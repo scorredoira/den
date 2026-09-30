@@ -98,7 +98,11 @@ pub fn watch(root: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> Re
     let (tx, rx) = mpsc::channel::<PathBuf>();
     let ignored = Ignored::new(root);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if let Ok(event) = event {
+        // Opening or reading isn't a change (on Linux inotify reports it): git
+        // reading the tree would otherwise trigger a refresh that reads it again.
+        if let Ok(event) = event
+            && !event.kind.is_access()
+        {
             for path in event.paths {
                 if !ignored.matches(&path) {
                     let _ = tx.send(path);

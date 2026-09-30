@@ -147,12 +147,9 @@ pub enum GitOp {
     Discard { files: Vec<String> },
     /// With `all`, stages everything changed first.
     Commit { message: String, all: bool },
-    Push,
-    /// Fast-forward only: never creates a merge.
-    Pull,
     /// Responde `Branches`.
     Branches,
-    /// Switches to `branch` (local, or remote like `origin/x`, which creates the local one).
+    /// Switches to the local `branch`.
     Switch { branch: String },
     /// Responds `Commits`, starting at `HEAD`.
     Log { skip: usize, limit: usize },
@@ -167,10 +164,6 @@ pub enum GitOp {
 pub struct GitStatus {
     /// `None` with a detached `HEAD`.
     pub branch: Option<String>,
-    pub upstream: Option<String>,
-    /// Commits ahead of and behind `upstream`.
-    pub ahead: u32,
-    pub behind: u32,
     /// In the index, ready to commit.
     pub staged: Vec<ChangedFile>,
     /// In the folder and unstaged, untracked files included.

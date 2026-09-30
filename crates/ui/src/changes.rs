@@ -516,32 +516,8 @@ impl ChangesPanel {
                             .child(format!("⎇ {branch}"))
                             .on_click(cx.listener(|this, _, _, cx| this.choose_branch(cx))),
                     )
-                    .when(status.upstream.is_some() && (status.ahead > 0 || status.behind > 0), |el| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.muted_foreground)
-                                .child(format!("↑{} ↓{}", status.ahead, status.behind)),
-                        )
-                    })
                     .when_some(self.busy.clone(), |el, busy| {
                         el.child(div().flex_none().text_color(theme.muted_foreground).child(busy))
-                    })
-                    .when(self.busy.is_none(), |el| {
-                        el.when(status.upstream.is_some(), |el| {
-                            el.child(
-                                link("changes-pull", "Pull", cx)
-                                    .flex_none()
-                                    .on_click(cx.listener(|this, _, _, cx| this.run(GitOp::Pull, Some("Pulling…"), cx))),
-                            )
-                        })
-                        .when(status.branch.is_some(), |el| {
-                            el.child(
-                                link("changes-push", "Push", cx)
-                                    .flex_none()
-                                    .on_click(cx.listener(|this, _, _, cx| this.run(GitOp::Push, Some("Pushing…"), cx))),
-                            )
-                        })
                     }),
             )
     }
@@ -722,8 +698,6 @@ impl ChangesPanel {
         let mut rows = Vec::new();
         for (ix, commit) in self.commits.iter().enumerate() {
             let expanded = self.expanded.as_ref() == Some(&commit.hash);
-            // The first `ahead` commits aren't on the remote yet.
-            let unpushed = self.status.upstream.is_some() && ix < self.status.ahead as usize;
             let refs = commit.refs.replace("HEAD -> ", "");
             let hash = commit.hash.clone();
             let panel = cx.entity().downgrade();
@@ -766,7 +740,6 @@ impl ChangesPanel {
                             .text_color(theme.muted_foreground)
                             .whitespace_nowrap()
                             .overflow_hidden()
-                            .when(unpushed, |el| el.child(div().text_color(theme.warning).child("↑ not pushed")))
                             .child(commit.short.clone())
                             .child(commit.author.clone())
                             .child(ago(commit.time))

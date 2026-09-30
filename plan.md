@@ -87,7 +87,7 @@ A single byte stream with binary frames, the same locally and over SSH; the only
 | Agent | `Hello`, `Version`, `Shutdown` | |
 | Files | `ListDir`, `ReadFile`, `WriteFile`, `CreateFile`, `CreateDir`, `Rename`, `Trash`, `Watch`, `Unwatch` | `FsChanged` |
 | Search | `Search { query, regex, case_sensitive, max_hits }`, `FindFiles` | |
-| Git | `GitChanges`, `GitDiff`, `Git { op }` (status, stage, unstage, discard, commit, push, pull, branches, switch, log, commit files and diffs) | |
+| Git | `GitChanges`, `GitDiff`, `Git { op }` (status, stage, unstage, discard, commit, branches, switch, log, commit files and diffs) | |
 | LSP | `Lsp { op }` (definition or references) | |
 | Tasks | `RepoAdd`, `RepoRemove`, `RepoList`, `TaskList`, `TaskCreate`, `TaskRemove`, `BlockedList` | `Activity`, `Blocked`, `OpenTask` |
 | Terminals | `TermCreate { group, cwd, command, cols, rows }`, `TermList`, `TermAttach`, `TermDetach`, `TermInput`, `TermResize`, `TermKill`, `TermCwd`, `SavePastedImage` | `TermOutput`, `TermTitle`, `TermExit` (the snapshot is `TermAttach`'s response) |
@@ -133,7 +133,7 @@ The main unit is the task; the server is an attribute of the task, not a level t
 | Area | Contents |
 | --- | --- |
 | Tasks (resizable, can be hidden) | Tasks grouped by server, each as `repo/branch`, with the state of its terminals (see below). At the bottom, "New Task" and the Settings gear. |
-| Side panel (resizable, can be hidden) | Its header has icon tabs for the four modes. Files: the worktree's tree. Changes: git, in three views: Branch (the files changed relative to the base branch), Uncommitted (stage, unstage, discard, commit) and History (commits, their files and diffs); plus the current branch with a picker to switch, push and pull. Search: the search box and the results grouped by file. References: the result of the last Shift-F12. |
+| Side panel (resizable, can be hidden) | Its header has icon tabs for the four modes. Files: the worktree's tree. Changes: git, in three views: Branch (the files changed relative to the base branch), Uncommitted (stage, unstage, discard, commit) and History (commits, their files and diffs); plus the current branch with a picker to switch between local branches. Only the local repo: no remotes, push or pull. Search: the search box and the results grouped by file. References: the result of the last Shift-F12. |
 | IDE | File tabs: code, rendered Markdown, images and read-only diffs. |
 | Task terminals | Terminal tabs and splits; usually one running Claude Code. |
 
@@ -291,7 +291,7 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 - Close All Tabs (Cmd-Alt-W) and Collapse All Folders (Cmd-Alt-C), also in the tab and tree menus.
 - Links in rendered Markdown: URLs open in the browser; relative paths (to the file's folder, or to the task's root with a leading `/`) open in a tab.
 - Restarting an agent to update it reopens its terminals: the old agent writes `agent-<protocol>.restart.json` next to its socket and the new one recreates them under the same ids, so the UIs reattach without noticing.
-- Git in Changes mode: Branch, Uncommitted (stage, unstage, discard, commit) and History (commits with their files and diffs) views; current branch with a picker to switch, push and pull. `Git { path, op }` request in the agent.
+- Git in Changes mode: Branch, Uncommitted (stage, unstage, discard, commit) and History (commits with their files and diffs) views; current branch with a picker to switch between local branches. `Git { path, op }` request in the agent.
 
 **Careful when working on sik from sik:**
 

@@ -1,23 +1,19 @@
 //! A task's changes against its base branch, and the operations of the
-//! Changes mode (stage, commit, push, branches, history), using `git`.
+//! Changes mode (stage, commit, branches, history), using `git`. Only the
+//! local repo: remotes are never read or touched.
 
 use std::{
     collections::HashMap,
     path::Path,
-    process::{Command, Stdio},
+    process::Command,
 };
 
 use anyhow::{Result, bail};
 use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, Response};
 
-/// The repo's main branch: `origin/HEAD`'s, or else `master` or `main`.
+/// The repo's main branch: the local `master` or `main`. Only the local repo
+/// counts: remotes are never looked at.
 fn default_branch(dir: &Path) -> Option<String> {
-    if let Ok(head) = git(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
-        let head = head.trim();
-        if !head.is_empty() {
-            return Some(head.to_string());
-        }
-    }
     ["master", "main"]
         .into_iter()
         .find(|branch| git(dir, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok())
@@ -124,27 +120,10 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
             git(dir, &["commit", "-m", &message])?;
             Ok(Response::Ok)
         }
-        GitOp::Push => {
-            let status = status(dir)?;
-            match (&status.upstream, &status.branch) {
-                (Some(_), _) => remote(dir, &["push"])?,
-                // First push of the branch: it gets linked to the remote one.
-                (None, Some(branch)) => remote(dir, &["push", "-u", "origin", branch])?,
-                (None, None) => bail!("There is no branch to push (detached HEAD)"),
-            };
-            Ok(Response::Ok)
-        }
-        GitOp::Pull => {
-            remote(dir, &["pull", "--ff-only"])?;
-            Ok(Response::Ok)
-        }
         GitOp::Branches => {
             let current = git(dir, &["branch", "--show-current"])?.trim().to_string();
-            let remotes = git(dir, &["remote"])?;
-            let branches = git(dir, &["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"])?
+            let branches = git(dir, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?
                 .lines()
-                // `refs/remotes/origin/HEAD` shows up as plain `origin`.
-                .filter(|branch| !branch.ends_with("/HEAD") && !remotes.lines().any(|remote| remote == *branch))
                 .map(str::to_string)
                 .collect();
             Ok(Response::Branches {
@@ -153,17 +132,7 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
             })
         }
         GitOp::Switch { branch } => {
-            // `git switch x` with only `origin/x` creates the local branch tracking it.
-            let local = match branch.split_once('/') {
-                Some((remote, name))
-                    if is_remote(dir, remote)
-                        && git(dir, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err() =>
-                {
-                    name
-                }
-                _ => branch.as_str(),
-            };
-            git(dir, &["switch", local])?;
+            git(dir, &["switch", &branch])?;
             Ok(Response::Ok)
         }
         GitOp::Log { skip, limit } => Ok(Response::Commits(log(dir, skip, limit)?)),
@@ -182,12 +151,8 @@ fn strs(files: &[String]) -> Vec<&str> {
     files.iter().map(String::as_str).collect()
 }
 
-fn is_remote(dir: &Path, name: &str) -> bool {
-    git(dir, &["remote"]).is_ok_and(|remotes| remotes.lines().any(|remote| remote == name))
-}
-
-/// `git status` in machine-readable format: branch, distance from the
-/// remote one, and what is staged and what isn't.
+/// `git status` in machine-readable format: branch, and what is staged
+/// and what isn't.
 fn status(dir: &Path) -> Result<GitStatus> {
     let mut status = GitStatus::default();
     let raw = git(dir, &["status", "--porcelain=v2", "--branch", "--no-renames", "--untracked-files=all", "-z"])?;
@@ -197,16 +162,6 @@ fn status(dir: &Path) -> Result<GitStatus> {
             let (key, value) = header.split_once(' ').unwrap_or((header, ""));
             match key {
                 "branch.head" if value != "(detached)" => status.branch = Some(value.to_string()),
-                "branch.upstream" => status.upstream = Some(value.to_string()),
-                "branch.ab" => {
-                    for part in value.split(' ') {
-                        if let Some(n) = part.strip_prefix('+') {
-                            status.ahead = n.parse().unwrap_or(0);
-                        } else if let Some(n) = part.strip_prefix('-') {
-                            status.behind = n.parse().unwrap_or(0);
-                        }
-                    }
-                }
                 _ => {}
             }
             continue;
@@ -268,6 +223,8 @@ fn log(dir: &Path, skip: usize, limit: usize) -> Result<Vec<CommitInfo>> {
         dir,
         &[
             "log",
+            "--decorate-refs=refs/heads",
+            "--decorate-refs=refs/tags",
             "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1e",
             &format!("--skip={skip}"),
             &format!("--max-count={limit}"),
@@ -288,25 +245,6 @@ fn log(dir: &Path, skip: usize, limit: usize) -> Result<Vec<CommitInfo>> {
             })
         })
         .collect())
-}
-
-/// Push and pull: they never sit waiting for a password or passphrase that
-/// nobody will type (the agent has no terminal).
-fn remote(dir: &Path, args: &[&str]) -> Result<String> {
-    let mut command = Command::new("git");
-    command
-        .args(args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .env("GIT_TERMINAL_PROMPT", "0");
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
-        command.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
-    }
-    let output = command.output()?;
-    if !output.status.success() {
-        bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Unified diff of a file, using the same criteria as `changes`.
