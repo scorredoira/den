@@ -1,0 +1,14 @@
+#!/bin/sh
+# Generates sik.icns from sik.svg (needs rsvg-convert: brew install librsvg).
+# The .icns is kept in the repo, so this is only needed when the icon changes.
+set -e
+dir="$(cd "$(dirname "$0")" && pwd)"
+set_dir="$(mktemp -d)/sik.iconset"
+mkdir -p "$set_dir"
+for size in 16 32 128 256 512; do
+  rsvg-convert -w "$size" -h "$size" "$dir/sik.svg" -o "$set_dir/icon_${size}x${size}.png"
+  rsvg-convert -w $((size * 2)) -h $((size * 2)) "$dir/sik.svg" -o "$set_dir/icon_${size}x${size}@2x.png"
+done
+iconutil -c icns "$set_dir" -o "$dir/sik.icns"
+rm -rf "$(dirname "$set_dir")"
+echo "$dir/sik.icns"

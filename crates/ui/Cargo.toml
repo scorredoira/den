@@ -1,0 +1,22 @@
+[package]
+name = "ui"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "sik"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+ui-term.workspace = true
+client.workspace = true
+proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+smol.workspace = true
+nucleo-matcher = "0.3"
+tree-sitter-xml = "0.7"
+tree-sitter = "0.26"

@@ -1,0 +1,27 @@
+[package]
+name = "agent"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "sik-agent"
+path = "src/main.rs"
+
+[dependencies]
+proto.workspace = true
+anyhow.workspace = true
+alacritty_terminal.workspace = true
+portable-pty.workspace = true
+libc.workspace = true
+client.workspace = true
+smol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ignore.workspace = true
+notify.workspace = true
+trash.workspace = true
+grep-regex = "0.1"
+grep-searcher = "0.1"
+grep-matcher = "0.1"
+

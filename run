@@ -1,0 +1,35 @@
+#!/bin/sh
+# Builds sik and its agent, and opens sik with whatever arguments are passed (a
+# folder or a file; by default, the current folder). `run task <name>` creates a
+# task like `sik task` does inside its terminals, without opening the app.
+#
+# The app isn't run from target/: on macOS, rebuilding a running binary can kill
+# the process. It's copied (along with the agent, which the app looks for next to
+# itself) to a per-build folder and the copy is opened; old copies are deleted
+# (a process still using them doesn't notice).
+set -e
+dir="$(cd "$(dirname "$0")" && pwd)"
+cargo build --quiet --manifest-path "$dir/Cargo.toml"
+# The agent for Linux servers, uploaded over SSH when needed.
+linux="$dir/target/x86_64-unknown-linux-musl/release/sik-agent"
+if command -v cargo-zigbuild >/dev/null; then
+  cargo zigbuild --quiet --release -p agent --target x86_64-unknown-linux-musl \
+    --manifest-path "$dir/Cargo.toml" 2>/dev/null || echo "warning: could not build the agent for Linux" >&2
+fi
+if [ "$1" = task ]; then
+  exec "$dir/target/debug/sik-agent" "$@"
+fi
+builds="$HOME/Library/Application Support/sik/builds"
+stamp="$(stat -f %m "$dir/target/debug/sik")-$(stat -f %m "$dir/target/debug/sik-agent")"
+[ -f "$linux" ] && stamp="$stamp-$(stat -f %m "$linux")"
+copy="$builds/$stamp"
+if [ ! -x "$copy/sik" ]; then
+  mkdir -p "$copy.part"
+  cp -p "$dir/target/debug/sik" "$dir/target/debug/sik-agent" "$copy.part/"
+  [ -f "$linux" ] && cp -p "$linux" "$copy.part/sik-agent-linux-x86_64"
+  mv "$copy.part" "$copy"
+fi
+for old in "$builds"/*; do
+  [ "$old" = "$copy" ] || rm -rf "$old"
+done
+exec "$copy/sik" "$@"

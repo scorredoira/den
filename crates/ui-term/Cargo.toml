@@ -1,0 +1,11 @@
+[package]
+name = "ui-term"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
+anyhow.workspace = true
+smol.workspace = true
+alacritty_terminal.workspace = true

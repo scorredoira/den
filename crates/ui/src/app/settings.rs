@@ -1,0 +1,596 @@
+//! Settings, in a modal (Cmd-, or the gear): they're app-wide, not per task.
+//! At the top a search box that filters everything; on the left an index of
+//! sections; on the right the sections, one after another.
+
+use gpui_kit::component::{input::InputEvent, kbd::Kbd};
+
+use super::*;
+use crate::shortcuts::{self, SHORTCUTS, Shortcut};
+
+/// Sections, in index order.
+const SECTIONS: [&str; 5] = ["Appearance", "Servers", "Repos", "Hidden Tasks", "Keyboard Shortcuts"];
+
+pub(super) struct Settings {
+    focus: FocusHandle,
+    search: Entity<InputState>,
+    /// The sections column, to jump to one from the index.
+    scroll: ScrollHandle,
+    section: usize,
+    /// Shortcut waiting for its new key combination, and what intercepts keys
+    /// meanwhile (before they do what they already do).
+    recording: Option<(&'static str, Subscription)>,
+    /// The chosen combination already belongs to another shortcut: ask before
+    /// taking it away (a shortcut is never removed silently).
+    conflict: Option<Conflict>,
+    _subscription: Subscription,
+}
+
+struct Conflict {
+    id: &'static str,
+    keys: String,
+    other: &'static Shortcut,
+}
+
+fn shortcut(id: &str) -> &'static Shortcut {
+    SHORTCUTS.iter().find(|shortcut| shortcut.id == id).expect("shortcut")
+}
+
+impl Sik {
+    /// Opens settings (or focuses them if already open).
+    pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_task = None;
+        self.confirm_remove = None;
+        self.error = None;
+        if self.host_input.is_none() {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("add: bill or user@host"));
+            let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.add_host(window, cx);
+                }
+            });
+            self._subscriptions.push(subscription);
+            self.host_input = Some(input);
+        }
+        for ix in 0..self.hosts.len() {
+            if self.hosts[ix].repo_input.is_none() {
+                let name = self.hosts[ix].name.clone();
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("add repo: ~/path"));
+                let subscription = cx.subscribe_in(&input, window, move |this, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.add_repo(name.clone(), window, cx);
+                    }
+                });
+                self._subscriptions.push(subscription);
+                self.hosts[ix].repo_input = Some(input);
+            }
+        }
+        if self.settings.is_none() {
+            let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));
+            let subscription = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
+                }
+            });
+            self.settings = Some(Settings {
+                focus: cx.focus_handle(),
+                search,
+                scroll: ScrollHandle::new(),
+                section: 0,
+                recording: None,
+                conflict: None,
+                _subscription: subscription,
+            });
+        }
+        if let Some(settings) = &self.settings {
+            settings.search.update(cx, |search, cx| search.focus(window, cx));
+        }
+        self.refresh_repos(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings = None;
+        self.host_picker = None;
+        self.folder_picker = None;
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn go_to_section(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if let Some(settings) = &mut self.settings {
+            settings.section = ix;
+            settings.scroll.scroll_to_item(ix);
+            cx.notify();
+        }
+    }
+
+    /// "Change": the next combination pressed (without doing what it already
+    /// does) becomes this shortcut's. Esc cancels.
+    fn record_shortcut(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        let sik = cx.entity().downgrade();
+        let interceptor = cx.intercept_keystrokes(move |event, _, cx| {
+            let keystroke = &event.keystroke;
+            // Only modifiers: not a combination yet.
+            if matches!(keystroke.key.as_str(), "shift" | "control" | "alt" | "platform" | "function" | "cmd" | "ctrl" | "fn") {
+                return;
+            }
+            cx.stop_propagation();
+            let keystroke = keystroke.clone();
+            sik.update(cx, |this, cx| this.recorded(id, keystroke, cx)).ok();
+        });
+        if let Some(settings) = &mut self.settings {
+            settings.recording = Some((id, interceptor));
+            settings.conflict = None;
+        }
+        cx.notify();
+    }
+
+    fn recorded(&mut self, id: &'static str, keystroke: Keystroke, cx: &mut Context<Self>) {
+        let Some(settings) = &mut self.settings else {
+            return;
+        };
+        settings.recording = None;
+        let plain_escape = keystroke.key == "escape" && !keystroke.modifiers.modified();
+        if !plain_escape {
+            self.set_shortcut(id, Some(keystroke.unparse()), cx);
+        }
+        cx.notify();
+    }
+
+    /// Changes a shortcut's combination (`None`: no shortcut). If it belongs to
+    /// another, changes nothing and asks.
+    fn set_shortcut(&mut self, id: &'static str, keys: Option<String>, cx: &mut Context<Self>) {
+        if let Some(keys) = &keys
+            && let Ok(keystroke) = Keystroke::parse(keys)
+            && let Some(other) = shortcuts::owner(&keystroke, cx).filter(|other| other.id != id)
+        {
+            if let Some(settings) = &mut self.settings {
+                settings.conflict = Some(Conflict { id, keys: keys.clone(), other });
+            }
+            return cx.notify();
+        }
+        let default = shortcut(id).default;
+        Config::update(cx, |config| {
+            let same_as_default = keys.as_deref().and_then(|keys| Keystroke::parse(keys).ok())
+                == Keystroke::parse(default).ok();
+            if same_as_default {
+                config.keys.remove(id);
+            } else {
+                config.keys.insert(id.to_string(), keys.unwrap_or_default());
+            }
+        });
+        shortcuts::apply(cx);
+        if let Some(settings) = &mut self.settings {
+            settings.conflict = None;
+        }
+        cx.notify();
+    }
+
+    /// "Reassign It Here": the other shortcut is left without a combination and this one goes to the chosen one.
+    fn resolve_conflict(&mut self, cx: &mut Context<Self>) {
+        let Some(conflict) = self.settings.as_mut().and_then(|settings| settings.conflict.take()) else {
+            return;
+        };
+        self.set_shortcut(conflict.other.id, None, cx);
+        self.set_shortcut(conflict.id, Some(conflict.keys), cx);
+    }
+
+    pub(super) fn render_settings(&self, settings: &Settings, cx: &mut Context<Self>) -> impl IntoElement {
+        let query = settings.search.read(cx).value().trim().to_lowercase();
+        let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
+
+        let sections: Vec<(AnyElement, bool)> = vec![
+            self.render_appearance(&matches, cx),
+            self.render_hosts(&matches, cx),
+            self.render_repos(&matches, cx),
+            self.render_hidden(&matches, cx),
+            self.render_shortcuts(settings, &matches, cx),
+        ];
+        let visible: Vec<bool> = sections.iter().map(|(_, visible)| *visible).collect();
+        let nothing = !visible.iter().any(|visible| *visible);
+
+        let theme = cx.theme();
+        let index = v_flex()
+            .w(px(200.))
+            .flex_none()
+            .pt_2()
+            .pr_2()
+            .gap_0p5()
+            .border_r_1()
+            .border_color(theme.border)
+            .children(SECTIONS.iter().enumerate().map(|(ix, title)| {
+                let selected = settings.section == ix;
+                div()
+                    .id(("settings-index", ix))
+                    .px_3()
+                    .py_1()
+                    .rounded(theme.radius)
+                    .when(selected, |el| el.font_semibold().text_color(theme.foreground))
+                    .when(!selected, |el| el.text_color(theme.muted_foreground))
+                    .when(!visible[ix], |el| el.opacity(0.4))
+                    .hover(|style| style.bg(theme.accent))
+                    .child(*title)
+                    .on_click(cx.listener(move |this, _, _, cx| this.go_to_section(ix, cx)))
+            }));
+
+        let content = v_flex()
+            .id("settings-sections")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .track_scroll(&settings.scroll)
+            .pl_6()
+            .pr_4()
+            .pb_8()
+            .children(sections.into_iter().map(|(section, _)| section))
+            .when(nothing, |el| {
+                el.child(div().pt_4().text_color(theme.muted_foreground).child("No settings match your search."))
+            });
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::black().opacity(0.25))
+            .occlude()
+            .child(
+                v_flex()
+                    .id("settings")
+                    .track_focus(&settings.focus)
+                    .w(relative(0.9))
+                    .max_w(px(1100.))
+                    .h(relative(0.85))
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .shadow_lg()
+                    .text_sm()
+                    // A click outside closes it, except in the pickers it opens.
+                    .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                        if this.host_picker.is_none() && this.folder_picker.is_none() {
+                            this.close_settings(window, cx);
+                        }
+                    }))
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.close_settings(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        h_flex()
+                            .h(px(40.))
+                            .flex_none()
+                            .px_4()
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .child(div().flex_1().font_semibold().child("Settings"))
+                            .child(
+                                icon_button("settings-close", "icons/tab-close.svg", cx)
+                                    .on_click(cx.listener(|this, _, window, cx| this.close_settings(window, cx))),
+                            ),
+                    )
+                    .child(div().px_4().py_3().flex_none().child(Input::new(&settings.search)))
+                    .child(h_flex().items_start().flex_1().min_h_0().px_4().child(index).child(content)),
+            )
+    }
+
+    /// Section title and its rows; the whole section hides if nothing
+    /// matches the search (while remaining a child, so the index still
+    /// knows which one to jump to).
+    fn section(title: &'static str, rows: Vec<AnyElement>, visible: bool, cx: &App) -> (AnyElement, bool) {
+        let theme = cx.theme();
+        let element = v_flex()
+            .when(visible, |el| {
+                el.pt_5()
+                    .gap_1()
+                    .child(div().pb_1().text_lg().font_semibold().text_color(theme.foreground).child(title))
+                    .children(rows)
+            })
+            .into_any_element();
+        (element, visible)
+    }
+
+    fn render_appearance(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let visible = ["Appearance", "Theme", "System", "Light", "Dark"].iter().any(|text| matches(text));
+        let current = Config::get(cx).theme;
+        let theme = cx.theme();
+        let choices = h_flex().gap_2().children(
+            [(ThemeChoice::System, "System"), (ThemeChoice::Light, "Light"), (ThemeChoice::Dark, "Dark")]
+                .into_iter()
+                .map(|(choice, label)| {
+                    let selected = current == choice;
+                    div()
+                        .id(label)
+                        .px_3()
+                        .py_1()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.border)
+                        .when(selected, |el| el.bg(theme.accent).font_semibold())
+                        .hover(|style| style.bg(theme.accent))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, window, cx| this.set_theme(choice, window, cx)))
+                }),
+        );
+        let rows = vec![setting("Theme", "Light, dark, or match the system.", choices, cx)];
+        Self::section(SECTIONS[0], rows, visible, cx)
+    }
+
+    fn render_hosts(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let title_matches = matches(SECTIONS[1]) || matches("ssh server");
+        let theme = cx.theme();
+        let mut rows = Vec::new();
+        let mut any = false;
+        for host in self.hosts.iter().skip(1) {
+            if !title_matches && !matches(&host.name) {
+                continue;
+            }
+            any = true;
+            let name = host.name.clone();
+            let status = match &host.status {
+                HostStatus::Connected => "connected",
+                HostStatus::Connecting => "connecting…",
+                HostStatus::Failed(_) => "offline",
+            };
+            rows.push(
+                list_row(name.to_string(), status, cx)
+                    .child(link(format!("host-remove-{name}"), "remove", cx).on_click(cx.listener(
+                        move |this, _, window, cx| this.remove_host(name.clone(), window, cx),
+                    )))
+                    .into_any_element(),
+            );
+        }
+        if title_matches {
+            rows.extend(self.host_input.as_ref().map(|input| {
+                h_flex()
+                    .pt_1()
+                    .gap_1()
+                    .max_w(px(480.))
+                    .child(div().flex_1().child(Input::new(input)))
+                    .child(icon_button("pick-host", "icons/server.svg", cx).on_click(
+                        cx.listener(|this, _, window, cx| this.open_host_picker(window, cx)),
+                    ))
+                    .into_any_element()
+            }));
+            rows.extend(
+                self.error
+                    .as_ref()
+                    .filter(|(target, _)| target.is_none())
+                    .map(|(_, error)| error_text(error.clone(), cx).into_any_element()),
+            );
+            rows.push(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("A name from ~/.ssh/config or user@host. The icon looks them up in ~/.ssh/config.")
+                    .into_any_element(),
+            );
+        }
+        Self::section(SECTIONS[1], rows, title_matches || any, cx)
+    }
+
+    fn render_repos(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let title_matches = matches(SECTIONS[2]);
+        let theme = cx.theme();
+        let mut rows = Vec::new();
+        let mut any = false;
+        for host in self.hosts.iter().filter(|host| host.client.is_some()) {
+            let host_matches = title_matches || matches(&host.name);
+            let repos: Vec<&PathBuf> = host
+                .repos
+                .iter()
+                .filter(|repo| host_matches || matches(&repo.to_string_lossy()))
+                .collect();
+            if !host_matches && repos.is_empty() {
+                continue;
+            }
+            any = true;
+            rows.push(
+                div()
+                    .pt_2()
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(theme.muted_foreground)
+                    .child(host.name.to_uppercase())
+                    .into_any_element(),
+            );
+            for repo in repos {
+                let (name, repo) = (host.name.clone(), repo.clone());
+                rows.push(
+                    list_row(folder_name(&repo), &repo.display().to_string(), cx)
+                        .child(link(format!("repo-remove-{name}-{}", repo.display()), "remove", cx).on_click(
+                            cx.listener(move |this, _, window, cx| this.remove_repo(name.clone(), repo.clone(), window, cx)),
+                        ))
+                        .into_any_element(),
+                );
+            }
+            let name = host.name.clone();
+            rows.extend(host.repo_input.as_ref().map(|input| {
+                h_flex()
+                    .pt_1()
+                    .gap_1()
+                    .max_w(px(480.))
+                    .child(div().flex_1().child(Input::new(input)))
+                    .child(icon_button(format!("pick-repo-{name}"), "icons/tree-folder.svg", cx).on_click(
+                        cx.listener(move |this, _, window, cx| this.open_folder_picker(name.clone(), window, cx)),
+                    ))
+                    .into_any_element()
+            }));
+        }
+        Self::section(SECTIONS[2], rows, title_matches || any, cx)
+    }
+
+    fn render_hidden(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let title_matches = matches(SECTIONS[3]);
+        let hidden: Vec<String> = Config::get(cx).hidden.clone();
+        let theme = cx.theme();
+        let mut rows = Vec::new();
+        for config in hidden.iter().filter(|config| title_matches || matches(config)) {
+            let config = config.clone();
+            rows.push(
+                list_row(config.clone(), "", cx)
+                    .child(link(format!("task-show-{config}"), "show", cx).on_click(cx.listener(
+                        move |this, _, _, cx| this.show_task(&config, cx),
+                    )))
+                    .into_any_element(),
+            );
+        }
+        let any = !rows.is_empty();
+        if title_matches && hidden.is_empty() {
+            rows.push(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("None. Right-click a task → Hide.")
+                    .into_any_element(),
+            );
+        }
+        Self::section(SECTIONS[3], rows, title_matches || any, cx)
+    }
+
+    fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let title_matches = matches(SECTIONS[4]) || matches("keybindings");
+        let recording = settings.recording.as_ref().map(|(id, _)| *id);
+        let mut rows = Vec::new();
+        for shortcut in SHORTCUTS {
+            let keys = shortcuts::keys(shortcut, cx);
+            let keys_text = keys.as_ref().map(Kbd::format).unwrap_or_default();
+            if !title_matches && !matches(shortcut.label) && !matches(&keys_text) {
+                continue;
+            }
+            rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
+        }
+        let visible = title_matches || !rows.is_empty();
+        Self::section(SECTIONS[4], rows, visible, cx)
+    }
+
+    fn shortcut_row(
+        &self,
+        shortcut: &'static Shortcut,
+        keys: Option<Keystroke>,
+        recording: Option<&'static str>,
+        settings: &Settings,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let id = shortcut.id;
+        let changed = shortcuts::changed(shortcut, cx);
+        let keys_element = if recording == Some(id) {
+            div().text_color(theme.primary).child("Press a key combination… (Esc to cancel)").into_any_element()
+        } else {
+            match keys {
+                Some(keys) => Kbd::new(keys).into_any_element(),
+                None => div().text_color(theme.muted_foreground).child("no shortcut").into_any_element(),
+            }
+        };
+        let conflict = settings.conflict.as_ref().filter(|conflict| conflict.id == id).map(|conflict| {
+            let keys = Keystroke::parse(&conflict.keys).map(|keys| Kbd::format(&keys)).unwrap_or_default();
+            h_flex()
+                .pl_3()
+                .pb_1()
+                .gap_2()
+                .text_xs()
+                .child(div().text_color(theme.warning).child(format!("{keys} is already “{}”.", conflict.other.label)))
+                .child(link(format!("conflict-yes-{id}"), "Reassign It Here", cx).on_click(
+                    cx.listener(|this, _, _, cx| this.resolve_conflict(cx)),
+                ))
+                .child(link(format!("conflict-no-{id}"), "Cancel", cx).on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(settings) = &mut this.settings {
+                        settings.conflict = None;
+                    }
+                    cx.notify();
+                })))
+        });
+        v_flex()
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("shortcut-{id}")))
+                    .group("shortcut")
+                    .h(px(30.))
+                    .px_3()
+                    .gap_3()
+                    .rounded(theme.radius)
+                    .hover(|style| style.bg(theme.accent.opacity(0.5)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(shortcut.label)
+                            .when(changed, |el| el.font_semibold()),
+                    )
+                    .child(keys_element)
+                    .child(
+                        link(format!("shortcut-change-{id}"), "Change", cx)
+                            .on_click(cx.listener(move |this, _, _, cx| this.record_shortcut(id, cx))),
+                    )
+                    .child(
+                        link(format!("shortcut-remove-{id}"), "Remove", cx)
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_shortcut(id, None, cx))),
+                    )
+                    .when(changed, |el| {
+                        el.child(
+                            link(format!("shortcut-reset-{id}"), "↺", cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_shortcut(id, Some(shortcut.default.to_string()), cx)
+                                })),
+                        )
+                    }),
+            )
+            .children(conflict)
+            .into_any_element()
+    }
+}
+
+/// A setting: bold name, description and its control below, as in VS Code.
+fn setting(title: &'static str, description: &'static str, control: impl IntoElement, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    v_flex()
+        .py_2()
+        .gap_1()
+        .child(div().font_semibold().child(title))
+        .child(div().text_color(theme.muted_foreground).child(description))
+        .child(div().pt_1().child(control))
+        .into_any_element()
+}
+
+/// A list row (servers, repos, hidden tasks).
+fn list_row(name: String, detail: &str, cx: &App) -> Div {
+    let theme = cx.theme();
+    h_flex()
+        .h(px(28.))
+        .px_3()
+        .gap_3()
+        .rounded(theme.radius)
+        .hover(|style| style.bg(theme.accent.opacity(0.5)))
+        .child(div().flex_none().child(name))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(detail.to_string()),
+        )
+}
+
+fn link(id: impl Into<SharedString>, label: &'static str, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    div()
+        .id(ElementId::Name(id.into()))
+        .flex_none()
+        .text_xs()
+        .text_color(theme.link)
+        .hover(|style| style.underline())
+        .child(label)
+}

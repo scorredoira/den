@@ -1,0 +1,10 @@
+[package]
+name = "client"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+proto.workspace = true
+anyhow.workspace = true
+smol.workspace = true

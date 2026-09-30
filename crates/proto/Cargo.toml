@@ -1,0 +1,11 @@
+[package]
+name = "proto"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+rmp-serde.workspace = true
+serde.workspace = true

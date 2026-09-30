@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- sik icon: an “s” drawn as a git branch, with two tasks (working and waiting for a reply). -->
+  <!-- macOS grid: the body takes up 824 × 824 in the center of 1024. -->
+  <defs>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d4ed8"/><stop offset="1" stop-color="#0b2a6b"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <path d="M512 100C868 100 924 156 924 512S868 924 512 924 100 868 100 512 156 100 512 100Z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#ink)"/>
+    <path d="M664 300 C664 300 360 250 360 400 C360 530 664 490 664 624 C664 770 360 724 360 724" fill="none" stroke="#f3f6ff" stroke-width="92" stroke-linecap="round"/>
+    <circle cx="664" cy="300" r="82" fill="#3fb950" stroke="#f3f6ff" stroke-width="26"/>
+    <circle cx="360" cy="724" r="82" fill="#f85149" stroke="#f3f6ff" stroke-width="26"/>
+  </g>
+</svg>
