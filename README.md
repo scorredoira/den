@@ -33,6 +33,8 @@ For Linux servers, first `cargo install cargo-zigbuild` and `brew install zig`. 
 
 New Task (Cmd-N) creates a worktree with the repo's executable `.task/create <name>` if it has one, or `git worktree add` otherwise. From a sik terminal: `cd "$(sik task <name>)"`.
 
+Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.task/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
+
 Cmd-1…9 go to a task, Cmd-E back to the previous one, Cmd-K finds one across servers. Every shortcut can be changed in Settings (Cmd-,).
 
 ## How it's built

@@ -137,6 +137,8 @@ pub struct Config {
     pub font_sizes: FontSizes,
     /// Long lines wrap in the editor (Opt-Z).
     pub word_wrap: bool,
+    /// Extensions (`json`, `ts`…) formatted on saving with Cmd-S.
+    pub format_on_save: Vec<String>,
 }
 
 /// Text sizes chosen in Settings; unset, the default.
@@ -190,6 +192,12 @@ impl Config {
     pub fn font_size(&self, area: TextArea) -> f32 {
         let mut sizes = self.font_sizes;
         area.slot(&mut sizes).unwrap_or(area.default_size()).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+
+    /// Whether saving `path` formats it first.
+    pub fn formats_on_save(&self, path: &std::path::Path) -> bool {
+        let ext = path.extension().map(|ext| ext.to_string_lossy().to_lowercase()).unwrap_or_default();
+        !ext.is_empty() && self.format_on_save.contains(&ext)
     }
 
     /// `None` goes back to the default.

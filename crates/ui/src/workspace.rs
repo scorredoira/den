@@ -23,7 +23,7 @@ use crate::{
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
-    GoToLine, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap,
+    GoToLine, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     changes::{self, ChangesEvent, ChangesPanel},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
@@ -1798,20 +1798,99 @@ impl Workspace {
         self.file_tree.update(cx, |tree, cx| tree.reveal(path, cx));
     }
 
-    /// Saves the active tab's file (from a view too).
-    fn save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(active) = self.active else {
+    /// The file of the active tab (which may be a view of it).
+    fn active_file(&self) -> Option<usize> {
+        let active = self.active?;
+        if !self.tabs[active].view {
+            return Some(active);
+        }
+        let path = &self.tabs[active].path;
+        self.tabs.iter().position(|tab| &tab.path == path && tab.is_file())
+    }
+
+    /// Saves the active tab's file (from a view too), formatting it first if
+    /// Settings say so for its type.
+    fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.active_file() else {
             return;
         };
-        let path = self.tabs[active].path.clone();
-        let file = if self.tabs[active].view {
-            self.tabs.iter().position(|tab| tab.path == path && tab.is_file())
-        } else {
-            Some(active)
-        };
-        if let Some(ix) = file {
+        if !Config::get(cx).formats_on_save(&self.tabs[ix].path) {
             self.save_tab(ix, cx).detach();
+            return;
         }
+        let format = self.format_tab(ix, window, cx);
+        let editor = self.tabs[ix].editor.clone();
+        cx.spawn(async move |this, cx| {
+            let formatted = format.await;
+            let Ok(Some(save)) = this.update(cx, |this, cx| this.tab_index(&editor).map(|ix| this.save_tab(ix, cx))) else {
+                return;
+            };
+            // Saving clears the status bar: why it wasn't formatted goes after.
+            if save.await
+                && let Err(err) = formatted
+            {
+                this.update(cx, |this, cx| {
+                    this.message = Some(err);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn format_document(&mut self, _: &FormatDocument, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.active_file() else {
+            return;
+        };
+        let format = self.format_tab(ix, window, cx);
+        cx.spawn(async move |this, cx| {
+            let message = format.await.err();
+            this.update(cx, |this, cx| {
+                this.message = message;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Formats the tab's text in the editor (one undo step, the cursor kept
+    /// on its line and column); the error says why it didn't.
+    fn format_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> Task<Result<(), SharedString>> {
+        let tab = &self.tabs[ix];
+        if !matches!(tab.content, Content::Ready) || tab.image.is_some() || tab.diff.is_some() {
+            return Task::ready(Ok(()));
+        }
+        let Some(client) = self.client.clone() else {
+            return Task::ready(Err("Couldn't format: no agent".into()));
+        };
+        let editor = tab.editor.clone();
+        let text = editor.read(cx).value().to_string();
+        let request = Request::Format { root: self.root.clone(), path: tab.path.clone(), text: text.clone() };
+        cx.spawn_in(window, async move |_, cx| {
+            let formatted = match client.request(request).await {
+                Ok(Response::Formatted { text: Some(formatted), .. }) => formatted,
+                Ok(Response::Formatted { text: None, .. }) => {
+                    return Err("Nothing formats this kind of file: the repo can add a .task/format".into());
+                }
+                Ok(other) => return Err(format!("Unexpected response: {other:?}").into()),
+                Err(err) => return Err(format!("Couldn't format: {err:#}").into()),
+            };
+            editor
+                .update_in(cx, |state, window, cx| {
+                    if *state.value() != text {
+                        return Err("Not formatted: the text changed meanwhile".into());
+                    }
+                    if let Some((range, with)) = editing::difference(&text, &formatted) {
+                        let cursor = state.cursor_position();
+                        let offset = editing::offset_at(&formatted, cursor.line, cursor.character);
+                        state.edit(&[(range, with)], &[(offset, offset)], false, window, cx);
+                    }
+                    Ok(())
+                })
+                .map_err(|_| SharedString::from("Not formatted: the tab closed"))?
+        })
     }
 
     /// Saves all tabs with changes; the result says whether it succeeded.
@@ -2314,6 +2393,7 @@ impl Workspace {
                             .context_menu(move |menu, _, _| {
                                 menu.menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition))
                                     .menu_with_disabled("Find References", readonly, Box::new(FindReferences))
+                                    .menu_with_disabled("Format Document", readonly, Box::new(FormatDocument))
                                     .separator()
                                     .menu_with_disabled("Cut", readonly, Box::new(input::Cut))
                                     .menu("Copy", Box::new(input::Copy))
@@ -2533,6 +2613,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_markdown_source))
             .on_action(cx.listener(Self::open_preview_to_side))
             .on_action(cx.listener(Self::toggle_word_wrap))
+            .on_action(cx.listener(Self::format_document))
             .on_action(cx.listener(|this, _: &SplitEditorRight, window, cx| this.split_editor(Axis::Row, window, cx)))
             .on_action(cx.listener(|this, _: &SplitEditorDown, window, cx| this.split_editor(Axis::Column, window, cx)))
             .on_action(cx.listener(Self::new_terminal))

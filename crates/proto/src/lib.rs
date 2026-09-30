@@ -149,6 +149,9 @@ pub enum Request {
     /// `Completions` for file `path` in the task at `root`), which some
     /// servers only give when asked for one. Responds `Resolved`.
     LspResolve { root: PathBuf, path: PathBuf, list: u64, item: u32 },
+    /// `text`, the editor's, formatted for file `path` in the task at
+    /// `root`. Responds `Formatted`.
+    Format { root: PathBuf, path: PathBuf, text: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -308,6 +311,8 @@ pub enum Response {
     Resolved { detail: Option<String>, documentation: Option<String> },
     /// `None` outside a call.
     Signature(Option<LspSignature>),
+    /// `None` if nothing formats that kind of file; `by` says what did.
+    Formatted { text: Option<String>, by: Option<String> },
 }
 
 /// A port a process started from a terminal listens on (at loopback or on

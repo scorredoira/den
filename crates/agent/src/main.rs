@@ -7,6 +7,7 @@
 
 mod blocked;
 mod cli;
+mod format;
 mod fs;
 mod git;
 mod lsp;

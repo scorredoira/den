@@ -289,6 +289,16 @@ pub fn difference(old: &str, new: &str) -> Option<(Range<usize>, String)> {
     Some((start..old.len() - end, new[start..new.len() - end].to_string()))
 }
 
+/// Byte offset of `line`, `column` (in characters) in `text`, clamped to the
+/// line's end and to the last line.
+pub fn offset_at(text: &str, line: u32, column: u32) -> usize {
+    let Some(start) = (line == 0).then_some(0).or_else(|| text.match_indices('\n').nth(line as usize - 1).map(|(ix, _)| ix + 1)) else {
+        return text.len();
+    };
+    let rest = text[start..].split('\n').next().unwrap_or("");
+    start + rest.char_indices().nth(column as usize).map_or(rest.len(), |(ix, _)| ix)
+}
+
 /// Where selections go after `range` is replaced by `len` bytes: after it,
 /// they move by the difference; inside it, to its end.
 pub fn shift(selections: &[Selection], range: &Range<usize>, len: usize) -> Vec<Selection> {
@@ -317,6 +327,16 @@ mod tests {
             text.replace_range(range, &with);
         }
         text
+    }
+
+    #[test]
+    fn offsets_of_positions() {
+        let text = "ab\nñx\n";
+        assert_eq!(super::offset_at(text, 0, 1), 1);
+        assert_eq!(super::offset_at(text, 1, 1), 5);
+        assert_eq!(super::offset_at(text, 1, 9), 6);
+        assert_eq!(super::offset_at(text, 2, 0), 7);
+        assert_eq!(super::offset_at(text, 7, 0), 7);
     }
 
     #[test]

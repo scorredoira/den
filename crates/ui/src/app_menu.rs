@@ -52,6 +52,8 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Replace", input::Replace),
             MenuItem::separator(),
             MenuItem::action("Find in Task", ShowSearch),
+            MenuItem::separator(),
+            MenuItem::action("Format Document", FormatDocument),
         ]),
         Menu::new("Selection").items([
             MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),

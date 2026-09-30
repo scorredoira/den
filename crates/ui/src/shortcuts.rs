@@ -57,6 +57,7 @@ shortcuts![
     (ToggleMarkdownSource, "Markdown: Toggle Source or Preview", "secondary-shift-v"),
     (OpenPreviewToSide, "Markdown: Open Preview to the Side", "secondary-alt-v"),
     (ToggleWordWrap, "Toggle Word Wrap", "alt-z"),
+    (FormatDocument, "Format Document", "shift-alt-f"),
     (SplitEditorRight, "Split Editor Right", "secondary-alt-s"),
     (SplitEditorDown, "Split Editor Down", "secondary-alt-shift-s"),
     (NewTerminal, "New Terminal", "secondary-t"),

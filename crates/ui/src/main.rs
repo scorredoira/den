@@ -43,6 +43,7 @@ actions!(
         GoToDefinition,
         GoToLine,
         ToggleWordWrap,
+        FormatDocument,
         SplitEditorRight,
         SplitEditorDown,
         OpenPreviewToSide,

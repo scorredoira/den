@@ -23,6 +23,8 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use proto::{LspCompletion, LspLocation, LspOp, LspSignature, Response};
+
+use crate::format::Indent;
 use serde_json::{Value, json};
 
 /// How long a server may take to start (rust-analyzer on a large repo).
@@ -203,6 +205,32 @@ pub fn resolve(task: &Path, path: &Path, list: u64, item: u32) -> Result<Respons
     Ok(Response::Resolved { detail: detail(&resolved), documentation: documentation(&resolved) })
 }
 
+/// `text` formatted by its language server, and the server's name; `None`
+/// if there's no server or it doesn't format. Without `indent` (nothing is
+/// indented yet), tabs.
+pub fn format(task: &Path, path: &Path, text: &str, indent: Option<Indent>) -> Result<Option<(String, String)>> {
+    let Some((language, language_id)) = language(path) else {
+        return Ok(None);
+    };
+    let Some(server) = server(language, &project_root(language, task, path))? else {
+        return Ok(None);
+    };
+    if !server.formats {
+        return Ok(None);
+    }
+    server.sync(path, text, language_id)?;
+    let (tab_size, spaces) = match indent {
+        Some(Indent::Spaces(n)) => (n, true),
+        _ => (4, false),
+    };
+    let params = json!({
+        "textDocument": { "uri": uri(path) },
+        "options": { "tabSize": tab_size, "insertSpaces": spaces, "trimTrailingWhitespace": true, "insertFinalNewline": true },
+    });
+    let edits = server.request("textDocument/formatting", params, REQUEST_TIMEOUT)?;
+    Ok(Some((server.apply(text, &edits), language.name.to_string())))
+}
+
 /// The `language` server for `root`, starting it if needed.
 /// `None` if it isn't installed.
 fn server(language: &'static Language, root: &Path) -> Result<Option<Arc<Server>>> {
@@ -322,6 +350,8 @@ struct Server {
     utf8: bool,
     /// It answers `completionItem/resolve`.
     resolves: bool,
+    /// It answers `textDocument/formatting`.
+    formats: bool,
     /// The last completion list and its items, for `resolve`.
     last_completions: Mutex<(u64, Vec<Value>)>,
     alive: Arc<AtomicBool>,
@@ -370,6 +400,7 @@ impl Server {
             open: Mutex::new(None),
             utf8: false,
             resolves: false,
+            formats: false,
             last_completions: Default::default(),
             alive,
             _child: Mutex::new(child),
@@ -393,6 +424,7 @@ impl Server {
                         "synchronization": { "dynamicRegistration": false },
                         "definition": { "linkSupport": true },
                         "references": {},
+                        "formatting": {},
                         "signatureHelp": {
                             "signatureInformation": {
                                 "documentationFormat": ["plaintext", "markdown"],
@@ -429,6 +461,8 @@ impl Server {
         })?;
         server.utf8 = init["capabilities"]["positionEncoding"] == "utf-8";
         server.resolves = init["capabilities"]["completionProvider"]["resolveProvider"] == true;
+        let formatting = &init["capabilities"]["documentFormattingProvider"];
+        server.formats = formatting == true || formatting.is_object();
         server.notify("initialized", json!({}))?;
         let server = Arc::new(server);
         // Requests from the server (configuration, capability
@@ -592,6 +626,41 @@ impl Server {
             .unzip();
         let incomplete = incomplete || result["items"].as_array().is_some_and(|items| items.len() > MAX_COMPLETIONS);
         (items, raw, incomplete)
+    }
+
+    /// `text` with a list of `TextEdit`s applied.
+    fn apply(&self, text: &str, edits: &Value) -> String {
+        let mut starts = vec![0];
+        starts.extend(text.match_indices('\n').map(|(ix, _)| ix + 1));
+        let offset = |position: &Value| -> Option<usize> {
+            let line = position["line"].as_u64()? as usize;
+            let Some(&start) = starts.get(line) else {
+                return Some(text.len());
+            };
+            let line_text = text[start..].split('\n').next().unwrap_or("");
+            let chars = self.decode_column(line_text, position["character"].as_u64()? as u32) as usize;
+            Some(start + line_text.char_indices().nth(chars).map_or(line_text.len(), |(ix, _)| ix))
+        };
+        let mut edits: Vec<(usize, usize, &str)> = edits
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|edit| Some((offset(&edit["range"]["start"])?, offset(&edit["range"]["end"])?, edit["newText"].as_str()?)))
+            .collect();
+        edits.sort_by_key(|(start, end, _)| (*start, *end));
+        let mut out = String::with_capacity(text.len());
+        let mut at = 0;
+        for (start, end, new) in edits {
+            if start < at || end < start {
+                continue;
+            }
+            out.push_str(&text[at..start]);
+            out.push_str(new);
+            at = end;
+        }
+        out.push_str(&text[at..]);
+        out
     }
 
     /// The active signature of a `signatureHelp` response, with its active
@@ -940,6 +1009,8 @@ mod tests {
             panic!()
         };
         assert!(signature.label.contains("Twice(x int) int") && signature.active.is_some(), "{signature:?}");
+        let (formatted, server) = format(&go, &go.join("main.go"), "package main\nfunc main(){\nx:=1\n_=x}\n", None).unwrap().unwrap();
+        assert_eq!((formatted.as_str(), server.as_str()), ("package main\n\nfunc main() {\n\tx := 1\n\t_ = x\n}\n", "gopls"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -8,11 +8,13 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 5] = ["Appearance", "Servers", "Repos", "Hidden Tasks", "Keyboard Shortcuts"];
+const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Servers", "Repos", "Hidden Tasks", "Keyboard Shortcuts"];
 
 pub(super) struct Settings {
     focus: FocusHandle,
     search: Entity<InputState>,
+    /// The extensions formatted on save, as typed.
+    format_on_save: Entity<InputState>,
     /// The sections column, to jump to one from the index.
     scroll: ScrollHandle,
     section: usize,
@@ -71,9 +73,20 @@ impl Sik {
                     cx.notify();
                 }
             });
+            let typed = Config::get(cx).format_on_save.join(", ");
+            let format_on_save =
+                cx.new(|cx| InputState::new(window, cx).placeholder("json, ts, go").default_value(typed));
+            let format_subscription = cx.subscribe(&format_on_save, |_, input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let extensions = extensions(&input.read(cx).value());
+                    Config::update(cx, |config| config.format_on_save = extensions);
+                }
+            });
+            self._subscriptions.push(format_subscription);
             self.settings = Some(Settings {
                 focus: cx.focus_handle(),
                 search,
+                format_on_save,
                 scroll: ScrollHandle::new(),
                 section: 0,
                 recording: None,
@@ -181,6 +194,7 @@ impl Sik {
 
         let sections: Vec<(AnyElement, bool)> = vec![
             self.render_appearance(&matches, cx),
+            self.render_editor(settings, &matches, cx),
             self.render_hosts(&matches, cx),
             self.render_repos(&matches, cx),
             self.render_hidden(&matches, cx),
@@ -359,8 +373,20 @@ impl Sik {
         Self::section(SECTIONS[0], rows, visible, cx)
     }
 
+    fn render_editor(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let visible = [SECTIONS[1], "Format on Save", "Format Document", "json"].iter().any(|text| matches(text));
+        let input = div().max_w(px(480.)).child(Input::new(&settings.format_on_save));
+        let rows = vec![setting(
+            "Format on Save",
+            "File types formatted when saved with Cmd-S, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .task/format if it has one, else the language server; JSON works without either.",
+            input,
+            cx,
+        )];
+        Self::section(SECTIONS[1], rows, visible, cx)
+    }
+
     fn render_hosts(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[1]) || matches("ssh server");
+        let title_matches = matches(SECTIONS[2]) || matches("ssh server");
         let theme = cx.theme();
         let mut rows = Vec::new();
         let mut any = false;
@@ -409,11 +435,11 @@ impl Sik {
                     .into_any_element(),
             );
         }
-        Self::section(SECTIONS[1], rows, title_matches || any, cx)
+        Self::section(SECTIONS[2], rows, title_matches || any, cx)
     }
 
     fn render_repos(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[2]);
+        let title_matches = matches(SECTIONS[3]);
         let theme = cx.theme();
         let mut rows = Vec::new();
         let mut any = false;
@@ -460,11 +486,11 @@ impl Sik {
                     .into_any_element()
             }));
         }
-        Self::section(SECTIONS[2], rows, title_matches || any, cx)
+        Self::section(SECTIONS[3], rows, title_matches || any, cx)
     }
 
     fn render_hidden(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[3]);
+        let title_matches = matches(SECTIONS[4]);
         let hidden: Vec<String> = Config::get(cx).hidden.clone();
         let theme = cx.theme();
         let mut rows = Vec::new();
@@ -488,11 +514,11 @@ impl Sik {
                     .into_any_element(),
             );
         }
-        Self::section(SECTIONS[3], rows, title_matches || any, cx)
+        Self::section(SECTIONS[4], rows, title_matches || any, cx)
     }
 
     fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[4]) || matches("keybindings");
+        let title_matches = matches(SECTIONS[5]) || matches("keybindings");
         let recording = settings.recording.as_ref().map(|(id, _)| *id);
         let mut rows = Vec::new();
         for shortcut in SHORTCUTS {
@@ -504,7 +530,7 @@ impl Sik {
             rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
         }
         let visible = title_matches || !rows.is_empty();
-        Self::section(SECTIONS[4], rows, visible, cx)
+        Self::section(SECTIONS[5], rows, visible, cx)
     }
 
     fn shortcut_row(
@@ -631,4 +657,12 @@ fn link(id: impl Into<SharedString>, label: &'static str, cx: &App) -> Stateful<
         .text_color(theme.link)
         .hover(|style| style.underline())
         .child(label)
+}
+
+/// `"JSON, .ts ,go"` → `["json", "ts", "go"]`.
+fn extensions(text: &str) -> Vec<String> {
+    text.split([',', ' '])
+        .map(|ext| ext.trim().trim_start_matches('.').to_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .collect()
 }
