@@ -175,7 +175,9 @@ fn status(dir: &Path) -> Result<GitStatus> {
             }
             continue;
         }
-        let fields: Vec<&str> = entry.splitn(11, ' ').collect();
+        // Only split the fixed metadata fields: the final path can contain spaces.
+        let field_count = if entry.starts_with("u ") { 11 } else { 9 };
+        let fields: Vec<&str> = entry.splitn(field_count, ' ').collect();
         match fields[0] {
             "?" => unstaged.push((entry[2..].to_string(), '?')),
             // Ordinary change: `1 XY sub mH mI mW hH hI path`.
@@ -422,6 +424,24 @@ mod tests {
 
     fn paths(files: &[ChangedFile]) -> Vec<(&str, char)> {
         files.iter().map(|f| (f.path.as_str(), f.status)).collect()
+    }
+
+    #[test]
+    fn status_preserves_spaces_in_paths() {
+        let dir = repo();
+        std::fs::create_dir(dir.join("my folder")).unwrap();
+        let file = "my folder/my file.txt";
+        std::fs::write(dir.join(file), "original\n").unwrap();
+        commit(&dir, "file with spaces");
+        std::fs::write(dir.join(file), "staged\n").unwrap();
+        run_op(&dir, GitOp::Stage { files: vec![file.into()] });
+        std::fs::write(dir.join(file), "unstaged\n").unwrap();
+        let Response::GitStatus(status) = run_op(&dir, GitOp::Status) else { panic!() };
+        assert_eq!(paths(&status.staged), vec![(file, 'M')]);
+        assert_eq!(paths(&status.unstaged), vec![(file, 'M')]);
+        assert_eq!((status.staged[0].added, status.staged[0].removed), (1, 1));
+        assert_eq!((status.unstaged[0].added, status.unstaged[0].removed), (1, 1));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
