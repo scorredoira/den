@@ -45,7 +45,7 @@ pub fn changes(dir: &Path, uncommitted: bool) -> Result<(Option<String>, Vec<Cha
 /// lines: `args` is the command without `--numstat` or `--name-status`.
 fn changed(dir: &Path, args: &[&str]) -> Result<Vec<ChangedFile>> {
     let mut counts: HashMap<String, (u32, u32)> = HashMap::new();
-    for line in git(dir, &[args, &["--numstat"]].concat())?.lines() {
+    for line in git(dir, &[args, &["--numstat", "-z"]].concat())?.split('\0').filter(|line| !line.is_empty()) {
         let mut parts = line.splitn(3, '\t');
         let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
             continue;
@@ -54,10 +54,10 @@ fn changed(dir: &Path, args: &[&str]) -> Result<Vec<ChangedFile>> {
         counts.insert(path.to_string(), (added.parse().unwrap_or(0), removed.parse().unwrap_or(0)));
     }
     let mut files = Vec::new();
-    for line in git(dir, &[args, &["--name-status"]].concat())?.lines() {
-        let Some((status, path)) = line.split_once('\t') else {
-            continue;
-        };
+    // With -z Git emits unquoted status/path pairs, even for tabs and newlines.
+    let raw = git(dir, &[args, &["--name-status", "-z"]].concat())?;
+    let mut records = raw.split_terminator('\0');
+    while let (Some(status), Some(path)) = (records.next(), records.next()) {
         let (added, removed) = counts.get(path).copied().unwrap_or_default();
         files.push(ChangedFile {
             path: path.to_string(),
@@ -71,8 +71,8 @@ fn changed(dir: &Path, args: &[&str]) -> Result<Vec<ChangedFile>> {
 
 /// Untracked files (minus ignored ones); all their lines are new.
 fn untracked(dir: &Path) -> Result<Vec<ChangedFile>> {
-    Ok(git(dir, &["ls-files", "--others", "--exclude-standard"])?
-        .lines()
+    Ok(git(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?
+        .split_terminator('\0')
         .map(|path| ChangedFile {
             path: path.to_string(),
             status: '?',
@@ -441,6 +441,41 @@ mod tests {
         assert_eq!(paths(&status.unstaged), vec![(file, 'M')]);
         assert_eq!((status.staged[0].added, status.staged[0].removed), (1, 1));
         assert_eq!((status.unstaged[0].added, status.unstaged[0].removed), (1, 1));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn git_operations_preserve_special_paths() {
+        let dir = repo();
+        run(&dir, &["config", "core.quotePath", "true"]);
+        let mut names = vec!["niño.txt", "quote\".txt", "tab\tname.txt", "line\nname.txt", "-dash.txt"];
+        names.sort();
+        for file in &names {
+            std::fs::write(dir.join(file), "original\n").unwrap();
+        }
+        let (_, files) = changes(&dir, true).unwrap();
+        assert_eq!(paths(&files), names.iter().map(|file| (*file, '?')).collect::<Vec<_>>());
+        assert!(files.iter().all(|file| (file.added, file.removed) == (1, 0)));
+
+        run_op(&dir, GitOp::Stage { files: names.iter().map(|name| name.to_string()).collect() });
+        let (_, files) = changes(&dir, true).unwrap();
+        assert_eq!(paths(&files), names.iter().map(|file| (*file, 'A')).collect::<Vec<_>>());
+        assert!(files.iter().all(|file| (file.added, file.removed) == (1, 0)));
+        commit(&dir, "special paths");
+        let Response::Changes { files, .. } = run_op(&dir, GitOp::CommitFiles { commit: "HEAD".into() }) else { panic!() };
+        assert_eq!(paths(&files), names.iter().map(|file| (*file, 'A')).collect::<Vec<_>>());
+
+        for file in &names {
+            std::fs::write(dir.join(file), "changed\n").unwrap();
+            assert!(diff(&dir, file, true).unwrap().contains("+changed"));
+        }
+        let (_, files) = changes(&dir, true).unwrap();
+        assert_eq!(paths(&files), names.iter().map(|file| (*file, 'M')).collect::<Vec<_>>());
+        assert!(files.iter().all(|file| (file.added, file.removed) == (1, 1)));
+        run_op(&dir, GitOp::Discard { files: names.iter().map(|name| name.to_string()).collect() });
+        for file in &names {
+            assert_eq!(std::fs::read_to_string(dir.join(file)).unwrap(), "original\n");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
