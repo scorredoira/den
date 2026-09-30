@@ -18,13 +18,12 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    config::UiText,
     CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     changes::{ChangesEvent, ChangesPanel},
-    config::{self, Config, SavedTab, Session},
+    config::{self, Config, SavedTab, Session, TextArea, UiText},
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
     file_tree::{FileTree, FileTreeEvent},
@@ -1600,6 +1599,7 @@ impl Workspace {
                 Content::Ready => match tab.rendered() {
                     Some(markdown) => div()
                         .size_full()
+                        .text_size(px(Config::get(cx).font_size(TextArea::Preview)))
                         .child(
                             TextView::new(markdown)
                                 .on_link_click({

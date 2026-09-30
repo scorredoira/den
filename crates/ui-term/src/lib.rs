@@ -15,7 +15,7 @@ use gpui_kit::{App, KeyBinding, actions};
 
 pub use backend::{PtyEvent, TerminalBackend};
 pub use terminal::{Terminal, TerminalEvent};
-pub use view::{TerminalView, TerminalViewEvent, grid_for};
+pub use view::{TerminalFontSize, TerminalView, TerminalViewEvent, grid_for};
 
 actions!(terminal, [Copy, Paste, SendTab, SendBackTab, SendInterrupt]);
 

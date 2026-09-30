@@ -15,7 +15,15 @@ use crate::{
     terminal::{Terminal, TerminalEvent},
 };
 
-const FONT_SIZE: f32 = 13.;
+/// Terminal text size, set by the app; 13 unless it says otherwise.
+pub struct TerminalFontSize(pub f32);
+
+impl Global for TerminalFontSize {}
+
+fn font_size(cx: &App) -> Pixels {
+    px(cx.try_global::<TerminalFontSize>().map_or(13., |size| size.0))
+}
+
 /// Inner padding of the view, on each side.
 const PADDING_X: f32 = 8.;
 const PADDING_Y: f32 = 4.;
@@ -410,7 +418,7 @@ pub fn grid_for(size: Size<Pixels>, window: &Window, cx: &App) -> (u16, u16) {
         family: gpui_kit::component::ActiveTheme::theme(cx).mono_font_family.clone(),
         ..Font::default()
     };
-    let grid = crate::element::grid_size(inner, &font, px(FONT_SIZE), window);
+    let grid = crate::element::grid_size(inner, &font, font_size(cx), window);
     (grid.cols, grid.rows)
 }
 
@@ -445,7 +453,7 @@ impl Render for TerminalView {
                 cx.entity(),
                 self.focus_handle.clone(),
                 focused,
-                px(FONT_SIZE),
+                font_size(cx),
                 self.layout.clone(),
                 self.link_cells(),
             ))

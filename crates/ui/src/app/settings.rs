@@ -296,9 +296,17 @@ impl Sik {
     }
 
     fn render_appearance(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = ["Appearance", "Theme", "System", "Light", "Dark", "Font Size", "text"].iter().any(|text| matches(text));
+        let sizes = [
+            (TextArea::Interface, "Interface Font Size", "File tree, tabs, lists and panels."),
+            (TextArea::Editor, "Editor Font Size", "Code and diffs."),
+            (TextArea::Preview, "Markdown Preview Font Size", "Rendered Markdown files."),
+            (TextArea::Terminal, "Terminal Font Size", "Every terminal."),
+        ];
+        let visible = ["Appearance", "Theme", "System", "Light", "Dark", "text"]
+            .iter()
+            .chain(sizes.iter().map(|(_, title, _)| title))
+            .any(|text| matches(text));
         let current = Config::get(cx).theme;
-        let font_size = Config::get(cx).font_size();
         let theme = cx.theme();
         let choices = h_flex().gap_2().children(
             [(ThemeChoice::System, "System"), (ThemeChoice::Light, "Light"), (ThemeChoice::Dark, "Dark")]
@@ -318,9 +326,9 @@ impl Sik {
                         .on_click(cx.listener(move |this, _, window, cx| this.set_theme(choice, window, cx)))
                 }),
         );
-        let step = |id: &'static str, label: &'static str, size: f32| {
+        let step = |id: String, label: &'static str, area: TextArea, size: f32| {
             div()
-                .id(id)
+                .id(SharedString::from(id))
                 .w(px(28.))
                 .py_1()
                 .flex()
@@ -330,22 +338,24 @@ impl Sik {
                 .border_color(theme.border)
                 .hover(|style| style.bg(theme.accent))
                 .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_font_size(Some(size), cx)))
+                .on_click(cx.listener(move |this, _, _, cx| this.set_font_size(area, Some(size), cx)))
         };
-        let size = h_flex()
-            .gap_2()
-            .child(step("font-smaller", "−", font_size - 1.))
-            .child(div().w(px(48.)).flex().justify_center().child(format!("{font_size} px")))
-            .child(step("font-larger", "+", font_size + 1.))
-            .when(font_size != config::DEFAULT_FONT_SIZE, |el| {
-                el.child(
-                    link("font-reset", "↺", cx).on_click(cx.listener(|this, _, _, cx| this.set_font_size(None, cx))),
-                )
-            });
-        let rows = vec![
-            setting("Theme", "Light, dark, or match the system.", choices, cx),
-            setting("Font Size", "Interface text: file tree, tabs, lists and panels. Code and terminals keep theirs.", size, cx),
-        ];
+        let mut rows = vec![setting("Theme", "Light, dark, or match the system.", choices, cx)];
+        for (ix, (area, title, description)) in sizes.into_iter().enumerate() {
+            let size = Config::get(cx).font_size(area);
+            let control = h_flex()
+                .gap_2()
+                .child(step(format!("font-smaller-{ix}"), "−", area, size - 1.))
+                .child(div().w(px(48.)).flex().justify_center().child(format!("{size} px")))
+                .child(step(format!("font-larger-{ix}"), "+", area, size + 1.))
+                .when(size != area.default_size(), |el| {
+                    el.child(
+                        link(format!("font-reset-{ix}"), "↺", cx)
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_font_size(area, None, cx))),
+                    )
+                });
+            rows.push(setting(title, description, control, cx));
+        }
         Self::section(SECTIONS[0], rows, visible, cx)
     }
 

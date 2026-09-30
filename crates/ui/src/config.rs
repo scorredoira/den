@@ -124,21 +124,66 @@ pub struct Config {
     pub last: Option<SavedTask>,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
-    /// Interface text size chosen in Settings; unsaved, the default.
+    pub font_sizes: FontSizes,
+}
+
+/// Text sizes chosen in Settings; unset, the default.
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FontSizes {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub font_size: Option<f32>,
+    interface: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    editor: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal: Option<f32>,
+}
+
+/// Each place with its own text size.
+#[derive(Clone, Copy, PartialEq)]
+pub enum TextArea {
+    Interface,
+    Editor,
+    Preview,
+    Terminal,
+}
+
+impl TextArea {
+    /// Interface and code as in VS Code; rendered Markdown, larger, for reading.
+    pub fn default_size(self) -> f32 {
+        match self {
+            Self::Preview => 16.,
+            Self::Interface | Self::Editor | Self::Terminal => 13.,
+        }
+    }
+
+    fn slot(self, sizes: &mut FontSizes) -> &mut Option<f32> {
+        match self {
+            Self::Interface => &mut sizes.interface,
+            Self::Editor => &mut sizes.editor,
+            Self::Preview => &mut sizes.preview,
+            Self::Terminal => &mut sizes.terminal,
+        }
+    }
 }
 
 impl Global for Config {}
 
-/// Interface text size, as in VS Code.
-pub const DEFAULT_FONT_SIZE: f32 = 13.;
 pub const MIN_FONT_SIZE: f32 = 10.;
-pub const MAX_FONT_SIZE: f32 = 18.;
+pub const MAX_FONT_SIZE: f32 = 24.;
 
 impl Config {
-    pub fn font_size(&self) -> f32 {
-        self.font_size.unwrap_or(DEFAULT_FONT_SIZE).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    pub fn font_size(&self, area: TextArea) -> f32 {
+        let mut sizes = self.font_sizes;
+        area.slot(&mut sizes).unwrap_or(area.default_size()).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+
+    /// `None` goes back to the default.
+    pub fn set_font_size(&mut self, area: TextArea, size: Option<f32>) {
+        let size = size.map(|size| size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+        *area.slot(&mut self.font_sizes) = size.filter(|size| *size != area.default_size());
     }
 
     fn path() -> Option<PathBuf> {
@@ -195,12 +240,12 @@ impl Config {
 /// Interface text at the size chosen in Settings.
 pub trait UiText: Styled + Sized {
     fn text_ui(self, cx: &App) -> Self {
-        self.text_size(px(Config::get(cx).font_size()))
+        self.text_size(px(Config::get(cx).font_size(TextArea::Interface)))
     }
 
     /// Secondary text: one point smaller.
     fn text_ui_small(self, cx: &App) -> Self {
-        self.text_size(px(Config::get(cx).font_size() - 1.))
+        self.text_size(px(Config::get(cx).font_size(TextArea::Interface) - 1.))
     }
 }
 

@@ -26,7 +26,7 @@ use crate::{
     ActivateTask1, ActivateTask2, ActivateTask3, ActivateTask4, ActivateTask5, ActivateTask6,
     ActivateTask7, ActivateTask8, ActivateTask9, NewTask, OpenCommandPalette, OpenSettings, OpenTaskPicker, PreviousTask,
     ShowShortcuts, ToggleTasks,
-    config::{self, Config, HostConfig, SavedTask, SavedWindow, ThemeChoice, UiText},
+    config::{self, Config, HostConfig, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
@@ -179,6 +179,7 @@ impl Sik {
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             if Config::get(cx).theme == ThemeChoice::System {
                 Theme::sync_system_appearance(Some(window), cx);
+                Self::apply_font_sizes(cx);
             }
         });
         let local = Host {
@@ -573,6 +574,7 @@ impl Sik {
             ThemeChoice::Light => Theme::change(ThemeMode::Light, Some(window), cx),
             ThemeChoice::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
         }
+        Self::apply_font_sizes(cx);
         cx.notify();
     }
 
@@ -1288,10 +1290,19 @@ impl Sik {
     }
 
     /// Applies at once: every window repaints with the new size.
-    fn set_font_size(&mut self, size: Option<f32>, cx: &mut Context<Self>) {
-        let size = size.map(|size| size.clamp(config::MIN_FONT_SIZE, config::MAX_FONT_SIZE));
-        Config::update(cx, |config| config.font_size = size.filter(|size| *size != config::DEFAULT_FONT_SIZE));
+    fn set_font_size(&mut self, area: TextArea, size: Option<f32>, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.set_font_size(area, size));
+        Self::apply_font_sizes(cx);
         cx.refresh_windows();
+    }
+
+    /// Hands the sizes that aren't read from the config where they're used:
+    /// the editor's to the theme and the terminal's to ui-term.
+    fn apply_font_sizes(cx: &mut App) {
+        let config = Config::get(cx);
+        let (editor, terminal) = (config.font_size(TextArea::Editor), config.font_size(TextArea::Terminal));
+        Theme::global_mut(cx).mono_font_size = px(editor);
+        cx.set_global(ui_term::TerminalFontSize(terminal));
     }
 
     fn active_workspace(&self) -> Option<Entity<Workspace>> {
