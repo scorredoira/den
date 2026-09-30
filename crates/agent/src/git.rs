@@ -144,6 +144,14 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
             dir,
             &["diff-tree", "-p", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames", &commit, "--", &file],
         )?)),
+        GitOp::Show { commit } => Ok(Response::Text(git(
+            dir,
+            &["show", "--no-color", "--format=fuller", "--stat", "--patch", "-m", "--first-parent", "--no-renames", &commit],
+        )?)),
+        GitOp::FileAt { commit, file } => Ok(Response::Text(
+            git(dir, &["show", &format!("{commit}:{file}")]).or_else(|_| git(dir, &["show", &format!("{commit}^:{file}")]))?,
+        )),
+        GitOp::Search { query, skip, limit } => Ok(Response::Commits(search(dir, &query, skip, limit)?)),
     }
 }
 
@@ -214,6 +222,8 @@ fn status(dir: &Path) -> Result<GitStatus> {
     Ok(status)
 }
 
+const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1f%b%x1e";
+
 fn log(dir: &Path, skip: usize, limit: usize) -> Result<Vec<CommitInfo>> {
     // With no commits yet there's no history (and `git log` fails).
     if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
@@ -225,26 +235,52 @@ fn log(dir: &Path, skip: usize, limit: usize) -> Result<Vec<CommitInfo>> {
             "log",
             "--decorate-refs=refs/heads",
             "--decorate-refs=refs/tags",
-            "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1e",
+            LOG_FORMAT,
             &format!("--skip={skip}"),
             &format!("--max-count={limit}"),
             "HEAD",
         ],
     )?;
-    Ok(raw
-        .split('\x1e')
-        .filter_map(|record| {
-            let mut fields = record.trim_start_matches('\n').split('\x1f');
-            Some(CommitInfo {
-                hash: fields.next().filter(|hash| !hash.is_empty())?.to_string(),
-                short: fields.next()?.to_string(),
-                author: fields.next()?.to_string(),
-                time: fields.next()?.parse().unwrap_or(0),
-                refs: fields.next()?.to_string(),
-                subject: fields.next()?.to_string(),
-            })
+    Ok(commits(&raw).map(|(commit, _)| commit).collect())
+}
+
+/// Reads the whole local history and filters it here: a single `git log`
+/// can't match the hash, or the message or the author, and it's fast (tens
+/// of thousands of commits in a fraction of a second).
+fn search(dir: &Path, query: &str, skip: usize, limit: usize) -> Result<Vec<CommitInfo>> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
+        return Ok(Vec::new());
+    }
+    let raw = git(
+        dir,
+        &["log", "--decorate-refs=refs/heads", "--decorate-refs=refs/tags", LOG_FORMAT, "HEAD", "--branches", "--tags"],
+    )?;
+    Ok(commits(&raw)
+        .filter(|(commit, body)| {
+            let text = format!("{}\n{}\n{}", commit.subject, body, commit.author).to_lowercase();
+            words.iter().all(|word| commit.hash.starts_with(word.as_str()) || text.contains(word.as_str()))
         })
+        .skip(skip)
+        .take(limit)
+        .map(|(commit, _)| commit)
         .collect())
+}
+
+/// The commits of a `git log` in `LOG_FORMAT`, each with its message body.
+fn commits(raw: &str) -> impl Iterator<Item = (CommitInfo, &str)> {
+    raw.split('\x1e').filter_map(|record| {
+        let mut fields = record.trim_start_matches('\n').split('\x1f');
+        let commit = CommitInfo {
+            hash: fields.next().filter(|hash| !hash.is_empty())?.to_string(),
+            short: fields.next()?.to_string(),
+            author: fields.next()?.to_string(),
+            time: fields.next()?.parse().unwrap_or(0),
+            refs: fields.next()?.to_string(),
+            subject: fields.next()?.to_string(),
+        };
+        Some((commit, fields.next().unwrap_or("")))
+    })
 }
 
 /// Unified diff of a file, using the same criteria as `changes`.
@@ -387,6 +423,23 @@ mod tests {
             panic!()
         };
         assert!(diff.contains("+three"));
+
+        let search = |query: &str| -> Vec<String> {
+            let Response::Commits(commits) = run_op(&dir, GitOp::Search { query: query.into(), skip: 0, limit: 10 }) else {
+                panic!()
+            };
+            commits.into_iter().map(|c| c.subject).collect()
+        };
+        assert_eq!(search("THREE"), vec!["three"]);
+        assert_eq!(search(&commits[1].short), vec!["initial"]);
+        assert_eq!(search("three a"), vec!["three"]);
+        assert!(search("three initial").is_empty());
+        let Response::Text(show) = run_op(&dir, GitOp::Show { commit: commits[0].hash.clone() }) else { panic!() };
+        assert!(show.contains("three") && show.contains("+three"));
+        let Response::Text(old) = run_op(&dir, GitOp::FileAt { commit: commits[1].hash.clone(), file: "a.txt".into() }) else {
+            panic!()
+        };
+        assert_eq!(old, "one\ntwo\n");
 
         run(&dir, &["branch", "other"]);
         let Response::Branches { current, branches } = run_op(&dir, GitOp::Branches) else { panic!() };

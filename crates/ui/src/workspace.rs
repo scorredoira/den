@@ -115,11 +115,19 @@ const MAX_PLACES: usize = 100;
 
 #[derive(Clone, PartialEq)]
 struct DiffOf {
-    /// Relative to the task's folder.
+    /// Relative to the task's folder; empty for the whole commit.
     file: String,
     uncommitted: bool,
     /// What changed in a commit (hash and short hash), not in the folder.
     commit: Option<(String, String)>,
+    /// The file as it was in `commit`, not its diff.
+    source: bool,
+}
+
+impl DiffOf {
+    fn commit(commit: String, short: String, file: String, source: bool) -> Self {
+        Self { file, uncommitted: false, commit: Some((commit, short)), source }
+    }
 }
 
 pub struct Workspace {
@@ -215,12 +223,18 @@ impl Workspace {
                     if *pin && !deleted {
                         this.open(this.root.join(file), true, window, cx);
                     } else {
-                        this.open_diff(DiffOf { file: file.clone(), uncommitted, commit: None }, *pin, window, cx);
+                        let of = DiffOf { file: file.clone(), uncommitted, commit: None, source: false };
+                        this.open_diff(of, *pin, window, cx);
                     }
                 }
                 ChangesEvent::OpenCommitDiff { commit, short, file, pin } => {
-                    let of = DiffOf { file: file.clone(), uncommitted: false, commit: Some((commit.clone(), short.clone())) };
-                    this.open_diff(of, *pin, window, cx);
+                    this.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), *pin, window, cx);
+                }
+                ChangesEvent::OpenCommit { commit, short, pin } => {
+                    this.open_diff(DiffOf::commit(commit.clone(), short.clone(), String::new(), false), *pin, window, cx);
+                }
+                ChangesEvent::OpenFileAt { commit, short, file } => {
+                    this.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
                 }
                 ChangesEvent::ChooseBranch { branches } => this.choose_branch(branches.clone(), window, cx),
             }),
@@ -563,7 +577,11 @@ impl Workspace {
         if let Some(ix) = self
             .tabs
             .iter()
-            .position(|tab| tab.diff.as_ref().is_some_and(|diff| diff.file == file && diff.commit == of.commit))
+            .position(|tab| {
+                tab.diff
+                    .as_ref()
+                    .is_some_and(|diff| diff.file == file && diff.commit == of.commit && diff.source == of.source)
+            })
         {
             if pin {
                 self.tabs[ix].preview = false;
@@ -575,7 +593,13 @@ impl Workspace {
             self.activate_with(ix, false, window, cx);
             return;
         }
-        let mut tab = self.new_tab_with(self.root.join(&file), !pin, "diff", window, cx);
+        // A whole commit is its own tab, not a file's.
+        let path = match &of.commit {
+            Some((commit, _)) if file.is_empty() => self.root.join(commit),
+            _ => self.root.join(&file),
+        };
+        let language = if of.source { language::for_path(&path) } else { "diff" };
+        let mut tab = self.new_tab_with(path, !pin, language, window, cx);
         tab.diff = Some(of);
         tab.grab_focus = false;
         let reuse = self
@@ -603,10 +627,17 @@ impl Workspace {
             return;
         };
         let request = match &of.commit {
-            Some((commit, _)) => Request::Git {
-                path: self.root.clone(),
-                op: GitOp::CommitDiff { commit: commit.clone(), file: of.file.clone() },
-            },
+            Some((commit, _)) => {
+                let (commit, file) = (commit.clone(), of.file.clone());
+                let op = if of.source {
+                    GitOp::FileAt { commit, file }
+                } else if file.is_empty() {
+                    GitOp::Show { commit }
+                } else {
+                    GitOp::CommitDiff { commit, file }
+                };
+                Request::Git { path: self.root.clone(), op }
+            }
             None => Request::GitDiff {
                 path: self.root.clone(),
                 file: of.file.clone(),
@@ -621,7 +652,7 @@ impl Workspace {
                 };
                 match response {
                     Ok(Response::Text(text)) => {
-                        let text = if text.is_empty() { "No changes".to_string() } else { text };
+                        let text = if text.is_empty() && !of.source { "No changes".to_string() } else { text };
                         let focused = window.focused(cx);
                         tab.saved = text.clone();
                         tab.content = Content::Ready;
@@ -1453,6 +1484,8 @@ impl Workspace {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let name = match &tab.diff {
+                    Some(DiffOf { commit: Some((_, short)), file, .. }) if file.is_empty() => format!("Commit {short}"),
+                    Some(DiffOf { commit: Some((_, short)), source: true, .. }) => format!("{name} @ {short}"),
                     Some(DiffOf { commit: Some((_, short)), .. }) => format!("{name} ({short})"),
                     Some(_) => format!("{name} (changes)"),
                     None => name,
@@ -1512,6 +1545,7 @@ impl Workspace {
                         let workspace = cx.entity().downgrade();
                         let path = tab.path.clone();
                         let diff = tab.diff.is_some();
+                        let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
                         let local = self.local;
                         let relative = tab
                             .path
@@ -1537,7 +1571,7 @@ impl Workspace {
                                 menu::item("Close All", &workspace, |this, window, cx| this.close_others(None, window, cx))
                                     .action(Box::new(CloseAllTabs)),
                             )
-                            .when(diff, |menu| {
+                            .when(diff && !whole_commit, |menu| {
                                 let path = path.clone();
                                 menu.item(menu::item("Open File", &workspace, move |this, window, cx| {
                                     this.open(path.clone(), true, window, cx)

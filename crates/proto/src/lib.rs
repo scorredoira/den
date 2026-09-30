@@ -157,6 +157,14 @@ pub enum GitOp {
     CommitFiles { commit: String },
     /// Responds `Text`: the diff of `file` in the commit.
     CommitDiff { commit: String, file: String },
+    /// Responds `Text`: the whole commit, its header, message and diff.
+    Show { commit: String },
+    /// Responds `Text`: `file` as it was in the commit (before it, if the
+    /// commit deleted it).
+    FileAt { commit: String, file: String },
+    /// Responds `Commits`: those of every local branch and tag whose hash,
+    /// message or author contain each word of `query`.
+    Search { query: String, skip: usize, limit: usize },
 }
 
 /// Repo status for the Changes mode, uncommitted.

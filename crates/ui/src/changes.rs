@@ -1,6 +1,6 @@
 //! Changes panel, in three views: what the task has touched relative to its
 //! base branch, what isn't committed yet (staged and unstaged, with the
-//! commit box) and the history. At the top, the branch with its push and pull.
+//! commit box) and the history, with its search. At the top, the branch.
 //! The agent does all the reading and work.
 
 use std::{
@@ -28,12 +28,19 @@ const DEBOUNCE: Duration = Duration::from_millis(400);
 /// Commits requested each time in the history.
 const PAGE: usize = 200;
 
+/// Delay after typing in the history search before asking again.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+
 pub enum ChangesEvent {
     /// Show the file's diff (`pin` false: preview).
     OpenDiff { file: String, pin: bool },
     OpenFile { file: String },
     /// Show what `file` changed in a commit.
     OpenCommitDiff { commit: String, short: String, file: String, pin: bool },
+    /// Show the whole commit: header, message and diff.
+    OpenCommit { commit: String, short: String, pin: bool },
+    /// Show `file` as it was in a commit.
+    OpenFileAt { commit: String, short: String, file: String },
     /// Choose which branch to switch to.
     ChooseBranch { branches: Vec<String> },
 }
@@ -63,6 +70,8 @@ pub struct ChangesPanel {
     /// Expanded commit, and the files of those already read.
     expanded: Option<String>,
     commit_files: HashMap<String, Vec<ChangedFile>>,
+    /// History search: hash, message or author.
+    query: Option<Entity<InputState>>,
     message: Option<Entity<InputState>>,
     /// The commit succeeded: the message is cleared on the next paint.
     clear_message: bool,
@@ -86,7 +95,7 @@ impl ChangesPanel {
             client,
             local,
             root,
-            view: View::Branch,
+            view: View::Uncommitted,
             base: None,
             files: Vec::new(),
             status: GitStatus::default(),
@@ -94,6 +103,7 @@ impl ChangesPanel {
             more: false,
             expanded: None,
             commit_files: HashMap::new(),
+            query: None,
             message: None,
             clear_message: false,
             selected: None,
@@ -140,6 +150,7 @@ impl ChangesPanel {
         };
         let path = self.root.clone();
         let view = self.view;
+        let log = self.log_op(0, cx);
         self.loading = true;
         self.refresh = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
@@ -148,7 +159,7 @@ impl ChangesPanel {
             let status = client.request(Request::Git { path: path.clone(), op: GitOp::Status }).await;
             let content = match view {
                 View::Branch => Some(client.request(Request::GitChanges { path, uncommitted: false }).await),
-                View::History => Some(client.request(Request::Git { path, op: GitOp::Log { skip: 0, limit: PAGE } }).await),
+                View::History => Some(client.request(Request::Git { path, op: log }).await),
                 View::Uncommitted => None,
             };
             this.update(cx, |this, cx| {
@@ -182,6 +193,16 @@ impl ChangesPanel {
             .ok();
         }));
         cx.notify();
+    }
+
+    /// The history's commits from `skip` on: all of them, or those matching the search.
+    fn log_op(&self, skip: usize, cx: &App) -> GitOp {
+        let query = self.query.as_ref().map(|query| query.read(cx).value().trim().to_string()).unwrap_or_default();
+        if query.is_empty() {
+            GitOp::Log { skip, limit: PAGE }
+        } else {
+            GitOp::Search { query, skip, limit: PAGE }
+        }
     }
 
     fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
@@ -332,9 +353,10 @@ impl ChangesPanel {
         };
         let path = self.root.clone();
         let skip = self.commits.len();
+        let op = self.log_op(skip, cx);
         self.more = false;
         cx.spawn(async move |this, cx| {
-            let result = client.request(Request::Git { path, op: GitOp::Log { skip, limit: PAGE } }).await;
+            let result = client.request(Request::Git { path, op }).await;
             this.update(cx, |this, cx| {
                 if let Ok(Response::Commits(commits)) = result
                     && this.commits.len() == skip
@@ -347,6 +369,20 @@ impl ChangesPanel {
             .ok();
         })
         .detach();
+    }
+
+    fn ensure_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.query.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search hash, message or author"));
+        self._subscriptions.push(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                this.expanded = None;
+                this.schedule(SEARCH_DEBOUNCE, cx);
+            }
+        }));
+        self.query = Some(input);
     }
 
     fn ensure_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -579,11 +615,40 @@ impl ChangesPanel {
             })
     }
 
+    fn commit_file_menu(
+        panel: WeakEntity<Self>,
+        commit: &CommitInfo,
+        file: &ChangedFile,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
+        move |menu, _, _| {
+            let (diff_hash, diff_short, diff_path) = (hash.clone(), short.clone(), path.clone());
+            let (at_hash, at_short, at_path) = (hash.clone(), short.clone(), path.clone());
+            let (open, copy) = (path.clone(), path.clone());
+            menu.item(menu::item("Open Changes", &panel, move |_, _, cx| {
+                cx.emit(ChangesEvent::OpenCommitDiff {
+                    commit: diff_hash.clone(),
+                    short: diff_short.clone(),
+                    file: diff_path.clone(),
+                    pin: true,
+                })
+            }))
+            .item(menu::item("Open File at This Commit", &panel, move |_, _, cx| {
+                cx.emit(ChangesEvent::OpenFileAt { commit: at_hash.clone(), short: at_short.clone(), file: at_path.clone() })
+            }))
+            .item(menu::item("Open File", &panel, move |_, _, cx| cx.emit(ChangesEvent::OpenFile { file: open.clone() })))
+            .separator()
+            .item(menu::item("Copy Relative Path", &panel, move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+            }))
+        }
+    }
+
     fn render_branch(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme();
         let total: (u32, u32) = self.files.iter().fold((0, 0), |(a, r), file| (a + file.added, r + file.removed));
         let base = match &self.base {
-            Some(base) => format!("Compared to {base}"),
+            Some(base) => format!("Since branching off {base}"),
             None => "No base branch".to_string(),
         };
         let mut rows = vec![
@@ -696,12 +761,15 @@ impl ChangesPanel {
     fn render_history(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme();
         let mut rows = Vec::new();
+        if let Some(query) = &self.query {
+            rows.push(div().px_3().pb_1().child(Input::new(query).small().cleanable(true)).into_any_element());
+        }
         for (ix, commit) in self.commits.iter().enumerate() {
             let expanded = self.expanded.as_ref() == Some(&commit.hash);
             let refs = commit.refs.replace("HEAD -> ", "");
-            let hash = commit.hash.clone();
+            let (hash, short) = (commit.hash.clone(), commit.short.clone());
             let panel = cx.entity().downgrade();
-            let (copy_hash, copy_subject) = (commit.hash.clone(), commit.subject.clone());
+            let (copy_hash, copy_subject, commit_short) = (commit.hash.clone(), commit.subject.clone(), commit.short.clone());
             rows.push(
                 v_flex()
                     .id(("commit", ix))
@@ -747,10 +815,23 @@ impl ChangesPanel {
                                 el.child(div().text_color(theme.primary).overflow_hidden().text_ellipsis().child(refs))
                             }),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_commit(hash.clone(), cx)))
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        let pin = event.click_count() >= 2;
+                        if !pin {
+                            this.toggle_commit(hash.clone(), cx);
+                        }
+                        if pin || this.expanded.as_ref() == Some(&hash) {
+                            cx.emit(ChangesEvent::OpenCommit { commit: hash.clone(), short: short.clone(), pin });
+                        }
+                    }))
                     .context_menu(move |menu, _, _| {
                         let (copy_hash, copy_subject) = (copy_hash.clone(), copy_subject.clone());
-                        menu.item(menu::item("Copy Hash", &panel, move |_, _, cx| {
+                        let (show, short) = (copy_hash.clone(), commit_short.clone());
+                        menu.item(menu::item("Show Commit", &panel, move |_, _, cx| {
+                            cx.emit(ChangesEvent::OpenCommit { commit: show.clone(), short: short.clone(), pin: true })
+                        }))
+                        .separator()
+                        .item(menu::item("Copy Hash", &panel, move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy_hash.clone()))
                         }))
                         .item(menu::item("Copy Message", &panel, move |_, _, cx| {
@@ -790,6 +871,7 @@ impl ChangesPanel {
                             });
                             cx.notify();
                         }))
+                        .context_menu(Self::commit_file_menu(cx.entity().downgrade(), commit, file))
                         .into_any_element(),
                 );
             }
@@ -810,6 +892,7 @@ impl ChangesPanel {
 impl Render for ChangesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_message(window, cx);
+        self.ensure_query(window, cx);
         let (rows, empty) = match self.view {
             View::Branch => (self.render_branch(cx), self.files.is_empty().then_some("No changes")),
             View::Uncommitted => (
