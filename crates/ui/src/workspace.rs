@@ -1745,7 +1745,8 @@ impl Workspace {
     /// Writes the tab to disk; the result says whether it succeeded.
     fn save_tab(&mut self, ix: usize, cx: &mut Context<Self>) -> Task<bool> {
         let tab = &self.tabs[ix];
-        if !matches!(tab.content, Content::Ready) || !tab.is_file() {
+        // Image tabs have an empty text editor; saving it would erase the image.
+        if !matches!(tab.content, Content::Ready) || !tab.is_file() || tab.image.is_some() {
             return Task::ready(true);
         }
         let path = tab.path.clone();
