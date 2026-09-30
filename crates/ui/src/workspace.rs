@@ -1751,6 +1751,7 @@ impl Workspace {
         }
         let path = tab.path.clone();
         let text = tab.editor.read(cx).text().to_string();
+        let editor = tab.editor.clone();
         let Some(client) = self.client.clone() else {
             return Task::ready(false);
         };
@@ -1764,9 +1765,10 @@ impl Workspace {
                 let ok = result.is_ok();
                 match result {
                     Ok(_) => {
-                        if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) {
+                        if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.editor == editor && tab.path == path) {
                             tab.saved = text;
-                            tab.dirty = false;
+                            // The user may have kept typing while the write was in flight.
+                            tab.dirty = tab.editor.read(cx).text().to_string() != tab.saved;
                             tab.confirm_close = false;
                             tab.preview = false;
                         }
