@@ -105,6 +105,11 @@ impl Pty {
         let _ = self.master.resize(size(cols, rows));
     }
 
+    /// The shell (or command) the terminal started.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
     /// The pty's foreground process, or the shell if unknown.
     pub fn foreground_pid(&self) -> Option<u32> {
         crate::platform::foreground_pid(self.master.as_ref()).or(self.pid)

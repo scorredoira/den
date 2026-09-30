@@ -11,6 +11,7 @@ mod fs;
 mod git;
 mod lsp;
 mod platform;
+mod ports;
 mod pty;
 mod search;
 mod server;

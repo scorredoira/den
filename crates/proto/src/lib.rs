@@ -128,6 +128,9 @@ pub enum Request {
         replacement: String,
         preserve_case: bool,
     },
+    /// TCP ports that processes started from the terminals listen on.
+    /// Responds `Ports`.
+    Ports,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -242,6 +245,18 @@ pub enum Response {
     Blame { commits: Vec<CommitInfo>, lines: Vec<Option<u32>> },
     /// How many replacements were made in how many files.
     Replaced { files: usize, replacements: usize },
+    Ports(Vec<PortInfo>),
+}
+
+/// A port a process started from a terminal listens on (at loopback or on
+/// every address).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortInfo {
+    pub port: u16,
+    /// Group of the terminal that started it (its task).
+    pub group: String,
+    /// Name of the process listening.
+    pub process: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

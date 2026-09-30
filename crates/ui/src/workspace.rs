@@ -5,7 +5,7 @@ use std::{
 };
 
 use client::Client;
-use proto::{CommitInfo, GitOp, LspLocation, LspOp, Request, Response, SearchHit};
+use proto::{CommitInfo, GitOp, LspLocation, LspOp, PortInfo, Request, Response, SearchHit};
 
 use gpui_kit::component::{
     ActiveTheme as _, h_flex, h_resizable, v_resizable,
@@ -205,8 +205,13 @@ pub struct Workspace {
     /// Word wrap as applied to the tabs (it follows the config).
     word_wrap: bool,
     message: Option<SharedString>,
+    /// On a server, ports the task's terminals are listening on.
+    ports: Vec<PortInfo>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// How often a task on a server checks which ports its terminals opened.
+const PORTS_REFRESH: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl Workspace {
     pub fn new(
@@ -306,6 +311,9 @@ impl Workspace {
             Self::watch_fs(&root, client, window, cx);
         }
         let message = (!has_agent).then(|| "No agent: no files or terminals".into());
+        if !local {
+            Self::watch_ports(cx);
+        }
         Self {
             root,
             session_key,
@@ -336,8 +344,59 @@ impl Workspace {
             shown: 0,
             word_wrap: Config::get(cx).word_wrap,
             message,
+            ports: Vec::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Keeps `ports` up to date with what the task's terminals listen on,
+    /// for as long as the workspace lives.
+    fn watch_ports(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let Ok((client, group)) = this.update(cx, |this, _| {
+                    (this.client.clone(), this.root.to_string_lossy().into_owned())
+                }) else {
+                    break;
+                };
+                if let Some(client) = client
+                    && let Ok(Response::Ports(ports)) = client.request(Request::Ports).await
+                {
+                    let ports: Vec<PortInfo> = ports.into_iter().filter(|info| info.group == group).collect();
+                    let alive = this.update(cx, |this, cx| {
+                        if this.ports != ports {
+                            this.ports = ports;
+                            cx.notify();
+                        }
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+                cx.background_executor().timer(PORTS_REFRESH).await;
+            }
+        })
+        .detach();
+    }
+
+    /// Opens a port of the server in the browser, forwarded over SSH.
+    fn open_port(&mut self, port: u16, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let url = format!("http://localhost:{port}/");
+            let result = cx.background_spawn(async move { client.local_url(&url) }).await;
+            this.update(cx, |this, cx| match result {
+                Ok(url) => cx.open_url(&url),
+                Err(err) => {
+                    this.message = Some(format!("{err:#}").into());
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Reopens what was open last time, without stealing focus.
@@ -2262,6 +2321,17 @@ impl Workspace {
         }
         if let Some(message) = &self.message {
             left = left.child(div().text_color(theme.warning).child(message.clone()));
+        }
+        for info in &self.ports {
+            let port = info.port;
+            right = right.child(
+                div()
+                    .id(("port", port as usize))
+                    .text_color(theme.link)
+                    .hover(|style| style.underline())
+                    .child(format!("{} :{port}", info.process))
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_port(port, cx))),
+            );
         }
         h_flex()
             .h(px(24.))

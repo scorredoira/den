@@ -26,7 +26,7 @@ use proto::{
 use crate::{
     platform::{self, Listener, Stream},
     pty::Pty,
-    blocked, fs, git, lsp, search,
+    blocked, fs, git, lsp, ports, search,
     snapshot::snapshot,
     tasks,
 };
@@ -312,11 +312,22 @@ fn is_slow(request: &Request) -> bool {
             | Request::Git { .. }
             | Request::Lsp { .. }
             | Request::Replace { .. }
+            | Request::Ports
     )
 }
 
 fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
     match request {
+        Request::Ports => {
+            let shells: HashMap<u32, String> = state
+                .lock()
+                .unwrap()
+                .terms
+                .values()
+                .filter_map(|entry| Some((entry.pty.pid()?, entry.group.clone())))
+                .collect();
+            Ok(Response::Ports(ports::listening(&shells)))
+        }
         Request::TaskCreate { repo, name, open } => {
             let task = tasks::add_repo(&repo).and_then(|repo| tasks::create(&repo, &name))?;
             if open {
@@ -496,7 +507,8 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         | Request::Trash { .. }
         | Request::Git { .. }
         | Request::Lsp { .. }
-        | Request::Replace { .. } => unreachable!("handled on its own thread"),
+        | Request::Replace { .. }
+        | Request::Ports => unreachable!("handled on its own thread"),
         Request::Rename { from, to } => {
             fs::rename(&from, &to)?;
             Ok(Response::Ok)
