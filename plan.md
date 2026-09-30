@@ -170,7 +170,7 @@ The text lives in the UI and the agent only reads and writes files. Highlighting
 - **Base:** gpui-component's `Input` in code mode (line numbers, selection, in-file search, files with hundreds of thousands of lines). If it falls short, Zed's `editor` is copied piece by piece.
 - **Highlighting:** tree-sitter grammars compiled into the binary. First batch: TypeScript, TSX, JavaScript, Go, Rust, JSON, TOML, YAML, Markdown, SQL, CSS, HTML, Bash. The `highlights.scm` queries come from Helix or Zed.
 - **Theme:** light, dark or following the system, with the highlighting colors of VS Code's 2026 theme (`assets/themes/vscode-2026.json`).
-- **Light editing:** typing, deleting, undo, saving with Cmd-S (Ctrl-S on Windows and Linux). No multi-cursor or refactors.
+- **Light editing:** typing, deleting, undo, saving with Cmd-S (Ctrl-S on Windows and Linux), plus VS Code's multi-cursor and line shortcuts (see Next). No refactors.
 - **Changes on disk:** on `FsChanged`, if the file has no unsaved changes it reloads silently; if it does, you're warned.
 - **Diff:** in Changes mode, a file opens as a read-only diff tab; Open File from its menu goes to the file itself.
 - **Images:** png, jpg, gif, webp, svg, bmp and tiff open in a tab, fitted to it.
@@ -307,6 +307,16 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 2. Try out with real use: tasks turning red, terminals reopening after an agent restart, links in Markdown.
 3. New tasks start `claude` in their first terminal (`task_command` in `config.json`).
 4. The rest of phase 6 (Developer ID and notarization; Linux package) and phase 7 (Windows).
+
+**Editor and git, requested (VS Code as the model):**
+
+- [ ] **Inline blame:** at the end of the cursor's line, in gray, the last commit that touched it: subject, author and age (`Add ACIGRUP PMS integration module, Minnu (7 months ago)`). The agent runs `git blame --porcelain` once per file and caches it until the file or `HEAD` changes; uncommitted lines show nothing.
+- [ ] **Cmd-D:** selects the word under the cursor, and each further press adds a cursor at its next occurrence. Case-sensitive or not, following the Aa toggle of the find bar. gpui-component already has several cursors (`AddCursorAbove/Below`); what's missing is the action that adds a selection at the next match.
+- [ ] **Cmd-Opt-↑/↓:** a cursor on the line above or below. It's already in gpui-component (`AddCursorAbove/Below`); check that it works and that nothing of ours shadows it.
+- [ ] **Opt-↑/↓:** moves the line (or the selected lines) up or down.
+- [ ] **Shift-Opt-↑/↓:** duplicates the line (or the selection) up or down. gpui-component binds Shift-Opt-↑/↓ to adding a cursor: ours wins.
+- [ ] **Global replace:** a Replace box in the Search panel. A "preserve case" toggle (VS Code's AB): the replacement takes the case of each match (`payment` → `invoice`, `Payment` → `Invoice`, `PAYMENT` → `INVOICE`). The agent writes the files; open tabs without unsaved changes reload on their own.
+- [ ] **Occurrences of the symbol (only if easy):** clicking on a name highlights its other occurrences in the visible file. Without LSP, same exact word; with LSP, `textDocument/documentHighlight`, which tells reads from writes.
 
 ## Risks and open questions
 
