@@ -5,11 +5,11 @@ use std::{
 };
 
 use client::Client;
-use proto::{GitOp, LspLocation, LspOp, Request, Response, SearchHit};
+use proto::{CommitInfo, GitOp, LspLocation, LspOp, Request, Response, SearchHit};
 
 use gpui_kit::component::{
     ActiveTheme as _, h_flex, h_resizable,
-    input::{self, Editor, EditorState, InputEvent, Position},
+    input::{self, Editor, EditorState, InputEvent, Position, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _},
     menu::ContextMenuExt as _,
     resizable_panel,
     text::{TextView, TextViewState},
@@ -22,7 +22,9 @@ use crate::{
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
-    changes::{ChangesEvent, ChangesPanel},
+    GoToLine,
+    changes::{self, ChangesEvent, ChangesPanel},
+    editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, SavedTab, Session, TextArea, UiText},
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
@@ -100,7 +102,19 @@ struct FileTab {
     diff: Option<DiffOf>,
     /// Reopened on returning to the task: if the file is gone, it closes itself.
     restored: bool,
+    /// Who last changed each line, as it was on disk when read or saved.
+    blame: Option<Arc<Blame>>,
+    /// Highlight of the occurrences of the word under the cursor, and the
+    /// selections it was computed for.
+    occurrences: Option<RangeDecorationCollection>,
+    occurrences_for: Vec<editing::Selection>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// `git blame` of a file: `lines[i]` indexes `commits`, `None` if uncommitted.
+struct Blame {
+    commits: Vec<CommitInfo>,
+    lines: Vec<Option<u32>>,
 }
 
 /// A place in the jump history.
@@ -238,10 +252,16 @@ impl Workspace {
                 }
                 ChangesEvent::ChooseBranch { branches } => this.choose_branch(branches.clone(), window, cx),
             }),
-            cx.subscribe_in(&search, window, |this, _, event: &SearchEvent, window, cx| match event {
+            cx.subscribe_in(&search, window, |this, search, event: &SearchEvent, window, cx| match event {
                 SearchEvent::Open { file, line, column, pin } => {
                     let goto = Position::new(line.saturating_sub(1), *column);
                     this.open_at_with(this.root.join(file), goto, *pin, *pin, window, cx);
+                }
+                SearchEvent::Replace { files } => {
+                    let dirty: HashSet<PathBuf> = this.tabs.iter().filter(|tab| tab.dirty).map(|tab| tab.path.clone()).collect();
+                    let (skipped, files): (Vec<String>, Vec<String>) =
+                        files.iter().cloned().partition(|file| dirty.contains(&this.root.join(file)));
+                    search.update(cx, |search, cx| search.replace(files, skipped.len(), cx));
                 }
             }),
             // Paths outside the task (the standard library) are absolute.
@@ -250,6 +270,7 @@ impl Workspace {
                     let goto = Position::new(line.saturating_sub(1), *column);
                     this.open_at_with(this.root.join(file), goto, *pin, *pin, window, cx);
                 }
+                SearchEvent::Replace { .. } => {}
             }),
         ];
         terminals.update(cx, |terminals, cx| terminals.restore(window, cx));
@@ -671,6 +692,128 @@ impl Workspace {
         .detach();
     }
 
+    /// Reads the file's blame from the agent (silently: outside a repo, or
+    /// with an agent that doesn't know `Blame`, there's none).
+    fn load_blame(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let (Some(client), Ok(file)) = (self.client.clone(), path.strip_prefix(&self.root)) else {
+            return;
+        };
+        let request = Request::Git { path: self.root.clone(), op: GitOp::Blame { file: file.to_string_lossy().into_owned() } };
+        cx.spawn(async move |this, cx| {
+            let blame = match client.request(request).await {
+                Ok(Response::Blame { commits, lines }) => Some(Arc::new(Blame { commits, lines })),
+                _ => None,
+            };
+            this.update(cx, |this, cx| {
+                if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.diff.is_none()) {
+                    tab.blame = blame;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Highlights the other occurrences of the word under the cursor, when
+    /// the selections changed.
+    fn highlight_occurrences(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.editor == editor) else {
+            return;
+        };
+        let state = editor.read(cx);
+        let selections = state.selections();
+        if selections == tab.occurrences_for {
+            return;
+        }
+        let ranges = editing::occurrences(&state.value(), &selections);
+        tab.occurrences_for = selections;
+        let color = cx.theme().selection.opacity(0.45);
+        let decorations: Vec<RangeDecoration> = ranges
+            .into_iter()
+            .map(|range| RangeDecoration::new(range).with_style(RangeDecorationStyle::Fill).with_color(color))
+            .collect();
+        match &tab.occurrences {
+            Some(collection) => collection.set(decorations, cx),
+            None if decorations.is_empty() => {}
+            None => {
+                let collection = editor.update(cx, |state, cx| state.create_range_decorations_collection(decorations, cx));
+                tab.occurrences = Some(collection);
+            }
+        }
+    }
+
+    /// The editor of the active tab, if it shows text (not an image or rendered Markdown).
+    fn active_editor(&self) -> Option<Entity<EditorState>> {
+        let tab = &self.tabs[self.active?];
+        (tab.image.is_none() && tab.rendered().is_none()).then(|| tab.editor.clone())
+    }
+
+    fn select_next_occurrence(&mut self, _: &SelectNextOccurrence, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        editor.update(cx, |state, cx| {
+            let case_insensitive = state.search_session().case_insensitive;
+            if let Some(selections) = editing::select_next_occurrence(&state.value(), &state.selections(), case_insensitive) {
+                let reveal = selections[0].1;
+                state.set_selections(&selections, cx);
+                state.reveal_offset(reveal, cx);
+            }
+        });
+    }
+
+    /// Moves (`duplicate` false) or duplicates the selected lines.
+    fn edit_lines(&mut self, up: bool, duplicate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        editor.update(cx, |state, cx| {
+            let (text, selections) = (state.value(), state.selections());
+            let edit = if duplicate {
+                Some(editing::duplicate_lines(&text, &selections, up))
+            } else {
+                editing::move_lines(&text, &selections, up)
+            };
+            if let Some(edit) = edit {
+                state.edit(&edit.edits, &edit.selections, window, cx);
+            }
+        });
+    }
+
+    /// Ctrl-G: asks for `line` or `line:column` and goes there.
+    fn go_to_line(&mut self, _: &GoToLine, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_editor().is_none() {
+            return;
+        }
+        let picker = cx.new(|cx| Picker::free_text("Go to Line (line or line:column)…", window, cx));
+        let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
+            this.finder = None;
+            match event {
+                PickerEvent::Pick(text) => {
+                    let mut parts = text.trim().splitn(2, [':', ',']);
+                    let line = parts.next().and_then(|line| line.trim().parse::<u32>().ok());
+                    let column = parts.next().and_then(|column| column.trim().parse::<u32>().ok()).unwrap_or(1);
+                    match (line, this.active_editor()) {
+                        (Some(line), Some(editor)) => {
+                            this.remember_place(cx);
+                            let lines = editor.read(cx).text().lines_len() as u32;
+                            let goto = Position::new(line.clamp(1, lines.max(1)) - 1, column.saturating_sub(1));
+                            editor.update(cx, |state, cx| state.set_cursor_position(goto, window, cx));
+                            reveal_centered(&editor, goto.line, false, 10, window, cx);
+                        }
+                        _ => this.focus_ide(window, cx),
+                    }
+                }
+                PickerEvent::Dismiss => this.focus_ide(window, cx),
+                PickerEvent::Close => {}
+            }
+            cx.notify();
+        });
+        self.finder = Some((picker, subscription));
+        cx.notify();
+    }
+
     /// Branch picker for the Changes mode, in Cmd-P's spot.
     fn choose_branch(&mut self, branches: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let picker = cx.new(|cx| Picker::new(Arc::new(branches), "Switch to Branch…", false, window, cx));
@@ -1013,8 +1156,11 @@ impl Workspace {
                     this.on_edit(&path_for_change, &editor, cx);
                 }
             }),
-            // The status bar shows the cursor position.
-            cx.observe(&editor, |_, _, cx| cx.notify()),
+            // The status bar shows the cursor position, and the blame follows it.
+            cx.observe(&editor, |this, editor, cx| {
+                this.highlight_occurrences(&editor, cx);
+                cx.notify()
+            }),
         ];
         FileTab {
             path,
@@ -1031,6 +1177,9 @@ impl Workspace {
             grab_focus: true,
             diff: None,
             restored: false,
+            blame: None,
+            occurrences: None,
+            occurrences_for: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -1100,6 +1249,7 @@ impl Workspace {
                             let line = tab.editor.read(cx).cursor_position().line;
                             reveal_centered(&tab.editor, line, true, 10, window, cx);
                         }
+                        this.load_blame(path.clone(), cx);
                         // Setting the text moves focus to the editor: it goes back to
                         // where it was, or where it belongs if this is the active tab.
                         let grab = this
@@ -1361,6 +1511,7 @@ impl Workspace {
                             tab.preview = false;
                         }
                         this.message = None;
+                        this.load_blame(path.clone(), cx);
                     }
                     Err(err) => {
                         this.message = Some(format!("Couldn't save: {err:#}").into());
@@ -1654,7 +1805,8 @@ impl Workspace {
                         .into_any_element(),
                     None => {
                         let readonly = tab.diff.is_some();
-                        Editor::new(&tab.editor)
+                        let blame = (!tab.dirty).then(|| tab.blame.clone()).flatten();
+                        let editor = Editor::new(&tab.editor)
                             .bordered(false)
                             .readonly(readonly)
                             .h_full()
@@ -1671,7 +1823,17 @@ impl Workspace {
                                     .menu_with_disabled("Paste", readonly, Box::new(input::Paste))
                                     .separator()
                                     .menu("Select All", Box::new(input::SelectAll))
-                            })
+                            });
+                        div()
+                            .key_context("CodeEditor")
+                            .size_full()
+                            .on_action(cx.listener(Self::select_next_occurrence))
+                            .on_action(cx.listener(|this, _: &MoveLineUp, window, cx| this.edit_lines(true, false, window, cx)))
+                            .on_action(cx.listener(|this, _: &MoveLineDown, window, cx| this.edit_lines(false, false, window, cx)))
+                            .on_action(cx.listener(|this, _: &DuplicateLineUp, window, cx| this.edit_lines(true, true, window, cx)))
+                            .on_action(cx.listener(|this, _: &DuplicateLineDown, window, cx| this.edit_lines(false, true, window, cx)))
+                            .child(editor)
+                            .children(blame.and_then(|blame| inline_blame(&tab.editor, &blame, cx)))
                             .into_any_element()
                     }
                 },
@@ -1808,6 +1970,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NextResult, _, cx| this.step_result(1, cx)))
             .on_action(cx.listener(|this, _: &PrevResult, _, cx| this.step_result(-1, cx)))
             .on_action(cx.listener(Self::go_to_definition))
+            .on_action(cx.listener(Self::go_to_line))
             .on_action(cx.listener(|this, _: &NavigateBack, window, cx| this.navigate(true, window, cx)))
             .on_action(cx.listener(|this, _: &NavigateForward, window, cx| this.navigate(false, window, cx)))
             .on_action(cx.listener(Self::find_references))
@@ -1884,6 +2047,40 @@ impl Render for Workspace {
                     .child(finder.clone())
             }))
     }
+}
+
+/// At the end of the cursor's line, in gray: the commit that last changed it.
+/// Positioned from the editor's last layout; nothing if the line isn't visible.
+fn inline_blame(editor: &Entity<EditorState>, blame: &Blame, cx: &App) -> Option<AnyElement> {
+    let state = editor.read(cx);
+    if state.selections().len() != 1 {
+        return None;
+    }
+    let line = state.cursor_position().line as usize;
+    let commit = &blame.commits[(*blame.lines.get(line)?)? as usize];
+    let text = state.text();
+    let end = text.line_start_offset(line) + text.slice_line(line).to_string().trim_end_matches('\r').len();
+    let at = state.range_to_bounds(&(end..end))?;
+    let area = state.input_bounds();
+    let origin = point(at.origin.x + px(48.), at.origin.y);
+    let width = area.right() - origin.x;
+    if at.origin.y < area.top() || at.bottom() > area.bottom() || width < px(40.) {
+        return None;
+    }
+    let theme = cx.theme();
+    let label = div()
+        .h(at.size.height)
+        .max_w(width)
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .text_color(theme.muted_foreground.opacity(0.8))
+        .font_family(theme.mono_font_family.clone())
+        .child(format!("{}, {} ({})", commit.subject, commit.author, changes::ago(commit.time)));
+    // In window coordinates, like the editor's layout.
+    Some(anchored().position(origin).child(label).into_any_element())
 }
 
 /// After a jump: if `line` wasn't visible, scrolls to center it, like VS Code

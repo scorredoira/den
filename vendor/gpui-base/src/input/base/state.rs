@@ -3020,6 +3020,74 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.select_to(end, cx);
     }
 
+    /// Every selection as `(anchor, cursor)` UTF-8 byte offsets; the first is
+    /// the active one. (sik)
+    pub fn selections(&self) -> Vec<(usize, usize)> {
+        self.selections
+            .iter()
+            .map(|sel| if sel.reversed { (sel.end, sel.start) } else { (sel.start, sel.end) })
+            .collect()
+    }
+
+    /// Replaces every selection with `selections`, `(anchor, cursor)` UTF-8
+    /// byte offsets; the first is the active one and overlapping ones merge.
+    /// An empty list is ignored. (sik)
+    pub fn set_selections(&mut self, selections: &[(usize, usize)], cx: &mut Context<Self>) {
+        if selections.is_empty() {
+            return;
+        }
+        self.undo_manager.break_transaction_coalescing();
+        let new: Vec<CursorSelection> = selections
+            .iter()
+            .map(|&(anchor, cursor)| {
+                let anchor = self.text.clip_offset(anchor.min(self.text.len()), Bias::Left);
+                let cursor = self.text.clip_offset(cursor.min(self.text.len()), Bias::Left);
+                let id = self.selections.generate_id();
+                let mut sel = CursorSelection::new(id, anchor.min(cursor), anchor.max(cursor));
+                sel.reversed = cursor < anchor;
+                sel
+            })
+            .collect();
+        self.selections.replace_all(new);
+        self.selections.merge_overlapping();
+        self.selected_word_range = None;
+        self.pause_blink_cursor(cx);
+        cx.notify();
+    }
+
+    /// Scrolls just enough to show `offset`. (sik)
+    pub fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.scroll_to(offset.min(self.text.len()), None, cx);
+    }
+
+    /// Applies `edits` (disjoint UTF-8 byte ranges of the current text and
+    /// their replacements) and then sets `selections` (as in
+    /// [`Self::set_selections`], offsets in the new text), undone as one step
+    /// that brings the old selections back. (sik)
+    pub fn edit(
+        &mut self,
+        edits: &[(Range<usize>, String)],
+        selections: &[(usize, usize)],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_editable() || edits.is_empty() {
+            return;
+        }
+        let before: Vec<CursorSelection> = self.selections.iter().copied().collect();
+        self.undo_manager.break_transaction_coalescing();
+        self.undo_manager.begin_transaction_with(EditIntent::Atomic);
+        self.undo_manager.record_selections(before.clone(), before.clone());
+        self.undo_manager.set_pending_intent(EditIntent::Atomic);
+        self.replace_text_in_ranges(edits, window, cx);
+        self.set_selections(selections, cx);
+        self.undo_manager
+            .record_selections(before, self.selections.iter().copied().collect());
+        self.undo_manager.commit_transaction();
+        let cursor = self.cursor();
+        self.scroll_to(cursor, None, cx);
+    }
+
     /// Resolve a mouse position to a byte offset in the text.
     ///
     /// Also reports the caret's line-end affinity for that offset: `true` when the position

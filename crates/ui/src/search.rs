@@ -1,6 +1,6 @@
 //! Search panel: searches the task's files (on the agent) as you type, and
-//! groups the results by file. The References panel is the same, without the
-//! box: its results (F12, Shift-F12) come from outside.
+//! groups the results by file, and replaces them. The References panel is the
+//! same, without the boxes: its results (F12, Shift-F12) come from outside.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -23,6 +23,9 @@ const MAX_HITS: usize = 5_000;
 
 pub enum SearchEvent {
     Open { file: String, line: u32, column: u32, pin: bool },
+    /// Replace All was confirmed for these files: the workspace leaves out
+    /// those with unsaved changes and calls `replace`.
+    Replace { files: Vec<String> },
 }
 
 enum Row {
@@ -34,8 +37,13 @@ pub struct SearchPanel {
     client: Option<Arc<Client>>,
     root: PathBuf,
     input: Entity<InputState>,
+    replacement: Entity<InputState>,
     regex: bool,
     case_sensitive: bool,
+    /// Each replacement takes the case of what it replaces.
+    preserve_case: bool,
+    /// What the last Replace All did.
+    replaced: Option<SharedString>,
     hits: Vec<SearchHit>,
     truncated: bool,
     selected: Option<usize>,
@@ -52,6 +60,7 @@ impl EventEmitter<SearchEvent> for SearchPanel {}
 impl SearchPanel {
     pub fn new(root: PathBuf, client: Option<Arc<Client>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search in Task"));
+        let replacement = cx.new(|cx| InputState::new(window, cx).placeholder("Replace"));
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
             InputEvent::Change => this.schedule(DEBOUNCE, cx),
             InputEvent::PressEnter { .. } => this.step(1, cx),
@@ -61,8 +70,11 @@ impl SearchPanel {
             client,
             root,
             input,
+            replacement,
             regex: false,
             case_sensitive: false,
+            preserve_case: false,
+            replaced: None,
             hits: Vec::new(),
             truncated: false,
             selected: None,
@@ -131,6 +143,7 @@ impl SearchPanel {
     }
 
     fn schedule(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        self.replaced = None;
         let query = self.input.read(cx).value().to_string();
         if query.is_empty() {
             self.search = None;
@@ -175,6 +188,73 @@ impl SearchPanel {
         cx.notify();
     }
 
+    /// Asks before replacing every match shown.
+    fn confirm_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hits.is_empty() {
+            return;
+        }
+        let files: Vec<String> = self
+            .hits
+            .iter()
+            .map(|hit| hit.path.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let with = self.replacement.read(cx).value().to_string();
+        let message = format!(
+            "Replace the matches on {}{} in {} with \"{with}\"?",
+            if self.truncated { "at least " } else { "" },
+            count(self.hits.len(), "line"),
+            count(files.len(), "file")
+        );
+        let detail = "Files with unsaved changes are left out. This can't be undone from here.";
+        let answer = window.prompt(PromptLevel::Warning, &message, Some(detail), &[PromptButton::new("Cancel"), PromptButton::new("Replace")], cx);
+        cx.spawn(async move |this, cx| {
+            if matches!(answer.await, Ok(1)) {
+                this.update(cx, |_, cx| cx.emit(SearchEvent::Replace { files })).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Replaces the matches in `files` (the workspace already left out
+    /// those with unsaved changes; `skipped` says how many) and searches again.
+    pub fn replace(&mut self, files: Vec<String>, skipped: usize, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let request = Request::Replace {
+            path: self.root.clone(),
+            files,
+            query: self.input.read(cx).value().to_string(),
+            regex: self.regex,
+            case_sensitive: self.case_sensitive,
+            replacement: self.replacement.read(cx).value().to_string(),
+            preserve_case: self.preserve_case,
+        };
+        cx.spawn(async move |this, cx| {
+            let response = client.request(request).await;
+            this.update(cx, |this, cx| {
+                this.schedule(Duration::ZERO, cx);
+                let skipped = match skipped {
+                    0 => String::new(),
+                    n => format!("; {n} with unsaved changes left out"),
+                };
+                match response {
+                    Ok(Response::Replaced { files, replacements }) => {
+                        this.replaced =
+                            Some(format!("Replaced {replacements} in {}{skipped}", count(files, "file")).into())
+                    }
+                    Ok(other) => this.error = Some(format!("Unexpected response: {other:?}").into()),
+                    Err(err) => this.error = Some(format!("{err:#}").into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// F4 / Shift-F4: next or previous match, opened in preview.
     pub fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.hits.is_empty() {
@@ -215,6 +295,11 @@ impl SearchPanel {
     }
 }
 
+/// "1 file", "3 files".
+fn count(n: usize, what: &str) -> String {
+    if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
+}
+
 impl SearchPanel {
     fn render_search_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -231,19 +316,40 @@ impl SearchPanel {
                 .hover(|style| style.text_color(theme.sidebar_foreground))
                 .child(label)
         };
-        h_flex()
+        let can_replace = !self.hits.is_empty() && !self.searching;
+        v_flex()
             .px_2()
             .pt_2()
             .gap_1()
-            .child(div().flex_1().child(Input::new(&self.input)))
-            .child(toggle("search-case", "Aa", self.case_sensitive).on_click(cx.listener(|this, _, _, cx| {
-                this.case_sensitive = !this.case_sensitive;
-                this.schedule(Duration::ZERO, cx);
-            })))
-            .child(toggle("search-regex", ".*", self.regex).on_click(cx.listener(|this, _, _, cx| {
-                this.regex = !this.regex;
-                this.schedule(Duration::ZERO, cx);
-            })))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(div().flex_1().child(Input::new(&self.input)))
+                    .child(toggle("search-case", "Aa", self.case_sensitive).on_click(cx.listener(|this, _, _, cx| {
+                        this.case_sensitive = !this.case_sensitive;
+                        this.schedule(Duration::ZERO, cx);
+                    })))
+                    .child(toggle("search-regex", ".*", self.regex).on_click(cx.listener(|this, _, _, cx| {
+                        this.regex = !this.regex;
+                        this.schedule(Duration::ZERO, cx);
+                    }))),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(div().flex_1().child(Input::new(&self.replacement)))
+                    .child(toggle("replace-case", "AB", self.preserve_case).on_click(cx.listener(|this, _, _, cx| {
+                        this.preserve_case = !this.preserve_case;
+                        cx.notify();
+                    })))
+                    .child(
+                        toggle("replace-all", "All", false)
+                            .when(!can_replace, |el| el.opacity(0.5))
+                            .when(can_replace, |el| {
+                                el.on_click(cx.listener(|this, _, window, cx| this.confirm_replace(window, cx)))
+                            }),
+                    ),
+            )
     }
 }
 
@@ -262,7 +368,9 @@ impl Render for SearchPanel {
         };
         let theme = cx.theme();
         let files = self.hits.iter().map(|hit| &hit.path).collect::<std::collections::BTreeSet<_>>().len();
-        let summary = if self.searching {
+        let summary = if let Some(replaced) = &self.replaced {
+            replaced.to_string()
+        } else if self.searching {
             "Searching…".to_string()
         } else if self.hits.is_empty() {
             String::new()

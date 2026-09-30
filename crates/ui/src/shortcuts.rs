@@ -50,6 +50,7 @@ shortcuts![
     (NextResult, "Next Result", "f4"),
     (PrevResult, "Previous Result", "shift-f4"),
     (GoToDefinition, "Go to Definition", "f12"),
+    (GoToLine, "Go to Line", "ctrl-g"),
     (FindReferences, "Find References", "shift-f12"),
     (NavigateBack, "Go Back", "ctrl-alt-left"),
     (NavigateForward, "Go Forward", "ctrl-alt-right"),
@@ -102,11 +103,12 @@ pub fn owner(keystroke: &Keystroke, cx: &App) -> Option<&'static Shortcut> {
 }
 
 /// Registers the app's shortcuts according to the config, replacing any that
-/// were there; the components' own stay as they were.
+/// were there, and then the code editor's; the components' own stay as they were.
 pub fn apply(cx: &mut App) {
     let ours = |name: &str| {
-        name.strip_prefix("app::")
-            .is_some_and(|id| SHORTCUTS.iter().any(|shortcut| shortcut.id == id))
+        name.starts_with("editing::")
+            || name.strip_prefix("app::")
+                .is_some_and(|id| SHORTCUTS.iter().any(|shortcut| shortcut.id == id))
     };
     let others: Vec<KeyBinding> = cx
         .key_bindings()
@@ -122,6 +124,8 @@ pub fn apply(cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(others);
     cx.bind_keys(bindings);
+    // After the app's, so they win inside the editor (see `editing::keymap`).
+    cx.bind_keys(crate::editing::keymap());
 }
 
 #[cfg(test)]

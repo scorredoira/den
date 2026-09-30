@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["vendor/*"]
 
 [workspace.package]
 edition = "2024"
@@ -31,3 +32,8 @@ split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# gpui-base with a few public additions for the editor (selections and
+# batch edits); see vendor/README.md.
+[patch.crates-io]
+gpui-base = { path = "vendor/gpui-base" }

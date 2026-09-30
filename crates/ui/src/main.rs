@@ -2,6 +2,7 @@ mod agent;
 mod app;
 mod assets;
 mod config;
+mod editing;
 mod changes;
 mod file_tree;
 mod language;
@@ -37,6 +38,7 @@ actions!(
         ShowSearch,
         ShowReferences,
         GoToDefinition,
+        GoToLine,
         FindReferences,
         NavigateBack,
         NavigateForward,

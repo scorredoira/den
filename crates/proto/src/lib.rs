@@ -115,6 +115,19 @@ pub enum Request {
     },
     /// Tasks (groups) waiting for an answer right now. Responds `Files`.
     BlockedList,
+    /// Replaces what `Search` with the same `query`, `regex` and
+    /// `case_sensitive` finds in `files` (relative to `path`) with
+    /// `replacement` (`$1`… with `regex`). With `preserve_case`, each
+    /// replacement takes the case of what it replaces. Responds `Replaced`.
+    Replace {
+        path: PathBuf,
+        files: Vec<String>,
+        query: String,
+        regex: bool,
+        case_sensitive: bool,
+        replacement: String,
+        preserve_case: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -165,6 +178,8 @@ pub enum GitOp {
     /// Responds `Commits`: those of every local branch and tag whose hash,
     /// message or author contain each word of `query`.
     Search { query: String, skip: usize, limit: usize },
+    /// Responds `Blame` for `file` as it is on disk.
+    Blame { file: String },
 }
 
 /// Repo status for the Changes mode, uncommitted.
@@ -222,6 +237,11 @@ pub enum Response {
     /// `server` is the server that responded; `None` if there's none for that
     /// language (and then `locations` is empty).
     Lsp { server: Option<String>, locations: Vec<LspLocation> },
+    /// Who last changed each line of a file: `lines[i]` is the index in
+    /// `commits` of line `i`'s commit, or `None` if it isn't committed.
+    Blame { commits: Vec<CommitInfo>, lines: Vec<Option<u32>> },
+    /// How many replacements were made in how many files.
+    Replaced { files: usize, replacements: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -29,7 +29,7 @@ Rust with GPUI across the whole app, developed directly on the Mac. macOS is GPU
 | --- | --- | --- |
 | Language | Rust | One language for the app and the agent; acceptable rebuild times (target under 10 s) |
 | UI | `gpui-kit` (Apache-2.0): GPUI, gpui-component and the backends for all three platforms | Native on the GPU; the same foundation as Zed; a single dependency with a pinned version |
-| Viewer | gpui-component's `Editor` | Highlighting, line numbers, large files; light editing is enough |
+| Viewer | gpui-component's `Editor` | Highlighting, line numbers, large files; light editing is enough. Its base crate, gpui-base, is copied in `vendor/` with a few public functions added (see `vendor/README.md`) |
 | Highlighting | tree-sitter, the one built into gpui-component | VS Code level; if it falls short, `highlights.scm` queries from Helix or Zed in our own `syntax` crate |
 | Terminal | `alacritty_terminal` (Apache-2.0) | Pure Rust, proven with GPUI inside Zed; no Zig to compile as with `libghostty-vt` |
 | Pty | `portable-pty` | The same one herdr uses; ConPTY on Windows |
@@ -310,13 +310,14 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 
 **Editor and git, requested (VS Code as the model):**
 
-- [ ] **Inline blame:** at the end of the cursor's line, in gray, the last commit that touched it: subject, author and age (`Add ACIGRUP PMS integration module, Minnu (7 months ago)`). The agent runs `git blame --porcelain` once per file and caches it until the file or `HEAD` changes; uncommitted lines show nothing.
-- [ ] **Cmd-D:** selects the word under the cursor, and each further press adds a cursor at its next occurrence. Case-sensitive or not, following the Aa toggle of the find bar. gpui-component already has several cursors (`AddCursorAbove/Below`); what's missing is the action that adds a selection at the next match.
-- [ ] **Cmd-Opt-↑/↓:** a cursor on the line above or below. It's already in gpui-component (`AddCursorAbove/Below`); check that it works and that nothing of ours shadows it.
-- [ ] **Opt-↑/↓:** moves the line (or the selected lines) up or down.
-- [ ] **Shift-Opt-↑/↓:** duplicates the line (or the selection) up or down. gpui-component binds Shift-Opt-↑/↓ to adding a cursor: ours wins.
-- [ ] **Global replace:** a Replace box in the Search panel. A "preserve case" toggle (VS Code's AB): the replacement takes the case of each match (`payment` → `invoice`, `Payment` → `Invoice`, `PAYMENT` → `INVOICE`). The agent writes the files; open tabs without unsaved changes reload on their own.
-- [ ] **Occurrences of the symbol (only if easy):** clicking on a name highlights its other occurrences in the visible file. Without LSP, same exact word; with LSP, `textDocument/documentHighlight`, which tells reads from writes.
+- [x] **Inline blame:** at the end of the cursor's line, in gray, the last commit that touched it: subject, author and age (`Add ACIGRUP PMS integration module, Minnu (7 months ago)`). The agent runs `git blame --porcelain` once per file and caches it until the file or `HEAD` changes; uncommitted lines show nothing.
+- [x] **Cmd-D:** selects the word under the cursor, and each further press adds a cursor at its next occurrence. Case-sensitive or not, following the Aa toggle of the find bar. gpui-component already has several cursors (`AddCursorAbove/Below`); what's missing is the action that adds a selection at the next match.
+- [x] **Cmd-Opt-↑/↓:** a cursor on the line above or below (gpui-component's `AddCursorAbove/Below`). "Focus Terminal Above/Below" shadowed it: GPUI ranks a binding without context as the deepest, so the editor's bindings are registered after the app's, in `CodeEditor > Input` (`editing::keymap`).
+- [x] **Opt-↑/↓:** moves the line (or the selected lines) up or down.
+- [x] **Shift-Opt-↑/↓:** duplicates the line (or the selection) up or down. (On Linux gpui-component binds these to adding a cursor.)
+- [x] **Global replace:** a Replace box in the Search panel. A "preserve case" toggle (VS Code's AB): the replacement takes the case of each match (`payment` → `invoice`, `Payment` → `Invoice`, `PAYMENT` → `INVOICE`). The agent writes the files; open tabs without unsaved changes reload on their own.
+- [x] **Occurrences of the symbol:** clicking on a name highlights its other occurrences in the file: same exact word, whole words only. (With LSP, `textDocument/documentHighlight` would tell reads from writes; not done.)
+- [x] **Ctrl-G:** go to `line` or `line:column`, in Cmd-P's spot; Ctrl-Opt-← comes back.
 
 ## Risks and open questions
 

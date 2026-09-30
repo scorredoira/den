@@ -483,7 +483,7 @@ fn row_action(id: impl Into<ElementId>, label: &'static str, cx: &App) -> Statef
 }
 
 /// "5 min ago", "3 d ago"…
-fn ago(time: i64) -> String {
+pub fn ago(time: i64) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let secs = (now - time).max(0);
     match secs {

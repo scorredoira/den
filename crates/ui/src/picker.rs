@@ -1,5 +1,6 @@
 //! Fuzzy-filtering picker (nucleo, the one Helix uses) over a list of
 //! strings: Cmd-P (the task's files), Cmd-K (tasks) and Cmd-Shift-P (commands).
+//! Without a list, it asks for a line of text (Ctrl-G, the line number).
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -34,6 +35,8 @@ pub struct Picker {
     files: Arc<Vec<String>>,
     /// Text on the right of a row (a command's shortcut), by string.
     hints: HashMap<String, String>,
+    /// No list: Enter picks what was typed.
+    free_text: bool,
     matches: Vec<String>,
     selected: usize,
     filter: Option<Task<()>>,
@@ -62,6 +65,7 @@ impl Picker {
             paths,
             files,
             hints: HashMap::new(),
+            free_text: false,
             matches: Vec::new(),
             selected: 0,
             filter: None,
@@ -69,6 +73,11 @@ impl Picker {
         };
         finder.refilter(cx);
         finder
+    }
+
+    /// Asks for a line of text: Enter picks what was typed.
+    pub fn free_text(placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self { free_text: true, ..Self::new(Arc::new(Vec::new()), placeholder, false, window, cx) }
     }
 
     pub fn with_hints(mut self, hints: HashMap<String, String>) -> Self {
@@ -98,7 +107,9 @@ impl Picker {
     }
 
     fn confirm(&mut self, cx: &mut Context<Self>) {
-        if let Some(file) = self.matches.get(self.selected) {
+        if self.free_text {
+            cx.emit(PickerEvent::Pick(self.input.read(cx).value().to_string()));
+        } else if let Some(file) = self.matches.get(self.selected) {
             cx.emit(PickerEvent::Pick(file.clone()));
         }
     }

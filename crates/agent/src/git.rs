@@ -152,6 +152,7 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
             git(dir, &["show", &format!("{commit}:{file}")]).or_else(|_| git(dir, &["show", &format!("{commit}^:{file}")]))?,
         )),
         GitOp::Search { query, skip, limit } => Ok(Response::Commits(search(dir, &query, skip, limit)?)),
+        GitOp::Blame { file } => blame(dir, &file),
     }
 }
 
@@ -281,6 +282,55 @@ fn commits(raw: &str) -> impl Iterator<Item = (CommitInfo, &str)> {
         };
         Some((commit, fields.next().unwrap_or("")))
     })
+}
+
+/// `git blame` of the file on disk, with its lines not yet committed as `None`.
+fn blame(dir: &Path, file: &str) -> Result<Response> {
+    let raw = git(dir, &["blame", "--porcelain", "--", file])?;
+    let mut commits: Vec<CommitInfo> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut lines = Vec::new();
+    let mut current: Option<usize> = None;
+    for line in raw.lines() {
+        if line.starts_with('\t') {
+            let ix = current.expect("a blame header comes before each line");
+            let uncommitted = commits[ix].hash.bytes().all(|byte| byte == b'0');
+            lines.push((!uncommitted).then_some(ix as u32));
+            continue;
+        }
+        let Some(ix) = current.filter(|_| !is_blame_header(line)) else {
+            let hash = line.split(' ').next().unwrap_or_default().to_string();
+            let ix = *index.entry(hash.clone()).or_insert_with(|| {
+                commits.push(CommitInfo {
+                    short: hash[..hash.len().min(10)].to_string(),
+                    hash,
+                    author: String::new(),
+                    time: 0,
+                    refs: String::new(),
+                    subject: String::new(),
+                });
+                commits.len() - 1
+            });
+            current = Some(ix);
+            continue;
+        };
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        match key {
+            "author" => commits[ix].author = value.to_string(),
+            "author-time" => commits[ix].time = value.parse().unwrap_or(0),
+            "summary" => commits[ix].subject = value.to_string(),
+            _ => {}
+        }
+    }
+    Ok(Response::Blame { commits, lines })
+}
+
+/// `<40 hex> <orig line> <final line>[ <count>]`: the line that starts each
+/// entry of `git blame --porcelain`.
+fn is_blame_header(line: &str) -> bool {
+    let mut parts = line.split(' ');
+    parts.next().is_some_and(|hash| hash.len() >= 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        && parts.next().is_some_and(|n| n.parse::<u32>().is_ok())
 }
 
 /// Unified diff of a file, using the same criteria as `changes`.
@@ -440,6 +490,16 @@ mod tests {
             panic!()
         };
         assert_eq!(old, "one\ntwo\n");
+
+        std::fs::write(dir.join("a.txt"), "one\nchanged\nthree\n").unwrap();
+        let Response::Blame { commits: blamed, lines } = run_op(&dir, GitOp::Blame { file: "a.txt".into() }) else {
+            panic!()
+        };
+        let subjects: Vec<Option<&str>> =
+            lines.iter().map(|line| line.map(|ix| blamed[ix as usize].subject.as_str())).collect();
+        assert_eq!(subjects, vec![Some("initial"), None, Some("three")]);
+        assert_eq!(blamed.iter().find(|c| c.subject == "three").unwrap().author, "a");
+        run(&dir, &["checkout", "-q", "--", "a.txt"]);
 
         run(&dir, &["branch", "other"]);
         let Response::Branches { current, branches } = run_op(&dir, GitOp::Branches) else { panic!() };

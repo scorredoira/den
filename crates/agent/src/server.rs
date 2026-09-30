@@ -311,6 +311,7 @@ fn is_slow(request: &Request) -> bool {
             | Request::Trash { .. }
             | Request::Git { .. }
             | Request::Lsp { .. }
+            | Request::Replace { .. }
     )
 }
 
@@ -362,6 +363,19 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
         } => {
             let (hits, truncated) = search::search(&path, &query, regex, case_sensitive, max_hits)?;
             Ok(Response::SearchResults { hits, truncated })
+        }
+        Request::Replace {
+            path,
+            files,
+            query,
+            regex,
+            case_sensitive,
+            replacement,
+            preserve_case,
+        } => {
+            let (files, replacements) =
+                search::replace(&path, &files, &query, regex, case_sensitive, &replacement, preserve_case)?;
+            Ok(Response::Replaced { files, replacements })
         }
         Request::ReadFile { path } => Ok(Response::Bytes(fs::read(&path)?)),
         Request::WriteFile { path, data } => {
@@ -481,7 +495,8 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         | Request::ListDir { .. }
         | Request::Trash { .. }
         | Request::Git { .. }
-        | Request::Lsp { .. } => unreachable!("handled on its own thread"),
+        | Request::Lsp { .. }
+        | Request::Replace { .. } => unreachable!("handled on its own thread"),
         Request::Rename { from, to } => {
             fs::rename(&from, &to)?;
             Ok(Response::Ok)
