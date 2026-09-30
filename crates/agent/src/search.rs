@@ -83,6 +83,8 @@ pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hi
                 entry.path(),
                 UTF8(|line_number, line| {
                     use grep_matcher::Matcher as _;
+                    // The searcher matches without the LF terminator.
+                    let line = line.strip_suffix('\n').unwrap_or(line);
                     let (column, length) = match matcher.find(line.as_bytes()) {
                         Ok(Some(m)) => (
                             line[..m.start()].chars().count() as u32,
@@ -126,23 +128,33 @@ pub fn replace(
     let pattern = if regex { query.to_string() } else { regex::escape(query) };
     let matcher = regex::RegexBuilder::new(&pattern)
         .case_insensitive(!case_sensitive)
-        .multi_line(true)
         .build()?;
     let (mut changed, mut total) = (0, 0);
     for file in files {
         let path = dir.join(file);
         let text = std::fs::read_to_string(&path)?;
         let mut count = 0;
-        let new = matcher.replace_all(&text, |caps: &regex::Captures| {
-            count += 1;
-            let mut with = String::new();
-            if regex {
-                caps.expand(replacement, &mut with);
-            } else {
-                with.push_str(replacement);
+        let mut new = String::with_capacity(text.len());
+        // Match the searcher's LF-delimited records, excluding the terminator.
+        // `multi_line` only changes anchors; it does not stop `\s` or `(?s)`
+        // from consuming newlines when matching against the whole file.
+        for record in text.split_inclusive('\n') {
+            let line = record.strip_suffix('\n').unwrap_or(record);
+            let replaced = matcher.replace_all(line, |caps: &regex::Captures| {
+                count += 1;
+                let mut with = String::new();
+                if regex {
+                    caps.expand(replacement, &mut with);
+                } else {
+                    with.push_str(replacement);
+                }
+                if preserve_case { with_case_of(&caps[0], &with) } else { with }
+            });
+            new.push_str(&replaced);
+            if record.ends_with('\n') {
+                new.push('\n');
             }
-            if preserve_case { with_case_of(&caps[0], &with) } else { with }
-        });
+        }
         if count > 0 {
             crate::fs::write(&path, new.as_bytes())?;
             changed += 1;
@@ -202,6 +214,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a.ts")).unwrap(), "call_invoice(Invoice, INVOICE)\n");
         assert_eq!(replace(&dir, &files, "a.b", false, true, "x", false).unwrap(), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replacement_only_changes_the_lines_search_matches() {
+        let dir = std::env::temp_dir().join(format!("sik-replace-lines-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        for (query, text, replacement, expected, matching_lines) in [
+            (r"foo\s+bar", "foo\nbar\nfoo bar\n", "X", "foo\nbar\nX\n", vec![3]),
+            (r"(?s)foo.*bar", "foo\nbar\nfoo bar", "X", "foo\nbar\nX", vec![3]),
+            (r"^foo$", "foo\nfoo\r\nfoo", "X", "X\nfoo\r\nX", vec![1, 3]),
+            (r"(foo) (bar)", "foo\nbar\nfoo bar foo bar\n", "$2 $1", "foo\nbar\nbar foo bar foo\n", vec![3]),
+            (r"^$", "\nfoo\n", "X", "X\nfoo\n", vec![1]),
+            (r"^$", "", "X", "", vec![]),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let (hits, _) = search(&dir, query, true, true, 100).unwrap();
+            assert_eq!(hits.iter().map(|hit| hit.line).collect::<Vec<_>>(), matching_lines, "{query}");
+            replace(&dir, &["a.txt".into()], query, true, true, replacement, false).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), expected, "{query}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
