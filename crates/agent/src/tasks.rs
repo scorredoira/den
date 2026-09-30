@@ -181,15 +181,17 @@ pub fn remove(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Runs a repo script through the user's login shell, so it gets their
-/// PATH (swt, sim…) even if the app was opened from the Finder.
+/// Runs a repo script through the user's interactive login shell, so it gets
+/// the PATH of their terminal (swt, sim…) even if the app was opened from the
+/// Finder: many setups only extend PATH in the rc file (.zshrc), which a
+/// login shell alone does not read.
 fn run_script(repo: &Path, script: &Path, args: &[&str]) -> Result<std::process::Output> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let script = script.to_string_lossy();
     let mut command = Command::new(shell);
-    command.args(["-l", "-c", "\"$0\" \"$@\"", &script]);
+    command.args(["-l", "-i", "-c", "\"$0\" \"$@\"", &script]);
     command.args(args);
-    Ok(command.current_dir(repo).output()?)
+    Ok(command.stdin(std::process::Stdio::null()).current_dir(repo).output()?)
 }
 
 fn output_log(output: &std::process::Output) -> String {
