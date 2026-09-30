@@ -243,7 +243,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     let mut writer = stream.try_clone_stream()?;
     std::thread::spawn(move || {
         while let Ok(message) = rx.recv() {
-            if proto::write_frame(&mut writer, &message).is_err() {
+            if write_message(&mut writer, &message).is_err() {
                 break;
             }
         }
@@ -293,6 +293,40 @@ fn reply_to(state: &Shared, conn: ConnId, id: Option<u64>, reply: Result<Respons
     if let Some(id) = id {
         let result = reply.map_err(|err| format!("{err:#}"));
         state.lock().unwrap().send(conn, ServerMessage::Response { id, result });
+    }
+}
+
+/// An oversized response fails its request without disconnecting all terminals.
+fn write_message(writer: &mut impl std::io::Write, message: &ServerMessage) -> Result<()> {
+    match proto::write_frame(writer, message) {
+        Err(err) if err.is::<proto::FrameTooLarge>() => {
+            if let ServerMessage::Response { id, .. } = message {
+                proto::write_frame(writer, &ServerMessage::Response { id: *id, result: Err(err.to_string()) })
+            } else {
+                Err(err)
+            }
+        }
+        result => result,
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_response_returns_an_error_and_keeps_the_stream_usable() {
+        let mut bytes = Vec::new();
+        write_message(&mut bytes, &ServerMessage::Response {
+            id: 7,
+            result: Ok(Response::Text("x".repeat(64 * 1024 * 1024))),
+        }).unwrap();
+        write_message(&mut bytes, &ServerMessage::Response { id: 8, result: Ok(Response::Ok) }).unwrap();
+        let mut reader = bytes.as_slice();
+        assert!(matches!(proto::read_frame(&mut reader).unwrap(),
+            Some(ServerMessage::Response { id: 7, result: Err(error) }) if error.contains("frame too large")));
+        assert!(matches!(proto::read_frame(&mut reader).unwrap(),
+            Some(ServerMessage::Response { id: 8, result: Ok(Response::Ok) })));
     }
 }
 

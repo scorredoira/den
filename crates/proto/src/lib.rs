@@ -20,6 +20,20 @@ pub const PROTOCOL: u32 = 6;
 /// Maximum frame size, so garbage input can't make us allocate without limit.
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 
+/// Largest file payload, leaving room for the response envelope in a frame.
+pub const MAX_FILE_BYTES: usize = MAX_FRAME - 1024;
+
+#[derive(Debug)]
+pub struct FrameTooLarge(pub usize);
+
+impl std::fmt::Display for FrameTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "frame too large: {} bytes (maximum {MAX_FRAME})", self.0)
+    }
+}
+
+impl std::error::Error for FrameTooLarge {}
+
 pub type TermId = u64;
 
 /// Message from the UI to the agent. Without an `id` no response is expected.
@@ -46,14 +60,14 @@ pub enum Request {
     /// Responds with the terminal's snapshot; its `TermOutput`s follow.
     TermAttach { term: TermId },
     TermDetach { term: TermId },
-    TermInput { term: TermId, data: Vec<u8> },
+    TermInput { term: TermId, #[serde(with = "serde_bytes")] data: Vec<u8> },
     TermResize { term: TermId, cols: u16, rows: u16 },
     TermKill { term: TermId },
     /// Current directory of the foreground process.
     TermCwd { term: TermId },
     /// Saves a pasted image to a temporary file on the agent's machine and
     /// responds with its path, to paste it into the terminal.
-    SavePastedImage { extension: String, data: Vec<u8> },
+    SavePastedImage { extension: String, #[serde(with = "serde_bytes")] data: Vec<u8> },
     /// Adds a git repo (or a worktree's repo) to those the agent knows.
     RepoAdd { path: PathBuf },
     /// Forgets a repo (touches nothing on disk).
@@ -87,7 +101,7 @@ pub enum Request {
         max_hits: usize,
     },
     ReadFile { path: PathBuf },
-    WriteFile { path: PathBuf, data: Vec<u8> },
+    WriteFile { path: PathBuf, #[serde(with = "serde_bytes")] data: Vec<u8> },
     /// A folder without what git ignores: folders first, by name.
     ListDir { path: PathBuf },
     Rename { from: PathBuf, to: PathBuf },
@@ -223,7 +237,7 @@ pub enum Response {
     TermList(Vec<TermInfo>),
     /// Escape sequences that reproduce the screen, history, cursor and modes
     /// in a fresh `cols` × `rows` emulator.
-    TermSnapshot { cols: u16, rows: u16, data: Vec<u8> },
+    TermSnapshot { cols: u16, rows: u16, #[serde(with = "serde_bytes")] data: Vec<u8> },
     Path(Option<PathBuf>),
     Tasks(Vec<TaskInfo>),
     Repos(Vec<PathBuf>),
@@ -232,7 +246,7 @@ pub enum Response {
     Text(String),
     Files(Vec<String>),
     SearchResults { hits: Vec<SearchHit>, truncated: bool },
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     Dir(Vec<DirEntryInfo>),
     GitStatus(GitStatus),
     Branches { current: Option<String>, branches: Vec<String> },
@@ -311,7 +325,7 @@ pub struct TermInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Event {
-    TermOutput { term: TermId, data: Vec<u8> },
+    TermOutput { term: TermId, #[serde(with = "serde_bytes")] data: Vec<u8> },
     TermTitle { term: TermId, title: Option<String> },
     TermExit { term: TermId },
     /// A task started or stopped working (its terminals produce output). Sent
@@ -336,6 +350,10 @@ pub fn build_id(bytes: &[u8]) -> String {
 
 pub fn write_frame<T: Serialize>(writer: &mut impl Write, message: &T) -> Result<()> {
     let body = rmp_serde::to_vec(message)?;
+    // Reject before writing even the header, so the next frame is still readable.
+    if body.len() > MAX_FRAME {
+        return Err(FrameTooLarge(body.len()).into());
+    }
     writer.write_all(&(body.len() as u32).to_le_bytes())?;
     writer.write_all(&body)?;
     writer.flush()?;
@@ -467,6 +485,49 @@ pub const AGENT_BIN: &str = "sik-agent";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_payloads_are_compatible_with_legacy_byte_arrays() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct Legacy { data: Vec<u8> }
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct Binary { #[serde(with = "serde_bytes")] data: Vec<u8> }
+        let data = vec![0, 127, 128, 255];
+        let legacy = Legacy { data: data.clone() };
+        let binary = Binary { data };
+        assert_eq!(rmp_serde::from_slice::<Legacy>(&rmp_serde::to_vec(&binary).unwrap()).unwrap(), legacy);
+        assert_eq!(rmp_serde::from_slice::<Binary>(&rmp_serde::to_vec(&legacy).unwrap()).unwrap(), binary);
+    }
+
+    #[test]
+    fn largest_file_payload_fits_in_a_frame() {
+        let message = ServerMessage::Response {
+            id: u64::MAX,
+            result: Ok(Response::Bytes(vec![255; MAX_FILE_BYTES])),
+        };
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &message).unwrap();
+        assert!(frame.len() <= MAX_FRAME + 4);
+        let Some(ServerMessage::Response { result: Ok(Response::Bytes(data)), .. }) =
+            read_frame(&mut frame.as_slice()).unwrap() else { panic!("expected file bytes") };
+        assert_eq!(data.len(), MAX_FILE_BYTES);
+        assert!(data.iter().all(|&byte| byte == 255));
+    }
+
+    #[test]
+    fn oversized_output_does_not_corrupt_the_stream() {
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &Response::Ok).unwrap();
+        let before = frame.clone();
+        let error = write_frame(&mut frame, &Response::Text("x".repeat(MAX_FRAME))).unwrap_err();
+        assert!(error.is::<FrameTooLarge>());
+        assert_eq!(frame, before);
+        write_frame(&mut frame, &Response::Ok).unwrap();
+        let mut reader = frame.as_slice();
+        assert!(matches!(read_frame::<Response>(&mut reader).unwrap(), Some(Response::Ok)));
+        assert!(matches!(read_frame::<Response>(&mut reader).unwrap(), Some(Response::Ok)));
+        assert!(read_frame::<Response>(&mut reader).unwrap().is_none());
+    }
 
     #[test]
     fn frames_round_trip() {

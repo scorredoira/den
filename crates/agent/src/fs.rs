@@ -3,6 +3,7 @@
 
 use std::{
     collections::HashSet,
+    io::Read as _,
     path::{Path, PathBuf},
     sync::mpsc,
     time::Duration,
@@ -16,17 +17,24 @@ use proto::DirEntryInfo;
 const HIDDEN: &[&str] = &[".git", ".DS_Store"];
 
 /// Maximum size of a file sent to the UI.
-const MAX_READ: u64 = 64 * 1024 * 1024;
+const MAX_READ: u64 = proto::MAX_FILE_BYTES as u64;
 
 /// How long changes accumulate before being sent together.
 const DEBOUNCE: Duration = Duration::from_millis(100);
 
 pub fn read(path: &Path) -> Result<Vec<u8>> {
-    let size = std::fs::metadata(path)?.len();
+    let file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
     if size > MAX_READ {
         bail!("the file is too large ({} MB)", size / 1024 / 1024);
     }
-    Ok(std::fs::read(path)?)
+    let mut data = Vec::new();
+    file.take(MAX_READ + 1).read_to_end(&mut data)?;
+    // The file can grow after checking its metadata.
+    if data.len() > proto::MAX_FILE_BYTES {
+        bail!("the file is too large (maximum {} bytes)", proto::MAX_FILE_BYTES);
+    }
+    Ok(data)
 }
 
 pub fn write(path: &Path, data: &[u8]) -> Result<()> {
@@ -212,6 +220,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn rejects_files_that_cannot_fit_in_a_response() {
+        let dir = dir("read-limit");
+        let path = dir.join("large.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_READ + 1).unwrap();
+        assert!(read(&path).unwrap_err().to_string().contains("too large"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
