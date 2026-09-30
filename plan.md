@@ -320,7 +320,7 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 - [x] **Ctrl-G:** go to `line` or `line:column`, in Cmd-P's spot; Ctrl-Opt-← comes back.
 - [x] **Menu bar (macOS):** Sik, File, Edit, Selection, View, Go, Terminal, Window and Help, as in VS Code; each entry is an existing action and shows its shortcut (`app_menu.rs`).
 - [x] **Word wrap:** Opt-Z (and View > Word Wrap), for every tab and task, saved in `config.json` (`word_wrap`).
-- [x] **Split editor:** two groups of tabs, side by side (Cmd-\) or one above the other (Cmd-Shift-\), or from the tab's menu (Split Right/Down, Move to Other Side). The active tab moves to the other group; with a Markdown file, its preview opens there instead (Open Preview to the Side, Cmd-Opt-V), updating as you type. When a group is left empty the split closes. A file can't be open in both groups at once (only its Markdown preview): both would need their own editor over the same text.
+- [x] **Split editor:** two groups of tabs, side by side (Cmd-Opt-S) or one above the other (Cmd-Opt-Shift-S; not VS Code's Cmd-\, which on a Spanish keyboard needs Opt), or from the tab's menu (Split Right/Down, Move to Other Side). The active tab moves to the other group; with a Markdown file, its preview opens there instead (Open Preview to the Side, Cmd-Opt-V), updating as you type. When a group is left empty the split closes. A file can't be open in both groups at once (only its Markdown preview): both would need their own editor over the same text.
 - [ ] **Drag tabs** to split the editor or move them between groups (later: the menu and the shortcuts cover it).
 
 ## Risks and open questions
