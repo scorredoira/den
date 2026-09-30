@@ -3,6 +3,7 @@ mod app;
 mod app_menu;
 mod assets;
 mod config;
+mod diff;
 mod editing;
 mod changes;
 mod completion;

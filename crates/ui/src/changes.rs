@@ -1,7 +1,7 @@
-//! Changes panel, in three views: what the task has touched relative to its
-//! base branch, what isn't committed yet (staged and unstaged, with the
-//! commit box) and the history, with its search. At the top, the branch.
-//! The agent does all the reading and work.
+//! Changes panel, in two views: what isn't committed yet (staged and
+//! unstaged, with the commit box) and the history, with its search, or only
+//! a file's or folder's. At the top, the branch. The agent does all the
+//! reading and work.
 
 use std::{
     collections::HashMap,
@@ -47,7 +47,6 @@ pub enum ChangesEvent {
 
 #[derive(Clone, Copy, PartialEq)]
 enum View {
-    Branch,
     Uncommitted,
     History,
 }
@@ -58,13 +57,12 @@ pub struct ChangesPanel {
     local: bool,
     root: PathBuf,
     view: View,
-    /// Branch view.
-    base: Option<String>,
-    files: Vec<ChangedFile>,
     /// Branch, distance from the remote and what's uncommitted.
     status: GitStatus,
     /// History view.
     commits: Vec<CommitInfo>,
+    /// Only the history of this file or folder (`true`: a folder).
+    file: Option<(String, bool)>,
     /// There may be more commits than the ones read.
     more: bool,
     /// Expanded commit, and the files of those already read.
@@ -75,7 +73,8 @@ pub struct ChangesPanel {
     message: Option<Entity<InputState>>,
     /// The commit succeeded: the message is cleared on the next paint.
     clear_message: bool,
-    /// Selected row (`s:`, `u:`, `b:` or `c:<hash>:` plus the path).
+    /// Selected row (`s:`, `u:` or `c:<hash>:` plus the path, or `h:<hash>`
+    /// in a file's history).
     selected: Option<String>,
     loading: bool,
     /// Operation in progress (push, pull, commit…), to display it.
@@ -96,10 +95,9 @@ impl ChangesPanel {
             local,
             root,
             view: View::Uncommitted,
-            base: None,
-            files: Vec::new(),
             status: GitStatus::default(),
             commits: Vec::new(),
+            file: None,
             more: false,
             expanded: None,
             commit_files: HashMap::new(),
@@ -120,11 +118,6 @@ impl ChangesPanel {
     pub fn set_client(&mut self, client: Arc<Client>, visible: bool, cx: &mut Context<Self>) {
         self.client = Some(client);
         self.mark_stale(visible, cx);
-    }
-
-    /// File diffs are opened according to the current view.
-    pub fn uncommitted(&self) -> bool {
-        self.view == View::Uncommitted
     }
 
     /// Something changed on disk: reread (after a short delay, since changes
@@ -158,7 +151,6 @@ impl ChangesPanel {
             }
             let status = client.request(Request::Git { path: path.clone(), op: GitOp::Status }).await;
             let content = match view {
-                View::Branch => Some(client.request(Request::GitChanges { path, uncommitted: false }).await),
                 View::History => Some(client.request(Request::Git { path, op: log }).await),
                 View::Uncommitted => None,
             };
@@ -172,10 +164,6 @@ impl ChangesPanel {
                     Err(err) => this.error = Some(format!("{err:#}").into()),
                 }
                 match content {
-                    Some(Ok(Response::Changes { base, files })) => {
-                        this.base = base;
-                        this.files = files;
-                    }
                     Some(Ok(Response::Commits(commits))) => {
                         this.more = commits.len() == PAGE;
                         // A new commit or a branch switch makes the expanded commit stale.
@@ -195,8 +183,12 @@ impl ChangesPanel {
         cx.notify();
     }
 
-    /// The history's commits from `skip` on: all of them, or those matching the search.
+    /// The history's commits from `skip` on: all of them, those matching the
+    /// search, or the file's.
     fn log_op(&self, skip: usize, cx: &App) -> GitOp {
+        if let Some((file, _)) = &self.file {
+            return GitOp::FileLog { file: file.clone(), skip, limit: PAGE };
+        }
         let query = self.query.as_ref().map(|query| query.read(cx).value().trim().to_string()).unwrap_or_default();
         if query.is_empty() {
             GitOp::Log { skip, limit: PAGE }
@@ -208,9 +200,20 @@ impl ChangesPanel {
     fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
         if self.view != view {
             self.view = view;
-            self.files.clear();
             self.schedule(Duration::ZERO, cx);
         }
+    }
+
+    /// Shows the history of only `file` (relative), or of everything.
+    pub fn show_history(&mut self, file: Option<(String, bool)>, cx: &mut Context<Self>) {
+        self.view = View::History;
+        if self.file != file {
+            self.file = file;
+            self.commits.clear();
+            self.expanded = None;
+            self.more = false;
+        }
+        self.schedule(Duration::ZERO, cx);
     }
 
     /// Runs a git operation and, when it finishes, rereads everything.
@@ -522,7 +525,6 @@ impl ChangesPanel {
                     .px_2()
                     .py_1()
                     .gap_1()
-                    .child(tab("changes-branch", "Branch", View::Branch))
                     .child(tab("changes-uncommitted", "Uncommitted", View::Uncommitted))
                     .child(tab("changes-history", "History", View::History))
                     .child(div().flex_1())
@@ -563,9 +565,11 @@ impl ChangesPanel {
         let path = file.path.clone();
         let absolute = self.root.join(&path);
         let deleted = file.status == 'D';
+        // Untracked or just added: no history yet.
+        let new = matches!(file.status, '?' | 'A');
         let local = self.local;
         move |menu, _, _| {
-            let (diff, open, copy) = (path.clone(), path.clone(), path.clone());
+            let (diff, open, copy, history) = (path.clone(), path.clone(), path.clone(), path.clone());
             let absolute = absolute.clone();
             menu.item(menu::item("Open Changes", &panel, move |_, _, cx| {
                 cx.emit(ChangesEvent::OpenDiff { file: diff.clone(), pin: false })
@@ -573,6 +577,10 @@ impl ChangesPanel {
             .item(
                 menu::item("Open File", &panel, move |_, _, cx| cx.emit(ChangesEvent::OpenFile { file: open.clone() }))
                     .disabled(deleted),
+            )
+            .item(
+                menu::item("Show File History", &panel, move |this, _, cx| this.show_history(Some((history.clone(), false)), cx))
+                    .disabled(new),
             )
             .separator()
             .item(menu::item("Copy Relative Path", &panel, move |_, _, cx| {
@@ -642,37 +650,6 @@ impl ChangesPanel {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
             }))
         }
-    }
-
-    fn render_branch(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = cx.theme();
-        let total: (u32, u32) = self.files.iter().fold((0, 0), |(a, r), file| (a + file.added, r + file.removed));
-        let base = match &self.base {
-            Some(base) => format!("Since branching off {base}"),
-            None => "No base branch".to_string(),
-        };
-        let mut rows = vec![
-            h_flex()
-                .px_3()
-                .pb_1()
-                .gap_2()
-                .text_ui_small(cx)
-                .text_color(theme.muted_foreground)
-                .child(base)
-                .child(div().flex_1())
-                .when(!self.files.is_empty(), |el| {
-                    el.child(format!("{} files", self.files.len()))
-                        .child(div().text_color(theme.success).child(format!("+{}", total.0)))
-                        .child(div().text_color(theme.danger).child(format!("−{}", total.1)))
-                })
-                .into_any_element(),
-        ];
-        rows.extend(
-            self.files
-                .iter()
-                .map(|file| self.change_row(format!("b:{}", file.path), file, Vec::new(), cx)),
-        );
-        rows
     }
 
     fn render_uncommitted(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -761,11 +738,39 @@ impl ChangesPanel {
     fn render_history(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme();
         let mut rows = Vec::new();
-        if let Some(query) = &self.query {
+        if let Some((file, _)) = &self.file {
+            rows.push(
+                h_flex()
+                    .px_3()
+                    .pb_1()
+                    .gap_1()
+                    .text_ui_small(cx)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("History of {file}")),
+                    )
+                    .child(
+                        link("history-all", "✕", cx).on_click(cx.listener(|this, _, _, cx| this.show_history(None, cx))),
+                    )
+                    .into_any_element(),
+            );
+        } else if let Some(query) = &self.query {
             rows.push(div().px_3().pb_1().child(Input::new(query).small().cleanable(true)).into_any_element());
         }
+        // In a file's history a commit is that file's changes, not a list of files.
+        let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
         for (ix, commit) in self.commits.iter().enumerate() {
             let expanded = self.expanded.as_ref() == Some(&commit.hash);
+            let key = format!("h:{}", commit.hash);
+            let selected = file.is_some() && self.selected.as_ref() == Some(&key);
+            let file = file.clone();
+            let menu_file = file.clone();
             let refs = commit.refs.replace("HEAD -> ", "");
             let (hash, short) = (commit.hash.clone(), commit.short.clone());
             let panel = cx.entity().downgrade();
@@ -777,6 +782,7 @@ impl ChangesPanel {
                     .py_1()
                     .gap_0p5()
                     .when(expanded, |el| el.bg(theme.sidebar_accent.opacity(0.5)))
+                    .when(selected, |el| el.bg(theme.sidebar_accent))
                     .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
                     .child(
                         h_flex()
@@ -788,7 +794,11 @@ impl ChangesPanel {
                                     .flex_none()
                                     .text_ui_small(cx)
                                     .text_color(theme.muted_foreground)
-                                    .child(if expanded { "▾" } else { "▸" }),
+                                    .child(match (&file, expanded) {
+                                        (Some(_), _) => "",
+                                        (None, true) => "▾",
+                                        (None, false) => "▸",
+                                    }),
                             )
                             .child(
                                 div()
@@ -817,6 +827,12 @@ impl ChangesPanel {
                     )
                     .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                         let pin = event.click_count() >= 2;
+                        if let Some(file) = &file {
+                            this.selected = Some(key.clone());
+                            cx.emit(ChangesEvent::OpenCommitDiff { commit: hash.clone(), short: short.clone(), file: file.clone(), pin });
+                            cx.notify();
+                            return;
+                        }
                         if !pin {
                             this.toggle_commit(hash.clone(), cx);
                         }
@@ -827,7 +843,23 @@ impl ChangesPanel {
                     .context_menu(move |menu, _, _| {
                         let (copy_hash, copy_subject) = (copy_hash.clone(), copy_subject.clone());
                         let (show, short) = (copy_hash.clone(), commit_short.clone());
-                        menu.item(menu::item("Show Commit", &panel, move |_, _, cx| {
+                        menu.when_some(menu_file.clone(), |menu, file| {
+                            let (diff_hash, diff_short, diff_file) = (show.clone(), short.clone(), file.clone());
+                            let (at_hash, at_short) = (show.clone(), short.clone());
+                            menu.item(menu::item("Open Changes", &panel, move |_, _, cx| {
+                                cx.emit(ChangesEvent::OpenCommitDiff {
+                                    commit: diff_hash.clone(),
+                                    short: diff_short.clone(),
+                                    file: diff_file.clone(),
+                                    pin: true,
+                                })
+                            }))
+                            .item(menu::item("Open File at This Commit", &panel, move |_, _, cx| {
+                                cx.emit(ChangesEvent::OpenFileAt { commit: at_hash.clone(), short: at_short.clone(), file: file.clone() })
+                            }))
+                            .separator()
+                        })
+                        .item(menu::item("Show Commit", &panel, move |_, _, cx| {
                             cx.emit(ChangesEvent::OpenCommit { commit: show.clone(), short: short.clone(), pin: true })
                         }))
                         .separator()
@@ -894,7 +926,6 @@ impl Render for ChangesPanel {
         self.ensure_message(window, cx);
         self.ensure_query(window, cx);
         let (rows, empty) = match self.view {
-            View::Branch => (self.render_branch(cx), self.files.is_empty().then_some("No changes")),
             View::Uncommitted => (
                 self.render_uncommitted(cx),
                 (self.status.staged.is_empty() && self.status.unstaged.is_empty()).then_some("Nothing to commit"),

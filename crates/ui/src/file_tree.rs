@@ -44,6 +44,8 @@ pub enum FileTreeEvent {
     Open { path: PathBuf, pin: bool },
     Renamed { from: PathBuf, to: PathBuf },
     Trashed { path: PathBuf },
+    /// Show the commits that changed a file or folder.
+    ShowHistory { path: PathBuf, dir: bool },
     Error(SharedString),
 }
 
@@ -612,6 +614,13 @@ impl FileTree {
             menu.item(item("Reveal in Finder", {
                 let path = path.clone();
                 Box::new(move |_, _, cx| cx.reveal_path(&path))
+            }))
+        })
+        .when(path != self.root, |menu| {
+            let dir = dir == path;
+            menu.separator().item(item("Show History", {
+                let path = path.clone();
+                Box::new(move |_, _, cx| cx.emit(FileTreeEvent::ShowHistory { path: path.clone(), dir }))
             }))
         })
         .separator()

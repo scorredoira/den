@@ -2,7 +2,7 @@
 //!
 //! Based on the `Input` example from the `gpui` crate.
 //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
-use gpui::TextAlign;
+use gpui::{Hsla, TextAlign};
 use gpui::{
     Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
@@ -344,6 +344,16 @@ struct PasteTarget {
 /// public: an alias is only as usable as the type behind it, so hiding this
 /// would leave `InputState` unable to do anything. Prefer naming the aliases
 /// — write `InputState`, not `InputBaseState<InputMode>`.
+/// How one line looks, as the sides of a diff need: a background across
+/// the whole line, a hatched gap standing for lines only the other side has,
+/// and the label in the gutter (`None`: blank). (sik)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LineStyle {
+    pub background: Option<Hsla>,
+    pub hatched: bool,
+    pub number: Option<SharedString>,
+}
+
 pub struct InputBaseState<M: InputModeKind> {
     /// State only this mode needs. See [`InputModeKind::Extras`].
     pub(crate) extras: M::Extras,
@@ -415,6 +425,11 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
+    /// (sik) How each line looks, by buffer line; see [`LineStyle`].
+    pub(crate) line_styles: Vec<LineStyle>,
+    /// (sik) The scroll offset of the last paint, to notify when something
+    /// else (the scrollbar) moved it.
+    pub(crate) painted_scroll_offset: Option<Point<Pixels>>,
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
@@ -753,6 +768,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
+            line_styles: Vec::new(),
+            painted_scroll_offset: None,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
@@ -3053,6 +3070,20 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.selected_word_range = None;
         self.pause_blink_cursor(cx);
         cx.notify();
+    }
+
+    /// Sets how each line looks (`styles[i]` for buffer line `i`); with any,
+    /// the gutter shows each line's `number` instead of its position. (sik)
+    pub fn set_line_styles(&mut self, styles: Vec<LineStyle>, cx: &mut Context<Self>) {
+        if self.line_styles != styles {
+            self.line_styles = styles;
+            cx.notify();
+        }
+    }
+
+    /// The scroll offset, counting one set but not applied yet. (sik)
+    pub fn target_scroll_offset(&self) -> Point<Pixels> {
+        self.deferred_scroll_offset.unwrap_or_else(|| self.scroll_handle.offset())
     }
 
     /// Scrolls just enough to show `offset`. (sik)

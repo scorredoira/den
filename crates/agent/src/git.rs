@@ -135,15 +135,19 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
             git(dir, &["switch", &branch])?;
             Ok(Response::Ok)
         }
-        GitOp::Log { skip, limit } => Ok(Response::Commits(log(dir, skip, limit)?)),
+        GitOp::Log { skip, limit } => Ok(Response::Commits(log(dir, skip, limit, None)?)),
+        GitOp::FileLog { file, skip, limit } => Ok(Response::Commits(log(dir, skip, limit, Some(&file))?)),
         GitOp::CommitFiles { commit } => {
             let files = changed(dir, &["diff-tree", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames", &commit])?;
             Ok(Response::Changes { base: None, files })
         }
-        GitOp::CommitDiff { commit, file } => Ok(Response::Text(git(
-            dir,
-            &["diff-tree", "-p", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames", &commit, "--", &file],
-        )?)),
+        GitOp::CommitDiff { commit, file } => Ok(Response::Text(commit_diff(dir, &commit, &file, None)?)),
+        GitOp::WholeDiff { file, commit: Some(commit), .. } => {
+            Ok(Response::Text(commit_diff(dir, &commit, &file, Some(WHOLE_FILE))?))
+        }
+        GitOp::WholeDiff { file, commit: None, uncommitted } => {
+            Ok(Response::Text(diff_with(dir, &file, uncommitted, Some(WHOLE_FILE))?))
+        }
         GitOp::Show { commit } => Ok(Response::Text(git(
             dir,
             &["show", "--no-color", "--format=fuller", "--stat", "--patch", "-m", "--first-parent", "--no-renames", &commit],
@@ -154,6 +158,17 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
         GitOp::Search { query, skip, limit } => Ok(Response::Commits(search(dir, &query, skip, limit)?)),
         GitOp::Blame { file } => blame(dir, &file),
     }
+}
+
+/// Context for a diff that shows the whole file.
+const WHOLE_FILE: &str = "--unified=100000000";
+
+/// What a commit changed in `file`, against its first parent.
+fn commit_diff(dir: &Path, commit: &str, file: &str, context: Option<&str>) -> Result<String> {
+    let mut args = vec!["diff-tree", "-p", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames"];
+    args.extend(context);
+    args.extend([commit, "--", file]);
+    git(dir, &args)
 }
 
 fn strs(files: &[String]) -> Vec<&str> {
@@ -227,23 +242,18 @@ fn status(dir: &Path) -> Result<GitStatus> {
 
 const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1f%b%x1e";
 
-fn log(dir: &Path, skip: usize, limit: usize) -> Result<Vec<CommitInfo>> {
+/// The history from `HEAD`, or only the commits that changed `file`.
+fn log(dir: &Path, skip: usize, limit: usize, file: Option<&str>) -> Result<Vec<CommitInfo>> {
     // With no commits yet there's no history (and `git log` fails).
     if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
         return Ok(Vec::new());
     }
-    let raw = git(
-        dir,
-        &[
-            "log",
-            "--decorate-refs=refs/heads",
-            "--decorate-refs=refs/tags",
-            LOG_FORMAT,
-            &format!("--skip={skip}"),
-            &format!("--max-count={limit}"),
-            "HEAD",
-        ],
-    )?;
+    let (skip, limit) = (format!("--skip={skip}"), format!("--max-count={limit}"));
+    let mut args = vec!["log", "--decorate-refs=refs/heads", "--decorate-refs=refs/tags", LOG_FORMAT, &skip, &limit, "HEAD"];
+    if let Some(file) = file {
+        args.extend(["--", file]);
+    }
+    let raw = git(dir, &args)?;
     Ok(commits(&raw).map(|(commit, _)| commit).collect())
 }
 
@@ -337,15 +347,25 @@ fn is_blame_header(line: &str) -> bool {
 
 /// Unified diff of a file, using the same criteria as `changes`.
 pub fn diff(dir: &Path, file: &str, uncommitted: bool) -> Result<String> {
+    diff_with(dir, file, uncommitted, None)
+}
+
+/// `diff`, with `context` (a `--unified`) if given.
+fn diff_with(dir: &Path, file: &str, uncommitted: bool, context: Option<&str>) -> Result<String> {
     let (base, _) = base(dir, uncommitted)?;
     let tracked = git(dir, &["ls-files", "--error-unmatch", "--", file]).is_ok()
         || git(dir, &["cat-file", "-e", &format!("{base}:{file}")]).is_ok();
     if tracked {
-        return git(dir, &["diff", "--no-renames", &base, "--", file]);
+        let mut args = vec!["diff", "--no-renames"];
+        args.extend(context);
+        args.extend([base.as_str(), "--", file]);
+        return git(dir, &args);
     }
     // Untracked: the whole file is new. `--no-index` exits with 1 when there are differences.
     let output = Command::new("git")
-        .args(["diff", "--no-index", "--", "/dev/null", file])
+        .args(["diff", "--no-index"])
+        .args(context)
+        .args(["--", "/dev/null", file])
         .current_dir(dir)
         .output()?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -528,6 +548,22 @@ mod tests {
             panic!()
         };
         assert!(diff.contains("+three"));
+        let whole = |commit: Option<String>, file: &str| -> String {
+            let Response::Text(diff) = run_op(&dir, GitOp::WholeDiff { file: file.into(), commit, uncommitted: true }) else {
+                panic!()
+            };
+            diff
+        };
+        assert!(whole(Some(commits[0].hash.clone()), "a.txt").contains("@@ -1,2 +1,3 @@\n one\n two\n+three"));
+        assert!(whole(None, "sub/new.txt").contains("@@ -0,0 +1 @@\n+x"));
+        let Response::Commits(history) = run_op(&dir, GitOp::FileLog { file: "a.txt".into(), skip: 0, limit: 10 }) else {
+            panic!()
+        };
+        assert_eq!(history.len(), 2);
+        let Response::Commits(history) = run_op(&dir, GitOp::FileLog { file: "b.txt".into(), skip: 0, limit: 10 }) else {
+            panic!()
+        };
+        assert_eq!(history.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), vec!["initial"]);
 
         let search = |query: &str| -> Vec<String> {
             let Response::Commits(commits) = run_op(&dir, GitOp::Search { query: query.into(), skip: 0, limit: 10 }) else {

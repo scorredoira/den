@@ -6,6 +6,7 @@ use std::{
 };
 
 use client::Client;
+use gpui_base::input::LineStyle;
 use proto::{CommitInfo, GitOp, LspLocation, LspOp, PortInfo, Request, Response, SearchHit};
 
 use gpui_kit::component::{
@@ -28,6 +29,7 @@ use crate::{
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, SavedTab, Session, TextArea, UiText},
+    diff,
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
     signature::{self, SignatureHint},
@@ -117,6 +119,8 @@ struct FileTab {
     grab_focus: bool,
     /// Tab showing a file's diff (read-only), not the file itself.
     diff: Option<DiffOf>,
+    /// A file's diff shown side by side: `editor` has the new side.
+    old: Option<OldSide>,
     /// Reopened on returning to the task: if the file is gone, it closes itself.
     restored: bool,
     /// Who last changed each line, as it was on disk when read or saved.
@@ -132,6 +136,14 @@ struct FileTab {
     /// Another view of a file open in another tab (the other group): its own
     /// editor, kept in sync with the file's, and the same rendered Markdown.
     view: bool,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// The old side of a side-by-side diff, which scrolls with the new one, and
+/// the changes within lines of both.
+struct OldSide {
+    editor: Entity<EditorState>,
+    marks: Option<(RangeDecorationCollection, RangeDecorationCollection)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -155,7 +167,6 @@ const MAX_PLACES: usize = 100;
 struct DiffOf {
     /// Relative to the task's folder; empty for the whole commit.
     file: String,
-    uncommitted: bool,
     /// What changed in a commit (hash and short hash), not in the folder.
     commit: Option<(String, String)>,
     /// The file as it was in `commit`, not its diff.
@@ -164,7 +175,7 @@ struct DiffOf {
 
 impl DiffOf {
     fn commit(commit: String, short: String, file: String, source: bool) -> Self {
-        Self { file, uncommitted: false, commit: Some((commit, short)), source }
+        Self { file, commit: Some((commit, short)), source }
     }
 }
 
@@ -249,6 +260,7 @@ impl Workspace {
                     FileTreeEvent::Open { path, pin } => this.open_with(path.clone(), *pin, *pin, window, cx),
                     FileTreeEvent::Renamed { from, to } => this.renamed(from, to, cx),
                     FileTreeEvent::Trashed { path } => this.trashed(path, window, cx),
+                    FileTreeEvent::ShowHistory { path, dir } => this.show_history(path, *dir, cx),
                     FileTreeEvent::Error(message) => {
                         this.message = Some(message.clone());
                         cx.notify();
@@ -275,12 +287,11 @@ impl Workspace {
             cx.subscribe_in(&changes, window, |this, _, event: &ChangesEvent, window, cx| match event {
                 ChangesEvent::OpenFile { file } => this.open(this.root.join(file), true, window, cx),
                 ChangesEvent::OpenDiff { file, pin } => {
-                    let uncommitted = this.changes.read(cx).uncommitted();
                     let deleted = !this.root.join(file).exists();
                     if *pin && !deleted {
                         this.open(this.root.join(file), true, window, cx);
                     } else {
-                        let of = DiffOf { file: file.clone(), uncommitted, commit: None, source: false };
+                        let of = DiffOf { file: file.clone(), commit: None, source: false };
                         this.open_diff(of, *pin, window, cx);
                     }
                 }
@@ -768,9 +779,8 @@ impl Workspace {
         }
     }
 
-    /// Opens (or reuses) the tab with the diff of `file`.
-    /// The folder one is reused when switching between Branch and Uncommitted;
-    /// a commit's one belongs to that commit only.
+    /// Opens (or reuses) the tab with the diff of `file`: the folder's, or a
+    /// commit's, which belongs to that commit only.
     fn open_diff(&mut self, of: DiffOf, pin: bool, window: &mut Window, cx: &mut Context<Self>) {
         let file = of.file.clone();
         if let Some(ix) = self
@@ -810,9 +820,16 @@ impl Workspace {
         let (Some(client), Some(of)) = (self.client.clone(), self.tabs[ix].diff.clone()) else {
             return;
         };
-        let request = match &of.commit {
-            Some((commit, _)) => {
-                let (commit, file) = (commit.clone(), of.file.clone());
+        let path = self.root.clone();
+        let commit = of.commit.as_ref().map(|(commit, _)| commit.clone());
+        // A file's changes go side by side, with the whole file.
+        let whole = (!of.source && !of.file.is_empty()).then(|| Request::Git {
+            path: path.clone(),
+            op: GitOp::WholeDiff { file: of.file.clone(), commit: commit.clone(), uncommitted: true },
+        });
+        let request = match commit {
+            Some(commit) => {
+                let file = of.file.clone();
                 let op = if of.source {
                     GitOp::FileAt { commit, file }
                 } else if file.is_empty() {
@@ -820,27 +837,52 @@ impl Workspace {
                 } else {
                     GitOp::CommitDiff { commit, file }
                 };
-                Request::Git { path: self.root.clone(), op }
+                Request::Git { path, op }
             }
-            None => Request::GitDiff {
-                path: self.root.clone(),
-                file: of.file.clone(),
-                uncommitted: of.uncommitted,
-            },
+            None => Request::GitDiff { path, file: of.file.clone(), uncommitted: true },
         };
         cx.spawn_in(window, async move |this, cx| {
-            let response = client.request(request).await;
+            let mut response = None;
+            if let Some(whole) = whole {
+                // An agent that doesn't know `WholeDiff` fails: the plain diff then.
+                match client.request(whole).await {
+                    Ok(Response::Text(text)) => response = Some(Ok(Response::Text(text))),
+                    _ => {}
+                }
+            }
+            let response = match response {
+                Some(response) => response,
+                None => client.request(request).await,
+            };
             this.update_in(cx, |this, window, cx| {
-                let Some(tab) = this.tabs.iter_mut().find(|tab| tab.diff.as_ref() == Some(&of)) else {
+                let Some(ix) = this.tabs.iter().position(|tab| tab.diff.as_ref() == Some(&of)) else {
                     return;
                 };
+                let sides = match &response {
+                    Ok(Response::Text(text)) if !of.source && !of.file.is_empty() => diff::split(text),
+                    _ => None,
+                };
+                if let Some(sides) = sides {
+                    this.show_side_by_side(ix, sides, window, cx);
+                    cx.notify();
+                    return;
+                }
+                let tab = &mut this.tabs[ix];
+                tab.old = None;
                 match response {
                     Ok(Response::Text(text)) => {
                         let text = if text.is_empty() && !of.source { "No changes".to_string() } else { text };
                         let focused = window.focused(cx);
                         tab.saved = text.clone();
                         tab.content = Content::Ready;
-                        tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
+                        let language = if of.source { language::for_path(&tab.path) } else { "diff" };
+                        tab.editor.update(cx, |state, cx| {
+                            if state.language_name() != language {
+                                state.set_highlighter(language, cx);
+                            }
+                            state.set_line_styles(Vec::new(), cx);
+                            state.set_value(text, window, cx);
+                        });
                         if let Some(focused) = focused {
                             focused.focus(window, cx);
                         }
@@ -853,6 +895,76 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// Shows a file's diff side by side: the old side in its own editor, the
+    /// new one in the tab's, both highlighted as the file and scrolling
+    /// together. The first time it goes to the first change.
+    fn show_side_by_side(&mut self, ix: usize, sides: diff::SideBySide, window: &mut Window, cx: &mut Context<Self>) {
+        let language = language::for_path(&self.tabs[ix].path);
+        let new = self.tabs[ix].editor.clone();
+        let first = self.tabs[ix].old.is_none();
+        if first {
+            let editor = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).soft_wrap(false));
+            let subscriptions = vec![
+                cx.observe(&editor, {
+                    let new = new.clone();
+                    move |_, old, cx| follow_scroll(&old, &new, cx)
+                }),
+                cx.observe(&new, {
+                    let old = editor.clone();
+                    move |_, new, cx| follow_scroll(&new, &old, cx)
+                }),
+            ];
+            self.tabs[ix].old = Some(OldSide { editor, marks: None, _subscriptions: subscriptions });
+        }
+        let theme = cx.theme();
+        let removed = (theme.danger.opacity(0.14), theme.danger.opacity(0.3));
+        let added = (theme.success.opacity(0.14), theme.success.opacity(0.3));
+        let focused = window.focused(cx);
+        let tab = &mut self.tabs[ix];
+        tab.saved = sides.new.text.clone();
+        tab.content = Content::Ready;
+        let old = tab.old.as_mut().expect("the old side was just created");
+        let mut marks = Vec::new();
+        for (editor, side, (line, word), marker) in [(&old.editor, &sides.old, removed, '−'), (&new, &sides.new, added, '+')] {
+            let decorations = side
+                .lines
+                .iter()
+                .filter_map(|line| line.changed.clone().filter(|range| !range.is_empty()))
+                .map(|range| RangeDecoration::new(range).with_style(RangeDecorationStyle::Fill).with_color(word))
+                .collect::<Vec<_>>();
+            editor.update(cx, |state, cx| {
+                if state.language_name() != language {
+                    state.set_highlighter(language, cx);
+                }
+                state.set_soft_wrap(false, window, cx);
+                state.set_value(side.text.clone(), window, cx);
+                state.set_line_styles(line_styles(side, marker, line), cx);
+            });
+            marks.push(decorations);
+        }
+        let new_marks = marks.pop().unwrap_or_default();
+        let old_marks = marks.pop().unwrap_or_default();
+        match &old.marks {
+            Some((old_collection, new_collection)) => {
+                old_collection.set(old_marks, cx);
+                new_collection.set(new_marks, cx);
+            }
+            None => {
+                let old_collection = old.editor.update(cx, |state, cx| state.create_range_decorations_collection(old_marks, cx));
+                let new_collection = new.update(cx, |state, cx| state.create_range_decorations_collection(new_marks, cx));
+                old.marks = Some((old_collection, new_collection));
+            }
+        }
+        if first && let Some(&row) = sides.changes.first() {
+            let at = Position::new(row as u32, 0);
+            new.update(cx, |state, cx| state.set_cursor_position(at, window, cx));
+            reveal_centered(&new, row as u32, true, 10, window, cx);
+        }
+        if let Some(focused) = focused {
+            focused.focus(window, cx);
+        }
     }
 
     /// Reads the file's blame from the agent (silently: outside a repo, or
@@ -1410,6 +1522,7 @@ impl Workspace {
             goto: None,
             grab_focus: true,
             diff: None,
+            old: None,
             restored: false,
             blame: None,
             occurrences: None,
@@ -2075,7 +2188,8 @@ impl Workspace {
             return;
         }
         self.word_wrap = wrap;
-        for tab in &self.tabs {
+        // The sides of a diff don't wrap, to stay aligned.
+        for tab in self.tabs.iter().filter(|tab| tab.old.is_none()) {
             tab.editor.update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
         }
     }
@@ -2093,6 +2207,18 @@ impl Workspace {
             self.set_mode(mode, cx);
             self.side_panel_visible = true;
         }
+        cx.notify();
+    }
+
+    /// The Changes panel with the commits that changed `path`.
+    fn show_history(&mut self, path: &Path, dir: bool, cx: &mut Context<Self>) {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return;
+        };
+        let file = relative.to_string_lossy().into_owned();
+        self.mode = Mode::Changes;
+        self.side_panel_visible = true;
+        self.changes.update(cx, |changes, cx| changes.show_history(Some((file, dir)), cx));
         cx.notify();
     }
 
@@ -2331,6 +2457,12 @@ impl Workspace {
                                     this.open(path.clone(), true, window, cx)
                                 }))
                             })
+                            .when(!whole_commit, |menu| {
+                                let path = path.clone();
+                                menu.item(menu::item("Show File History", &workspace, move |this, _, cx| {
+                                    this.show_history(&path, false, cx)
+                                }))
+                            })
                             .separator()
                             .item(menu::item("Copy Path", &workspace, {
                                 let path = path.clone();
@@ -2439,7 +2571,7 @@ impl Workspace {
                                     .separator()
                                     .menu("Select All", Box::new(input::SelectAll))
                             });
-                        div()
+                        let code = div()
                             .key_context("CodeEditor")
                             .size_full()
                             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -2460,8 +2592,23 @@ impl Workspace {
                                     .as_ref()
                                     .filter(|hint| hint.editor == tab.editor)
                                     .and_then(|hint| signature::render(hint, cx)),
-                            )
-                            .into_any_element()
+                            );
+                        match &tab.old {
+                            Some(old) => h_flex()
+                                .size_full()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .border_r_1()
+                                        .border_color(cx.theme().border)
+                                        .child(Editor::new(&old.editor).bordered(false).readonly(true).h_full()),
+                                )
+                                .child(div().flex_1().min_w_0().h_full().child(code))
+                                .into_any_element(),
+                            None => code.into_any_element(),
+                        }
                     }
                 },
             },
@@ -2813,6 +2960,31 @@ fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, retrie
     let top = (line as f32 - (rows - 1.) / 2.).max(0.);
     let x = state.scroll_offset().x;
     editor.update(cx, |state, cx| state.set_scroll_offset(point(x, -(line_height * top)), cx));
+}
+
+/// Keeps the other side of a diff at the same height.
+fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut App) {
+    let y = from.read(cx).target_scroll_offset().y;
+    let offset = to.read(cx).target_scroll_offset();
+    if offset.y != y {
+        to.update(cx, |state, cx| state.set_scroll_offset(point(offset.x, y), cx));
+    }
+}
+
+/// How a side of a diff shows each line: changed ones in `color` and with
+/// `marker` after the number, gaps hatched.
+fn line_styles(side: &diff::Side, marker: char, color: Hsla) -> Vec<LineStyle> {
+    side.lines
+        .iter()
+        .map(|line| {
+            let changed = line.kind == diff::Kind::Changed;
+            LineStyle {
+                background: changed.then_some(color),
+                hatched: line.kind == diff::Kind::Gap,
+                number: line.number.map(|number| format!("{number}{}", if changed { marker } else { ' ' }).into()),
+            }
+        })
+        .collect()
 }
 
 /// The name (letters, digits and `_`) at `column` of `line`, or just before

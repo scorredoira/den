@@ -240,6 +240,12 @@ pub enum GitOp {
     Search { query: String, skip: usize, limit: usize },
     /// Responds `Blame` for `file` as it is on disk.
     Blame { file: String },
+    /// Responds `Text`: the unified diff of `file` with the whole file as
+    /// context, for the side-by-side view. In `commit` if there is one, and
+    /// otherwise as `Request::GitDiff` does.
+    WholeDiff { file: String, commit: Option<String>, uncommitted: bool },
+    /// Responds `Commits`: those that changed `file`, from `HEAD`.
+    FileLog { file: String, skip: usize, limit: usize },
 }
 
 /// Repo status for the Changes mode, uncommitted.

@@ -2,7 +2,7 @@ use crate::input::{InputExtras as _, InputModeKind};
 use gpui::Corners;
 use gpui::Half;
 use gpui::{
-    AnyElement, App, Bounds, Edges, Element, ElementId, ElementInputHandler, Entity,
+    AnyElement, App, Bounds, ContentMask, Edges, Element, ElementId, ElementInputHandler, Entity,
     GlobalElementId,
 };
 use gpui::{
@@ -781,6 +781,55 @@ impl<M: InputModeKind> TextElement<M> {
         (!corners.is_empty()).then_some(corners)
     }
 
+    /// (sik) Paints each styled line's background and hatching, from the
+    /// gutter's edge to the right, under everything else.
+    fn paint_line_styles(
+        &self,
+        prepaint: &PrepaintState,
+        input_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        let state = self.state.read(cx);
+        let line_height = window.line_height();
+        let layout = &prepaint.last_layout;
+        let left = prepaint.bounds.origin.x + layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN / 2.;
+        let right = input_bounds.right();
+        if right <= left {
+            return;
+        }
+        let stripe = state.editor_style.muted_foreground.opacity(0.25);
+        let mut y = prepaint.bounds.origin.y + layout.visible_top;
+        for (line, &buffer_line) in layout.lines.iter().zip(layout.visible_buffer_lines.iter()) {
+            let height = line.size(line_height).height;
+            if let Some(style) = state.line_styles.get(buffer_line) {
+                let line_bounds = Bounds::new(point(left, y), size(right - left, height));
+                if let Some(color) = style.background {
+                    window.paint_quad(fill(line_bounds, color));
+                }
+                if style.hatched {
+                    window.with_content_mask(Some(ContentMask { bounds: line_bounds }), |window| {
+                        let step = px(8.);
+                        let mut x = left - height;
+                        let mut builder = gpui::PathBuilder::stroke(px(1.));
+                        while x < right {
+                            builder.move_to(point(x, y + height));
+                            builder.line_to(point(x + height, y));
+                            x += step;
+                        }
+                        if let Ok(path) = builder.build() {
+                            window.paint_path(path, stripe);
+                        }
+                    });
+                }
+            }
+            y += height;
+            if Some(buffer_line) == prepaint.current_row {
+                y += prepaint.ghost_lines_height;
+            }
+        }
+    }
+
     fn layout_range_decorations(
         &self,
         last_layout: &LastLayout,
@@ -1081,7 +1130,17 @@ impl<M: InputModeKind> TextElement<M> {
         let total_lines = text.lines_len();
         // Reserve three digits for small documents, then follow the actual
         // line count up to seven digits.
-        let line_number_len = line_number_len(total_lines);
+        let mut line_number_len = line_number_len(total_lines);
+        // (sik) Labels of their own: as wide as the widest.
+        if !state.line_styles.is_empty() {
+            line_number_len = state
+                .line_styles
+                .iter()
+                .filter_map(|style| style.number.as_ref().map(|number| number.len()))
+                .max()
+                .unwrap_or(0)
+                .max(1);
+        }
 
         let mut line_number_width = if state.mode.line_number() {
             let empty_line_number = window.text_system().shape_line(
@@ -2806,11 +2865,21 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 .iter()
                 .zip(last_layout.visible_buffer_lines.iter())
             {
-                let line_no: SharedString = format!(
-                    "{:>width$}",
-                    displayed_line_number(buffer_line + 1),
-                    width = line_number_len
-                )
+                let line_no: SharedString = if state.line_styles.is_empty() {
+                    format!(
+                        "{:>width$}",
+                        displayed_line_number(buffer_line + 1),
+                        width = line_number_len
+                    )
+                } else {
+                    // (sik)
+                    let label = state
+                        .line_styles
+                        .get(buffer_line)
+                        .and_then(|style| style.number.as_deref())
+                        .unwrap_or("");
+                    format!("{label:>line_number_len$}")
+                }
                 .into();
 
                 let runs = if current_row == Some(buffer_line) {
@@ -2946,6 +3015,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 }
                 offset_y += height;
             }
+        }
+
+        // (sik) Line backgrounds and hatched gaps, across the whole line.
+        if !self.state.read(cx).line_styles.is_empty() {
+            self.paint_line_styles(prepaint, input_bounds, window, cx);
         }
 
         // Keep scrollbar offset always be positive，Start from the left position
@@ -3192,6 +3266,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state.scroll_size = prepaint.scroll_size;
             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
             state.deferred_scroll_offset = None;
+            // (sik) The scrollbar moves the offset without notifying.
+            let offset = state.scroll_handle.offset();
+            if state.painted_scroll_offset.replace(offset).is_some_and(|painted| painted != offset) {
+                cx.notify();
+            }
 
             // Layout consumers need changed geometry, not another notification
             // for every paint of an unchanged input.

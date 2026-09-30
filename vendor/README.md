@@ -11,6 +11,12 @@ Changes marked `(sik)` in `src/input/base/state.rs`: public
 state, which `crates/ui/src/editing.rs` needs for Cmd-D and moving and
 duplicating lines with several cursors (the crate keeps its cursors private).
 
+Also `(sik)`, for side-by-side diffs: `LineStyle` and `set_line_styles`
+(a background across the whole line, a hatched gap and a label of its own in
+the gutter, painted in `src/input/base/element.rs`), `target_scroll_offset`,
+and a notification when the scrollbar moves the offset, so the other side can
+follow it.
+
 And one fix marked `(sik)` in `src/input/editor/lsp/completions.rs`: the
 completion menu forgot where it had opened only on hiding its own copy, so
 after the first completion typing before that point asked for nothing; and it
