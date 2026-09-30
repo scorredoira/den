@@ -1500,9 +1500,9 @@ impl Sik {
         } else if self.blocked.contains(key) {
             ("●", theme.danger)
         } else if task.working {
-            ("●", theme.success)
-        } else if self.attention.contains(key) {
             ("◐", theme.warning)
+        } else if self.attention.contains(key) {
+            ("●", theme.success)
         } else {
             ("○", theme.muted_foreground)
         };
