@@ -63,7 +63,7 @@ shortcuts![
     (FocusPaneDown, "Focus Terminal Below", "secondary-alt-down"),
     (ToggleTerminals, "Toggle Terminals", "secondary-j"),
     (MaximizeTerminals, "Maximize Terminals", "secondary-shift-j"),
-    (NewTask, "New Task", "secondary-shift-n"),
+    (NewTask, "New Task", "secondary-n"),
     (OpenTaskPicker, "Find Task", "secondary-k"),
     (PreviousTask, "Previous Task", "secondary-e"),
     (ToggleTasks, "Toggle Tasks Column", "secondary-shift-b"),

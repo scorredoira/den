@@ -61,6 +61,11 @@ struct AgentTerm {
     title: Option<String>,
     subscribers: HashSet<ConnId>,
     last_output: Instant,
+    /// Its first quiet moment has passed: what a shell or a resumed session
+    /// prints on starting up is not work, so until then output doesn't mark
+    /// the task as working (on an agent restart every task would end up
+    /// "finished").
+    settled: bool,
     /// Whether the screen (no output since `last_output`) asks for an answer,
     /// and up to which output it was checked.
     blocked: bool,
@@ -112,6 +117,9 @@ impl State {
         };
         entry.last_output = Instant::now();
         entry.blocked = false;
+        if !entry.settled {
+            return;
+        }
         let group = entry.group.clone();
         if self.working.insert(group.clone()) {
             self.broadcast_all(|| Event::Activity {
@@ -123,6 +131,11 @@ impl State {
 
     /// Considers tasks without recent output as stopped.
     fn expire_activity(&mut self) {
+        for entry in self.terms.values_mut() {
+            if !entry.settled && entry.last_output.elapsed() >= WORKING_WINDOW {
+                entry.settled = true;
+            }
+        }
         let stopped: Vec<String> = self
             .working
             .iter()
@@ -707,6 +720,7 @@ fn create(
                 title: None,
                 subscribers: HashSet::new(),
                 last_output: Instant::now(),
+                settled: false,
                 blocked: false,
                 checked: Instant::now(),
             },

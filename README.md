@@ -31,7 +31,7 @@ For Linux servers, first `cargo install cargo-zigbuild` and `brew install zig`. 
 
 ## Tasks
 
-New Task (Cmd-Shift-N) creates a worktree with the repo's executable `.task/create <name>` if it has one, or `git worktree add` otherwise. From a sik terminal: `cd "$(sik task <name>)"`.
+New Task (Cmd-N) creates a worktree with the repo's executable `.task/create <name>` if it has one, or `git worktree add` otherwise. From a sik terminal: `cd "$(sik task <name>)"`.
 
 Cmd-1…9 go to a task, Cmd-E back to the previous one, Cmd-K finds one across servers. Every shortcut can be changed in Settings (Cmd-,).
 

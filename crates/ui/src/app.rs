@@ -942,7 +942,7 @@ impl Sik {
         cx.notify();
     }
 
-    /// Cmd-Shift-N: new task in the active task's repo.
+    /// Cmd-N: new task in the active task's repo.
     fn new_task_action(&mut self, _: &NewTask, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.active.clone() else {
             return;
