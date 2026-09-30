@@ -145,12 +145,52 @@ pub enum Request {
     /// TCP ports that processes started from the terminals listen on.
     /// Responds `Ports`.
     Ports,
+    /// The detail and documentation of completion `item` of `list` (a
+    /// `Completions` for file `path` in the task at `root`), which some
+    /// servers only give when asked for one. Responds `Resolved`.
+    LspResolve { root: PathBuf, path: PathBuf, list: u64, item: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LspOp {
     Definition,
     References,
+    /// Responds `Completions`.
+    Completion,
+    /// Responds `Signature`.
+    SignatureHelp,
+}
+
+/// The signature of the call the cursor is in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LspSignature {
+    pub label: String,
+    /// The parameter the cursor is on: its start and end in `label`, in
+    /// characters.
+    pub active: Option<(u32, u32)>,
+    /// That parameter's documentation or, without one, the signature's;
+    /// plain text.
+    pub documentation: Option<String>,
+}
+
+/// A completion the language server offers at the cursor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LspCompletion {
+    pub label: String,
+    /// LSP `CompletionItemKind`.
+    pub kind: Option<u32>,
+    /// The type or signature, shown next to the label.
+    pub detail: Option<String>,
+    /// Markdown.
+    pub documentation: Option<String>,
+    /// What replaces the text from `start` to the cursor.
+    pub text: String,
+    /// 0-based column, in characters, on the cursor's line.
+    pub start: u32,
+    /// What the typed text is matched against.
+    pub filter: String,
+    /// What orders it among the others.
+    pub sort: String,
 }
 
 /// A code location returned by the language server.
@@ -260,6 +300,14 @@ pub enum Response {
     /// How many replacements were made in how many files.
     Replaced { files: usize, replacements: usize },
     Ports(Vec<PortInfo>),
+    /// `server` as in `Lsp`. `incomplete`: typing more may bring others,
+    /// so they're asked again instead of filtering these. `list` names them
+    /// for `LspResolve`.
+    Completions { server: Option<String>, list: u64, items: Vec<LspCompletion>, incomplete: bool },
+    /// What `LspResolve` adds to a completion; `None` what the server didn't say.
+    Resolved { detail: Option<String>, documentation: Option<String> },
+    /// `None` outside a call.
+    Signature(Option<LspSignature>),
 }
 
 /// A port a process started from a terminal listens on (at loopback or on

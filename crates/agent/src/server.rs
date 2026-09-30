@@ -345,6 +345,7 @@ fn is_slow(request: &Request) -> bool {
             | Request::Trash { .. }
             | Request::Git { .. }
             | Request::Lsp { .. }
+            | Request::LspResolve { .. }
             | Request::Replace { .. }
             | Request::Ports
     )
@@ -398,6 +399,7 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
         Request::GitDiff { path, file, uncommitted } => Ok(Response::Text(git::diff(&path, &file, uncommitted)?)),
         Request::Git { path, op } => git::run(&path, op),
         Request::Lsp { root, path, text, line, column, op } => lsp::request(&root, &path, &text, line, column, op),
+        Request::LspResolve { root, path, list, item } => lsp::resolve(&root, &path, list, item),
         Request::FindFiles { path } => Ok(Response::Files(search::files(&path))),
         Request::Search {
             path,
@@ -541,6 +543,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         | Request::Trash { .. }
         | Request::Git { .. }
         | Request::Lsp { .. }
+        | Request::LspResolve { .. }
         | Request::Replace { .. }
         | Request::Ports => unreachable!("handled on its own thread"),
         Request::Rename { from, to } => {

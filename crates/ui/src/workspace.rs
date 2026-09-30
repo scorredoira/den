@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -24,10 +25,12 @@ use crate::{
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap,
     changes::{self, ChangesEvent, ChangesPanel},
+    completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, SavedTab, Session, TextArea, UiText},
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
+    signature::{self, SignatureHint},
     file_tree::{FileTree, FileTreeEvent},
     language, menu,
     splits::{Axis, Direction},
@@ -207,6 +210,10 @@ pub struct Workspace {
     message: Option<SharedString>,
     /// On a server, ports the task's terminals are listening on.
     ports: Vec<PortInfo>,
+    /// The signature of the call being typed, and where it was last asked for.
+    signature: Option<SignatureHint>,
+    signature_at: Option<Position>,
+    signature_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -345,6 +352,9 @@ impl Workspace {
             word_wrap: Config::get(cx).word_wrap,
             message,
             ports: Vec::new(),
+            signature: None,
+            signature_at: None,
+            signature_task: Task::ready(()),
             _subscriptions: subscriptions,
         }
     }
@@ -1031,6 +1041,72 @@ impl Workspace {
         self.ask_lsp(LspOp::References, window, cx);
     }
 
+    /// Who to ask for completions in `editor`: the agent, the task and the
+    /// file, if it's a text tab (not a diff).
+    pub fn completion_target(&self, editor: &Entity<EditorState>) -> Option<(Arc<Client>, PathBuf, PathBuf)> {
+        let tab = self.tabs.iter().find(|tab| &tab.editor == editor)?;
+        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() {
+            return None;
+        }
+        Some((self.client.clone()?, self.root.clone(), tab.path.clone()))
+    }
+
+    /// Asks for the signature of the call at the cursor of `editor` when
+    /// `(` or `,` was just typed, or if it's already shown there.
+    fn ask_signature(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let state = editor.read(cx);
+        let cursor = state.cursor_position();
+        let shown = self.signature.as_ref().is_some_and(|hint| &hint.editor == editor);
+        let text = state.value();
+        if state.selections().len() != 1 || !(shown || signature::opens(&text, cursor)) {
+            return;
+        }
+        let Some((client, root, path)) = self.completion_target(editor) else {
+            return;
+        };
+        self.signature_at = Some(cursor);
+        let request = Request::Lsp {
+            root,
+            path,
+            text: text.to_string(),
+            line: cursor.line,
+            column: cursor.character,
+            op: LspOp::SignatureHelp,
+        };
+        let editor = editor.clone();
+        self.signature_task = cx.spawn(async move |this, cx| {
+            let response = client.request(request).await;
+            this.update(cx, |this, cx| {
+                this.signature = match response {
+                    Ok(Response::Signature(Some(signature))) => Some(SignatureHint { editor, signature }),
+                    _ => None,
+                };
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// The cursor moved while the signature is shown: along the line it's
+    /// asked again (the parameter may be another); off it, it closes.
+    fn follow_signature(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        if !self.signature.as_ref().is_some_and(|hint| &hint.editor == editor) {
+            return;
+        }
+        let cursor = editor.read(cx).cursor_position();
+        match self.signature_at {
+            Some(at) if at == cursor => {}
+            Some(at) if at.line == cursor.line => self.ask_signature(editor, cx),
+            _ => self.close_signature(),
+        }
+    }
+
+    fn close_signature(&mut self) {
+        self.signature = None;
+        self.signature_at = None;
+        self.signature_task = Task::ready(());
+    }
+
     fn ask_lsp(&mut self, op: LspOp, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.active else {
             return;
@@ -1099,7 +1175,7 @@ impl Workspace {
                     }
                     (Ok(other), _) => this.message = Some(format!("Unexpected response: {other:?}").into()),
                     (Err(err), LspOp::Definition) => this.message = Some(format!("{err:#}").into()),
-                    (Err(err), LspOp::References) => {
+                    (Err(err), _) => {
                         let title = format!("References to {name}");
                         this.references
                             .update(cx, |references, cx| references.set_results(title, Err(format!("{err:#}").into()), cx));
@@ -1290,11 +1366,16 @@ impl Workspace {
     ) -> FileTab {
         let markdown =
             (language == "markdown").then(|| cx.new(|cx| TextViewState::markdown("", cx)));
+        let workspace = cx.entity().downgrade();
         let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
+            let mut editor = EditorState::new(window, cx)
                 .language(language)
                 .line_number(true)
-                .soft_wrap(Config::get(cx).word_wrap)
+                .soft_wrap(Config::get(cx).word_wrap);
+            let lsp = editor.lsp_mut();
+            lsp.completion_provider = Some(Rc::new(Completions::new(workspace, cx.entity().downgrade())));
+            lsp.completion_menu.max_width = px(480.);
+            editor
         });
         let subscriptions = vec![
             cx.subscribe_in(&editor, window, move |this, editor, event: &InputEvent, window, cx| {
@@ -1305,6 +1386,7 @@ impl Workspace {
             // The status bar shows the cursor position, and the blame follows it.
             cx.observe(&editor, |this, editor, cx| {
                 this.highlight_occurrences(&editor, cx);
+                this.follow_signature(&editor, cx);
                 cx.notify()
             }),
         ];
@@ -1492,6 +1574,9 @@ impl Workspace {
         }
         let path = self.tabs[ix].path.clone();
         let text = editor.read(cx).value();
+        if editor.read(cx).focus_handle(cx).is_focused(window) {
+            self.ask_signature(editor, cx);
+        }
         // Each other view gets the difference; its own change event comes
         // back here, finds them equal and stops.
         for other in &self.tabs {
@@ -2239,6 +2324,12 @@ impl Workspace {
                         div()
                             .key_context("CodeEditor")
                             .size_full()
+                            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                                if event.keystroke.key == "escape" && this.signature.is_some() {
+                                    this.close_signature();
+                                    cx.notify();
+                                }
+                            }))
                             .on_action(cx.listener(Self::select_next_occurrence))
                             .on_action(cx.listener(|this, _: &MoveLineUp, window, cx| this.edit_lines(true, false, window, cx)))
                             .on_action(cx.listener(|this, _: &MoveLineDown, window, cx| this.edit_lines(false, false, window, cx)))
@@ -2246,6 +2337,12 @@ impl Workspace {
                             .on_action(cx.listener(|this, _: &DuplicateLineDown, window, cx| this.edit_lines(false, true, window, cx)))
                             .child(editor)
                             .children(blame.and_then(|blame| inline_blame(&tab.editor, &blame, cx)))
+                            .children(
+                                self.signature
+                                    .as_ref()
+                                    .filter(|hint| hint.editor == tab.editor)
+                                    .and_then(|hint| signature::render(hint, cx)),
+                            )
                             .into_any_element()
                     }
                 },

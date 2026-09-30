@@ -34,6 +34,8 @@ split-debuginfo = "unpacked"
 opt-level = 2
 
 # gpui-base with a few public additions for the editor (selections and
-# batch edits); see vendor/README.md.
+# batch edits), and gpui-component with the completion menu drawn like VS
+# Code's; see vendor/README.md.
 [patch.crates-io]
 gpui-base = { path = "vendor/gpui-base" }
+gpui-component = { path = "vendor/gpui-component" }

@@ -35,7 +35,7 @@ Rust with GPUI across the whole app, developed directly on the Mac. macOS is GPU
 | Pty | `portable-pty` | The same one herdr uses; ConPTY on Windows |
 | Search | `grep` + `ignore` crates (ripgrep's) | Respects `.gitignore`, without depending on a binary |
 | Git | calls to `git` | Status, diffs, staging, commits, branches, history |
-| LSP | minimal custom client (JSON-RPC over the server's stdio) | Only `definition` and `references` |
+| LSP | minimal custom client (JSON-RPC over the server's stdio) | `definition`, `references`, `completion` (with `completionItem/resolve`) and `signatureHelp` |
 | Agent concurrency | `std` threads and channels, no `tokio` | Dozens of terminals per machine: one thread per pty and per connection is enough and the code is simpler |
 | SSH | the system `ssh` binary | Reuses `~/.ssh/config`, keys, agent and ProxyJump with no code of our own |
 
@@ -183,7 +183,8 @@ Everything runs in the agent, next to the files, and the UI only receives the re
 - **Global search:** `grep` and `ignore` crates in the agent, in parallel, respecting `.gitignore`. It searches as you type; results come in one response, capped at 5,000 matches (the panel says when there were more).
 - **Find file by name (Cmd-P):** the agent lists the project's files (`FindFiles`, respecting `.gitignore`) and the UI filters locally with `nucleo`, Helix's fuzzy matcher.
 - **Find in file (Cmd-F):** local, inside the viewer.
-- **F12 and Shift-F12:** the agent starts a language server per project and language (rust-analyzer, gopls, clangd, Pyright or pylsp, and TypeScript: the project's or the global one; with TypeScript 7, `tsc --lsp --stdio`). It only implements `initialize`, `didOpen`, `didChange`, `definition` and `references`.
+- **F12 and Shift-F12:** the agent starts a language server per project and language (rust-analyzer, gopls, clangd, Pyright or pylsp, and TypeScript: the project's or the global one; with TypeScript 7, `tsc --lsp --stdio`). It only implements `initialize`, `didOpen`, `didChange`, `definition`, `references`, `completion` (and `completionItem/resolve` for the selected item) and `signatureHelp`.
+- **Completions and signatures:** the menu opens as you type an identifier or after `.`, `::` or `->`, asked once per word and filtered locally while it grows; it's drawn like VS Code's (icon per kind, matched letters, the selected item's detail). The signature shows above the cursor on `(` and `,`, with the current parameter in bold, until the call closes, the cursor leaves the line or Escape.
 - **F12 result:** with a single target, it jumps straight there; with several, they're shown in the References panel.
 - **Without LSP:** if the language has no server, Shift-F12 searches for the exact word under the cursor and says so in the panel.
 

@@ -96,6 +96,12 @@ pub trait CompletionProvider {
         Task::ready(Ok(false))
     }
 
+    /// (sik) `item` with its detail and documentation, for servers that only
+    /// give them when asked for one item (`completionItem/resolve`).
+    fn resolve_completion(&self, item: &CompletionItem, _: &mut App) -> Task<Result<CompletionItem>> {
+        Task::ready(Ok(item.clone()))
+    }
+
     /// Determines if the completion should be triggered based on the given byte offset.
     ///
     /// This is called on the main thread.
@@ -141,17 +147,22 @@ impl InputBaseState<EditorMode> {
         let start = range.end;
         let new_offset = self.cursor();
 
+        // (sik) An open menu closes on text that isn't a trigger, and on
+        // going back past where it opened; a closed one starts again here.
+        let open = self.extras.context_menu_content.completion.open;
         if !provider.is_completion_trigger(start, new_text, cx) {
+            if open {
+                self.hide_context_menu(cx);
+            }
             return;
         }
 
-        let start_offset = self
-            .extras
-            .context_menu_content
-            .completion
-            .trigger_start_offset
-            .unwrap_or(start);
+        let start_offset = match self.extras.context_menu_content.completion.trigger_start_offset {
+            Some(offset) if open => offset,
+            _ => start,
+        };
         if new_offset < start_offset {
+            self.hide_context_menu(cx);
             return;
         }
 
