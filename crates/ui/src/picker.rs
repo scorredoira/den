@@ -1,7 +1,7 @@
 //! Fuzzy-filtering picker (nucleo, the one Helix uses) over a list of
-//! strings: Cmd-P (the task's files) and Cmd-K (tasks).
+//! strings: Cmd-P (the task's files), Cmd-K (tasks) and Cmd-Shift-P (commands).
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use gpui_kit::component::{
     ActiveTheme as _, h_flex,
@@ -30,6 +30,8 @@ pub struct Picker {
     /// Whether the strings are paths: the name goes first and the folder in gray.
     paths: bool,
     files: Arc<Vec<String>>,
+    /// Text on the right of a row (a command's shortcut), by string.
+    hints: HashMap<String, String>,
     matches: Vec<String>,
     selected: usize,
     filter: Option<Task<()>>,
@@ -57,6 +59,7 @@ impl Picker {
             input,
             paths,
             files,
+            hints: HashMap::new(),
             matches: Vec::new(),
             selected: 0,
             filter: None,
@@ -64,6 +67,11 @@ impl Picker {
         };
         finder.refilter(cx);
         finder
+    }
+
+    pub fn with_hints(mut self, hints: HashMap<String, String>) -> Self {
+        self.hints = hints;
+        self
     }
 
     /// The list arrived (or was refreshed) while the picker was open.
@@ -168,6 +176,7 @@ impl Render for Picker {
                             Some((dir, name)) => (name.to_string(), dir.to_string()),
                             None => (file.clone(), String::new()),
                         };
+                        let hint = self.hints.get(file).cloned();
                         let file = file.clone();
                         h_flex()
                             .id(("picker-row", ix))
@@ -187,6 +196,9 @@ impl Render for Picker {
                                     .text_ellipsis()
                                     .child(dir),
                             )
+                            .children(hint.map(|hint| {
+                                div().ml_auto().flex_none().text_xs().text_color(theme.muted_foreground).child(hint)
+                            }))
                             .on_click(cx.listener(move |_, _, _, cx| cx.emit(PickerEvent::Pick(file.clone()))))
                     })),
             )

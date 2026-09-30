@@ -55,6 +55,8 @@ actions!(
         MaximizeTerminals,
         NewTask,
         OpenTaskPicker,
+        OpenCommandPalette,
+        ShowShortcuts,
         PreviousTask,
         ToggleTasks,
         ActivateTask1,

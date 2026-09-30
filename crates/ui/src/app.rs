@@ -15,6 +15,7 @@ use gpui_kit::component::{
     ActiveTheme as _, StyledExt as _, Theme, ThemeMode, TitleBar, h_flex, h_resizable,
     highlighter::SyntaxColors,
     input::{Input, InputEvent, InputState},
+    kbd::Kbd,
     menu::ContextMenuExt as _,
     resizable_panel, v_flex,
 };
@@ -23,11 +24,13 @@ use proto::{Event, Request, Response, TaskInfo};
 
 use crate::{
     ActivateTask1, ActivateTask2, ActivateTask3, ActivateTask4, ActivateTask5, ActivateTask6,
-    ActivateTask7, ActivateTask8, ActivateTask9, NewTask, OpenSettings, OpenTaskPicker, PreviousTask, ToggleTasks,
+    ActivateTask7, ActivateTask8, ActivateTask9, NewTask, OpenCommandPalette, OpenSettings, OpenTaskPicker, PreviousTask,
+    ShowShortcuts, ToggleTasks,
     config::{self, Config, HostConfig, SavedTask, SavedWindow, ThemeChoice},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
+    shortcuts::{self, SHORTCUTS},
     workspace::Workspace,
 };
 
@@ -141,6 +144,8 @@ pub struct Sik {
     previous: Option<TaskKey>,
     /// Cmd-K: jump to a task by name.
     task_picker: Option<(Entity<Picker>, Subscription)>,
+    /// Cmd-Shift-P and F1: run any command, with its shortcut beside it.
+    command_palette: Option<(Entity<Picker>, Subscription)>,
     /// Settings: pick a server from `~/.ssh/config`.
     host_picker: Option<(Entity<Picker>, Subscription)>,
     /// Settings: pick a repo's folder on a server.
@@ -222,6 +227,7 @@ impl Sik {
             pending_last: None,
             previous: None,
             task_picker: None,
+            command_palette: None,
             host_picker: None,
             folder_picker: None,
             quit_confirm: None,
@@ -881,6 +887,47 @@ impl Sik {
             cx.notify();
         });
         self.task_picker = Some((picker, subscription));
+        cx.notify();
+    }
+
+    fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.command_palette.is_some() {
+            return;
+        }
+        // The commands run where the focus was, as if their keys were pressed there.
+        let previous = window.focused(cx);
+        let commands: Vec<_> = SHORTCUTS
+            .iter()
+            .filter(|shortcut| !matches!(shortcut.id, "OpenCommandPalette" | "ShowShortcuts"))
+            .collect();
+        let labels: Vec<String> = commands.iter().map(|shortcut| shortcut.label.to_string()).collect();
+        let hints: HashMap<String, String> = commands
+            .iter()
+            .filter_map(|shortcut| Some((shortcut.label.to_string(), Kbd::format(&shortcuts::keys(shortcut, cx)?))))
+            .collect();
+        let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Run a command…", false, window, cx).with_hints(hints));
+        let subscription = cx.subscribe_in(&picker, window, move |this, _, event: &PickerEvent, window, cx| {
+            this.command_palette = None;
+            let restore = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| match &previous {
+                Some(focus) => window.focus(focus, cx),
+                None => this.focus_active(window, cx),
+            };
+            match event {
+                PickerEvent::Pick(label) => {
+                    restore(this, window, cx);
+                    if let Some(shortcut) = SHORTCUTS.iter().find(|shortcut| shortcut.label == label) {
+                        match &previous {
+                            Some(focus) => focus.dispatch_action(shortcut.action().as_ref(), window, cx),
+                            None => window.dispatch_action(shortcut.action(), cx),
+                        }
+                    }
+                }
+                PickerEvent::Dismiss => restore(this, window, cx),
+                PickerEvent::Close => {}
+            }
+            cx.notify();
+        });
+        self.command_palette = Some((picker, subscription));
         cx.notify();
     }
 
@@ -1619,6 +1666,8 @@ impl Render for Sik {
             .on_action(cx.listener(Self::toggle_tasks))
             .on_action(cx.listener(Self::new_task_action))
             .on_action(cx.listener(Self::open_task_picker))
+            .on_action(cx.listener(|this, _: &OpenCommandPalette, window, cx| this.open_command_palette(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| this.open_command_palette(window, cx)))
             .on_action(cx.listener(Self::previous_task))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
             .relative()
@@ -1665,7 +1714,7 @@ impl Render for Sik {
                         }
                     }))
             })
-            .children(self.task_picker.as_ref().map(|(picker, _)| {
+            .children(self.task_picker.as_ref().or(self.command_palette.as_ref()).map(|(picker, _)| {
                 div()
                     .absolute()
                     .top(px(44.))

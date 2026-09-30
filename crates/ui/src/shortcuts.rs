@@ -3,7 +3,7 @@
 //! applied immediately, without touching the components' own (the editor, the
 //! terminal).
 
-use gpui_kit::{App, KeyBinding, Keystroke};
+use gpui_kit::{Action, App, KeyBinding, Keystroke};
 
 use crate::{config::Config, *};
 
@@ -13,6 +13,7 @@ pub struct Shortcut {
     pub label: &'static str,
     pub default: &'static str,
     bind: fn(&str) -> KeyBinding,
+    action: fn() -> Box<dyn Action>,
 }
 
 macro_rules! shortcuts {
@@ -22,6 +23,7 @@ macro_rules! shortcuts {
             label: $label,
             default: $keys,
             bind: |keys| KeyBinding::new(keys, $action, None),
+            action: || Box::new($action),
         }),*];
     };
 }
@@ -29,6 +31,8 @@ macro_rules! shortcuts {
 // The app's use Cmd on Mac and Ctrl on Windows and Linux (`secondary`), and have
 // no context: they mean the same thing wherever the focus is.
 shortcuts![
+    (OpenCommandPalette, "Command Palette", "secondary-shift-p"),
+    (ShowShortcuts, "Show Shortcuts", "f1"),
     (OpenSettings, "Settings", "secondary-,"),
     (Quit, "Quit", "secondary-q"),
     (Save, "Save", "secondary-s"),
@@ -73,6 +77,12 @@ shortcuts![
     (ActivateTask8, "Go to Task 8", "secondary-8"),
     (ActivateTask9, "Go to Task 9", "secondary-9"),
 ];
+
+impl Shortcut {
+    pub fn action(&self) -> Box<dyn Action> {
+        (self.action)()
+    }
+}
 
 /// A shortcut's key combination, already in the platform's form (`cmd-s`);
 /// `None` if it was removed.
