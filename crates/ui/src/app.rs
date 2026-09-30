@@ -26,7 +26,7 @@ use crate::{
     ActivateTask1, ActivateTask2, ActivateTask3, ActivateTask4, ActivateTask5, ActivateTask6,
     ActivateTask7, ActivateTask8, ActivateTask9, NewTask, OpenCommandPalette, OpenSettings, OpenTaskPicker, PreviousTask,
     ShowShortcuts, ToggleTasks,
-    config::{self, Config, HostConfig, SavedTask, SavedWindow, ThemeChoice},
+    config::{self, Config, HostConfig, SavedTask, SavedWindow, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
@@ -105,7 +105,7 @@ impl Render for DragPreview {
         div()
             .px_3()
             .py_1()
-            .text_sm()
+            .text_ui(cx)
             .rounded(cx.theme().radius)
             .bg(cx.theme().sidebar_accent)
             .text_color(cx.theme().sidebar_foreground)
@@ -789,7 +789,7 @@ impl Sik {
                     .border_color(theme.border)
                     .bg(theme.popover)
                     .shadow_lg()
-                    .text_sm()
+                    .text_ui(cx)
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         match event.keystroke.key.as_str() {
                             "escape" => this.cancel_quit(window, cx),
@@ -823,7 +823,7 @@ impl Sik {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_ui_small(cx)
                             .text_color(theme.muted_foreground)
                             .child("Click a file to go to it."),
                     )
@@ -1287,6 +1287,13 @@ impl Sik {
         self.apply_theme(window, cx);
     }
 
+    /// Applies at once: every window repaints with the new size.
+    fn set_font_size(&mut self, size: Option<f32>, cx: &mut Context<Self>) {
+        let size = size.map(|size| size.clamp(config::MIN_FONT_SIZE, config::MAX_FONT_SIZE));
+        Config::update(cx, |config| config.font_size = size.filter(|size| *size != config::DEFAULT_FONT_SIZE));
+        cx.refresh_windows();
+    }
+
     fn active_workspace(&self) -> Option<Entity<Workspace>> {
         self.active.as_ref().and_then(|key| self.workspaces.get(key).cloned())
     }
@@ -1330,7 +1337,7 @@ impl Sik {
                 h_flex()
                     .id(SharedString::from(format!("host-{name}")))
                     .gap_1()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
                     .child(div().text_color(color).child(dot))
                     .child(name.clone())
@@ -1363,7 +1370,7 @@ impl Sik {
                         .border_1()
                         .border_color(theme.warning)
                         .bg(theme.background)
-                        .text_xs()
+                        .text_ui_small(cx)
                         .child(
                             div()
                                 .whitespace_normal()
@@ -1400,7 +1407,7 @@ impl Sik {
             .children(detail.map(|detail| {
                 div()
                     .pl_3()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
                     .whitespace_normal()
                     .child(detail)
@@ -1425,15 +1432,15 @@ impl Sik {
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.background)
-                .text_sm()
+                .text_ui(cx)
                 .child(
                     div()
-                        .text_xs()
+                        .text_ui_small(cx)
                         .text_color(theme.muted_foreground)
                         .child(format!("New task in {place}")),
                 )
                 .child(Input::new(&form.input))
-                .child(div().text_xs().text_color(theme.muted_foreground).child(if form.busy {
+                .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(if form.busy {
                     "Creating…"
                 } else {
                     "Enter to create · Esc to cancel"
@@ -1458,7 +1465,7 @@ impl Sik {
                     .h(px(34.))
                     .flex_none()
                     .px_3()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
                     .child("TASKS"),
@@ -1479,7 +1486,7 @@ impl Sik {
                     .flex_none()
                     .px_3()
                     .gap_2()
-                    .text_sm()
+                    .text_ui(cx)
                     .text_color(theme.muted_foreground)
                     .border_t_1()
                     .border_color(theme.sidebar_border)
@@ -1518,7 +1525,7 @@ impl Sik {
             .h(px(26.))
             .px_3()
             .gap_2()
-            .text_sm()
+            .text_ui(cx)
             .when(active, |el| el.bg(theme.sidebar_accent))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
             .child(div().text_color(color).child(dot))
@@ -1533,7 +1540,7 @@ impl Sik {
             .when(ix < 9, |el| {
                 el.child(
                     div()
-                        .text_xs()
+                        .text_ui_small(cx)
                         .text_color(theme.muted_foreground)
                         .child(format!("⌘{}", ix + 1)),
                 )
@@ -1605,8 +1612,8 @@ impl Sik {
                 .border_1()
                 .border_color(theme.danger)
                 .bg(theme.background)
-                .text_xs()
-                .child(div().text_sm().child(format!("Delete {label}?")))
+                .text_ui_small(cx)
+                .child(div().text_ui(cx).child(format!("Delete {label}?")))
                 .child(div().text_color(theme.muted_foreground).whitespace_normal().child(detail))
                 .child(
                     h_flex()
@@ -1663,6 +1670,7 @@ impl Render for Sik {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .font_family(cx.theme().font_family.clone())
+            .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
             .on_action(cx.listener(Self::new_task_action))
             .on_action(cx.listener(Self::open_task_picker))
@@ -1690,7 +1698,7 @@ impl Render for Sik {
                         .flex()
                         .justify_center()
                         .pr(px(72.))
-                        .text_sm()
+                        .text_ui(cx)
                         .text_color(cx.theme().muted_foreground)
                         .child(title),
                 ),
@@ -1738,7 +1746,7 @@ impl Render for Sik {
 
 fn error_text(error: SharedString, cx: &App) -> impl IntoElement {
     div()
-        .text_xs()
+        .text_ui_small(cx)
         .text_color(cx.theme().danger)
         .whitespace_normal()
         .child(error)

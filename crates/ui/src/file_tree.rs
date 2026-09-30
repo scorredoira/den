@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
-use crate::CollapseFileTree;
+use crate::{CollapseFileTree, config::UiText};
 
 actions!(
     file_tree,
@@ -657,7 +657,7 @@ impl Render for FileTree {
                         .gap_1()
                         .pl(px(8. + row.depth as f32 * 14.))
                         .pr_2()
-                        .text_sm()
+                        .text_ui(cx)
                         .text_color(theme.sidebar_foreground)
                         .when(is_selected, |el| {
                             el.bg(if focused { theme.sidebar_accent } else { theme.sidebar_accent.opacity(0.6) })

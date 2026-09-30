@@ -18,6 +18,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
+    config::UiText,
     CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
@@ -1422,7 +1423,7 @@ impl Workspace {
                     .child(
                         div()
                             .pr_1()
-                            .text_xs()
+                            .text_ui_small(cx)
                             .text_color(theme.muted_foreground)
                             .child(self.mode.title()),
                     ),
@@ -1470,7 +1471,7 @@ impl Workspace {
                     .gap_1()
                     .pl_3()
                     .pr_1()
-                    .text_sm()
+                    .text_ui(cx)
                     .border_r_1()
                     .border_color(theme.border)
                     .when(active, |el| {
@@ -1576,7 +1577,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_sm()
+                .text_ui(cx)
                 .text_color(theme.muted_foreground)
                 .child("Open a file from the tree")
                 .into_any_element(),
@@ -1584,7 +1585,7 @@ impl Workspace {
                 Content::Loading => div().size_full().into_any_element(),
                 Content::Failed(err) => div()
                     .p_4()
-                    .text_sm()
+                    .text_ui(cx)
                     .text_color(theme.danger)
                     .child(err.clone())
                     .into_any_element(),
@@ -1689,7 +1690,7 @@ impl Workspace {
             .flex_none()
             .px_3()
             .justify_between()
-            .text_xs()
+            .text_ui_small(cx)
             .bg(theme.status_bar)
             .border_t_1()
             .border_color(theme.status_bar_border)
@@ -1792,6 +1793,7 @@ impl Render for Workspace {
             .relative()
             .size_full()
             .font_family(cx.theme().font_family.clone())
+            .text_ui(cx)
             .text_color(cx.theme().foreground)
             .child({
                 let layout = Config::get(cx).layout;

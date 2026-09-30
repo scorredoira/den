@@ -14,6 +14,8 @@ use nucleo_matcher::{
     pattern::{CaseMatching, Normalization, Pattern},
 };
 
+use crate::config::UiText;
+
 /// Results shown.
 const SHOWN: usize = 60;
 
@@ -147,7 +149,7 @@ impl Render for Picker {
             .border_color(theme.border)
             .bg(theme.popover)
             .shadow_lg()
-            .text_sm()
+            .text_ui(cx)
             // A click outside closes it, like Esc. Not on focus loss: a click
             // on a result also takes focus away from the field.
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::Close)))
@@ -189,7 +191,7 @@ impl Render for Picker {
                             .child(div().flex_none().child(name))
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_ui_small(cx)
                                     .text_color(theme.muted_foreground)
                                     .overflow_hidden()
                                     .whitespace_nowrap()
@@ -197,7 +199,7 @@ impl Render for Picker {
                                     .child(dir),
                             )
                             .children(hint.map(|hint| {
-                                div().ml_auto().flex_none().text_xs().text_color(theme.muted_foreground).child(hint)
+                                div().ml_auto().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(hint)
                             }))
                             .on_click(cx.listener(move |_, _, _, cx| cx.emit(PickerEvent::Pick(file.clone()))))
                     })),

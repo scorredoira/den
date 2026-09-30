@@ -20,7 +20,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, Request, Response};
 
-use crate::menu;
+use crate::{config::UiText, menu};
 
 /// Delay after a change on disk before asking git again.
 const DEBOUNCE: Duration = Duration::from_millis(400);
@@ -373,7 +373,7 @@ fn link(id: impl Into<ElementId>, label: impl Into<SharedString>, cx: &App) -> S
     div()
         .id(id)
         .px_1()
-        .text_xs()
+        .text_ui_small(cx)
         .rounded(theme.radius)
         .text_color(theme.muted_foreground)
         .hover(|style| style.text_color(theme.sidebar_foreground).bg(theme.sidebar_accent))
@@ -405,7 +405,7 @@ fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: 
             div()
                 .w(px(12.))
                 .flex_none()
-                .text_xs()
+                .text_ui_small(cx)
                 .text_color(status_color)
                 .child(if file.status == '?' { 'U' } else { file.status }.to_string()),
         )
@@ -419,7 +419,7 @@ fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: 
                 .child(div().flex_none().when(file.status == 'D', |el| el.line_through()).child(name))
                 .child(
                     div()
-                        .text_xs()
+                        .text_ui_small(cx)
                         .text_color(theme.muted_foreground)
                         .overflow_hidden()
                         .text_ellipsis()
@@ -430,7 +430,7 @@ fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: 
             h_flex()
                 .flex_none()
                 .gap_1()
-                .text_xs()
+                .text_ui_small(cx)
                 .when(file.added > 0, |el| el.child(div().text_color(theme.success).child(format!("+{}", file.added))))
                 .when(file.removed > 0, |el| {
                     el.child(div().text_color(theme.danger).child(format!("−{}", file.removed)))
@@ -470,7 +470,7 @@ impl ChangesPanel {
                 .id(id)
                 .px_2()
                 .py_0p5()
-                .text_xs()
+                .text_ui_small(cx)
                 .rounded(theme.radius)
                 .when(selected, |el| el.bg(theme.sidebar_accent).text_color(theme.sidebar_foreground))
                 .when(!selected, |el| el.text_color(theme.muted_foreground))
@@ -500,7 +500,7 @@ impl ChangesPanel {
                     .px_2()
                     .pb_1()
                     .gap_1()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .child(
                         div()
                             .id("changes-switch")
@@ -571,7 +571,7 @@ impl ChangesPanel {
             .px_3()
             .pt_2()
             .pb_0p5()
-            .text_xs()
+            .text_ui_small(cx)
             .text_color(theme.muted_foreground)
             .child(div().flex_1().child(title))
             .when_some(action, |el, (label, op)| {
@@ -591,7 +591,7 @@ impl ChangesPanel {
                 .px_3()
                 .pb_1()
                 .gap_2()
-                .text_xs()
+                .text_ui_small(cx)
                 .text_color(theme.muted_foreground)
                 .child(base)
                 .child(div().flex_1())
@@ -627,7 +627,7 @@ impl ChangesPanel {
                         div()
                             .id("changes-commit")
                             .py_0p5()
-                            .text_xs()
+                            .text_ui_small(cx)
                             .text_center()
                             .rounded(theme.radius)
                             .when(nothing || self.busy.is_some(), |el| {
@@ -718,7 +718,7 @@ impl ChangesPanel {
                                 div()
                                     .w(px(10.))
                                     .flex_none()
-                                    .text_xs()
+                                    .text_ui_small(cx)
                                     .text_color(theme.muted_foreground)
                                     .child(if expanded { "▾" } else { "▸" }),
                             )
@@ -736,7 +736,7 @@ impl ChangesPanel {
                         h_flex()
                             .pl(px(14.))
                             .gap_2()
-                            .text_xs()
+                            .text_ui_small(cx)
                             .text_color(theme.muted_foreground)
                             .whitespace_nowrap()
                             .overflow_hidden()
@@ -767,7 +767,7 @@ impl ChangesPanel {
                     div()
                         .pl(px(26.))
                         .py_0p5()
-                        .text_xs()
+                        .text_ui_small(cx)
                         .text_color(theme.muted_foreground)
                         .child("…")
                         .into_any_element(),
@@ -822,13 +822,13 @@ impl Render for ChangesPanel {
         let theme = cx.theme();
         v_flex()
             .size_full()
-            .text_sm()
+            .text_ui(cx)
             .child(header)
             .children(self.error.clone().map(|error| {
                 div()
                     .px_3()
                     .pb_1()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .text_color(theme.danger)
                     .whitespace_normal()
                     .child(error)
@@ -841,7 +841,7 @@ impl Render for ChangesPanel {
                     .overflow_y_scroll()
                     .children(rows)
                     .when_some(empty.filter(|_| !self.loading && self.error.is_none()), |el, empty| {
-                        el.child(div().px_3().pt_2().text_xs().text_color(theme.muted_foreground).child(empty))
+                        el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
                     }),
             )
     }

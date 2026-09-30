@@ -14,7 +14,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{Request, Response, SearchHit};
 
-use crate::menu;
+use crate::{config::UiText, menu};
 
 /// Wait after the last keystroke before searching.
 const DEBOUNCE: Duration = Duration::from_millis(200);
@@ -223,7 +223,7 @@ impl SearchPanel {
                 .id(id)
                 .px_1p5()
                 .py_0p5()
-                .text_xs()
+                .text_ui_small(cx)
                 .rounded(theme.radius)
                 .font_family(theme.mono_font_family.clone())
                 .when(on, |el| el.bg(theme.sidebar_accent).text_color(theme.sidebar_foreground))
@@ -253,7 +253,7 @@ impl Render for SearchPanel {
             Some(title) => div()
                 .px_3()
                 .pt_2()
-                .text_sm()
+                .text_ui(cx)
                 .text_color(cx.theme().sidebar_foreground)
                 .whitespace_normal()
                 .child(title.clone())
@@ -281,20 +281,20 @@ impl Render for SearchPanel {
         let mono = theme.mono_font_family.clone();
         v_flex()
             .size_full()
-            .text_sm()
+            .text_ui(cx)
             .child(header)
             .child(
                 div()
                     .px_3()
                     .py_1()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
                     .child(summary),
             )
             .children(self.error.clone().map(|error| {
                 div()
                     .px_3()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .text_color(theme.danger)
                     .whitespace_normal()
                     .child(error)
@@ -309,7 +309,7 @@ impl Render for SearchPanel {
                                 .h(px(22.))
                                 .px_3()
                                 .gap_2()
-                                .text_xs()
+                                .text_ui_small(cx)
                                 .child(
                                     div()
                                         .flex_1()
@@ -358,7 +358,7 @@ impl Render for SearchPanel {
                                     .pl(px(20.))
                                     .pr_2()
                                     .gap_2()
-                                    .text_xs()
+                                    .text_ui_small(cx)
                                     .when(is_selected, |el| el.bg(theme.sidebar_accent))
                                     .when(!is_selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
                                     .child(

@@ -4,7 +4,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use gpui_kit::component::ResizableState;
-use gpui_kit::{App, AppContext as _, Bounds, Entity, Global, Pixels, WindowBounds, point, px, size};
+use gpui_kit::{App, AppContext as _, Bounds, Entity, Global, Pixels, Styled, WindowBounds, point, px, size};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -124,11 +124,23 @@ pub struct Config {
     pub last: Option<SavedTask>,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
+    /// Interface text size chosen in Settings; unsaved, the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f32>,
 }
 
 impl Global for Config {}
 
+/// Interface text size, as in VS Code.
+pub const DEFAULT_FONT_SIZE: f32 = 13.;
+pub const MIN_FONT_SIZE: f32 = 10.;
+pub const MAX_FONT_SIZE: f32 = 18.;
+
 impl Config {
+    pub fn font_size(&self) -> f32 {
+        self.font_size.unwrap_or(DEFAULT_FONT_SIZE).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+
     fn path() -> Option<PathBuf> {
         proto::config_dir().ok().map(|dir| dir.join("config.json"))
     }
@@ -179,6 +191,20 @@ impl Config {
         .detach();
     }
 }
+
+/// Interface text at the size chosen in Settings.
+pub trait UiText: Styled + Sized {
+    fn text_ui(self, cx: &App) -> Self {
+        self.text_size(px(Config::get(cx).font_size()))
+    }
+
+    /// Secondary text: one point smaller.
+    fn text_ui_small(self, cx: &App) -> Self {
+        self.text_size(px(Config::get(cx).font_size() - 1.))
+    }
+}
+
+impl<T: Styled> UiText for T {}
 
 /// Width a panel opens with: the saved one, within limits.
 pub fn width(saved: f32, min: f32, max: f32) -> Pixels {

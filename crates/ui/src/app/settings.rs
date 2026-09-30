@@ -248,7 +248,7 @@ impl Sik {
                     .border_color(theme.border)
                     .bg(theme.background)
                     .shadow_lg()
-                    .text_sm()
+                    .text_ui(cx)
                     // A click outside closes it, except in the pickers it opens.
                     .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                         if this.host_picker.is_none() && this.folder_picker.is_none() {
@@ -296,8 +296,9 @@ impl Sik {
     }
 
     fn render_appearance(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = ["Appearance", "Theme", "System", "Light", "Dark"].iter().any(|text| matches(text));
+        let visible = ["Appearance", "Theme", "System", "Light", "Dark", "Font Size", "text"].iter().any(|text| matches(text));
         let current = Config::get(cx).theme;
+        let font_size = Config::get(cx).font_size();
         let theme = cx.theme();
         let choices = h_flex().gap_2().children(
             [(ThemeChoice::System, "System"), (ThemeChoice::Light, "Light"), (ThemeChoice::Dark, "Dark")]
@@ -317,7 +318,34 @@ impl Sik {
                         .on_click(cx.listener(move |this, _, window, cx| this.set_theme(choice, window, cx)))
                 }),
         );
-        let rows = vec![setting("Theme", "Light, dark, or match the system.", choices, cx)];
+        let step = |id: &'static str, label: &'static str, size: f32| {
+            div()
+                .id(id)
+                .w(px(28.))
+                .py_1()
+                .flex()
+                .justify_center()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .hover(|style| style.bg(theme.accent))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_font_size(Some(size), cx)))
+        };
+        let size = h_flex()
+            .gap_2()
+            .child(step("font-smaller", "−", font_size - 1.))
+            .child(div().w(px(48.)).flex().justify_center().child(format!("{font_size} px")))
+            .child(step("font-larger", "+", font_size + 1.))
+            .when(font_size != config::DEFAULT_FONT_SIZE, |el| {
+                el.child(
+                    link("font-reset", "↺", cx).on_click(cx.listener(|this, _, _, cx| this.set_font_size(None, cx))),
+                )
+            });
+        let rows = vec![
+            setting("Theme", "Light, dark, or match the system.", choices, cx),
+            setting("Font Size", "Interface text: file tree, tabs, lists and panels. Code and terminals keep theirs.", size, cx),
+        ];
         Self::section(SECTIONS[0], rows, visible, cx)
     }
 
@@ -365,7 +393,7 @@ impl Sik {
             );
             rows.push(
                 div()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
                     .child("A name from ~/.ssh/config or user@host. The icon looks them up in ~/.ssh/config.")
                     .into_any_element(),
@@ -393,7 +421,7 @@ impl Sik {
             rows.push(
                 div()
                     .pt_2()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
                     .child(host.name.to_uppercase())
@@ -444,7 +472,7 @@ impl Sik {
         if title_matches && hidden.is_empty() {
             rows.push(
                 div()
-                    .text_xs()
+                    .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
                     .child("None. Right-click a task → Hide.")
                     .into_any_element(),
@@ -494,7 +522,7 @@ impl Sik {
                 .pl_3()
                 .pb_1()
                 .gap_2()
-                .text_xs()
+                .text_ui_small(cx)
                 .child(div().text_color(theme.warning).child(format!("{keys} is already “{}”.", conflict.other.label)))
                 .child(link(format!("conflict-yes-{id}"), "Reassign It Here", cx).on_click(
                     cx.listener(|this, _, _, cx| this.resolve_conflict(cx)),
@@ -578,7 +606,7 @@ fn list_row(name: String, detail: &str, cx: &App) -> Div {
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
-                .text_xs()
+                .text_ui_small(cx)
                 .text_color(theme.muted_foreground)
                 .child(detail.to_string()),
         )
@@ -589,7 +617,7 @@ fn link(id: impl Into<SharedString>, label: &'static str, cx: &App) -> Stateful<
     div()
         .id(ElementId::Name(id.into()))
         .flex_none()
-        .text_xs()
+        .text_ui_small(cx)
         .text_color(theme.link)
         .hover(|style| style.underline())
         .child(label)

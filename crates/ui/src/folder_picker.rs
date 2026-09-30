@@ -12,6 +12,8 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{Request, Response};
 
+use crate::config::UiText;
+
 pub enum FolderPickerEvent {
     Pick(PathBuf),
     Dismiss,
@@ -177,7 +179,7 @@ impl Render for FolderPicker {
             .border_color(theme.border)
             .bg(theme.popover)
             .shadow_lg()
-            .text_sm()
+            .text_ui(cx)
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(FolderPickerEvent::Dismiss)))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let keystroke = &event.keystroke;
@@ -190,7 +192,7 @@ impl Render for FolderPicker {
                 }
                 cx.stop_propagation();
             }))
-            .child(div().px_1().text_xs().font_semibold().text_color(theme.muted_foreground).child(self.title.clone()))
+            .child(div().px_1().text_ui_small(cx).font_semibold().text_color(theme.muted_foreground).child(self.title.clone()))
             .child(
                 h_flex()
                     .px_1()
@@ -218,7 +220,7 @@ impl Render for FolderPicker {
             )
             .child(Input::new(&self.filter))
             .children(self.error.clone().map(|error| {
-                div().px_1().text_xs().text_color(theme.danger).whitespace_normal().child(error)
+                div().px_1().text_ui_small(cx).text_color(theme.danger).whitespace_normal().child(error)
             }))
             .child(
                 v_flex()
@@ -244,7 +246,7 @@ impl Render for FolderPicker {
                             }))
                     }))
                     .when(visible.is_empty() && !self.loading, |el| {
-                        el.child(div().px_2().py_1().text_xs().text_color(theme.muted_foreground).child("No subfolders"))
+                        el.child(div().px_2().py_1().text_ui_small(cx).text_color(theme.muted_foreground).child("No subfolders"))
                     }),
             )
             .child(
@@ -254,7 +256,7 @@ impl Render for FolderPicker {
                     .child(
                         div()
                             .flex_1()
-                            .text_xs()
+                            .text_ui_small(cx)
                             .text_color(theme.muted_foreground)
                             .child("Enter to open · Cmd-↑ to go up · Cmd-Enter to add"),
                     )

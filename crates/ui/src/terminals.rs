@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for};
 
 use crate::{
+    config::UiText,
     CloseTab, NewTerminal, SplitDown, SplitRight, agent, menu,
     splits::{Axis, Direction, Tree},
 };
@@ -471,14 +472,14 @@ impl TerminalArea {
                     .max_w(px(220.))
                     .px_3()
                     .gap_1()
-                    .text_sm()
+                    .text_ui(cx)
                     .border_r_1()
                     .border_color(theme.border)
                     .when(active, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
                     .when(!active, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
                     .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
                     .when(count > 1, |el| {
-                        el.child(div().text_xs().text_color(theme.muted_foreground).child(format!("×{count}")))
+                        el.child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(format!("×{count}")))
                     })
                     .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
                     .context_menu({
@@ -577,7 +578,7 @@ impl Render for TerminalArea {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_sm()
+                    .text_ui(cx)
                     .text_color(theme.muted_foreground)
                     .child(if self.client.is_some() {
                         "Cmd-T opens a terminal"
