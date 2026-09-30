@@ -23,3 +23,6 @@ nucleo-matcher = "0.3"
 lsp-types = "0.97"
 tree-sitter-xml = "0.7"
 tree-sitter = "0.26"
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

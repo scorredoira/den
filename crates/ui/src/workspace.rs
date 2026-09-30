@@ -37,6 +37,9 @@ use crate::{
     terminals::{TerminalArea, TerminalAreaEvent},
 };
 
+mod tab_drag;
+use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Files,
@@ -202,6 +205,8 @@ pub struct Workspace {
     active: Option<usize>,
     /// The code area split in two groups of tabs, and which one has the focus.
     editor_split: Option<Axis>,
+    /// Preview of a tab drop over an editor group's content.
+    editor_drop: Option<(usize, EditorDrop)>,
     group: usize,
     /// Counter for `FileTab::shown`.
     shown: u64,
@@ -347,6 +352,7 @@ impl Workspace {
             tabs: Vec::new(),
             active: None,
             editor_split: None,
+            editor_drop: None,
             group: 0,
             shown: 0,
             word_wrap: Config::get(cx).word_wrap,
@@ -1677,7 +1683,7 @@ impl Workspace {
         let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
             return;
         };
-        if tab.rendered().is_some() {
+        if tab.rendered().is_some() || tab.image.is_some() || !matches!(tab.content, Content::Ready) {
             self.focus_handle.focus(window, cx);
         } else {
             tab.editor.update(cx, |state, cx| state.focus(window, cx));
@@ -2152,6 +2158,9 @@ impl Workspace {
             .bg(theme.tab_bar)
             .border_b_1()
             .border_color(theme.border)
+            .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
+                this.drop_tab(drag, group, Some(this.tabs.len()), EditorDrop::Center, window, cx);
+            }))
             .children(self.tabs.iter().enumerate().filter(|(_, tab)| tab.group == group).map(|(ix, tab)| {
                 let active = shown == Some(ix);
                 let name = tab
@@ -2175,6 +2184,7 @@ impl Workspace {
                 };
                 h_flex()
                     .id(("tab", ix))
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("editor-tab-{ix}")))
                     .group("tab")
                     .h_full()
                     .flex_none()
@@ -2193,6 +2203,26 @@ impl Workspace {
                     })
                     .when(!active, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
                     .when(tab.preview, |el| el.italic())
+                    .on_drag(
+                        TabDrag { editor: tab.editor.clone(), label: name.clone().into() },
+                        {
+                            let workspace = cx.entity().downgrade();
+                            move |drag, _, window, cx| {
+                                workspace.update(cx, |this, cx| {
+                                    this.start_tab_drag(drag, window, cx);
+                                }).ok();
+                                cx.new(|_| TabDragPreview(drag.label.clone()))
+                            }
+                        },
+                    )
+                    .drag_over::<TabDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
+                    .on_drop(cx.listener({
+                        let before = tab.editor.clone();
+                        move |this, drag: &TabDrag, window, cx| {
+                            let before = this.tab_index(&before);
+                            this.drop_tab(drag, group, before, EditorDrop::Center, window, cx);
+                        }
+                    }))
                     .child(name)
                     .child(
                         div()
@@ -2324,6 +2354,14 @@ impl Workspace {
                         }
                     })
             }))
+            .child(
+                div()
+                    .id(("tab-drop-end", group))
+                    .h_full()
+                    .flex_1()
+                    .min_w(px(24.))
+                    .drag_over::<TabDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary)),
+            )
     }
 
     /// A group's tab bar and the tab it shows. A click anywhere in it gives
@@ -2440,7 +2478,27 @@ impl Workspace {
                 }
             }))
             .when(!self.tabs.is_empty(), |el| el.child(self.render_tab_bar(group, cx)))
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .id(("editor-drop-area", group))
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("editor-body-{group}")))
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<TabDrag>, _, cx| {
+                        this.track_tab_drop(group, event, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
+                        let placement = this.editor_drop.filter(|(target, _)| *target == group)
+                            .map_or(EditorDrop::Center, |(_, placement)| placement);
+                        this.drop_tab(drag, group, None, placement, window, cx);
+                    }))
+                    .child(body)
+                    .when_some(self.editor_drop.filter(|(target, _)| *target == group && cx.has_active_drag()), |el, (_, placement)| {
+                        el.child(placement.indicator(cx))
+                    }),
+            )
             .into_any_element()
     }
 
@@ -2582,10 +2640,20 @@ fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_word_wrap(window, cx);
+        if !cx.has_active_drag() {
+            self.editor_drop = None;
+        }
         h_flex()
             .id("workspace")
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && cx.stop_active_drag(window) {
+                    this.editor_drop = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| this.close_others(None, window, cx)))
