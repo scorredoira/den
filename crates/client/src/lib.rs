@@ -45,6 +45,10 @@ pub struct Client {
     /// Receive the events not tied to a specific terminal (activity).
     watchers: Arc<Mutex<Vec<Watcher>>>,
     on_disconnect: Arc<Mutex<Vec<OnDisconnect>>>,
+    /// The server's `ssh` destination, for connections over SSH.
+    destination: Option<String>,
+    /// Ports of the server forwarded to this machine: remote → local.
+    forwards: Mutex<HashMap<u16, u16>>,
 }
 
 /// Copy of the agent binary to start the daemon from. On macOS, rebuilding a
@@ -117,7 +121,7 @@ impl Client {
 
     fn connect(socket: &Path) -> Result<Arc<Self>> {
         let (reader, writer) = platform::connect(socket)?;
-        Ok(Self::from_stream(reader, writer, None))
+        Ok(Self::from_stream(reader, writer, None, None))
     }
 
     /// A client over any stream (the local socket or `ssh … bridge`).
@@ -126,6 +130,7 @@ impl Client {
         reader: Box<dyn std::io::Read + Send>,
         writer: Box<dyn Write + Send>,
         process: Option<std::process::Child>,
+        destination: Option<String>,
     ) -> Arc<Self> {
         let client = Arc::new(Self {
             process: Mutex::new(process),
@@ -137,6 +142,8 @@ impl Client {
             subscribers: Arc::default(),
             watchers: Arc::default(),
             on_disconnect: Arc::default(),
+            destination,
+            forwards: Mutex::default(),
         });
         let pending = client.pending.clone();
         let subscribers = client.subscribers.clone();
@@ -199,6 +206,29 @@ impl Client {
             }
         });
         client
+    }
+
+    /// The URL to open on this machine for `url`, seen from the agent's
+    /// machine. On a server, a URL pointing at the server itself
+    /// (`localhost:5173`) gets its port forwarded over SSH; other URLs come
+    /// back unchanged. Blocks while `ssh` runs.
+    pub fn local_url(&self, url: &str) -> Result<String> {
+        let Some(destination) = &self.destination else {
+            return Ok(url.to_string());
+        };
+        let Some(target) = ssh::LoopbackUrl::parse(url) else {
+            return Ok(url.to_string());
+        };
+        let mut forwards = self.forwards.lock().unwrap();
+        let local = match forwards.get(&target.port) {
+            Some(local) => *local,
+            None => {
+                let local = ssh::forward(destination, &target)?;
+                forwards.insert(target.port, local);
+                local
+            }
+        };
+        Ok(target.with_port(local))
     }
 
     /// Checks whether the connected agent is the `expected` binary (its fingerprint);

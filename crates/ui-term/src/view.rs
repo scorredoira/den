@@ -38,6 +38,9 @@ pub enum TerminalViewEvent {
         line: Option<u32>,
         column: Option<u32>,
     },
+    /// Cmd-click on a URL in a terminal on a server: it may point at the
+    /// server itself, so whoever knows the connection opens it.
+    OpenUrl(String),
 }
 
 /// Link under the mouse with Cmd held: it's underlined and a click opens it.
@@ -403,7 +406,8 @@ impl TerminalView {
 
     fn open_link(&mut self, link: Link, cx: &mut Context<Self>) {
         match link {
-            Link::Url(url) => cx.open_url(&url),
+            Link::Url(url) if self.local => cx.open_url(&url),
+            Link::Url(url) => cx.emit(TerminalViewEvent::OpenUrl(url)),
             Link::Path { path, line, column } => {
                 cx.emit(TerminalViewEvent::OpenPath { path, line, column })
             }

@@ -185,6 +185,23 @@ impl TerminalArea {
         cx.emit(TerminalAreaEvent::Message(message.into()));
     }
 
+    /// Opens in the browser a URL from a terminal, forwarding its port if it
+    /// points at the server.
+    fn open_url(&mut self, url: String, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return cx.open_url(&url);
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { client.local_url(&url) }).await;
+            this.update(cx, |this, cx| match result {
+                Ok(url) => cx.open_url(&url),
+                Err(err) => this.error(format!("{err:#}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn add_view(&mut self, term: TermId, terminal: Entity<Terminal>, window: &mut Window, cx: &mut Context<Self>) -> Entity<TerminalView> {
         let local = self.local;
         let view = cx.new(|cx| TerminalView::new(terminal, local, window, cx));
@@ -197,6 +214,7 @@ impl TerminalArea {
                 line: *line,
                 column: *column,
             }),
+            TerminalViewEvent::OpenUrl(url) => this.open_url(url.clone(), cx),
         });
         self._subscriptions.push(subscription);
         self.views.insert(term, view.clone());
