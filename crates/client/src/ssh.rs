@@ -135,7 +135,7 @@ pub fn connect_ssh(destination: &str, agents: &Path) -> Result<Arc<Client>> {
         .context("could not run ssh")?;
     let reader = process.stdout.take().expect("stdout");
     let writer = process.stdin.take().expect("stdin");
-    let client = Client::from_stream(Box::new(reader), Box::new(writer), Some(process), Some(destination.to_string()));
+    let client = Client::from_stream(Box::new(reader), Box::new(writer), Some(process), None, Some(destination.to_string()));
     match smol::block_on(client.request(Request::Hello { protocol: PROTOCOL }))? {
         Response::Hello { protocol, .. } if protocol == PROTOCOL => {
             client.check_version(&local);

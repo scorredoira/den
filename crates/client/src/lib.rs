@@ -23,6 +23,7 @@ use proto::{ClientMessage, Decoded, Event, PROTOCOL, Request, Response, ServerEn
 type Callback = Box<dyn FnOnce(Result<Response>) + Send>;
 type Subscriber = Box<dyn Fn(TermUpdate) + Send>;
 type OnDisconnect = Box<dyn FnOnce() + Send>;
+type CloseStream = Box<dyn FnOnce() + Send + Sync>;
 
 /// What a terminal's follower receives.
 pub enum TermUpdate {
@@ -35,6 +36,7 @@ type Watcher = Box<dyn Fn(&Event) + Send>;
 
 pub struct Client {
     process: Mutex<Option<std::process::Child>>,
+    close_stream: Option<CloseStream>,
     /// The connected agent is from a different build than the one that would be launched now.
     outdated: std::sync::atomic::AtomicBool,
     connected: Arc<std::sync::atomic::AtomicBool>,
@@ -82,6 +84,11 @@ fn stable_copy(agent_bin: &Path, state_dir: &Path) -> Result<std::path::PathBuf>
 
 impl Drop for Client {
     fn drop(&mut self) {
+        // Closing just the writer leaves the reader's cloned socket alive.
+        // Shut down both directions to wake the reader and notify the agent.
+        if let Some(close) = self.close_stream.take() {
+            close();
+        }
         if let Some(mut process) = self.process.lock().unwrap().take() {
             let _ = process.kill();
             let _ = process.wait();
@@ -120,8 +127,8 @@ impl Client {
     }
 
     fn connect(socket: &Path) -> Result<Arc<Self>> {
-        let (reader, writer) = platform::connect(socket)?;
-        Ok(Self::from_stream(reader, writer, None, None))
+        let (reader, writer, close) = platform::connect(socket)?;
+        Ok(Self::from_stream(reader, writer, None, Some(close), None))
     }
 
     /// A client over any stream (the local socket or `ssh … bridge`).
@@ -130,10 +137,12 @@ impl Client {
         reader: Box<dyn std::io::Read + Send>,
         writer: Box<dyn Write + Send>,
         process: Option<std::process::Child>,
+        close_stream: Option<CloseStream>,
         destination: Option<String>,
     ) -> Arc<Self> {
         let client = Arc::new(Self {
             process: Mutex::new(process),
+            close_stream,
             outdated: std::sync::atomic::AtomicBool::new(false),
             connected: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             writer: Mutex::new(writer),
@@ -311,5 +320,40 @@ impl Client {
     pub fn unsubscribe(&self, term: TermId) {
         self.subscribers.lock().unwrap().remove(&term);
         self.notify(Request::TermDetach { term });
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{io::Read as _, os::unix::net::UnixStream, sync::mpsc};
+
+    #[test]
+    fn dropping_local_client_closes_socket_and_notifies_listeners() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let (reader, writer, close) = platform::split(stream).unwrap();
+        let client = Client::from_stream(reader, writer, None, Some(close), None);
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let request_tx = tx.clone();
+        client.request_with(Request::TaskList, move |result| {
+            assert!(result.is_err());
+            request_tx.send("request").unwrap();
+        });
+        let terminal_tx = tx.clone();
+        client.subscribe(1, move |update| {
+            assert!(matches!(update, TermUpdate::Disconnected));
+            terminal_tx.send("terminal").unwrap();
+        });
+        client.on_disconnect(move || tx.send("disconnect").unwrap());
+        assert!(matches!(proto::read_frame::<ClientMessage>(&mut peer).unwrap(),
+            Some(ClientMessage { request: Request::TaskList, .. })));
+
+        drop(client);
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0, "the agent must see EOF");
+        let mut notifications: Vec<_> = (0..3).map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap()).collect();
+        notifications.sort();
+        assert_eq!(notifications, vec!["disconnect", "request", "terminal"]);
     }
 }
