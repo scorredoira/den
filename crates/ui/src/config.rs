@@ -88,6 +88,13 @@ pub struct SavedTab {
     pub path: PathBuf,
     pub line: u32,
     pub column: u32,
+    /// The editor group it's in: 1 is the second one of a split.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub group: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// What's open in a task, to reopen it.
@@ -96,6 +103,9 @@ pub struct SavedTab {
 pub struct Session {
     pub tabs: Vec<SavedTab>,
     pub active: Option<usize>,
+    /// The code area split in two, side by side or one above the other.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<crate::splits::Axis>,
 }
 
 /// A task on a server (`local` is this machine).
@@ -125,6 +135,8 @@ pub struct Config {
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
     pub font_sizes: FontSizes,
+    /// Long lines wrap in the editor (Opt-Z).
+    pub word_wrap: bool,
 }
 
 /// Text sizes chosen in Settings; unset, the default.

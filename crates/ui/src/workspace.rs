@@ -8,7 +8,7 @@ use client::Client;
 use proto::{CommitInfo, GitOp, LspLocation, LspOp, Request, Response, SearchHit};
 
 use gpui_kit::component::{
-    ActiveTheme as _, h_flex, h_resizable,
+    ActiveTheme as _, h_flex, h_resizable, v_resizable,
     input::{self, Editor, EditorState, InputEvent, Position, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _},
     menu::ContextMenuExt as _,
     resizable_panel,
@@ -22,7 +22,7 @@ use crate::{
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
-    GoToLine,
+    GoToLine, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap,
     changes::{self, ChangesEvent, ChangesPanel},
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, SavedTab, Session, TextArea, UiText},
@@ -73,7 +73,12 @@ enum Content {
 
 impl FileTab {
     fn rendered(&self) -> Option<&Entity<TextViewState>> {
-        self.markdown.as_ref().filter(|_| !self.show_source)
+        self.markdown.as_ref().filter(|_| !self.show_source || self.mirror)
+    }
+
+    /// The tab that holds the file itself: not a diff or a side preview.
+    fn is_file(&self) -> bool {
+        self.diff.is_none() && !self.mirror
     }
 }
 
@@ -108,6 +113,12 @@ struct FileTab {
     /// selections it was computed for.
     occurrences: Option<RangeDecorationCollection>,
     occurrences_for: Vec<editing::Selection>,
+    /// The editor group it's in: 0, or 1 for the second one of a split.
+    group: usize,
+    /// When it was last shown: a group shows its most recent tab.
+    shown: u64,
+    /// Markdown preview shown next to its source, sharing its rendered view.
+    mirror: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -177,7 +188,15 @@ pub struct Workspace {
     /// The task's file list for Cmd-P (refreshed each time it opens).
     files: Arc<Vec<String>>,
     tabs: Vec<FileTab>,
+    /// The active tab of the focused group (the one keys and commands act on).
     active: Option<usize>,
+    /// The code area split in two groups of tabs, and which one has the focus.
+    editor_split: Option<Axis>,
+    group: usize,
+    /// Counter for `FileTab::shown`.
+    shown: u64,
+    /// Word wrap as applied to the tabs (it follows the config).
+    word_wrap: bool,
     message: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
@@ -305,6 +324,10 @@ impl Workspace {
             files: Arc::default(),
             tabs: Vec::new(),
             active: None,
+            editor_split: None,
+            group: 0,
+            shown: 0,
+            word_wrap: Config::get(cx).word_wrap,
             message,
             _subscriptions: subscriptions,
         }
@@ -317,19 +340,24 @@ impl Workspace {
             .get(&self.session_key)
             .cloned()
             .unwrap_or_default();
+        self.editor_split = session.split;
         for saved in session.tabs {
             let mut tab = self.new_tab(saved.path.clone(), false, window, cx);
             tab.grab_focus = false;
             tab.restored = true;
             tab.goto = Some(Position::new(saved.line, saved.column));
+            tab.group = saved.group.min(1);
             self.tabs.push(tab);
             self.load(saved.path, false, window, cx);
         }
+        self.normalize_groups();
         self.active = session
             .active
             .filter(|ix| *ix < self.tabs.len())
             .or((!self.tabs.is_empty()).then_some(0));
         if let Some(ix) = self.active {
+            self.group = self.tabs[ix].group;
+            self.mark_shown(ix);
             let path = self.tabs[ix].path.clone();
             self.file_tree.update(cx, |tree, cx| tree.reveal(&path, cx));
         }
@@ -339,8 +367,8 @@ impl Workspace {
 
     /// What is open now (excluding diff tabs).
     fn session(&self, cx: &App) -> Session {
-        let mut session = Session::default();
-        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none()) {
+        let mut session = Session { split: self.editor_split, ..Session::default() };
+        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.is_file()) {
             if self.active == Some(ix) {
                 session.active = Some(session.tabs.len());
             }
@@ -350,6 +378,7 @@ impl Workspace {
                 path: tab.path.clone(),
                 line: cursor.line,
                 column: cursor.character,
+                group: tab.group,
             });
         }
         session
@@ -367,7 +396,8 @@ impl Workspace {
             return;
         }
         let moved_only = saved.active == session.active
-            && saved.tabs.iter().map(|tab| &tab.path).eq(session.tabs.iter().map(|tab| &tab.path));
+            && saved.split == session.split
+            && saved.tabs.iter().map(|tab| (&tab.path, tab.group)).eq(session.tabs.iter().map(|tab| (&tab.path, tab.group)));
         let key = self.session_key.clone();
         let change = move |config: &mut Config| {
             if session.tabs.is_empty() {
@@ -385,14 +415,61 @@ impl Workspace {
 
     /// Removes a tab without moving focus.
     fn forget(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.active = self.remove_tab(ix);
+        if let Some(ix) = self.active {
+            self.mark_shown(ix);
+        }
+        cx.notify();
+    }
+
+    /// Removes a tab and returns the tab to make active: the same one if it
+    /// was another (its index may have moved), or the neighbor in its group,
+    /// or the other group's if its group was left empty (the split closes).
+    fn remove_tab(&mut self, ix: usize) -> Option<usize> {
+        let group = self.tabs[ix].group;
+        let active = self.active;
         self.tabs.remove(ix);
-        self.active = match self.active {
+        let groups_before = self.editor_split.is_some();
+        self.normalize_groups();
+        let collapsed = groups_before && self.editor_split.is_none();
+        match active {
             _ if self.tabs.is_empty() => None,
             Some(active) if active > ix => Some(active - 1),
-            Some(active) if active == ix => Some(ix.min(self.tabs.len() - 1)),
-            other => other,
-        };
-        cx.notify();
+            Some(active) if active < ix => Some(active),
+            _ if collapsed => self.shown_in(0),
+            _ => {
+                let same = |i: &usize| self.tabs[*i].group == group;
+                (ix..self.tabs.len()).find(same).or_else(|| (0..ix).rev().find(same)).or(self.shown_in(self.group))
+            }
+        }
+    }
+
+    /// With a group left empty the split closes and everything goes to group 0.
+    fn normalize_groups(&mut self) {
+        let split = self.editor_split.is_some()
+            && self.tabs.iter().any(|tab| tab.group == 0)
+            && self.tabs.iter().any(|tab| tab.group == 1);
+        if !split {
+            self.editor_split = None;
+            self.group = 0;
+            for tab in &mut self.tabs {
+                tab.group = 0;
+            }
+        }
+    }
+
+    /// The tab a group shows: the active one for the focused group, the
+    /// most recently shown for the other.
+    fn shown_in(&self, group: usize) -> Option<usize> {
+        if group == self.group && self.active.is_some_and(|ix| self.tabs.get(ix).is_some_and(|tab| tab.group == group)) {
+            return self.active;
+        }
+        (0..self.tabs.len()).filter(|ix| self.tabs[*ix].group == group).max_by_key(|ix| self.tabs[*ix].shown)
+    }
+
+    fn mark_shown(&mut self, ix: usize) {
+        self.shown += 1;
+        self.tabs[ix].shown = self.shown;
     }
 
     /// Asks the agent to report changes inside `root`.
@@ -438,7 +515,7 @@ impl Workspace {
         let reload: Vec<(PathBuf, bool)> = self
             .tabs
             .iter()
-            .filter(|tab| tab.diff.is_none() && (matches!(tab.content, Content::Ready) || tab.restored))
+            .filter(|tab| tab.is_file() && (matches!(tab.content, Content::Ready) || tab.restored))
             .map(|tab| (tab.path.clone(), !tab.restored))
             .collect();
         for (path, reload) in reload {
@@ -473,7 +550,7 @@ impl Workspace {
 
     /// Opens `path`; with `focus`, the keyboard goes to the editor.
     fn open_with(&mut self, path: PathBuf, pin: bool, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.tabs.iter().position(|tab| tab.path == path && tab.diff.is_none()) {
+        if let Some(ix) = self.tabs.iter().position(|tab| tab.path == path && tab.is_file()) {
             if pin {
                 self.tabs[ix].preview = false;
             }
@@ -485,12 +562,21 @@ impl Workspace {
         let mut tab = self.new_tab(path.clone(), !pin, window, cx);
         tab.grab_focus = focus;
         // A preview reuses the previous preview's tab.
+        let ix = self.place_tab(tab, pin);
+        self.load(path, false, window, cx);
+        self.activate_with(ix, focus, window, cx);
+    }
+
+    /// Puts a new tab in the focused group: over that group's preview tab
+    /// (unless `pin`), or after the active one.
+    fn place_tab(&mut self, tab: FileTab, pin: bool) -> usize {
+        let group = self.group;
         let reuse = self
             .tabs
             .iter()
-            .position(|tab| tab.preview && !tab.dirty)
+            .position(|tab| tab.preview && !tab.dirty && tab.group == group)
             .filter(|_| !pin);
-        let ix = match reuse {
+        match reuse {
             Some(ix) => {
                 self.tabs[ix] = tab;
                 ix
@@ -500,15 +586,13 @@ impl Workspace {
                 self.tabs.insert(ix, tab);
                 ix
             }
-        };
-        self.load(path, false, window, cx);
-        self.activate_with(ix, focus, window, cx);
+        }
     }
 
     /// The active tab's file and cursor position.
     fn place(&self, cx: &App) -> Option<Place> {
         let tab = &self.tabs[self.active?];
-        if tab.diff.is_some() {
+        if !tab.is_file() {
             return None;
         }
         let position = tab.goto.unwrap_or_else(|| tab.editor.read(cx).cursor_position());
@@ -568,7 +652,7 @@ impl Workspace {
         self.terminals_maximized = false;
         let focused = window.focused(cx);
         self.open_with(path.clone(), pin, focus, window, cx);
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.path == path && tab.diff.is_none()) else {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) else {
             return;
         };
         // Going to a line makes sense in the source, not in the rendered view.
@@ -623,22 +707,7 @@ impl Workspace {
         let mut tab = self.new_tab_with(path, !pin, language, window, cx);
         tab.diff = Some(of);
         tab.grab_focus = false;
-        let reuse = self
-            .tabs
-            .iter()
-            .position(|tab| tab.preview && !tab.dirty)
-            .filter(|_| !pin);
-        let ix = match reuse {
-            Some(ix) => {
-                self.tabs[ix] = tab;
-                ix
-            }
-            None => {
-                let ix = self.active.map_or(self.tabs.len(), |active| active + 1);
-                self.tabs.insert(ix, tab);
-                ix
-            }
-        };
+        let ix = self.place_tab(tab, pin);
         self.load_diff(ix, window, cx);
         self.activate_with(ix, false, window, cx);
     }
@@ -705,7 +774,7 @@ impl Workspace {
                 _ => None,
             };
             this.update(cx, |this, cx| {
-                if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.diff.is_none()) {
+                if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) {
                     tab.blame = blame;
                     cx.notify();
                 }
@@ -889,7 +958,7 @@ impl Workspace {
             return;
         };
         let tab = &self.tabs[ix];
-        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() {
+        if !matches!(tab.content, Content::Ready) || !tab.is_file() {
             return;
         }
         let Some(client) = self.client.clone() else {
@@ -1147,7 +1216,7 @@ impl Workspace {
             EditorState::new(window, cx)
                 .language(language)
                 .line_number(true)
-                .soft_wrap(false)
+                .soft_wrap(Config::get(cx).word_wrap)
         });
         let path_for_change = path.clone();
         let subscriptions = vec![
@@ -1180,6 +1249,9 @@ impl Workspace {
             blame: None,
             occurrences: None,
             occurrences_for: Vec::new(),
+            group: self.group,
+            shown: 0,
+            mirror: false,
             _subscriptions: subscriptions,
         }
     }
@@ -1207,7 +1279,7 @@ impl Workspace {
                 None => Err("No agent".to_string()),
             };
             this.update_in(cx, |this, window, cx| {
-                let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.diff.is_none()) else {
+                let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) else {
                     return;
                 };
                 let name = file_name(&path);
@@ -1255,7 +1327,7 @@ impl Workspace {
                         let grab = this
                             .tabs
                             .iter()
-                            .find(|tab| tab.path == path && tab.diff.is_none())
+                            .find(|tab| tab.path == path && tab.is_file())
                             .is_some_and(|tab| tab.grab_focus);
                         if !reload && grab && this.active.is_some_and(|ix| this.tabs[ix].path == path) {
                             this.focus_active(window, cx);
@@ -1266,7 +1338,7 @@ impl Workspace {
                     // A reopened file that's gone doesn't deserve a tab (while
                     // offline there's no telling: it's reread on reconnect).
                     Err(_) if tab.restored && this.client.as_ref().is_some_and(|client| client.is_connected()) => {
-                        if let Some(ix) = this.tabs.iter().position(|tab| tab.path == path && tab.diff.is_none()) {
+                        if let Some(ix) = this.tabs.iter().position(|tab| tab.path == path && tab.is_file()) {
                             this.forget(ix, cx);
                         }
                     }
@@ -1296,7 +1368,7 @@ impl Workspace {
         let reload: Vec<PathBuf> = self
             .tabs
             .iter()
-            .filter(|tab| tab.diff.is_none() && matches!(tab.content, Content::Ready) && paths.contains(&tab.path))
+            .filter(|tab| tab.is_file() && matches!(tab.content, Content::Ready) && paths.contains(&tab.path))
             .map(|tab| tab.path.clone())
             .collect();
         for path in reload {
@@ -1340,6 +1412,8 @@ impl Workspace {
 
     fn activate_with(&mut self, ix: usize, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.active = Some(ix);
+        self.group = self.tabs[ix].group;
+        self.mark_shown(ix);
         self.message = None;
         let tab = &self.tabs[ix];
         let path = tab.path.clone();
@@ -1373,7 +1447,7 @@ impl Workspace {
         let Some(tab) = self.active.map(|ix| &mut self.tabs[ix]) else {
             return;
         };
-        if tab.markdown.is_none() {
+        if tab.markdown.is_none() || tab.mirror {
             return;
         }
         tab.show_source = !tab.show_source;
@@ -1415,20 +1489,21 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.tabs.remove(ix);
+        let was_active = self.active == Some(ix);
+        let next = self.remove_tab(ix);
         self.message = None;
-        match self.active {
-            _ if self.tabs.is_empty() => {
+        match next {
+            None => {
                 self.active = None;
                 self.focus_handle.focus(window, cx);
                 cx.notify();
             }
-            Some(active) if active >= ix => {
-                let next = active.saturating_sub(1).min(self.tabs.len() - 1);
-                let next = if active == ix { ix.min(self.tabs.len() - 1) } else { next };
-                self.activate(next, window, cx);
+            Some(next) if was_active => self.activate(next, window, cx),
+            Some(next) => {
+                self.active = Some(next);
+                self.group = self.tabs[next].group;
+                cx.notify();
             }
-            _ => cx.notify(),
         }
     }
 
@@ -1452,10 +1527,10 @@ impl Workspace {
         cx.notify();
     }
 
-    fn tab_index(&self, path: &Path, diff: bool) -> Option<usize> {
-        self.tabs
-            .iter()
-            .position(|tab| tab.path == path && tab.diff.is_some() == diff)
+    /// A tab's index by its editor, which is unique (paths aren't: a file,
+    /// its diff and its side preview share one).
+    fn tab_index(&self, editor: &Entity<EditorState>) -> Option<usize> {
+        self.tabs.iter().position(|tab| &tab.editor == editor)
     }
 
     fn reveal_in_tree(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -1486,7 +1561,7 @@ impl Workspace {
     /// Writes the tab to disk; the result says whether it succeeded.
     fn save_tab(&mut self, ix: usize, cx: &mut Context<Self>) -> Task<bool> {
         let tab = &self.tabs[ix];
-        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() {
+        if !matches!(tab.content, Content::Ready) || !tab.is_file() {
             return Task::ready(true);
         }
         let path = tab.path.clone();
@@ -1504,7 +1579,7 @@ impl Workspace {
                 let ok = result.is_ok();
                 match result {
                     Ok(_) => {
-                        if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.diff.is_none()) {
+                        if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) {
                             tab.saved = text;
                             tab.dirty = false;
                             tab.confirm_close = false;
@@ -1541,14 +1616,115 @@ impl Workspace {
     }
 
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.active {
-            self.activate((ix + 1) % self.tabs.len(), window, cx);
-        }
+        self.step_tab(1, window, cx);
     }
 
     fn prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.active {
-            self.activate((ix + self.tabs.len() - 1) % self.tabs.len(), window, cx);
+        self.step_tab(-1, window, cx);
+    }
+
+    /// To the next or previous tab of the focused group.
+    fn step_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = self.active else {
+            return;
+        };
+        let group: Vec<usize> = (0..self.tabs.len()).filter(|ix| self.tabs[*ix].group == self.group).collect();
+        let Some(at) = group.iter().position(|ix| *ix == active) else {
+            return;
+        };
+        let next = group[(at as isize + delta).rem_euclid(group.len() as isize) as usize];
+        self.activate(next, window, cx);
+    }
+
+    /// Split Editor Right/Down: a Markdown file gets its preview on the other
+    /// side; otherwise the active tab moves to the other group (there must be
+    /// another tab left in its own). With the split already there, it only
+    /// changes direction (Move to Other Side moves tabs).
+    fn split_editor(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_split.is_some() {
+            self.editor_split = Some(axis);
+            return cx.notify();
+        }
+        let Some(ix) = self.active else {
+            return;
+        };
+        if self.tabs[ix].markdown.is_some() && self.tabs[ix].is_file() {
+            self.editor_split = Some(axis);
+            return self.open_preview_to_side(&OpenPreviewToSide, window, cx);
+        }
+        if self.tabs.len() < 2 {
+            self.message = Some("Open another tab to split the editor (or a Markdown file, for its preview)".into());
+            return cx.notify();
+        }
+        self.editor_split = Some(axis);
+        self.move_to_other_group(ix, window, cx);
+    }
+
+    /// Moves a tab to the other group (creating it side by side if there's
+    /// no split); if its group is left empty, the split closes.
+    fn move_to_other_group(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_split.get_or_insert(Axis::Row);
+        let from = self.tabs[ix].group;
+        let tab = self.tabs.remove(ix);
+        let mut tab = tab;
+        tab.group = 1 - from;
+        self.tabs.push(tab);
+        let ix = self.tabs.len() - 1;
+        let editor = self.tabs[ix].editor.clone();
+        // The group it left shows its most recent tab.
+        self.active = None;
+        self.normalize_groups();
+        let ix = self.tab_index(&editor).unwrap_or(ix);
+        self.activate(ix, window, cx);
+    }
+
+    /// Markdown: the rendered view in the other group, next to the source,
+    /// updating as you type.
+    fn open_preview_to_side(&mut self, _: &OpenPreviewToSide, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.active else {
+            return;
+        };
+        let (path, markdown, group) = {
+            let tab = &self.tabs[ix];
+            let Some(markdown) = tab.markdown.clone().filter(|_| tab.is_file()) else {
+                return;
+            };
+            (tab.path.clone(), markdown, tab.group)
+        };
+        self.tabs[ix].show_source = true;
+        self.editor_split.get_or_insert(Axis::Row);
+        let other = 1 - group;
+        if let Some(mirror) = self.tabs.iter().position(|tab| tab.mirror && tab.path == path) {
+            self.tabs[mirror].group = other;
+            self.mark_shown(mirror);
+        } else {
+            let mut mirror = self.new_tab_with(path, false, "markdown", window, cx);
+            mirror.markdown = Some(markdown);
+            mirror.mirror = true;
+            mirror.content = Content::Ready;
+            mirror.group = other;
+            self.tabs.push(mirror);
+            let last = self.tabs.len() - 1;
+            self.mark_shown(last);
+        }
+        self.activate(ix, window, cx);
+    }
+
+    fn toggle_word_wrap(&mut self, _: &ToggleWordWrap, _: &mut Window, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.word_wrap = !config.word_wrap);
+        crate::app_menu::set(cx);
+        cx.notify();
+    }
+
+    /// Applies the config's word wrap to the tabs if it changed (in any task).
+    fn apply_word_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wrap = Config::get(cx).word_wrap;
+        if wrap == self.word_wrap {
+            return;
+        }
+        self.word_wrap = wrap;
+        for tab in &self.tabs {
+            tab.editor.update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
         }
     }
 
@@ -1617,18 +1793,21 @@ impl Workspace {
             })
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(&self, group: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let shown = self.shown_in(group);
+        let focused = self.editor_split.is_none() || group == self.group;
+        let split = self.editor_split.is_some();
         h_flex()
-            .id("tab-bar")
+            .id(("tab-bar", group))
             .h(px(34.))
             .flex_none()
             .overflow_x_scroll()
             .bg(theme.tab_bar)
             .border_b_1()
             .border_color(theme.border)
-            .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
-                let active = self.active == Some(ix);
+            .children(self.tabs.iter().enumerate().filter(|(_, tab)| tab.group == group).map(|(ix, tab)| {
+                let active = shown == Some(ix);
                 let name = tab
                     .path
                     .file_name()
@@ -1639,6 +1818,7 @@ impl Workspace {
                     Some(DiffOf { commit: Some((_, short)), source: true, .. }) => format!("{name} @ {short}"),
                     Some(DiffOf { commit: Some((_, short)), .. }) => format!("{name} ({short})"),
                     Some(_) => format!("{name} (changes)"),
+                    None if tab.mirror => format!("Preview {name}"),
                     None => name,
                 };
                 let close_icon = if tab.dirty {
@@ -1658,7 +1838,11 @@ impl Workspace {
                     .border_r_1()
                     .border_color(theme.border)
                     .when(active, |el| {
-                        el.bg(theme.tab_active).text_color(theme.tab_active_foreground)
+                        el.bg(theme.tab_active).text_color(if focused {
+                            theme.tab_active_foreground
+                        } else {
+                            theme.tab_foreground
+                        })
                     })
                     .when(!active, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
                     .when(tab.preview, |el| el.italic())
@@ -1695,7 +1879,9 @@ impl Workspace {
                     .context_menu({
                         let workspace = cx.entity().downgrade();
                         let path = tab.path.clone();
+                        let editor = tab.editor.clone();
                         let diff = tab.diff.is_some();
+                        let markdown = tab.markdown.is_some() && tab.is_file();
                         let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
                         let local = self.local;
                         let relative = tab
@@ -1706,22 +1892,62 @@ impl Workspace {
                             .into_owned();
                         move |menu, _, _| {
                             let relative = relative.clone();
-                            let (close, others) = (path.clone(), path.clone());
+                            let (close, others, moved, right, down, preview) =
+                                (editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone());
                             menu.item(
                                 menu::item("Close", &workspace, move |this, window, cx| {
-                                    if let Some(ix) = this.tab_index(&close, diff) {
+                                    if let Some(ix) = this.tab_index(&close) {
                                         this.close(ix, window, cx);
                                     }
                                 })
                                 .action(Box::new(CloseTab)),
                             )
                             .item(menu::item("Close Others", &workspace, move |this, window, cx| {
-                                this.close_others(this.tab_index(&others, diff), window, cx)
+                                this.close_others(this.tab_index(&others), window, cx)
                             }))
                             .item(
                                 menu::item("Close All", &workspace, |this, window, cx| this.close_others(None, window, cx))
                                     .action(Box::new(CloseAllTabs)),
                             )
+                            .separator()
+                            .when(!split, |menu| {
+                                menu.item(
+                                    menu::item("Split Right", &workspace, move |this, window, cx| {
+                                        if let Some(ix) = this.tab_index(&right) {
+                                            this.activate(ix, window, cx);
+                                            this.split_editor(Axis::Row, window, cx);
+                                        }
+                                    })
+                                    .action(Box::new(SplitEditorRight)),
+                                )
+                                .item(
+                                    menu::item("Split Down", &workspace, move |this, window, cx| {
+                                        if let Some(ix) = this.tab_index(&down) {
+                                            this.activate(ix, window, cx);
+                                            this.split_editor(Axis::Column, window, cx);
+                                        }
+                                    })
+                                    .action(Box::new(SplitEditorDown)),
+                                )
+                            })
+                            .when(split, |menu| {
+                                menu.item(menu::item("Move to Other Side", &workspace, move |this, window, cx| {
+                                    if let Some(ix) = this.tab_index(&moved) {
+                                        this.move_to_other_group(ix, window, cx);
+                                    }
+                                }))
+                            })
+                            .when(markdown, |menu| {
+                                menu.item(
+                                    menu::item("Open Preview to the Side", &workspace, move |this, window, cx| {
+                                        if let Some(ix) = this.tab_index(&preview) {
+                                            this.activate(ix, window, cx);
+                                            this.open_preview_to_side(&OpenPreviewToSide, window, cx);
+                                        }
+                                    })
+                                    .action(Box::new(OpenPreviewToSide)),
+                                )
+                            })
                             .when(diff && !whole_commit, |menu| {
                                 let path = path.clone();
                                 menu.item(menu::item("Open File", &workspace, move |this, window, cx| {
@@ -1753,9 +1979,11 @@ impl Workspace {
             }))
     }
 
-    fn render_editor_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// A group's tab bar and the tab it shows. A click anywhere in it gives
+    /// it the focus.
+    fn render_group(&self, group: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let body = match self.active.map(|ix| &self.tabs[ix]) {
+        let body = match self.shown_in(group).map(|ix| &self.tabs[ix]) {
             None => div()
                 .size_full()
                 .flex()
@@ -1840,10 +2068,42 @@ impl Workspace {
             },
         };
         v_flex()
+            .id(("editor-group", group))
             .size_full()
             .bg(theme.background)
-            .when(!self.tabs.is_empty(), |el| el.child(self.render_tab_bar(cx)))
+            .capture_any_mouse_down(cx.listener(move |this, _, window, cx| {
+                if this.group != group
+                    && let Some(ix) = this.shown_in(group)
+                {
+                    this.activate_with(ix, false, window, cx);
+                }
+            }))
+            .when(!self.tabs.is_empty(), |el| el.child(self.render_tab_bar(group, cx)))
             .child(div().flex_1().min_h_0().child(body))
+            .into_any_element()
+    }
+
+    /// The code area: one group, or two split side by side or one above the
+    /// other; the status bar under them.
+    fn render_editor_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let groups = match self.editor_split {
+            None => self.render_group(0, cx),
+            Some(axis) => {
+                let (first, second) = (self.render_group(0, cx), self.render_group(1, cx));
+                let split = match axis {
+                    Axis::Row => h_resizable("editor-groups-row"),
+                    Axis::Column => v_resizable("editor-groups-column"),
+                };
+                split
+                    .child(resizable_panel().child(first))
+                    .child(resizable_panel().child(second))
+                    .into_any_element()
+            }
+        };
+        v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .child(div().flex_1().min_h_0().child(groups))
             .child(self.render_status_bar(cx))
     }
 
@@ -1864,7 +2124,7 @@ impl Workspace {
                 }
                 right = right.child(state.language_name());
             }
-            if tab.markdown.is_some() {
+            if tab.markdown.is_some() && !tab.mirror {
                 let label = if tab.show_source { "Show Preview" } else { "Show Source" };
                 right = right.child(
                     div()
@@ -1949,6 +2209,7 @@ fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.apply_word_wrap(window, cx);
         h_flex()
             .id("workspace")
             .key_context("Workspace")
@@ -1978,6 +2239,10 @@ impl Render for Workspace {
                 cx.listener(|this, _: &ShowReferences, _, cx| this.show_mode(Mode::References, cx)),
             )
             .on_action(cx.listener(Self::toggle_markdown_source))
+            .on_action(cx.listener(Self::open_preview_to_side))
+            .on_action(cx.listener(Self::toggle_word_wrap))
+            .on_action(cx.listener(|this, _: &SplitEditorRight, window, cx| this.split_editor(Axis::Row, window, cx)))
+            .on_action(cx.listener(|this, _: &SplitEditorDown, window, cx| this.split_editor(Axis::Column, window, cx)))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(|this, _: &SplitRight, window, cx| this.split(Axis::Row, window, cx)))
             .on_action(cx.listener(|this, _: &SplitDown, window, cx| this.split(Axis::Column, window, cx)))

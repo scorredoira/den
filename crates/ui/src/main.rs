@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod app_menu;
 mod assets;
 mod config;
 mod editing;
@@ -39,6 +40,16 @@ actions!(
         ShowReferences,
         GoToDefinition,
         GoToLine,
+        ToggleWordWrap,
+        SplitEditorRight,
+        SplitEditorDown,
+        OpenPreviewToSide,
+        About,
+        Hide,
+        HideOthers,
+        ShowAll,
+        Minimize,
+        Zoom,
         FindReferences,
         NavigateBack,
         NavigateForward,
@@ -116,6 +127,8 @@ fn main() {
             config::Config::init(cx);
             language::register();
             bind_keys(cx);
+            app_menu::init(cx);
+            app_menu::set(cx);
 
             let title = root
                 .file_name()
@@ -172,5 +185,11 @@ fn window_bounds(cx: &App) -> WindowBounds {
 /// while it has focus.
 fn bind_keys(cx: &mut App) {
     cx.bind_keys(file_tree::keymap());
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
+        KeyBinding::new("cmd-m", Minimize, None),
+    ]);
     shortcuts::apply(cx);
 }
