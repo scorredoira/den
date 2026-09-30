@@ -558,7 +558,7 @@ impl Workspace {
             Content::Ready => {
                 tab.editor
                     .update(cx, |state, cx| state.set_cursor_position(goto, window, cx));
-                reveal_centered(&tab.editor, goto.line, true, window, cx);
+                reveal_centered(&tab.editor, goto.line, false, 10, window, cx);
             }
             _ => tab.goto = Some(goto),
         }
@@ -1098,7 +1098,7 @@ impl Workspace {
                         });
                         if !reload {
                             let line = tab.editor.read(cx).cursor_position().line;
-                            reveal_centered(&tab.editor, line, true, window, cx);
+                            reveal_centered(&tab.editor, line, true, 10, window, cx);
                         }
                         // Setting the text moves focus to the editor: it goes back to
                         // where it was, or where it belongs if this is the active tab.
@@ -1887,20 +1887,23 @@ impl Render for Workspace {
 }
 
 /// After a jump: if `line` wasn't visible, scrolls to center it, like VS Code
-/// (the editor alone only brings it in at the edge). If not laid out yet (a
-/// freshly opened file), it's done on the next frame.
-fn reveal_centered(editor: &Entity<EditorState>, line: u32, retry: bool, window: &mut Window, cx: &mut App) {
+/// (the editor alone only brings it in at the edge). With `always`, it centers
+/// even if it's visible: a freshly loaded file already scrolled the cursor in
+/// at the edge on its own, so being visible there doesn't mean it was. If not
+/// laid out yet (a freshly opened tab takes a few frames), it's tried again
+/// on the next ones, `retries` times at most.
+fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, retries: u8, window: &mut Window, cx: &mut App) {
     let state = editor.read(cx);
     let (Some(visible), Some(line_height)) = (state.visible_row_range(), state.line_height()) else {
-        if retry {
+        if retries > 0 {
             let editor = editor.clone();
-            window.on_next_frame(move |window, cx| reveal_centered(&editor, line, false, window, cx));
+            window.on_next_frame(move |window, cx| reveal_centered(&editor, line, true, retries - 1, window, cx));
         }
         return;
     };
     let line = line as usize;
     // Lines at the edge may be half visible: they count as outside.
-    if visible.len() > 2 && line > visible.start && line + 1 < visible.end {
+    if !always && visible.len() > 2 && line > visible.start && line + 1 < visible.end {
         return;
     }
     let rows = visible.len().max(1) as f32;
