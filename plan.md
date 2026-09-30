@@ -310,8 +310,8 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 
 **Editor and git, requested (VS Code as the model):**
 
-- [x] **Inline blame:** at the end of the cursor's line, in gray, the last commit that touched it: subject, author and age (`Add ACIGRUP PMS integration module, Minnu (7 months ago)`). The agent runs `git blame --porcelain` once per file and caches it until the file or `HEAD` changes; uncommitted lines show nothing.
-- [x] **Cmd-D:** selects the word under the cursor, and each further press adds a cursor at its next occurrence. Case-sensitive or not, following the Aa toggle of the find bar. gpui-component already has several cursors (`AddCursorAbove/Below`); what's missing is the action that adds a selection at the next match.
+- [x] **Inline blame:** at the end of the cursor's line, in gray, the last commit that touched it: subject, author and age (`Add ACIGRUP PMS integration module, Minnu (7 months ago)`). The agent runs `git blame --porcelain` when the file is read or saved, and again when `HEAD` moves (commit, checkout, reset, also from a terminal): it watches the git folder's `logs/HEAD`, which in a worktree is outside the task, and reports it as a change to `.git`. Uncommitted lines show nothing.
+- [x] **Cmd-D:** selects the word under the cursor, and each further press adds a cursor at its next occurrence. As in VS Code, starting from a word it matches whole words with the same case; from any other selection it follows the find bar's Aa.
 - [x] **Cmd-Opt-↑/↓:** a cursor on the line above or below (gpui-component's `AddCursorAbove/Below`). "Focus Terminal Above/Below" shadowed it: GPUI ranks a binding without context as the deepest, so the editor's bindings are registered after the app's, in `CodeEditor > Input` (`editing::keymap`).
 - [x] **Opt-↑/↓:** moves the line (or the selected lines) up or down.
 - [x] **Shift-Opt-↑/↓:** duplicates the line (or the selection) up or down. (On Linux gpui-component binds these to adding a cursor.)
@@ -320,7 +320,7 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 - [x] **Ctrl-G:** go to `line` or `line:column`, in Cmd-P's spot; Ctrl-Opt-← comes back.
 - [x] **Menu bar (macOS):** Sik, File, Edit, Selection, View, Go, Terminal, Window and Help, as in VS Code; each entry is an existing action and shows its shortcut (`app_menu.rs`).
 - [x] **Word wrap:** Opt-Z (and View > Word Wrap), for every tab and task, saved in `config.json` (`word_wrap`).
-- [x] **Split editor:** two groups of tabs, side by side (Cmd-Opt-S) or one above the other (Cmd-Opt-Shift-S; not VS Code's Cmd-\, which on a Spanish keyboard needs Opt), or from the tab's menu (Split Right/Down, Move to Other Side). The active tab moves to the other group; with a Markdown file, its preview opens there instead (Open Preview to the Side, Cmd-Opt-V), updating as you type. When a group is left empty the split closes. A file can't be open in both groups at once (only its Markdown preview): both would need their own editor over the same text.
+- [x] **Split editor:** two groups of tabs, side by side (Cmd-Opt-S) or one above the other (Cmd-Opt-Shift-S; not VS Code's Cmd-\, which on a Spanish keyboard needs Opt), or from the tab's menu. As in VS Code, splitting opens the active file on the other side too: another view with its own editor (cursor, scroll, undo), kept in sync with the first by applying the same edit; saving, unsaved changes and the blame are the file's, and if the file's tab closes a view takes over. A Markdown file opens its preview on the other side (Open Preview to the Side, Cmd-Opt-V), updating as you type. Move to Other Side moves a tab; a group left empty closes the split.
 - [ ] **Drag tabs** to split the editor or move them between groups (later: the menu and the shortcuts cover it).
 
 ## Risks and open questions

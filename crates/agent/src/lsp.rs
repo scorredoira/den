@@ -382,7 +382,7 @@ impl Server {
         // Whatever changes on disk (minus ignored files) goes to the server.
         *server.watcher.lock().unwrap() = {
             let weak = Arc::downgrade(&server);
-            crate::fs::watch(root, move |paths| {
+            crate::fs::watch(root, false, move |paths| {
                 let Some(server) = weak.upgrade() else { return };
                 let changes: Vec<Value> = paths
                     .iter()

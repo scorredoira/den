@@ -92,11 +92,16 @@ pub fn trash(path: &Path) -> Result<()> {
 
 /// Watches `root` and calls `changed` with batches of changed paths until
 /// the returned value is dropped.
-/// Nothing git ignores (logs, temp files, `target/`…) is reported, nor
-/// `.git`: in a repo in use they change constantly and nobody cares.
-pub fn watch(root: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> Result<notify::RecommendedWatcher> {
+/// Nothing git ignores (logs, temp files, `target/`…) is reported, nor what
+/// changes inside `.git`. With `git`, a commit, checkout or reset (which move
+/// `HEAD`) is reported as `root/.git`, also in a worktree, whose git folder is
+/// elsewhere.
+pub fn watch(root: &Path, git: bool, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> Result<notify::RecommendedWatcher> {
     let (tx, rx) = mpsc::channel::<PathBuf>();
     let ignored = Ignored::new(root);
+    let git_dir = git.then(|| git_dir(root)).flatten();
+    let marker = root.join(".git");
+    let watched_git = git_dir.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         // Opening or reading isn't a change (on Linux inotify reports it): git
         // reading the tree would otherwise trigger a refresh that reads it again.
@@ -104,13 +109,25 @@ pub fn watch(root: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> Re
             && !event.kind.is_access()
         {
             for path in event.paths {
-                if !ignored.matches(&path) {
+                if let Some(git_dir) = &watched_git
+                    && path.starts_with(git_dir)
+                {
+                    if is_head_log(git_dir, &path) {
+                        let _ = tx.send(marker.clone());
+                    }
+                } else if !ignored.matches(&path) {
                     let _ = tx.send(path);
                 }
             }
         }
     })?;
     watcher.watch(root, RecursiveMode::Recursive)?;
+    // `logs/HEAD` gets a line on every commit, checkout or reset.
+    if let Some(logs) = git_dir.map(|dir| dir.join("logs"))
+        && logs.is_dir()
+    {
+        watcher.watch(&logs, RecursiveMode::NonRecursive)?;
+    }
     std::thread::spawn(move || {
         // Ends when the watcher (and with it the sender) is dropped.
         while let Ok(first) = rx.recv() {
@@ -121,6 +138,25 @@ pub fn watch(root: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> Re
         }
     });
     Ok(watcher)
+}
+
+/// The repo's own git folder: `root/.git`, or in a worktree the one git
+/// keeps for it inside the main repo.
+fn git_dir(root: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
+        .and_then(|dir| dir.canonicalize().ok())
+}
+
+fn is_head_log(git_dir: &Path, path: &Path) -> bool {
+    path.strip_prefix(git_dir).is_ok_and(|rest| rest == Path::new("logs/HEAD"))
 }
 
 /// What git ignores inside a folder: its `.gitignore` and those of the
@@ -209,7 +245,7 @@ mod tests {
         let dir = dir("watch");
         std::fs::write(dir.join(".gitignore"), "logs/\n").unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let _watcher = watch(&dir, {
+        let _watcher = watch(&dir, false, {
             let seen = seen.clone();
             move |paths| seen.lock().unwrap().extend(paths)
         })
@@ -224,6 +260,43 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!seen.lock().unwrap().iter().any(|path| path.starts_with(dir.join("logs"))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reports_commits_in_a_worktree() {
+        let dir = dir("git");
+        let git = |dir: &Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(["-c", "user.email=a@b", "-c", "user.name=a"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "git {args:?}");
+        };
+        let main = dir.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "master"]);
+        std::fs::write(main.join("a.txt"), "a").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-qm", "one"]);
+        git(&main, &["worktree", "add", "-q", "-b", "task", "../task"]);
+        let task = dir.join("task");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let _watcher = watch(&task, true, {
+            let seen = seen.clone();
+            move |paths| seen.lock().unwrap().extend(paths)
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        git(&task, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let start = std::time::Instant::now();
+        while !seen.lock().unwrap().contains(&task.join(".git")) {
+            assert!(start.elapsed() < Duration::from_secs(5), "the commit was never reported");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

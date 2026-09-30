@@ -99,8 +99,9 @@ fn range_of((anchor, cursor): Selection) -> Range<usize> {
 
 /// Cmd-D: with a cursor, selects its word; with a selection, adds the next
 /// occurrence of the active one (after it, wrapping around) as the new active
-/// selection. A whole word only matches whole words. `None` if nothing is
-/// left to add.
+/// selection. As in VS Code, a whole word only matches whole words with the
+/// same case; any other selection follows the find bar's Aa
+/// (`case_insensitive`). `None` if nothing is left to add.
 pub fn select_next_occurrence(text: &str, selections: &[Selection], case_insensitive: bool) -> Option<Vec<Selection>> {
     let active = range_of(*selections.first()?);
     if active.is_empty() {
@@ -110,7 +111,8 @@ pub fn select_next_occurrence(text: &str, selections: &[Selection], case_insensi
         return Some(selections);
     }
     let needle = &text[active.clone()];
-    let matches = find_all(text, needle, case_insensitive, is_whole_word(text, &active));
+    let word = is_whole_word(text, &active);
+    let matches = find_all(text, needle, case_insensitive && !word, word);
     let taken = |range: &Range<usize>| {
         selections
             .iter()
@@ -269,6 +271,39 @@ pub fn occurrences(text: &str, selections: &[Selection]) -> Vec<Range<usize>> {
     found
 }
 
+/// The one edit that turns `old` into `new`: the range of `old` between
+/// their common start and end, and what replaces it. `None` if equal.
+pub fn difference(old: &str, new: &str) -> Option<(Range<usize>, String)> {
+    if old == new {
+        return None;
+    }
+    let mut start = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+    while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+        start -= 1;
+    }
+    let max = old.len().min(new.len()) - start;
+    let mut end = old.bytes().rev().zip(new.bytes().rev()).take(max).take_while(|(a, b)| a == b).count();
+    while !old.is_char_boundary(old.len() - end) || !new.is_char_boundary(new.len() - end) {
+        end -= 1;
+    }
+    Some((start..old.len() - end, new[start..new.len() - end].to_string()))
+}
+
+/// Where selections go after `range` is replaced by `len` bytes: after it,
+/// they move by the difference; inside it, to its end.
+pub fn shift(selections: &[Selection], range: &Range<usize>, len: usize) -> Vec<Selection> {
+    let moved = |offset: usize| {
+        if offset <= range.start {
+            offset
+        } else if offset >= range.end {
+            offset + len - range.len()
+        } else {
+            range.start + len
+        }
+    };
+    selections.iter().map(|&(anchor, cursor)| (moved(anchor), moved(cursor))).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,20 +324,22 @@ mod tests {
         let text = "pay payment pay Pay pay";
         let first = select_next_occurrence(text, &[(1, 1)], true).unwrap();
         assert_eq!(first, vec![(0, 3)]);
-        // Whole word: `payment` doesn't count; case-insensitive: `Pay` does.
+        // Whole word: neither `payment` nor `Pay` count, even with Aa off.
         let second = select_next_occurrence(text, &first, true).unwrap();
         assert_eq!(second, vec![(12, 15), (0, 3)]);
         let third = select_next_occurrence(text, &second, true).unwrap();
-        assert_eq!(third[0], (16, 19));
-        let sensitive = select_next_occurrence(text, &second, false).unwrap();
-        assert_eq!(sensitive[0], (20, 23));
+        assert_eq!(third[0], (20, 23));
         // After the last one it wraps around, and when all are taken, nothing.
-        let all = select_next_occurrence(text, &[(20, 23), (16, 19), (12, 15)], true).unwrap();
+        let all = select_next_occurrence(text, &[(20, 23), (12, 15)], true).unwrap();
         assert_eq!(all[0], (0, 3));
         assert!(select_next_occurrence(text, &all, true).is_none());
-        // Not a whole word: matches inside words too.
+        // Not a whole word: matches inside words too, and follows Aa.
         let part = select_next_occurrence(text, &[(0, 2)], false).unwrap();
         assert_eq!(part[0], (4, 6));
+        let insensitive = select_next_occurrence(text, &[(12, 14)], true).unwrap();
+        assert_eq!(insensitive[0], (16, 18));
+        let sensitive = select_next_occurrence(text, &[(12, 14)], false).unwrap();
+        assert_eq!(sensitive[0], (20, 22));
     }
 
     #[test]
@@ -338,6 +375,19 @@ mod tests {
         let two = duplicate_lines(text, &[(0, 0), (5, 5)], false);
         assert_eq!(apply(text, &two), "a\na\nbb\nc\nc");
         assert_eq!(two.selections, vec![(2, 2), (9, 9)]);
+    }
+
+    #[test]
+    fn difference_and_shift() {
+        assert_eq!(difference("abc", "abc"), None);
+        assert_eq!(difference("hello world", "hello big world"), Some((6..6, "big ".into())));
+        assert_eq!(difference("aaa", "aa"), Some((2..3, String::new())));
+        assert_eq!(difference("año", "año!"), Some((4..4, "!".into())));
+        // Common bytes of different characters (ñ and ò share the first) don't split them.
+        assert_eq!(difference("xñ", "xò"), Some((1..3, "ò".into())));
+        let range = 6..6;
+        assert_eq!(shift(&[(0, 0), (6, 6), (8, 10)], &range, 4), vec![(0, 0), (6, 6), (12, 14)]);
+        assert_eq!(shift(&[(3, 7)], &(2..8), 1), vec![(3, 3)]);
     }
 
     #[test]

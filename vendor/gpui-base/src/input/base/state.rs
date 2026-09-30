@@ -3063,11 +3063,13 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Applies `edits` (disjoint UTF-8 byte ranges of the current text and
     /// their replacements) and then sets `selections` (as in
     /// [`Self::set_selections`], offsets in the new text), undone as one step
-    /// that brings the old selections back. (sik)
+    /// that brings the old selections back. With `reveal`, it scrolls to the
+    /// cursor. (sik)
     pub fn edit(
         &mut self,
         edits: &[(Range<usize>, String)],
         selections: &[(usize, usize)],
+        reveal: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3084,8 +3086,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.undo_manager
             .record_selections(before, self.selections.iter().copied().collect());
         self.undo_manager.commit_transaction();
-        let cursor = self.cursor();
-        self.scroll_to(cursor, None, cx);
+        if reveal {
+            let cursor = self.cursor();
+            self.scroll_to(cursor, None, cx);
+        }
     }
 
     /// Resolve a mouse position to a byte offset in the text.

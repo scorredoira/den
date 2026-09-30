@@ -518,7 +518,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("connection closed"))?;
             let root = path.clone();
-            let watcher = fs::watch(&path, move |paths| {
+            let watcher = fs::watch(&path, true, move |paths| {
                 let _ = sender.send(ServerMessage::Event(Event::FsChanged {
                     root: root.clone(),
                     paths,
