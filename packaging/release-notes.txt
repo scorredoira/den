@@ -1,9 +1,9 @@
-## What's new in 0.1.7
+## What's new in 0.1.8
 
-- The focused terminal of a split is marked by its title, in the text's color with a line on top, instead of a border around it.
-- The workspaces column shows a checkout's branch only when it isn't `master` or `main`, and a worktree's only when it differs from its folder's name.
+- **Icons in the workspaces column:** servers have an icon colored by their connection, workspaces a folder and worktrees a branch. Claude's state shows after the name, only when there's one.
+- **Faster connections after an update:** the agent is uploaded to servers compressed, about 2.5 times faster, and the column says so while it uploads.
 
-Also in 0.1.6: the menu bar on Windows and Linux, the welcome screen on first launch, the branch in the status bar, a read-only Changes panel that refreshes on its own, and a fix for the side panel jumping while resized.
+Also in 0.1.7: the focused terminal of a split is marked by its title, and branches show only when they aren't `master` or `main`. In 0.1.6: the menu bar on Windows and Linux, the welcome screen on first launch, the branch in the status bar, and a read-only Changes panel that refreshes on its own.
 
 After upgrading, restart the outdated agent from the workspaces column so that changes made in a terminal refresh the Changes panel. Restarting the agent also restarts its terminals.
 
