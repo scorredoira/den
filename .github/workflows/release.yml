@@ -68,6 +68,14 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           flags=()
-          if [[ "$PRERELEASE" == true || "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "Sik $RELEASE_TAG" --generate-notes --notes-file packaging/release-notes.txt --draft "${flags[@]}"
-          gh release edit "$RELEASE_TAG" --draft=false
+          latest=false
+          if [[ "$PRERELEASE" == true || "$RELEASE_TAG" == *-* ]]; then
+            flags+=(--prerelease)
+          else
+            # GitHub marks as Latest whichever release finishes last. When two
+            # releases overlap, only the highest version may take it.
+            highest=$({ gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName -q '.[].tagName'; echo "$RELEASE_TAG"; } | sort -V | tail -1)
+            if [[ "$highest" == "$RELEASE_TAG" ]]; then latest=true; fi
+          fi
+          gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "Sik $RELEASE_TAG" --generate-notes --notes-file packaging/release-notes.txt --draft --latest=false "${flags[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false --latest="$latest"
