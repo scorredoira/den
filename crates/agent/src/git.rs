@@ -371,7 +371,13 @@ fn diff_with(dir: &Path, file: &str, uncommitted: bool, context: Option<&str>) -
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = crate::platform::command("git").args(args).current_dir(dir).output()?;
+    // Reading never writes the index (`git status` refreshes it when it can):
+    // the index is watched, and each write would ask for another read.
+    let output = crate::platform::command("git")
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .current_dir(dir)
+        .output()?;
     if !output.status.success() {
         bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim());
     }

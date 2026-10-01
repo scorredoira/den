@@ -101,8 +101,9 @@ pub fn trash(path: &Path) -> Result<()> {
 /// Watches `root` and calls `changed` with batches of changed paths until
 /// the returned value is dropped.
 /// Nothing git ignores (logs, temp files, `target/`…) is reported, nor what
-/// changes inside `.git`. With `git`, a commit, checkout or reset (which move
-/// `HEAD`) is reported as `root/.git`, also in a worktree, whose git folder is
+/// changes inside `.git`. With `git`, what moves the repo's state — a
+/// commit, checkout, reset, staging or a merge starting or ending — is
+/// reported as `root/.git`, also in a worktree, whose git folder is
 /// elsewhere.
 pub fn watch(root: &Path, git: bool, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> Result<notify::RecommendedWatcher> {
     let (tx, rx) = mpsc::channel::<PathBuf>();
@@ -120,7 +121,7 @@ pub fn watch(root: &Path, git: bool, changed: impl Fn(Vec<PathBuf>) + Send + 'st
                 if let Some(git_dir) = &watched_git
                     && path.starts_with(git_dir)
                 {
-                    if is_head_log(git_dir, &path) {
+                    if is_state(git_dir, &path) {
                         let _ = tx.send(marker.clone());
                     }
                 } else if !ignored.matches(&path) {
@@ -130,11 +131,14 @@ pub fn watch(root: &Path, git: bool, changed: impl Fn(Vec<PathBuf>) + Send + 'st
         }
     })?;
     watcher.watch(root, RecursiveMode::Recursive)?;
-    // `logs/HEAD` gets a line on every commit, checkout or reset.
-    if let Some(logs) = git_dir.map(|dir| dir.join("logs"))
-        && logs.is_dir()
-    {
-        watcher.watch(&logs, RecursiveMode::NonRecursive)?;
+    // `logs/HEAD` gets a line on every commit, checkout or reset; the git
+    // folder itself has the index, `HEAD` and `MERGE_HEAD`.
+    if let Some(git_dir) = &git_dir {
+        watcher.watch(git_dir, RecursiveMode::NonRecursive)?;
+        let logs = git_dir.join("logs");
+        if logs.is_dir() {
+            watcher.watch(&logs, RecursiveMode::NonRecursive)?;
+        }
     }
     std::thread::spawn(move || {
         // Ends when the watcher (and with it the sender) is dropped.
@@ -163,8 +167,10 @@ fn git_dir(root: &Path) -> Option<PathBuf> {
         .and_then(|dir| dir.canonicalize().ok())
 }
 
-fn is_head_log(git_dir: &Path, path: &Path) -> bool {
-    path.strip_prefix(git_dir).is_ok_and(|rest| rest == Path::new("logs/HEAD"))
+/// A file in the git folder whose change means the status changed.
+fn is_state(git_dir: &Path, path: &Path) -> bool {
+    path.strip_prefix(git_dir)
+        .is_ok_and(|rest| ["index", "HEAD", "MERGE_HEAD", "logs/HEAD"].iter().any(|state| rest == Path::new(state)))
 }
 
 /// What git ignores inside a folder: its `.gitignore` and those of the
@@ -282,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_commits_in_a_worktree() {
+    fn reports_commits_and_staging_in_a_worktree() {
         let dir = dir("git");
         let git = |dir: &Path, args: &[&str]| {
             let status = crate::platform::command("git")
@@ -313,6 +319,16 @@ mod tests {
         let start = std::time::Instant::now();
         while !seen.lock().unwrap().contains(&task.join(".git")) {
             assert!(start.elapsed() < Duration::from_secs(5), "the commit was never reported");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Staging only writes the index.
+        std::fs::write(task.join("b.txt"), "b").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        seen.lock().unwrap().clear();
+        git(&task, &["add", "b.txt"]);
+        let start = std::time::Instant::now();
+        while !seen.lock().unwrap().contains(&task.join(".git")) {
+            assert!(start.elapsed() < Duration::from_secs(5), "staging was never reported");
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = std::fs::remove_dir_all(&dir);
