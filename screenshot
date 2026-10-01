@@ -1,0 +1,113 @@
+#!/bin/sh
+# Takes the README screenshot (docs/screenshots/main.png): opens Sik.app with a
+# demo config of its own (dark theme, a clone of this repo with a few worktrees),
+# runs Claude Code and a shell in split terminals, captures the window and closes
+# it. Your config, agent and terminals aren't touched: the demo instance has its
+# own config, state and agent socket.
+#
+# Usage: ./screenshot [path to Sik.app]   (default /Applications/Sik.app)
+# The terminal running it needs Accessibility permission (it types into sik);
+# leave the keyboard and mouse alone while it runs.
+# Claude Code runs a read-only question, which takes about a minute.
+set -eu
+dir="$(cd "$(dirname "$0")" && pwd)"
+app="${1:-/Applications/Sik.app}/Contents/MacOS/sik"
+out="$dir/docs/screenshots/main.png"
+# Short paths: the shell prompt shows the folder and a socket path has a limit.
+# The real path (/private/tmp), the one git reports for the worktrees.
+demo="$(cd "$(mktemp -d /tmp/sikdemo.XXXX)" && pwd -P)"
+projects="$demo/p"
+socket="$demo/agent.sock"
+pid=""
+
+cleanup() {
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  lsof -t "$socket" 2>/dev/null | xargs kill 2>/dev/null
+  sleep 1
+  rm -rf "$demo"
+  true
+}
+trap cleanup EXIT INT TERM
+
+git clone -q "$dir" "$projects/sik"
+for branch in lsp-hover ssh-reconnect tab-drag wsl-distros; do
+  git -C "$projects/sik" worktree add -q -b "$branch" "$projects/wt/$branch"
+done
+task="$projects/wt/wsl-distros"
+
+mkdir -p "$demo/config" "$demo/state" "$demo/zdot"
+printf '["%s"]\n' "$projects/sik" > "$demo/config/repos.json"
+cat > "$demo/config/config.json" <<EOF
+{
+  "theme": "dark",
+  "check_for_updates": false,
+  "layout": { "tasks": 230, "side": 230, "terminals": 760 },
+  "window": { "x": 40, "y": 60, "width": 1800, "height": 1000, "maximized": false },
+  "last": { "host": "local", "path": "$task" },
+  "sessions": {
+    "$task": {
+      "tabs": [
+        { "path": "$task/crates/ui/src/language.rs", "line": 20, "column": 4 },
+        { "path": "$task/crates/proto/src/lib.rs", "line": 0, "column": 0 }
+      ],
+      "active": 0
+    }
+  }
+}
+EOF
+cat > "$demo/zdot/.zshrc" <<'EOF'
+export PATH="$HOME/.local/bin:$PATH"
+PROMPT='%F{blue}%1~%f %F{magenta}❯%f '
+EOF
+
+# The window id of a process, for screencapture.
+cat > "$demo/wid.swift" <<'EOF'
+import CoreGraphics
+let pid = Int32(CommandLine.arguments[1])!
+let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as! [[String: Any]]
+for w in list where (w[kCGWindowOwnerPID as String] as? Int32) == pid && (w[kCGWindowLayer as String] as? Int) == 0 {
+  print(w[kCGWindowNumber as String]!); break
+}
+EOF
+
+# keys <AppleScript lines>: sends keystrokes to the demo sik.
+keys() {
+  osascript -e "tell application \"System Events\"
+    set frontmost of (first process whose unix id is $pid) to true
+    delay 0.3
+    $1
+  end tell" >/dev/null
+}
+type_line() {
+  keys "keystroke \"$1\"
+    key code 36"
+}
+
+(cd "$task" && ZDOTDIR="$demo/zdot" SIK_CONFIG_DIR="$demo/config" SIK_STATE_DIR="$demo/state" \
+  SIK_AGENT_SOCKET="$socket" exec "$app") >"$demo/app.log" 2>&1 &
+pid=$!
+window=""
+for _ in $(seq 30); do
+  window="$(swift "$demo/wid.swift" "$pid")"
+  [ -n "$window" ] && break
+  sleep 1
+done
+[ -n "$window" ] || { echo "sik didn't open a window; see $demo/app.log" >&2; exit 1; }
+sleep 5
+
+echo "running Claude Code…"
+type_line "claude 'How does this branch find WSL distros? Read crates/client/src/wsl.rs and explain it briefly, with a small table. Do not edit anything.'"
+sleep 5
+# The new folder's trust dialog: "Yes, I trust this folder" is the second option.
+keys "key code 125
+    delay 0.5
+    key code 36"
+sleep 3
+keys 'keystroke "d" using {command down, shift down}'
+sleep 1.5
+type_line 'git status --short; git log --oneline --graph -12'
+sleep 50
+
+screencapture -x -o -l "$window" "$demo/shot.png"
+sips --resampleWidth 2400 "$demo/shot.png" --out "$out" >/dev/null
+echo "saved: $out"

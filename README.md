@@ -1,23 +1,24 @@
 <p align="center">
-  <img src="packaging/macos/sik.svg" width="112" alt="sik icon">
+  <img src="packaging/macos/sik.svg" width="112" alt="Sik icon">
 </p>
 
-<h1 align="center">sik</h1>
+<h1 align="center">Sik</h1>
 
 <p align="center">
-  A native workspace for coding agents: persistent terminals and a code editor side by side,<br>
-  where every task is a git worktree, on your machine or on any server over SSH.
+  A native environment for working with coding agents, written in Rust.<br>
+  A code editor, a multiplexer of persistent terminals and git in one app, on your machine or on any server over SSH.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/main.png" alt="sik: the task column, the code and the task's Claude Code terminal">
+  <img src="docs/screenshots/main.png" alt="Sik: the workspaces column, the code, and Claude Code next to a shell in split terminals">
 </p>
 
-- **Tasks.** The tasks of all your servers in one column; switching tasks switches the file tree, changes, search and terminals at once. A dot per task: red when Claude is asking something, yellow while it works, green when it finished unseen. No hooks: sik reads the terminals.
-- **Terminals that don't die.** They live in an agent that survives closing the app or losing SSH, and reattach with their history.
-- **Code next to the agent.** Tree-sitter highlighting, F12, Shift-F12, completions and signatures over LSP, search, Cmd-P, Markdown and images; Cmd-click a `file:line` in a terminal to open it.
-- **Git.** Uncommitted changes, the history (of everything or of one file) and side-by-side diffs; the branch in the status bar. Open a commit to see its message, author, date and all its file changes together; click a file name to open its diff in a separate tab. Sik only reads: committing, staging, switching branches, pushing and pulling are done in a terminal.
-- **Remote like local.** A server is a name from `~/.ssh/config`; sik uploads its agent and everything works as it does locally.
+- **Native, in Rust.** GPU-rendered with GPUI, no Electron. On macOS, Linux and Windows.
+- **Code editor.** Tree-sitter highlighting, language servers (go to definition, references, completions, signatures, formatting), project search, go to file by name, split editors, Markdown and images. Cmd-click a `file:line` in a terminal to open it.
+- **Persistent sessions.** A terminal multiplexer per workspace, with tabs and splits. Every terminal lives in `sik-agent`, not in the app, like in tmux. Close Sik, update it or lose the connection and Claude keeps working; reopening reattaches each terminal with its screen and history.
+- **Remote like local.** A server is a name from `~/.ssh/config`. Sik uploads its agent, which runs the terminals, search, git and language servers next to the files; only terminal output and results travel. On Windows, WSL distros work the same way.
+- **Git built in.** Every workspace is a folder, a checkout or a worktree, and New Worktree (Cmd-N) starts one per task. Uncommitted changes, the history of the repo or of a file, side-by-side diffs, commits with all their files, and the blame of the current line. Sik only reads: commit and push from a terminal.
+- **Every agent at a glance.** The workspaces of all your servers in one column, with a dot each: red when Claude is asking something, yellow while it works, green when it finished unseen. No hooks: Sik reads the terminals. Cmd-1…9 and Cmd-E jump between them.
 
 ## Install
 
@@ -34,7 +35,7 @@ Download a package from [Releases](https://github.com/scorredoira/sik/releases).
 
 **Linux:** a graphical Wayland or X11 session and a working Vulkan driver are required. On Ubuntu 24.04, install runtime dependencies with `sudo apt install libfontconfig1 libwayland-client0 libwebkit2gtk-4.1-0 libxkbcommon-x11-0 libx11-xcb1 libssl3t64 libzstd1 libvulkan1`. The optional installer also needs Python 3. Packages built on Ubuntu 24.04 require its glibc baseline; they are not universal binaries for older distributions.
 
-**Windows:** releases are unsigned, so Windows may show a publisher/SmartScreen warning. Install Git for Windows and the Windows OpenSSH client and make `git` and `ssh` available on PATH. The default terminal is PowerShell (PowerShell 7 when installed). Keep the bundled agent next to `sik.exe`. Close the app before replacing an installed release. To work inside WSL, add the distro as a server (`wsl:<distro>`, also listed in the server picker): sik installs its Linux agent there and runs files, git, language servers and terminals inside the distro, which it keeps running while the agent has terminals.
+**Windows:** releases are unsigned, so Windows may show a publisher/SmartScreen warning. Install Git for Windows and the Windows OpenSSH client and make `git` and `ssh` available on PATH. The default terminal is PowerShell (PowerShell 7 when installed). Keep the bundled agent next to `sik.exe`. Close the app before replacing an installed release. To work inside WSL, add the distro as a server (`wsl:<distro>`, also listed in the server picker): Sik installs its Linux agent there and runs files, git, language servers and terminals inside the distro, which it keeps running while the agent has terminals.
 
 Git must be installed on every machine where you use repositories. SSH connections currently support Linux x86_64 servers; every desktop package includes their static agent. Install Claude Code and any language servers you use separately.
 
@@ -48,6 +49,32 @@ cargo build --release --locked -p ui -p agent
 ```
 
 Both executables are in `target/release`. On macOS, `./install` builds and installs `Sik.app`; `./run` opens a development build. To include the Linux SSH agent when building on macOS, install `cargo-zigbuild` and Zig first.
+
+## Opening from a terminal
+
+`sik <path>` opens a folder, or a file in its repo, as a workspace in Sik. It works from any terminal: the agent links `sik` into `~/.local/bin` if that folder exists. Over SSH it opens in the app connected to that server.
+
+## Workspaces
+
+The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees folded under its checkout. Drag to reorder: a checkout moves along with its worktrees.
+
+New Worktree (Cmd-N) creates one with the repo's executable `.sik/create <name>` if it has one, or `git worktree add` otherwise. From a Sik terminal: `cd "$(sik worktree <name>)"`.
+
+On Windows, repository hooks can use `.sik/create.ps1`, `.sik/remove.ps1` and `.sik/format.ps1` (also `.cmd`, `.bat` or `.exe`). Extensionless hooks need `sh` on PATH. PowerShell terminals report their current directory automatically; custom shells should emit OSC 7 for directory tracking.
+
+Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.sik/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
+
+Cmd-1…9 go to a workspace, Cmd-E back to the previous one, Cmd-K finds one across servers. Every shortcut can be changed in Settings (Cmd-,).
+
+Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
+
+## Updates
+
+An installed Sik (`Sik.app` on macOS, or installed with the Linux package's `install.sh`) checks for a new release every few hours and installs it in the background; Settings → Updates turns this off, and Check for Updates still works. It never restarts by itself: the title bar shows a discreet Restart to update button, which asks before restarting. Workspaces and open files reopen as they were, and terminals keep running in the agent across the restart.
+
+## How it's built
+
+Rust and [GPUI](https://www.gpui.rs) with [gpui-component](https://github.com/longbridge/gpui-component). The app only draws; every machine runs `sik-agent`, which keeps the terminals and does search, git and LSP next to the files, over a local socket or `ssh`. `plan.md` has the design and what's left.
 
 ## Publishing releases
 
@@ -67,32 +94,6 @@ Alternatively, update `Cargo.toml` and `Cargo.lock`, commit and push, then open 
 
 macOS packages use ad hoc signing and Windows packages are unsigned. GUI behavior and installation should also be checked on real machines; CI tests the code and builds packages but does not exercise a real desktop session.
 
-## Opening from a terminal
-
-`sik <path>` opens a folder, or a file in its repo, as a workspace in sik. It works from any terminal: the agent links `sik` into `~/.local/bin` if that folder exists. Over SSH it opens in the app connected to that server.
-
-## Workspaces
-
-The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees folded under its checkout. Drag to reorder: a checkout moves along with its worktrees.
-
-New Worktree (Cmd-N) creates one with the repo's executable `.sik/create <name>` if it has one, or `git worktree add` otherwise. From a sik terminal: `cd "$(sik worktree <name>)"`.
-
-On Windows, repository hooks can use `.sik/create.ps1`, `.sik/remove.ps1` and `.sik/format.ps1` (also `.cmd`, `.bat` or `.exe`). Extensionless hooks need `sh` on PATH. PowerShell terminals report their current directory automatically; custom shells should emit OSC 7 for directory tracking.
-
-Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.sik/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
-
-Cmd-1…9 go to a workspace, Cmd-E back to the previous one, Cmd-K finds one across servers. Every shortcut can be changed in Settings (Cmd-,).
-
-## Updates
-
-An installed Sik (`Sik.app` on macOS, or installed with the Linux package's `install.sh`) checks for a new release every few hours and installs it in the background; Settings → Updates turns this off, and Check for Updates still works. It never restarts by itself: the title bar shows a discreet Restart to update button, which asks before restarting. Workspaces and open files reopen as they were, and terminals keep running in the agent across the restart.
-
-Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
-
-## How it's built
-
-Rust and [GPUI](https://www.gpui.rs) with [gpui-component](https://github.com/longbridge/gpui-component). The app only draws; every machine runs `sik-agent`, which keeps the terminals and does search, git and LSP next to the files, over a local socket or `ssh`. `plan.md` has the design and what's left.
-
 ## License
 
-GPL-3.0. Inspired by [herdr](https://github.com/herdrdev/herdr) (Apache-2.0), whose rules for detecting when Claude Code is waiting for an answer sik uses, with code adapted from [Zed](https://github.com/zed-industries/zed) (GPL-3.0).
+GPL-3.0. Inspired by [herdr](https://github.com/herdrdev/herdr) (Apache-2.0), whose rules for detecting when Claude Code is waiting for an answer Sik uses, with code adapted from [Zed](https://github.com/zed-industries/zed) (GPL-3.0).
