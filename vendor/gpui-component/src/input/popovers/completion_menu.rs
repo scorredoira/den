@@ -24,6 +24,9 @@ use crate::{
 struct ContextMenuDelegate {
     query: SharedString,
     menu: Entity<CompletionMenu>,
+    /// (sik) The menu's editor, kept here because the menu may be leased
+    /// (e.g. during `show`) when the selection changes.
+    editor: WeakEntity<EditorState>,
     items: Vec<Rc<CompletionItem>>,
     selected_ix: usize,
     /// (sik) Items already asked for their detail and documentation.
@@ -47,7 +50,7 @@ impl ContextMenuDelegate {
         if item.detail.is_some() || item.documentation.is_some() || !self.resolved.insert(ix) {
             return;
         }
-        let Some(editor) = self.menu.read(cx).editor.upgrade() else {
+        let Some(editor) = self.editor.upgrade() else {
             return;
         };
         let Some(provider) = editor.read(cx).lsp().completion_provider.clone() else {
@@ -289,6 +292,7 @@ impl CompletionMenu {
             let menu = ContextMenuDelegate {
                 query: SharedString::default(),
                 menu: view,
+                editor: editor.downgrade(),
                 items: vec![],
                 selected_ix: 0,
                 resolved: Default::default(),
