@@ -1,12 +1,12 @@
-## What's new in 0.1.5
+## What's new in 0.1.6
 
-- **Workspaces column** (formerly Tasks): each row shows its folder name, with the branch only when it differs. A repo's worktrees fold under its checkout. Drag a checkout to move it along with its worktrees.
-- **`sik <path>`** opens a folder, or a file in its repo, from any terminal, starting Sik if it isn't running. Over SSH it opens in the app connected to that server. `sik task` is now `sik worktree`.
-- **Repo hooks** move from `.task/` to `.sik/` (`create`, `remove`, `format`). Rename the folder in your repos.
-- **Automatic updates:** an installed Sik checks for new releases every few hours, installs them and restarts once nothing is unsaved. Terminals keep running across the restart.
-- Fix LSP crashes and make language servers sturdier.
+- **Windows and Linux:** the menu bar now shows in the window's title bar, with Settings and Exit in File and About in Help.
+- **First launch:** opened from the Start menu, a shortcut or a double click, Sik shows the welcome screen (or your last workspace) instead of opening its working folder.
+- **The branch is in the status bar.**
+- **The Changes panel only reads:** commit, stage, discard and switch branches in a terminal. The panel refreshes on its own when you do, also when staging, so its refresh button is gone.
+- Fix the side panel jumping while resizing it with the terminals hidden.
 
-After upgrading, restart the outdated agent from the workspaces column so that `sik <path>` and the `.sik/` hooks work. Restarting the agent also restarts its terminals.
+After upgrading, restart the outdated agent from the workspaces column so that changes made in a terminal refresh the Changes panel. Restarting the agent also restarts its terminals.
 
 ## Downloads
 
