@@ -22,13 +22,13 @@ mod shortcuts;
 mod signature;
 mod splits;
 mod terminals;
+mod update;
 mod workspace;
 
 use std::path::{Path, PathBuf};
 
 use gpui_kit::*;
 
-use crate::app::Sik;
 
 actions!(
     app,
@@ -87,8 +87,8 @@ actions!(
     ]
 );
 
-/// `editor [folder | file]`: given a file, opens it; the project is the
-/// current folder if it contains the file, otherwise the file's folder.
+/// `sik [folder | file]`: given a file, opens it in its repo (see
+/// `proto::open_target`).
 /// Opened from the Dock or the Finder with nothing to resume, there's no
 /// folder: the welcome screen offers to open one.
 fn main() {
@@ -105,91 +105,69 @@ fn main() {
         .nth(1)
         .filter(|arg| !arg.to_string_lossy().starts_with("-psn"))
         .map(PathBuf::from);
-    let arg = arg.map(|path| path.canonicalize().unwrap_or(path));
-    // With nothing to open, go back to the last task.
+    let arg = arg.map(|path| cwd.join(&path).canonicalize().unwrap_or(path));
+    // With nothing to open, go back to the last workspace.
     let resume = arg.is_none();
     let (root, file) = match arg {
-        Some(path) if path.is_file() => {
-            let root = if path.starts_with(&cwd) {
-                cwd
-            } else {
-                path.parent().map(PathBuf::from).unwrap_or(cwd)
-            };
-            (Some(root), Some(path))
+        Some(path) => {
+            let (root, file) = proto::open_target(&path);
+            (Some(root), file)
         }
-        Some(path) => (Some(path), None),
         None if launched => (None, None),
         None => (Some(cwd), None),
     };
+
+    // For `sik <path>` to start the app when it isn't running.
+    if let (Ok(exe), Ok(file)) = (std::env::current_exe(), proto::app_file()) {
+        let _ = std::fs::create_dir_all(file.parent().unwrap_or(&file));
+        let _ = std::fs::write(file, exe.to_string_lossy().as_bytes());
+    }
 
     // Terminals live in the agent; if it doesn't start, the app works without them.
     let agent = agent::connect()
         .inspect_err(|err| eprintln!("no agent: {err:#}"))
         .ok();
 
-    gpui_kit::application()
-        .with_assets(assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            ui_term::init(cx);
-            config::Config::init(cx);
-            language::register();
-            bind_keys(cx);
-            app_menu::init(cx);
-            app_menu::set(cx);
+    let application = gpui_kit::application().with_assets(assets::Assets);
+    // The Dock icon clicked with the window closed: it opens again.
+    application.on_reopen(app::reopen);
+    application.run(move |cx| {
+        gpui_kit::init(cx);
+        ui_term::init(cx);
+        config::Config::init(cx);
+        language::register();
+        bind_keys(cx);
+        app_menu::init(cx);
+        app_menu::set(cx);
 
-            let title = match &root {
-                Some(root) => root
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| root.display().to_string()),
-                None => "sik".to_string(),
-            };
-            // The app draws the title bar itself (`TitleBar`), in the theme's color.
-            let options = WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
-                    ..gpui_kit::component::TitleBar::title_bar_options()
-                }),
-                window_bounds: Some(window_bounds(cx)),
-                ..gpui_kit::component::TitleBar::window_options()
-            };
-            let (window, sik) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| Sik::new(root.clone(), file.clone(), resume, agent.clone(), window, cx))
-            })
-            .expect("could not open the window");
-            // With unsaved files, Cmd-Q asks before quitting.
-            let sik = sik.downgrade();
-            // The action arrives while the window is busy dispatching it, and
-            // it can't be entered from there: ask right afterwards.
-            cx.on_action(move |_: &Quit, cx| {
-                let sik = sik.clone();
-                cx.defer(move |cx| {
-                    let ready = window
-                        .update(cx, |_, window, cx| sik.update(cx, |sik, cx| sik.confirm_quit(window, cx)))
-                        .ok()
-                        .and_then(Result::ok)
-                        .unwrap_or(true);
-                    if ready {
-                        cx.quit();
-                    }
-                });
-            });
-            cx.activate(true);
-        });
+        update::init(cx);
+        app::set_agent(agent.clone(), cx);
+        if let Some(agent) = &agent {
+            listen_for_open(agent, cx);
+        }
+        app::open_window(root.clone(), file.clone(), resume, cx);
+        // With unsaved files, Cmd-Q asks before quitting. The action arrives
+        // while a window is busy dispatching it, and it can't be entered
+        // from there: ask right afterwards.
+        cx.on_action(|_: &Quit, cx| cx.defer(app::quit));
+        cx.activate(true);
+    });
 }
 
-/// The window opens where it was closed; the first time, covering almost the
-/// whole screen, which is the size people work at.
-fn window_bounds(cx: &App) -> WindowBounds {
-    if let Some(saved) = config::Config::get(cx).window {
-        return saved.bounds();
-    }
-    let screen = cx
-        .primary_display()
-        .map(|display| display.bounds().size)
-        .unwrap_or(size(px(1440.), px(900.)));
-    WindowBounds::centered(size(screen.width * 0.92, screen.height * 0.9), cx)
+/// `sik <path>` in this machine's terminals, also with the window closed.
+fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
+    let (tx, rx) = smol::channel::unbounded::<(PathBuf, Option<PathBuf>)>();
+    agent.watch(move |event| {
+        if let proto::Event::Open { root, file } = event {
+            let _ = tx.try_send((root.clone(), file.clone()));
+        }
+    });
+    cx.spawn(async move |cx| {
+        while let Ok((root, file)) = rx.recv().await {
+            cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx));
+        }
+    })
+    .detach();
 }
 
 /// The app's shortcuts (see `shortcuts`) and the tree's, which only apply

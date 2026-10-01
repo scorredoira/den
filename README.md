@@ -67,15 +67,25 @@ Alternatively, update `Cargo.toml` and `Cargo.lock`, commit and push, then open 
 
 macOS packages use ad hoc signing and Windows packages are unsigned. GUI behavior and installation should also be checked on real machines; CI tests the code and builds packages but does not exercise a real desktop session.
 
-## Tasks
+## Opening from a terminal
 
-New Task (Cmd-N) creates a worktree with the repo's executable `.task/create <name>` if it has one, or `git worktree add` otherwise. From a sik terminal: `cd "$(sik task <name>)"`.
+`sik <path>` opens a folder, or a file in its repo, as a workspace in sik. It works from any terminal: the agent links `sik` into `~/.local/bin` if that folder exists. Over SSH it opens in the app connected to that server.
 
-On Windows, repository hooks can use `.task/create.ps1`, `.task/remove.ps1` and `.task/format.ps1` (also `.cmd`, `.bat` or `.exe`). Extensionless hooks need `sh` on PATH. PowerShell terminals report their current directory automatically; custom shells should emit OSC 7 for directory tracking.
+## Workspaces
 
-Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.task/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
+The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees folded under its checkout. Drag to reorder: a checkout moves along with its worktrees.
 
-Cmd-1…9 go to a task, Cmd-E back to the previous one, Cmd-K finds one across servers. Every shortcut can be changed in Settings (Cmd-,).
+New Worktree (Cmd-N) creates one with the repo's executable `.sik/create <name>` if it has one, or `git worktree add` otherwise. From a sik terminal: `cd "$(sik worktree <name>)"`.
+
+On Windows, repository hooks can use `.sik/create.ps1`, `.sik/remove.ps1` and `.sik/format.ps1` (also `.cmd`, `.bat` or `.exe`). Extensionless hooks need `sh` on PATH. PowerShell terminals report their current directory automatically; custom shells should emit OSC 7 for directory tracking.
+
+Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.sik/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
+
+Cmd-1…9 go to a workspace, Cmd-E back to the previous one, Cmd-K finds one across servers. Every shortcut can be changed in Settings (Cmd-,).
+
+## Updates
+
+An installed Sik (`Sik.app` on macOS, or installed with the Linux package's `install.sh`) checks for a new release every few hours, installs it and restarts into it: right away if nothing is unsaved, otherwise once it is, or with the title bar's button. Terminals keep running in the agent across the restart.
 
 Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
 

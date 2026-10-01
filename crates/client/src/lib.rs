@@ -181,7 +181,7 @@ impl Client {
                             callback(result.map_err(|err| anyhow!(err)));
                         }
                     }
-                    ServerMessage::Event(event @ (Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. })) => {
+                    ServerMessage::Event(event @ (Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. } | Event::Open { .. })) => {
                         for watcher in watchers.lock().unwrap().iter() {
                             watcher(&event);
                         }
@@ -191,7 +191,7 @@ impl Client {
                             Event::TermOutput { term, .. }
                             | Event::TermTitle { term, .. }
                             | Event::TermExit { term } => *term,
-                            Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. } => unreachable!(),
+                            Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. } | Event::Open { .. } => unreachable!(),
                         };
                         let exit = matches!(event, Event::TermExit { .. });
                         let mut subscribers = subscribers.lock().unwrap();

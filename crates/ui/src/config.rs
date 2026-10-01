@@ -125,6 +125,9 @@ pub struct Config {
     /// List order, set by dragging (same keys as `hidden`); those not in it
     /// go at the end.
     pub order: Vec<String>,
+    /// Repos whose worktrees are folded under their checkout (same keys as
+    /// `hidden`, the checkout's).
+    pub collapsed: Vec<String>,
     pub hosts: Vec<HostConfig>,
     pub layout: Layout,
     pub window: Option<SavedWindow>,

@@ -1,5 +1,5 @@
 //! Repos and tasks. A task is a git worktree; how it's created is up to
-//! each repo through its `.task/create` script, which the agent calls if present.
+//! each repo through its `.sik/create` script, which the agent calls if present.
 
 use std::{
     path::{Path, PathBuf},
@@ -9,11 +9,11 @@ use anyhow::{Context as _, Result, bail};
 use proto::TaskInfo;
 
 /// Script a repo creates its tasks with: it receives the task name.
-const CREATE_SCRIPT: &str = ".task/create";
+const CREATE_SCRIPT: &str = "create";
 
 /// Script a repo removes its tasks with: it receives the name (the branch)
 /// and the worktree folder.
-const REMOVE_SCRIPT: &str = ".task/remove";
+const REMOVE_SCRIPT: &str = "remove";
 
 fn repos_file() -> Result<PathBuf> {
     Ok(proto::config_dir()?.join("repos.json"))
@@ -122,7 +122,7 @@ pub fn create(path: &Path, name: &str) -> Result<TaskInfo> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c)) {
         bail!("invalid task name: use letters, digits, `-`, `_`, `.` or `/`");
     }
-    let script = crate::platform::repo_script(&repo.join(CREATE_SCRIPT));
+    let script = crate::platform::repo_hook(repo, CREATE_SCRIPT);
     let output = if let Some(script) = script {
         run_script(repo, &script, &[name])?
     } else {
@@ -161,7 +161,7 @@ pub fn remove(path: &Path) -> Result<()> {
         bail!("the main checkout cannot be removed");
     }
     let name = task.branch.clone().unwrap_or_default();
-    let script = crate::platform::repo_script(&repo.join(REMOVE_SCRIPT));
+    let script = crate::platform::repo_hook(&repo, REMOVE_SCRIPT);
     let output = if let Some(script) = script {
         run_script(&repo, &script, &[&name, &dunce::simplified(path).to_string_lossy()])?
     } else {
@@ -250,8 +250,8 @@ mod tests {
     #[cfg(unix)]
     fn calls_the_repo_script() {
         let repo = repo("script");
-        std::fs::create_dir_all(repo.join(".task")).unwrap();
-        let script = repo.join(".task/create");
+        std::fs::create_dir_all(repo.join(".sik")).unwrap();
+        let script = repo.join(".sik/create");
         std::fs::write(&script, "#!/bin/sh\ngit worktree add -q -b \"$1\" \"../other-place-$1\"\necho done\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -263,8 +263,8 @@ mod tests {
     #[cfg(windows)]
     fn calls_powershell_repo_script() {
         let repo = repo("powershell");
-        std::fs::create_dir_all(repo.join(".task")).unwrap();
-        std::fs::write(repo.join(".task/create.ps1"),
+        std::fs::create_dir_all(repo.join(".sik")).unwrap();
+        std::fs::write(repo.join(".sik/create.ps1"),
             "param([string]$TaskName)\ngit worktree add -q -b $TaskName \"../custom-$TaskName\"\nexit $LASTEXITCODE\n").unwrap();
         let task = create(&repo, "windows").unwrap();
         assert_eq!(task.path.file_name().unwrap(), "custom-windows");
@@ -290,8 +290,8 @@ mod tests {
     fn remove_script_must_really_remove() {
         let repo = repo("noremove");
         let task = create(&repo, "x").unwrap();
-        std::fs::create_dir_all(repo.join(".task")).unwrap();
-        let script = repo.join(".task/remove");
+        std::fs::create_dir_all(repo.join(".sik")).unwrap();
+        let script = repo.join(".sik/remove");
         std::fs::write(&script, "#!/bin/sh\necho \"doing nothing with $1 in $2\"\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -303,8 +303,8 @@ mod tests {
     #[cfg(unix)]
     fn reports_script_failures() {
         let repo = repo("fails");
-        std::fs::create_dir_all(repo.join(".task")).unwrap();
-        let script = repo.join(".task/create");
+        std::fs::create_dir_all(repo.join(".sik")).unwrap();
+        let script = repo.join(".sik/create");
         std::fs::write(&script, "#!/bin/sh\necho 'no space left' >&2\nexit 3\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();

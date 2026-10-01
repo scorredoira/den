@@ -534,6 +534,17 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         Request::RepoList => Ok(Response::Repos(tasks::repos())),
         Request::BlockedList => Ok(Response::Files(state.lock().unwrap().blocked.iter().cloned().collect())),
         Request::Version => Ok(Response::Text(own_build_id())),
+        Request::Open { root, file } => {
+            let state = state.lock().unwrap();
+            let mut count = 0;
+            for (other, client) in &state.clients {
+                if *other != conn {
+                    let event = Event::Open { root: root.clone(), file: file.clone() };
+                    count += usize::from(client.send(ServerMessage::Event(event)).is_ok());
+                }
+            }
+            Ok(Response::Count(count))
+        }
         Request::TaskCreate { .. }
         | Request::TaskRemove { .. }
         | Request::GitChanges { .. }

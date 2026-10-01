@@ -77,11 +77,11 @@ pub enum Request {
     /// Tasks from all known repos: their worktrees, the main one included.
     TaskList,
     /// Creates a task in the repo of `repo` (a worktree works too): runs
-    /// `.task/create <name>` if it exists and, otherwise, `git worktree add`.
+    /// `.sik/create <name>` if it exists and, otherwise, `git worktree add`.
     /// May take a while; the response arrives when it's done. With `open`, the
     /// connected UIs open it (`sik task` from a sik terminal).
     TaskCreate { repo: PathBuf, name: String, open: bool },
-    /// Removes the task (its worktree) with the repo's `.task/remove` if it
+    /// Removes the task (its worktree) with the repo's `.sik/remove` if it
     /// exists and, otherwise, with `git worktree remove` (which refuses if
     /// there are uncommitted changes). Closes its terminals. May take a while.
     TaskRemove { path: PathBuf },
@@ -152,6 +152,10 @@ pub enum Request {
     /// `text`, the editor's, formatted for file `path` in the task at
     /// `root`. Responds `Formatted`.
     Format { root: PathBuf, path: PathBuf, text: String },
+    /// `sik <path>` in a terminal: asks the UIs connected to this agent to
+    /// open `root` as a workspace, with `file` in it. Responds `Count`: how
+    /// many other connections it was sent to (none: no app is listening).
+    Open { root: PathBuf, file: Option<PathBuf> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -319,6 +323,7 @@ pub enum Response {
     Signature(Option<LspSignature>),
     /// `None` if nothing formats that kind of file; `by` says what did.
     Formatted { text: Option<String>, by: Option<String> },
+    Count(usize),
 }
 
 /// A port a process started from a terminal listens on (at loopback or on
@@ -397,6 +402,9 @@ pub enum Event {
     /// A task started or stopped waiting for an answer (Claude is asking something).
     /// Sent to every connection, like `Activity`.
     Blocked { group: String, blocked: bool },
+    /// Asks the UI to open `root` as a workspace, with `file` in it (see
+    /// `Request::Open`).
+    Open { root: PathBuf, file: Option<PathBuf> },
 }
 
 /// Fingerprint of a binary (64-bit FNV-1a): tells agent versions apart.
@@ -540,6 +548,24 @@ pub fn socket_path() -> Result<PathBuf> {
 
 /// App name: paths and binaries derive from it.
 pub const APP: &str = "sik";
+
+/// Where the app writes its own binary's path on starting, for `sik <path>`
+/// to start it when it isn't running (the agent runs from a copy, elsewhere).
+pub fn app_file() -> Result<PathBuf> {
+    Ok(state_dir()?.join("app"))
+}
+
+/// What `sik <path>` opens: a folder as it is; a file in its repo (the
+/// folder of the nearest `.git` above it), or in its own folder outside one.
+/// `path` is absolute.
+pub fn open_target(path: &std::path::Path) -> (PathBuf, Option<PathBuf>) {
+    if path.is_dir() {
+        return (path.to_path_buf(), None);
+    }
+    let parent = path.parent().unwrap_or(path);
+    let root = parent.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(parent);
+    (root.to_path_buf(), Some(path.to_path_buf()))
+}
 
 /// Name of the agent binary.
 pub const AGENT_BIN: &str = if cfg!(windows) { "sik-agent.exe" } else { "sik-agent" };

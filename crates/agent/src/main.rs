@@ -3,7 +3,7 @@
 //! - `sik-agent daemon`: listens on the local socket (started by the UI).
 //! - `sik-agent bridge`: joins stdin/stdout to the socket, starting the daemon
 //!   if needed. It's what `ssh host sik-agent bridge` runs (phase 3).
-//! - `sik task <name>`: creates a task from a terminal (see `cli.rs`).
+//! - `sik <path>`, `sik worktree <name>`: from a terminal (see `cli.rs`).
 
 mod blocked;
 mod cli;
@@ -34,7 +34,8 @@ fn main() -> Result<()> {
         Some("daemon") => daemon(),
         None if !cli::invoked_as_sik() => daemon(),
         Some("bridge") => bridge(),
-        Some("task") => cli::task(&args[1..]),
+        Some("worktree" | "wt" | "task") => cli::task(&args[1..]),
+        Some(path) if cli::invoked_as_sik() && !path.starts_with('-') && args.len() == 1 => cli::open(path),
         _ => {
             eprint!("{}", cli::USAGE);
             std::process::exit(2);

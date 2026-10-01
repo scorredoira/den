@@ -44,10 +44,13 @@ mod welcome;
 const REFRESH: Duration = Duration::from_secs(5);
 
 /// Name of this machine in the tasks column.
-const LOCAL: &str = "local";
+pub const LOCAL: &str = "local";
 
-/// Width of the title bar's tasks column button.
+/// Width of the title bar's workspaces column button.
 const TOGGLE_WIDTH: f32 = 22.;
+
+/// Width of the fold arrow before a repo with worktrees.
+const FOLD_WIDTH: f32 = 12.;
 
 /// How many folders Open Recent remembers.
 const RECENT: usize = 20;
@@ -132,6 +135,118 @@ impl Render for DragPreview {
     }
 }
 
+/// The window, and the local agent it talks to (kept for opening it again
+/// after it's closed: the app goes on without it on macOS).
+#[derive(Default)]
+struct Main {
+    window: Option<(AnyWindowHandle, WeakEntity<Sik>)>,
+    agent: Option<Arc<Client>>,
+}
+
+impl Global for Main {}
+
+/// The local agent, for the window.
+pub fn set_agent(agent: Option<Arc<Client>>, cx: &mut App) {
+    cx.default_global::<Main>().agent = agent;
+}
+
+/// The window, while it's open.
+fn main_window(cx: &App) -> Option<(AnyWindowHandle, Entity<Sik>)> {
+    let (handle, sik) = cx.try_global::<Main>()?.window.as_ref()?;
+    Some((*handle, sik.upgrade()?))
+}
+
+/// Opens the window with `root` and `file` in it; with no `root`, the last
+/// workspace if `resume`, or the welcome screen.
+pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, cx: &mut App) {
+    let agent = cx.default_global::<Main>().agent.clone();
+    let title = match &root {
+        Some(root) => folder_name(root),
+        None => "sik".to_string(),
+    };
+    // The app draws the title bar itself (`TitleBar`), in the theme's color.
+    let options = WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some(title.into()),
+            ..TitleBar::title_bar_options()
+        }),
+        window_bounds: Some(window_bounds(cx)),
+        ..TitleBar::window_options()
+    };
+    let opened = gpui_kit::open_window(options, cx, |window, cx| {
+        cx.new(|cx| Sik::new(root.clone(), file.clone(), resume, agent, window, cx))
+    });
+    match opened {
+        Ok((handle, sik)) => cx.default_global::<Main>().window = Some((handle, sik.downgrade())),
+        Err(err) => eprintln!("could not open the window: {err:#}"),
+    }
+}
+
+/// Clicking the Dock icon with the window closed opens it again.
+pub fn reopen(cx: &mut App) {
+    if main_window(cx).is_none() {
+        open_window(None, None, true, cx);
+    }
+}
+
+/// `sik <path>` in a terminal of `host`: `root` as a workspace, with `file`
+/// open in it, and the window to the front (opened if it was closed).
+pub fn handle_open(host: SharedString, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
+    match main_window(cx) {
+        Some((handle, sik)) => {
+            handle
+                .update(cx, |_, window, cx| {
+                    sik.update(cx, |sik, cx| sik.open_from_terminal(host, root, file, window, cx));
+                    window.activate_window();
+                })
+                .ok();
+        }
+        None if host == LOCAL => open_window(Some(root), file, false, cx),
+        None => {
+            open_window(None, None, false, cx);
+            if let Some((handle, sik)) = main_window(cx) {
+                handle
+                    .update(cx, |_, window, cx| {
+                        sik.update(cx, |sik, cx| sik.open_from_terminal(host, root, file, window, cx))
+                    })
+                    .ok();
+            }
+        }
+    }
+    cx.activate(true);
+}
+
+/// Whether there are unsaved files.
+pub fn anything_unsaved(cx: &App) -> bool {
+    main_window(cx).is_some_and(|(_, sik)| !sik.read(cx).unsaved(cx).is_empty())
+}
+
+/// Cmd-Q: quits once there are no unsaved files, or they're saved.
+pub fn quit(cx: &mut App) {
+    if let Some((handle, sik)) = main_window(cx) {
+        let ready = handle
+            .update(cx, |_, window, cx| sik.update(cx, |sik, cx| sik.confirm_quit(window, cx)))
+            .unwrap_or(true);
+        if !ready {
+            return;
+        }
+    }
+    crate::update::relaunch_if_restarting(cx);
+    cx.quit();
+}
+
+/// The window opens where it was closed; the first time, covering almost
+/// the whole screen, which is the size people work at.
+fn window_bounds(cx: &App) -> WindowBounds {
+    if let Some(saved) = Config::get(cx).window {
+        return saved.bounds();
+    }
+    let screen = cx
+        .primary_display()
+        .map(|display| display.bounds().size)
+        .unwrap_or(size(px(1440.), px(900.)));
+    WindowBounds::centered(size(screen.width * 0.92, screen.height * 0.9), cx)
+}
 
 pub struct Sik {
     hosts: Vec<Host>,
@@ -478,6 +593,7 @@ impl Sik {
     /// `sik task` on it.
     fn watch_host(&mut self, name: SharedString, client: Arc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         let (tx, rx) = smol::channel::unbounded::<Event>();
+        let name_for_watch = name.clone();
         client.watch(move |event| {
             let event = match event {
                 Event::Activity { group, working } => Event::Activity {
@@ -489,6 +605,11 @@ impl Sik {
                     blocked: *blocked,
                 },
                 Event::OpenTask { path } => Event::OpenTask { path: path.clone() },
+                // This machine's come to the app (see `main`), even with no window.
+                Event::Open { root, file } if name_for_watch != LOCAL => Event::Open {
+                    root: root.clone(),
+                    file: file.clone(),
+                },
                 _ => return,
             };
             let _ = tx.try_send(event);
@@ -528,6 +649,10 @@ impl Sik {
                             this.set_working(&key, working, cx)
                         })
                         .is_ok(),
+                    Event::Open { root, file } => {
+                        let host = name.clone();
+                        this.update(cx, |_, cx| cx.defer(move |cx| handle_open(host, root, file, cx))).is_ok()
+                    }
                     Event::OpenTask { path } => {
                         let tasks = list_tasks(&client).await;
                         this.update_in(cx, |this, window, cx| {
@@ -619,8 +744,9 @@ impl Sik {
         cx.notify();
     }
 
-    /// Visible tasks in list order (the one for Cmd-1…9): by server and,
-    /// within each, by the dragged order.
+    /// Visible workspaces in list order (the one for Cmd-1…9): by server;
+    /// within each, a repo's checkout followed by its worktrees, the repos
+    /// and the worktrees within them in the dragged order.
     fn ordered<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
         let config = Config::get(cx);
         let mut entries: Vec<(usize, TaskKey, &TaskInfo)> = Vec::new();
@@ -645,9 +771,20 @@ impl Sik {
                 .position(|other| other == &key)
                 .unwrap_or(usize::MAX)
         };
-        entries.sort_by(|(ha, ka, a), (hb, kb, b)| {
-            (ha, position(ka), &a.repo, !a.main, &a.branch).cmp(&(hb, position(kb), &b.repo, !b.main, &b.branch))
-        });
+        // A repo goes where the first of its own was dragged; never dragged,
+        // at the end, by name.
+        let mut groups: HashMap<(usize, &Path), usize> = HashMap::new();
+        for (host, key, task) in &entries {
+            let task: &'a TaskInfo = task;
+            let rank = groups.entry((*host, task.repo.as_path())).or_insert(usize::MAX);
+            *rank = (*rank).min(position(key));
+        }
+        let sort_key = |(host, key, task): &(usize, TaskKey, &TaskInfo)| {
+            let repo = folder_name(&task.repo).to_lowercase();
+            let group = groups[&(*host, task.repo.as_path())];
+            (*host, group, repo, task.repo.clone(), !task.main, position(key), folder_name(&task.path).to_lowercase())
+        };
+        entries.sort_by_cached_key(sort_key);
         entries.into_iter().map(|(_, key, task)| (key, task)).collect()
     }
 
@@ -693,7 +830,7 @@ impl Sik {
                 let local = key.host == LOCAL;
                 let workspace = cx.new(|cx| Workspace::new(root, client, local, key.config(), window, cx));
                 workspace.update(cx, |workspace, cx| workspace.restore(window, cx));
-                if local && let Some(file) = self.open_file.take() {
+                if let Some(file) = self.open_file.take() {
                     workspace.update(cx, |workspace, cx| workspace.open(file, true, window, cx));
                 }
                 self.workspaces.insert(key.clone(), workspace.clone());
@@ -749,6 +886,7 @@ impl Sik {
 
     fn cancel_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.quit_confirm = None;
+        crate::update::cancel_restart(cx);
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -774,6 +912,7 @@ impl Sik {
             this.update(cx, |this, cx| {
                 this.quit_saving = false;
                 if ok && this.unsaved(cx).is_empty() {
+                    crate::update::relaunch_if_restarting(cx);
                     cx.quit();
                 }
                 cx.notify();
@@ -908,7 +1047,7 @@ impl Sik {
             return;
         }
         let labels: Vec<String> = self.ordered(cx).into_iter().map(|(key, _)| self.label(&key)).collect();
-        let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Go to task…", false, window, cx));
+        let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Go to workspace…", false, window, cx));
         let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
             this.task_picker = None;
             match event {
@@ -995,6 +1134,39 @@ impl Sik {
         let config = key.config();
         Config::update(cx, |c| c.hidden.retain(|hidden| hidden != &config));
         self.activate(key, window, cx);
+    }
+
+    /// `sik <path>`: `root` as a workspace (the worktree containing it, if
+    /// any), with `file` open in it. A server not yet connected enters it on
+    /// connecting.
+    fn open_from_terminal(
+        &mut self,
+        host: SharedString,
+        root: PathBuf,
+        file: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = self
+            .host(&host)
+            .and_then(|host| {
+                host.tasks
+                    .iter()
+                    .filter(|task| root.starts_with(&task.path))
+                    .max_by_key(|task| task.path.components().count())
+                    .map(|task| task.path.clone())
+            })
+            .unwrap_or(root);
+        self.open_file = file;
+        if self.client(&host).is_none() {
+            self.pending_last = Some(TaskKey { host, path });
+            return;
+        }
+        self.open_path(host, path, window, cx);
+        // Already open: the file goes in it now.
+        if let (Some(file), Some(workspace)) = (self.open_file.take(), self.active_workspace()) {
+            workspace.update(cx, |workspace, cx| workspace.open(file, true, window, cx));
+        }
     }
 
     /// Cmd-O: a local folder, with the system's dialog.
@@ -1296,18 +1468,54 @@ impl Sik {
         cx.notify();
     }
 
-    /// Puts `dragged` right before `target` and saves the order.
+    /// Dropping `dragged` on `target`, and saves the order. A repo's checkout
+    /// takes its worktrees along, before `target`'s repo; a worktree only
+    /// moves within its repo, before `target` (first, dropped on the checkout).
     fn move_task(&mut self, dragged: &TaskKey, target: &TaskKey, cx: &mut Context<Self>) {
         if dragged == target || dragged.host != target.host {
             return;
         }
-        let mut order: Vec<String> = self.ordered(cx).into_iter().map(|(key, _)| key.config()).collect();
-        let Some(from) = order.iter().position(|key| *key == dragged.config()) else {
+        let (Some(from), Some(to)) = (self.task(dragged), self.task(target)) else {
             return;
         };
-        let moved = order.remove(from);
-        let to = order.iter().position(|key| *key == target.config()).unwrap_or(order.len());
-        order.insert(to, moved);
+        let (main, same_repo, onto_main) = (from.main, from.repo == to.repo, to.main);
+        // The list as runs of the same repo, each its checkout first.
+        let mut groups: Vec<Vec<TaskKey>> = Vec::new();
+        let mut last: Option<(SharedString, PathBuf)> = None;
+        for (key, task) in self.ordered(cx) {
+            let group = (key.host.clone(), task.repo.clone());
+            if last.as_ref() != Some(&group) {
+                groups.push(Vec::new());
+                last = Some(group);
+            }
+            groups.last_mut().expect("just pushed").push(key);
+        }
+        let find = |groups: &[Vec<TaskKey>], key: &TaskKey| groups.iter().position(|group| group.contains(key));
+        let (Some(source), Some(dest)) = (find(&groups, dragged), find(&groups, target)) else {
+            return;
+        };
+        if main {
+            if same_repo {
+                return;
+            }
+            let moved = groups.remove(source);
+            let dest = find(&groups, target).unwrap_or(groups.len());
+            groups.insert(dest, moved);
+        } else {
+            if !same_repo {
+                return;
+            }
+            let group = &mut groups[dest];
+            group.retain(|key| key != dragged);
+            let checkout = usize::from(group.first().is_some_and(|key| self.task(key).is_some_and(|task| task.main)));
+            let at = if onto_main {
+                checkout
+            } else {
+                group.iter().position(|key| key == target).unwrap_or(group.len())
+            };
+            group.insert(at.max(checkout), dragged.clone());
+        }
+        let order: Vec<String> = groups.into_iter().flatten().map(|key| key.config()).collect();
         Config::update(cx, |c| c.order = order);
         cx.notify();
     }
@@ -1671,7 +1879,7 @@ impl Sik {
                     div()
                         .text_ui_small(cx)
                         .text_color(theme.muted_foreground)
-                        .child(format!("New task in {place}")),
+                        .child(format!("New worktree in {place}")),
                 )
                 .child(Input::new(&form.input))
                 .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(if form.busy {
@@ -1685,8 +1893,10 @@ impl Sik {
         let mut sections: Vec<AnyElement> = Vec::new();
         for host in &self.hosts {
             sections.push(self.render_host_header(host, cx));
-            for (key, task) in ordered.iter().filter(|(key, _)| key.host == host.name) {
-                sections.push(self.render_task(key, task, cx));
+            let entries: Vec<(TaskKey, &TaskInfo)> =
+                ordered.iter().filter(|(key, _)| key.host == host.name).cloned().collect();
+            for group in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo) {
+                sections.push(self.render_repo(group, cx));
             }
         }
         let theme = cx.theme();
@@ -1699,7 +1909,7 @@ impl Sik {
                 .text_ui_small(cx)
                 .text_color(theme.muted_foreground)
                 .child(div().whitespace_normal().child(
-                    "Add a repo to work on several branches at once: each task is a worktree with its own terminals and Claude Code session.",
+                    "Add a repo to work on several branches at once: each worktree is a workspace with its own terminals and Claude Code session.",
                 ))
                 .child(
                     div()
@@ -1723,7 +1933,7 @@ impl Sik {
                     .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
-                    .child("TASKS")
+                    .child("WORKSPACES")
                     .context_menu(move |menu, _, _| column_menu(menu, &header_menu)),
             )
             .children(new_task)
@@ -1747,11 +1957,68 @@ impl Sik {
             .into_any_element()
     }
 
-    fn render_task(&self, key: &TaskKey, task: &TaskInfo, cx: &mut Context<Self>) -> AnyElement {
+    /// A repo's workspaces: its checkout and, folded under it, its worktrees.
+    /// A repo without worktrees is a single row.
+    fn render_repo(&self, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
+        let (head, worktrees) = match group {
+            [(key, task), rest @ ..] if task.main => (Some((key, *task)), rest),
+            _ => (None, group),
+        };
+        let Some(&(ref first, first_task)) = group.first() else {
+            return div().into_any_element();
+        };
+        if worktrees.is_empty() {
+            return self.render_task(first, first_task, Some(None), &[], cx);
+        }
+        let fold_key = TaskKey { host: first.host.clone(), path: first_task.repo.clone() }.config();
+        let collapsed = Config::get(cx).collapsed.contains(&fold_key);
+        let header = match head {
+            Some((key, task)) => self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx),
+            // Its checkout is hidden: the repo's name, which only folds.
+            None => {
+                let theme = cx.theme();
+                h_flex()
+                    .id(SharedString::from(format!("repo-{fold_key}")))
+                    .h(px(26.))
+                    .px_3()
+                    .gap_1()
+                    .text_ui(cx)
+                    .text_color(theme.muted_foreground)
+                    .child(fold_chevron(collapsed, cx))
+                    .child(folder_name(&first_task.repo))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(&fold_key, cx)))
+                    .into_any_element()
+            }
+        };
+        let rows: Vec<AnyElement> = if collapsed {
+            Vec::new()
+        } else {
+            worktrees.iter().map(|(key, task)| self.render_task(key, task, None, &[], cx)).collect()
+        };
+        let line = cx.theme().sidebar_border;
+        v_flex()
+            .my_1()
+            .child(header)
+            .when(!collapsed, |el| el.child(v_flex().ml(px(18.)).border_l_1().border_color(line).children(rows)))
+            .into_any_element()
+    }
+
+    fn toggle_fold(&mut self, fold_key: &str, cx: &mut Context<Self>) {
+        Config::update(cx, |c| {
+            if c.collapsed.iter().any(|key| key == fold_key) {
+                c.collapsed.retain(|key| key != fold_key);
+            } else {
+                c.collapsed.push(fold_key.to_string());
+            }
+        });
+        cx.notify();
+    }
+
+    /// The dot before a workspace: deleting, waiting for an answer, working,
+    /// finished without being looked at, or nothing.
+    fn status(&self, key: &TaskKey, task: &TaskInfo, cx: &App) -> (&'static str, Hsla) {
         let theme = cx.theme();
-        let label: SharedString = task_label(task).into();
-        let active = self.active.as_ref() == Some(key);
-        let (dot, color) = if self.removing.contains(key) {
+        if self.removing.contains(key) {
             ("…", theme.muted_foreground)
         } else if self.blocked.contains(key) {
             ("●", theme.danger)
@@ -1761,7 +2028,42 @@ impl Sik {
             ("●", theme.success)
         } else {
             ("○", theme.muted_foreground)
-        };
+        }
+    }
+
+    /// A workspace's row. `fold` is set on the column's own rows (not a
+    /// repo's worktrees): `Some((key, collapsed))` for a checkout with
+    /// worktrees; `folded`, those worktrees, whose state shows on it while
+    /// they're hidden.
+    fn render_task(
+        &self,
+        key: &TaskKey,
+        task: &TaskInfo,
+        fold: Option<Option<(String, bool)>>,
+        folded: &[(TaskKey, &TaskInfo)],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label: SharedString = folder_name(&task.path).into();
+        // The branch, when the folder's name doesn't say it.
+        let branch = task.branch.clone().filter(|branch| *branch != *label);
+        let active = self.active.as_ref() == Some(key);
+        let (mut dot, mut color) = self.status(key, task, cx);
+        if let Some(Some((_, true))) = &fold {
+            // Folded: the most urgent of its worktrees, if more than its own.
+            let urgency = |dot: &str, color: Hsla| match dot {
+                "●" if color == cx.theme().danger => 3,
+                "◐" => 2,
+                "●" => 1,
+                _ => 0,
+            };
+            for (key, task) in folded {
+                let (other, other_color) = self.status(key, task, cx);
+                if urgency(other, other_color) > urgency(dot, color) {
+                    (dot, color) = (other, other_color);
+                }
+            }
+        }
+        let theme = cx.theme();
         let known = self
             .host(&key.host)
             .is_some_and(|host| host.tasks.iter().any(|other| other.path == key.path));
@@ -1777,6 +2079,19 @@ impl Sik {
             .text_ui(cx)
             .when(active, |el| el.bg(theme.sidebar_accent))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
+            .when_some(fold, |row, fold| {
+                row.pl_1().child(match fold {
+                    Some((fold_key, collapsed)) => div()
+                        .id(SharedString::from(format!("fold-{fold_key}")))
+                        .child(fold_chevron(collapsed, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_fold(&fold_key, cx);
+                        }))
+                        .into_any_element(),
+                    None => div().w(px(FOLD_WIDTH)).flex_none().into_any_element(),
+                })
+            })
             .child(div().text_color(color).child(dot))
             .child(
                 div()
@@ -1786,6 +2101,17 @@ impl Sik {
                     .text_ellipsis()
                     .child(label.clone()),
             )
+            .children(branch.map(|branch| {
+                div()
+                    .flex_none()
+                    .max_w(px(120.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_ui_small(cx)
+                    .text_color(theme.muted_foreground)
+                    .child(branch)
+            }))
             .on_drag(
                 TaskDrag {
                     key: key.clone(),
@@ -1804,7 +2130,7 @@ impl Sik {
             }))
             .when(!known, |row| {
                 let path = key.path.display().to_string();
-                row.tooltip(move |window, cx| Tooltip::new(format!("{path} · a folder, not a task")).build(window, cx))
+                row.tooltip(move |window, cx| Tooltip::new(format!("{path} · a folder, not a repo")).build(window, cx))
             })
             .context_menu({
                 let key = key.clone();
@@ -1823,14 +2149,14 @@ impl Sik {
                     let repo = repo.clone();
                     let menu = if known {
                         menu.item(
-                            menu::item(format!("New Task in {repo_name}…"), &weak, move |this, window, cx| {
+                            menu::item(format!("New Worktree in {repo_name}…"), &weak, move |this, window, cx| {
                                 this.start_new_task(create.host.clone(), repo.clone(), window, cx)
                             })
                             .disabled(!can_create),
                         )
                     } else {
                         menu.item(
-                            menu::item("Add Repo to Tasks", &weak, move |this, window, cx| {
+                            menu::item("Add Repo to Workspaces", &weak, move |this, window, cx| {
                                 this.add_repo_path(add.host.clone(), add.path.clone(), window, cx)
                             })
                             .disabled(!connected),
@@ -1855,7 +2181,7 @@ impl Sik {
                     })
                     .separator()
                     .item(
-                        menu::item("Delete Task…", &weak, move |this, _, cx| {
+                        menu::item("Delete Worktree…", &weak, move |this, _, cx| {
                             this.confirm_remove = Some(remove.clone());
                             this.error = None;
                             cx.notify();
@@ -1867,10 +2193,10 @@ impl Sik {
 
 
         let confirm = (self.confirm_remove.as_ref() == Some(key)).then(|| {
-            let detail = if local && task.repo.join(".task/remove").is_file() {
-                "The repo's .task/remove deletes it; depending on the repo, along with its uncommitted changes."
+            let detail = if local && task.repo.join(".sik/remove").is_file() {
+                "The repo's .sik/remove deletes it; depending on the repo, along with its uncommitted changes."
             } else {
-                "With the repo's .task/remove if it has one; otherwise git worktree remove, which won't delete with uncommitted changes."
+                "With the repo's .sik/remove if it has one; otherwise git worktree remove, which won't delete with uncommitted changes."
             };
             v_flex()
                 .mx_2()
@@ -1972,7 +2298,7 @@ impl Render for Sik {
                             } else {
                                 cx.theme().muted_foreground
                             }))
-                            .tooltip(|window, cx| Tooltip::new("Toggle Tasks Column").build(window, cx))
+                            .tooltip(|window, cx| Tooltip::new("Toggle Workspaces Column").build(window, cx))
                             .on_click(cx.listener(|this, _, window, cx| this.toggle_tasks(&ToggleTasks, window, cx))),
                     )
                     .child(
@@ -1984,7 +2310,24 @@ impl Render for Sik {
                             .text_ui(cx)
                             .text_color(cx.theme().muted_foreground)
                             .child(title),
-                    ),
+                    )
+                    .children(cx.try_global::<crate::update::Updates>().and_then(|updates| updates.ready.clone()).map(|version| {
+                        div()
+                            .id("restart-to-update")
+                            .flex_none()
+                            .mr_2()
+                            .px_2()
+                            .rounded(cx.theme().radius)
+                            .text_ui_small(cx)
+                            .text_color(cx.theme().primary)
+                            .hover(|style| style.bg(cx.theme().secondary_hover))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(format!("Restart to update to {version}"))
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Installed. It restarts by itself once nothing is unsaved; terminals stay as they are.").build(window, cx)
+                            })
+                            .on_click(|_, _, cx| crate::update::restart(cx))
+                    })),
             )
             .child({
                 let visible = tasks_visible;
@@ -2057,7 +2400,7 @@ fn column_menu(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
             this.open_settings_at(settings::SERVERS, window, cx)
         }))
         .separator()
-        .item(menu::item("Hide Tasks Column", sik, |this, _, cx| this.show_tasks_column(false, cx)))
+        .item(menu::item("Hide Workspaces Column", sik, |this, _, cx| this.show_tasks_column(false, cx)))
 }
 
 /// Right-click on a server's name in the tasks column.
@@ -2092,6 +2435,15 @@ fn recent_label(key: &TaskKey) -> String {
         _ => key.path.display().to_string(),
     };
     if key.host == LOCAL { path } else { format!("{}: {path}", key.host) }
+}
+
+/// The arrow that folds a repo's worktrees under its checkout.
+fn fold_chevron(collapsed: bool, cx: &App) -> impl IntoElement {
+    let icon = if collapsed { "icons/chevron-right.svg" } else { "icons/chevron-down.svg" };
+    div()
+        .w(px(FOLD_WIDTH))
+        .flex_none()
+        .child(svg().path(icon).size(px(FOLD_WIDTH)).text_color(cx.theme().muted_foreground))
 }
 
 /// An open folder that doesn't belong to any known repo.
@@ -2156,14 +2508,10 @@ fn folder_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// `repo/branch`, or the folder name if it has no branch.
+/// The checkout's folder name, or `repo/folder` for a worktree.
 fn task_label(task: &TaskInfo) -> String {
     let repo = folder_name(&task.repo);
-    match &task.branch {
-        Some(branch) => format!("{repo}/{branch}"),
-        None if task.path == task.repo => repo,
-        None => format!("{repo}/{}", folder_name(&task.path)),
-    }
+    if task.path == task.repo { repo } else { format!("{repo}/{}", folder_name(&task.path)) }
 }
 
 #[cfg(test)]

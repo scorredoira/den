@@ -59,7 +59,7 @@ impl EventEmitter<SearchEvent> for SearchPanel {}
 
 impl SearchPanel {
     pub fn new(root: PathBuf, client: Option<Arc<Client>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search in Task"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search in Workspace"));
         let replacement = cx.new(|cx| InputState::new(window, cx).placeholder("Replace"));
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
             InputEvent::Change => this.schedule(DEBOUNCE, cx),

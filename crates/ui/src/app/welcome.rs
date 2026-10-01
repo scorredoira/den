@@ -57,7 +57,7 @@ impl Sik {
             )
             .when(no_repos, |el| {
                 el.child(
-                    action("welcome-add-repo", "Add Repo…", "for tasks: branches side by side".into())
+                    action("welcome-add-repo", "Add Repo…", "worktrees: branches side by side".into())
                         .on_click(cx.listener(|this, _, window, cx| this.add_local_repo(window, cx))),
                 )
             });

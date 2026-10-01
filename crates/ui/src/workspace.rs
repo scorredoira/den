@@ -2082,7 +2082,7 @@ impl Workspace {
             let formatted = match client.request(request).await {
                 Ok(Response::Formatted { text: Some(formatted), .. }) => formatted,
                 Ok(Response::Formatted { text: None, .. }) => {
-                    return Err("Nothing formats this kind of file: the repo can add a .task/format".into());
+                    return Err("Nothing formats this kind of file: the repo can add a .sik/format".into());
                 }
                 Ok(other) => return Err(format!("Unexpected response: {other:?}").into()),
                 Err(err) => return Err(format!("Couldn't format: {err:#}").into()),

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 /// Connection with a UI: read on one thread and written on another.
 pub trait Stream: std::io::Read + std::io::Write + Send + 'static {
@@ -236,6 +236,33 @@ pub fn default_lang() -> Option<String> {
     None
 }
 
+/// Starts the app, opening `path`: the one that last ran on this machine;
+/// on macOS, through `open` if it's in a bundle, so it starts as an app.
+pub fn launch_app(path: &Path) -> Result<()> {
+    let app = std::fs::read_to_string(proto::app_file()?)
+        .map(|app| PathBuf::from(app.trim()))
+        .ok()
+        .filter(|app| app.exists())
+        .context("could not find the sik app: open it once")?;
+    let bundle = app.ancestors().find(|dir| dir.extension().is_some_and(|ext| ext == "app"));
+    let mut command = match bundle {
+        Some(bundle) if cfg!(target_os = "macos") => {
+            let mut command = std::process::Command::new("open");
+            command.arg("-a").arg(bundle).arg("--args");
+            command
+        }
+        _ => std::process::Command::new(&app),
+    };
+    configure_background(&mut command);
+    command
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
 pub fn spawn_daemon(log: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
@@ -251,6 +278,16 @@ pub fn spawn_daemon(log: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hooks_in_sik() {
+        let repo = std::env::temp_dir().join(format!("sik-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(repo.join(".sik")).unwrap();
+        assert_eq!(super::repo_hook(&repo, "create"), None);
+        std::fs::write(repo.join(".sik/create"), "").unwrap();
+        assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".sik/create")));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     #[test]
     #[cfg(unix)]
     fn reads_own_cwd() {
@@ -294,6 +331,11 @@ pub fn repo_script(path: &Path) -> Option<PathBuf> {
         if candidate.is_file() { return Some(candidate); }
     }
     path.is_file().then(|| path.to_path_buf())
+}
+
+/// A repo's hook `name` (`create`, `remove`, `format`), in its `.sik` folder.
+pub fn repo_hook(repo: &Path, name: &str) -> Option<PathBuf> {
+    repo_script(&repo.join(".sik").join(name))
 }
 
 pub fn script_command(path: &Path) -> std::process::Command {

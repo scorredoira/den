@@ -9,7 +9,7 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Servers", "Repos", "Hidden Tasks", "Keyboard Shortcuts"];
+const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Servers", "Repos", "Hidden Workspaces", "Keyboard Shortcuts"];
 
 pub(super) const SERVERS: usize = 2;
 
@@ -408,7 +408,7 @@ impl Sik {
             cx,
         ), setting(
             "Format on Save",
-            "File types formatted when saved, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .task/format if it has one, else the language server; JSON works without either.",
+            "File types formatted when saved, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .sik/format if it has one, else the language server; JSON works without either.",
             input,
             cx,
         )];
@@ -540,7 +540,7 @@ impl Sik {
                 div()
                     .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
-                    .child("None. Right-click a task → Hide.")
+                    .child("None. Right-click a workspace → Hide.")
                     .into_any_element(),
             );
         }
