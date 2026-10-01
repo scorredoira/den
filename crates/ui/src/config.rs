@@ -293,6 +293,7 @@ pub fn width(saved: f32, min: f32, max: f32) -> Pixels {
 pub struct Split {
     state: Entity<ResizableState>,
     width: Option<Pixels>,
+    visible: Vec<bool>,
 }
 
 impl Split {
@@ -300,16 +301,95 @@ impl Split {
         Self {
             state: cx.new(|_| ResizableState::default()),
             width: None,
+            visible: Vec::new(),
         }
     }
 
-    /// The state for painting the row in a space of `width`; if the space
-    /// changed, it starts again from the saved sizes.
-    pub fn state(&mut self, width: Pixels, cx: &mut App) -> &Entity<ResizableState> {
-        if self.width.is_some_and(|last| last != width) {
+    /// The state for painting the row in a space of `width`, with the
+    /// panels `visible`; if either changed, it starts again from the saved
+    /// sizes. A hidden panel keeps the size it was last painted at, and
+    /// dragging would count it as taken: the dragged panel jumps back to
+    /// its minimum with every move.
+    pub fn state(&mut self, width: Pixels, visible: &[bool], cx: &mut App) -> &Entity<ResizableState> {
+        if self.width.is_some_and(|last| last != width) || (!self.visible.is_empty() && self.visible != visible) {
             self.state.update(cx, |state, _| state.clear());
         }
         self.width = Some(width);
+        self.visible = visible.to_vec();
         &self.state
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use gpui_kit::component::{h_resizable, resizable_panel};
+    use gpui_kit::*;
+    use core::prelude::v1::test;
+
+    use super::Split;
+
+    /// Side panel, code and terminals, as in a workspace.
+    struct Row {
+        split: Split,
+        terminals: bool,
+    }
+
+    impl Render for Row {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let state = self.split.state(px(1000.), &[true, true, self.terminals], cx).clone();
+            div().w(px(1000.)).h(px(100.)).child(
+                h_resizable("row")
+                    .with_state(&state)
+                    .child(resizable_panel().size(px(200.)).size_range(px(160.)..px(600.)).child(div().size_full()))
+                    .child(resizable_panel().child(div().size_full()))
+                    .child(
+                        resizable_panel()
+                            .size(px(300.))
+                            .size_range(px(240.)..px(4000.))
+                            .visible(self.terminals)
+                            .child(div().size_full()),
+                    ),
+            )
+        }
+    }
+
+    /// Terminals shown and then hidden: dragging the side panel follows the
+    /// mouse instead of jumping back to its minimum, and the terminals come
+    /// back at their size.
+    #[gpui_kit::test]
+    fn dragging_beside_hidden_terminals_follows_the_mouse(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|_, cx| Row { split: Split::new(cx), terminals: true });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |view, cx| {
+            view.terminals = false;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let state = view.update(cx, |view, cx| view.split.state(px(1000.), &[true, true, false], cx).clone());
+        for width in [260., 300., 340.] {
+            cx.update(|window, cx| state.update(cx, |state, cx| state.resize_panel(0, px(width), window, cx)));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert_eq!(state.read_with(cx, |state, _| state.sizes()[0]), px(width));
+        }
+        // Shown again, the terminals come back at their size, not squeezed.
+        view.update(cx, |view, cx| {
+            view.terminals = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let state = view.update(cx, |view, cx| view.split.state(px(1000.), &[true, true, true], cx).clone());
+        assert_eq!(state.read_with(cx, |state, _| state.sizes()[2]), px(300.));
     }
 }

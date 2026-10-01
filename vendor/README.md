@@ -28,6 +28,12 @@ after the first completion typing before that point asked for nothing; and it
 stayed open, stale, on text that isn't a trigger. And `resolve_completion`
 on `CompletionProvider`, which the menu calls for the selected item.
 
+And one fix marked `(sik)` in `src/resizable/panel.rs` and `mod.rs`: a
+hidden panel kept its last size (or the 100 px placeholder) in the sizes a
+drag redistributes, so dragging beside it went over the container and the
+dragged panel jumped back to its minimum on every move. Hidden, it now
+counts as 0.
+
 ## gpui-component 0.7.0
 
 The crates.io release the same way (its `tests/` and `[[test]]` entries left

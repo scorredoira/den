@@ -217,6 +217,14 @@ impl ResizableState {
         cx.notify();
     }
 
+    /// (sik) A hidden panel takes no room in the sizes a drag redistributes.
+    pub(crate) fn hide_panel(&mut self, panel_ix: usize) {
+        if let (Some(size), Some(panel)) = (self.sizes.get_mut(panel_ix), self.panels.get_mut(panel_ix)) {
+            *size = px(0.);
+            panel.bounds = Bounds::default();
+        }
+    }
+
     /// Remove the panel at `panel_ix` and redistribute the remaining space.
     pub fn remove_panel(&mut self, panel_ix: usize, cx: &mut Context<Self>) {
         self.panels.remove(panel_ix);

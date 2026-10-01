@@ -2249,7 +2249,7 @@ impl Render for Sik {
         // While the tasks column's edge is being dragged, its width is already
         // in the state before painting.
         let tasks_visible = self.tasks_visible(cx);
-        let tasks = match self.split.state(window.viewport_size().width, cx).read(cx).sizes().first() {
+        let tasks = match self.split.state(window.viewport_size().width, &[tasks_visible, true], cx).read(cx).sizes().first() {
             Some(width) if tasks_visible => *width,
             _ => px(0.),
         };
@@ -2332,7 +2332,7 @@ impl Render for Sik {
             .child({
                 let visible = tasks_visible;
                 div().flex_1().min_h_0().w_full().child(h_resizable("sik-split")
-                    .with_state(self.split.state(window.viewport_size().width, cx))
+                    .with_state(self.split.state(window.viewport_size().width, &[visible, true], cx))
                     .child(
                         resizable_panel()
                             .size(config::width(Config::get(cx).layout.tasks, 160., 500.))

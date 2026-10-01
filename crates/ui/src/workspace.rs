@@ -2984,7 +2984,7 @@ impl Render for Workspace {
                     (free / 2.).max(400.)
                 });
                 h_resizable("workspace-split")
-                    .with_state(self.split.state(self.width, cx))
+                    .with_state(self.split.state(self.width, &[side_visible, editor_visible, terminals_visible], cx))
                     .child(
                         resizable_panel()
                             .size(config::width(layout.side, 160., 600.))
