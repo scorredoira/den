@@ -55,6 +55,7 @@ impl EventListener for Listener_ {
 struct AgentTerm {
     group: String,
     pty: Pty,
+    cwd: crate::shell_cwd::ShellCwd,
     emulator: Term<Listener_>,
     parser: Processor,
     events: Listener_,
@@ -597,7 +598,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         Request::TermCwd { term } => {
             let state = state.lock().unwrap();
             let entry = state.terms.get(&term).ok_or_else(|| gone(term))?;
-            let cwd = entry.pty.foreground_pid().and_then(platform::process_cwd);
+            let cwd = entry.pty.foreground_pid().and_then(platform::process_cwd).or_else(|| Some(entry.cwd.path.clone()));
             Ok(Response::Path(cwd))
         }
     }
@@ -692,7 +693,7 @@ fn save_for_restart(state: &State) {
                 group: entry.group.clone(),
                 cwd: foreground
                     .and_then(platform::process_cwd)
-                    .unwrap_or_else(|| PathBuf::from(&entry.group)),
+                    .unwrap_or_else(|| entry.cwd.path.clone()),
                 cols: entry.emulator.columns() as u16,
                 rows: entry.emulator.screen_lines() as u16,
                 claude: foreground.and_then(platform::process_args).and_then(|args| resume_command(&args)),
@@ -781,6 +782,7 @@ fn create(
             AgentTerm {
                 group,
                 pty,
+                cwd: crate::shell_cwd::ShellCwd::new(cwd),
                 emulator,
                 parser: Processor::new(),
                 events,
@@ -810,6 +812,7 @@ fn create(
                 let Some(entry) = state.terms.get_mut(&term) else {
                     break;
                 };
+                entry.cwd.advance(&buf[..n]);
                 entry.parser.advance(&mut entry.emulator, &buf[..n]);
                 let events = std::mem::take(&mut *entry.events.0.lock().unwrap());
                 let mut title_changed = false;

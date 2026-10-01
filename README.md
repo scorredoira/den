@@ -21,17 +21,57 @@
 
 ## Install
 
-macOS for now. With [Rust](https://rustup.rs) and Xcode:
+Download a package from [Releases](https://github.com/scorredoira/sik/releases).
+
+| Platform | Package | Installation |
+| --- | --- | --- |
+| macOS 15+, Apple Silicon | `sik-<version>-macos-aarch64.zip` | Unzip and drag `Sik.app` to Applications. |
+| macOS 15+, Intel | `sik-<version>-macos-x86_64.zip` | Unzip and drag `Sik.app` to Applications. |
+| Linux x86_64, Ubuntu 24.04 or compatible | `sik-<version>-linux-x86_64.tar.gz` | Extract and run `./install.sh`, or run `./sik` directly. |
+| Windows 10/11 x64 | `sik-<version>-windows-x86_64.zip` | Extract the whole folder and open `sik.exe`. Optional: run `install.ps1` for a per-user install and Start menu shortcut. |
+
+**macOS first launch:** releases are ad hoc signed, without notarization. After trying to open Sik, go to System Settings → Privacy & Security → Open Anyway. See [Apple's instructions](https://support.apple.com/102445). A normal download may be blocked until you authorize it.
+
+**Linux:** a graphical Wayland or X11 session and a working Vulkan driver are required. On Ubuntu 24.04, install runtime dependencies with `sudo apt install libfontconfig1 libwayland-client0 libwebkit2gtk-4.1-0 libxkbcommon-x11-0 libx11-xcb1 libssl3t64 libzstd1 libvulkan1`. The optional installer also needs Python 3. Packages built on Ubuntu 24.04 require its glibc baseline; they are not universal binaries for older distributions.
+
+**Windows:** releases are unsigned, so Windows may show a publisher/SmartScreen warning. Install Git for Windows and the Windows OpenSSH client and make `git` and `ssh` available on PATH. The default terminal is PowerShell (PowerShell 7 when installed). Keep the bundled agent next to `sik.exe`. Close the app before replacing an installed release.
+
+Git must be installed on every machine where you use repositories. SSH connections currently support Linux x86_64 servers; every desktop package includes their static agent. Install Claude Code and any language servers you use separately.
+
+Every release includes `SHA256SUMS`. On macOS use `shasum -a 256 <archive>`; on Linux use `sha256sum <archive>`; on Windows use `Get-FileHash <archive> -Algorithm SHA256`.
+
+To build from source, install Rust and the native dependencies from the [GPUI Kit installation guide](https://gpui-kit.com/docs/installation/), then run:
 
 ```sh
-git clone https://github.com/scorredoira/sik && cd sik && ./install
+git clone https://github.com/scorredoira/sik && cd sik
+cargo build --release --locked -p ui -p agent
 ```
 
-For Linux servers, first `cargo install cargo-zigbuild` and `brew install zig`. To work on sik, `./run` builds in debug and opens it.
+Both executables are in `target/release`. On macOS, `./install` builds and installs `Sik.app`; `./run` opens a development build. To include the Linux SSH agent when building on macOS, install `cargo-zigbuild` and Zig first.
+
+## Publishing releases
+
+CI builds, tests and packages macOS Apple Silicon, macOS Intel, Linux and Windows on every branch push and pull request. Packages can be downloaded from the successful workflow's artifacts before publishing. No signing certificates or extra repository secrets are needed.
+
+Once your changes are committed, publish a new version from the repository root:
+
+```sh
+./release 0.1.1
+# Windows: python packaging/release.py 0.1.1
+# Preview without changes: ./release 0.1.1 --dry-run
+```
+
+This updates the workspace version and lockfile, creates a version commit and an annotated tag, and pushes the branch and tag together. The `Release` workflow runs the tests and publishes all four packages with checksums and generated release notes only after every build succeeds. Use a version such as `0.2.0-beta.1` for a prerelease. Publishing takes several minutes; the first build is slower while caches fill.
+
+Alternatively, update `Cargo.toml` and `Cargo.lock`, commit and push, then open **Actions → Release → Run workflow** on that branch. It publishes the version in `Cargo.toml` and creates its tag. A manually pushed `v<version>` tag also triggers publication; the tag must match the manifest. Existing releases are never overwritten. If a build fails before publication, fix the failure and use a new version, or rerun a transient failure on the same commit.
+
+macOS packages use ad hoc signing and Windows packages are unsigned. GUI behavior and installation should also be checked on real machines; CI tests the code and builds packages but does not exercise a real desktop session.
 
 ## Tasks
 
 New Task (Cmd-N) creates a worktree with the repo's executable `.task/create <name>` if it has one, or `git worktree add` otherwise. From a sik terminal: `cd "$(sik task <name>)"`.
+
+On Windows, repository hooks can use `.task/create.ps1`, `.task/remove.ps1` and `.task/format.ps1` (also `.cmd`, `.bat` or `.exe`). Extensionless hooks need `sh` on PATH. PowerShell terminals report their current directory automatically; custom shells should emit OSC 7 for directory tracking.
 
 Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.task/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
 

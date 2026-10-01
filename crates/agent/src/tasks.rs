@@ -47,7 +47,7 @@ pub fn add_repo(path: &Path) -> Result<PathBuf> {
 
 /// `~/something` → this machine's home folder plus `something`.
 pub fn expand_home(path: &Path) -> PathBuf {
-    match (path.strip_prefix("~"), std::env::var_os("HOME")) {
+    match (path.strip_prefix("~"), dirs::home_dir()) {
         (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => path.to_path_buf(),
     }
@@ -91,7 +91,7 @@ fn worktrees(repo: &Path) -> Result<Vec<TaskInfo>> {
         let mut bare = false;
         for line in block.lines() {
             if let Some(rest) = line.strip_prefix("worktree ") {
-                path = Some(PathBuf::from(rest));
+                path = Some(PathBuf::from(rest).canonicalize().unwrap_or_else(|_| PathBuf::from(rest)));
             } else if let Some(rest) = line.strip_prefix("branch ") {
                 branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
             } else if line == "bare" {
@@ -123,8 +123,8 @@ pub fn create(path: &Path, name: &str) -> Result<TaskInfo> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c)) {
         bail!("invalid task name: use letters, digits, `-`, `_`, `.` or `/`");
     }
-    let script = repo.join(CREATE_SCRIPT);
-    let output = if script.is_file() {
+    let script = crate::platform::repo_script(&repo.join(CREATE_SCRIPT));
+    let output = if let Some(script) = script {
         run_script(repo, &script, &[name])?
     } else {
         let folder = repo
@@ -162,8 +162,8 @@ pub fn remove(path: &Path) -> Result<()> {
         bail!("the main checkout cannot be removed");
     }
     let name = task.branch.clone().unwrap_or_default();
-    let script = repo.join(REMOVE_SCRIPT);
-    let output = if script.is_file() {
+    let script = crate::platform::repo_script(&repo.join(REMOVE_SCRIPT));
+    let output = if let Some(script) = script {
         run_script(&repo, &script, &[&name, &path.to_string_lossy()])?
     } else {
         Command::new("git")
@@ -186,10 +186,16 @@ pub fn remove(path: &Path) -> Result<()> {
 /// Finder: many setups only extend PATH in the rc file (.zshrc), which a
 /// login shell alone does not read.
 fn run_script(repo: &Path, script: &Path, args: &[&str]) -> Result<std::process::Output> {
+    #[cfg(unix)]
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let script = script.to_string_lossy();
-    let mut command = Command::new(shell);
-    command.args(["-l", "-i", "-c", "\"$0\" \"$@\"", &script]);
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new(shell);
+        command.args(["-l", "-i", "-c", "\"$0\" \"$@\""]).arg(script);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = crate::platform::script_command(script);
     command.args(args);
     Ok(command.stdin(std::process::Stdio::null()).current_dir(repo).output()?)
 }
@@ -242,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn calls_the_repo_script() {
         let repo = repo("script");
         std::fs::create_dir_all(repo.join(".task")).unwrap();
@@ -269,6 +276,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn remove_script_must_really_remove() {
         let repo = repo("noremove");
         let task = create(&repo, "x").unwrap();
@@ -282,6 +290,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn reports_script_failures() {
         let repo = repo("fails");
         std::fs::create_dir_all(repo.join(".task")).unwrap();

@@ -17,6 +17,7 @@ mod pty;
 mod search;
 mod server;
 mod snapshot;
+mod shell_cwd;
 mod tasks;
 
 use std::{io::Write as _, time::Duration};

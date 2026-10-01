@@ -526,7 +526,8 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(dirs::config_dir().context("no config directory")?.join(APP))
 }
 
-/// The local agent's socket. On Windows it will be a named pipe (not implemented).
+/// The local agent's socket identity. Windows maps it to a per-user named pipe;
+/// the filesystem path also locates restart state.
 /// `SIK_AGENT_SOCKET` overrides it (tests, or a separate development agent).
 pub fn socket_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SIK_AGENT_SOCKET") {
@@ -539,7 +540,7 @@ pub fn socket_path() -> Result<PathBuf> {
 pub const APP: &str = "sik";
 
 /// Name of the agent binary.
-pub const AGENT_BIN: &str = "sik-agent";
+pub const AGENT_BIN: &str = if cfg!(windows) { "sik-agent.exe" } else { "sik-agent" };
 
 #[cfg(test)]
 mod tests {

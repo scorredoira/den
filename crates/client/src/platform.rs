@@ -22,18 +22,25 @@ pub(crate) fn split(stream: std::os::unix::net::UnixStream) -> Result<(Box<dyn R
     Ok((Box::new(stream.try_clone()?), Box::new(stream), close))
 }
 
-/// Not implemented on Windows: the named pipe will go here.
-#[cfg(not(unix))]
-pub fn connect(_socket: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, crate::CloseStream)> {
-    anyhow::bail!("not implemented on Windows")
+#[cfg(windows)]
+pub fn connect(socket: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, crate::CloseStream)> {
+    let stream = crate::windows_pipe::Stream::connect(socket)?;
+    let closer = stream.clone();
+    Ok((Box::new(stream.clone()), Box::new(stream), Box::new(move || closer.close())))
 }
 
 /// Starts the agent daemon. It detaches itself from the app's session, so it
 /// survives the app closing.
 pub fn spawn_daemon(agent_bin: &Path, log: &Path) -> Result<()> {
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    std::process::Command::new(agent_bin)
-        .arg("daemon")
+    let mut command = std::process::Command::new(agent_bin);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No inherited console; the agent owns the ConPTY sessions independently.
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    command.arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)

@@ -31,7 +31,11 @@ fn terminal_survives_reconnect() {
     let term = match smol::block_on(client.request(Request::TermCreate {
         group: "test".into(),
         cwd: dir.clone(),
-        command: Some(vec!["/bin/sh".into(), "-c".into(), "echo hello; exec cat".into()]),
+        command: Some(if cfg!(windows) {
+            vec!["cmd.exe".into(), "/Q".into(), "/K".into(), "echo hello".into()]
+        } else {
+            vec!["/bin/sh".into(), "-c".into(), "echo hello; exec cat".into()]
+        }),
         cols: 40,
         rows: 10,
     }))

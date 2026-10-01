@@ -1,0 +1,72 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Publish as a prerelease
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        name: Validate version and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          tag="v$version"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "Tag must match Cargo.toml: $tag" >&2
+            exit 1
+          fi
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)" || { echo 'Version already tags a different commit'; exit 1; }
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; bump the version before publishing again." >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - name: Publish all packages together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          flags=()
+          if [[ "$PRERELEASE" == true || "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "Sik $RELEASE_TAG" --generate-notes "${flags[@]}"

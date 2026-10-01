@@ -8,7 +8,7 @@
 use std::{
     io::{Read, Write},
     path::Path,
-    process::{Command, Stdio},
+    process::Stdio,
     sync::mpsc,
     time::Duration,
 };
@@ -37,12 +37,10 @@ pub fn format(task: &Path, path: &Path, text: &str) -> Result<Response> {
 
 /// Runs the repo's `.task/format`; `None` if there's none or the file isn't its.
 fn script(task: &Path, path: &Path, text: &str) -> Result<Option<String>> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let script = task.join(SCRIPT);
-    if !script.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0) {
+    let Some(script) = crate::platform::repo_script(&task.join(SCRIPT)) else {
         return Ok(None);
-    }
-    let mut child = Command::new(&script)
+    };
+    let mut child = crate::platform::script_command(&script)
         .arg(path)
         .current_dir(task)
         .stdin(Stdio::piped())
@@ -279,6 +277,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn the_repo_script_first_and_then_the_rest() {
         use std::os::unix::fs::PermissionsExt as _;
         let task = std::env::temp_dir().join(format!("sik-format-{}", std::process::id()));

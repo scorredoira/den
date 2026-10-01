@@ -78,39 +78,36 @@ mod unix {
 #[cfg(unix)]
 pub use unix::*;
 
-/// Not implemented on Windows: the named pipe will go here.
-#[cfg(not(unix))]
+#[cfg(windows)]
 mod windows {
     use std::path::Path;
-
-    use anyhow::{Result, bail};
-
+    use anyhow::Result;
     use super::Stream;
 
-    pub struct Listener;
+    impl Stream for client::windows_pipe::Stream {
+        fn try_clone_stream(&self) -> Result<Box<dyn Stream>> {
+            Ok(Box::new(self.clone()))
+        }
+    }
 
+    pub struct Listener(client::windows_pipe::Listener);
     impl Listener {
-        pub fn bind(_path: &Path) -> Result<Self> {
-            bail!("not implemented on Windows")
+        pub fn bind(path: &Path) -> Result<Self> {
+            Ok(Self(client::windows_pipe::Listener::bind(path)?))
         }
-
         pub fn accept(&self) -> Result<Box<dyn Stream>> {
-            bail!("not implemented on Windows")
+            Ok(Box::new(self.0.accept()?))
         }
     }
-
-    pub fn connect(_path: &Path) -> Result<Box<dyn Stream>> {
-        bail!("not implemented on Windows")
+    pub fn connect(path: &Path) -> Result<Box<dyn Stream>> {
+        Ok(Box::new(client::windows_pipe::Stream::connect(path)?))
     }
-
+    // The launcher creates a process without an inherited console.
     pub fn detach_session() {}
-
-    pub fn foreground_pid(_master: &dyn portable_pty::MasterPty) -> Option<u32> {
-        None
-    }
+    pub fn foreground_pid(_master: &dyn portable_pty::MasterPty) -> Option<u32> { None }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub use windows::*;
 
 /// Current directory of a process, via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`.
@@ -184,10 +181,13 @@ pub fn symlink(target: &Path, link: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Not implemented on Windows: we'll have to copy the binary or use a `.cmd`.
-#[cfg(not(unix))]
-pub fn symlink(_target: &Path, _link: &Path) -> Result<()> {
-    anyhow::bail!("not implemented on Windows")
+/// Hard links need no symlink privilege, and keep the exact agent binary.
+#[cfg(windows)]
+pub fn symlink(target: &Path, link: &Path) -> Result<()> {
+    let link = link.with_extension("exe");
+    let _ = std::fs::remove_file(&link);
+    std::fs::hard_link(target, &link).or_else(|_| std::fs::copy(target, &link).map(|_| ()))?;
+    Ok(())
 }
 
 /// Starts the daemon from this same binary, detached from its launcher.
@@ -211,8 +211,9 @@ pub fn default_lang() -> Option<String> {
 pub fn spawn_daemon(log: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    std::process::Command::new(exe)
-        .arg("daemon")
+    let mut command = std::process::Command::new(exe);
+    configure_background(&mut command);
+    command.arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)
@@ -223,9 +224,76 @@ pub fn spawn_daemon(log: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(unix)]
     fn reads_own_cwd() {
         let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
         let read = super::process_cwd(std::process::id()).map(|path| path.canonicalize().unwrap());
         assert_eq!(read, Some(cwd));
     }
+}
+
+/// Avoid flashing console windows when a GUI-launched agent runs a helper.
+pub fn configure_background(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+/// Resolve executable extensions on Windows (including npm's .cmd shims).
+pub fn executable(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    #[cfg(windows)]
+    {
+        let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        for ext in extensions.split(';') {
+            let candidate = dir.join(format!("{name}{}", ext.to_ascii_lowercase()));
+            if candidate.is_file() { return Some(candidate); }
+        }
+    }
+    path.is_file().then_some(path)
+}
+
+/// On Unix hooks are executable files. Windows supports .ps1/.cmd/.bat/.exe,
+/// plus extensionless shell scripts via Git for Windows' sh on PATH.
+pub fn repo_script(path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    for ext in ["ps1", "cmd", "bat", "exe"] {
+        let candidate = path.with_extension(ext);
+        if candidate.is_file() { return Some(candidate); }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return path.metadata().ok().filter(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).map(|_| path.to_path_buf());
+    }
+    #[cfg(windows)]
+    path.is_file().then(|| path.to_path_buf())
+}
+
+pub fn script_command(path: &Path) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        let ext = path.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+        let mut command = match ext.as_str() {
+            "ps1" => {
+                let mut c = std::process::Command::new("powershell.exe");
+                c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"]).arg(path);
+                c
+            }
+            "exe" | "com" | "cmd" | "bat" => std::process::Command::new(path),
+            _ => {
+                let mut c = std::process::Command::new("sh");
+                c.arg(path);
+                c
+            }
+        };
+        configure_background(&mut command);
+        command
+    }
+    #[cfg(unix)]
+    std::process::Command::new(path)
 }

@@ -35,7 +35,7 @@ impl Pty {
                 cmd.args(args);
                 cmd
             }
-            _ => CommandBuilder::new_default_prog(),
+            _ => default_shell(),
         };
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
@@ -129,4 +129,19 @@ fn size(cols: u16, rows: u16) -> PtySize {
         pixel_width: 0,
         pixel_height: 0,
     }
+}
+
+#[cfg(unix)]
+fn default_shell() -> CommandBuilder { CommandBuilder::new_default_prog() }
+
+#[cfg(windows)]
+fn default_shell() -> CommandBuilder {
+    // Prefer PowerShell 7, falling back to Windows PowerShell. Load the user's
+    // profile normally, preserve their prompt, and append a directory report.
+    let shell = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find_map(|dir| crate::platform::executable(&dir, "pwsh"))
+    }).unwrap_or_else(|| "powershell.exe".into());
+    let mut command = CommandBuilder::new(shell);
+    command.args(["-NoLogo", "-NoExit", "-Command", r#"$global:SikOriginalPrompt = $function:prompt; function global:prompt { $p = & $global:SikOriginalPrompt; if ($PWD.Provider.Name -eq 'FileSystem') { $u = [Uri]::new($PWD.ProviderPath).AbsoluteUri; [Console]::Write(([char]27).ToString() + ']7;' + $u + [char]7) }; $p }"#]);
+    command
 }
