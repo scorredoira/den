@@ -1,10 +1,9 @@
-## What's new in 0.1.6
+## What's new in 0.1.7
 
-- **Windows and Linux:** the menu bar now shows in the window's title bar, with Settings and Exit in File and About in Help.
-- **First launch:** opened from the Start menu, a shortcut or a double click, Sik shows the welcome screen (or your last workspace) instead of opening its working folder.
-- **The branch is in the status bar.**
-- **The Changes panel only reads:** commit, stage, discard and switch branches in a terminal. The panel refreshes on its own when you do, also when staging, so its refresh button is gone.
-- Fix the side panel jumping while resizing it with the terminals hidden.
+- The focused terminal of a split is marked by its title, in the text's color with a line on top, instead of a border around it.
+- The workspaces column shows a checkout's branch only when it isn't `master` or `main`, and a worktree's only when it differs from its folder's name.
+
+Also in 0.1.6: the menu bar on Windows and Linux, the welcome screen on first launch, the branch in the status bar, a read-only Changes panel that refreshes on its own, and a fix for the side panel jumping while resized.
 
 After upgrading, restart the outdated agent from the workspaces column so that changes made in a terminal refresh the Changes panel. Restarting the agent also restarts its terminals.
 
