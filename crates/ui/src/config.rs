@@ -73,12 +73,12 @@ impl SavedWindow {
     }
 }
 
-/// A server connected to over SSH.
+/// A server connected to over SSH (or, on Windows, a WSL distro).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HostConfig {
     /// How it's shown in the tasks column.
     pub name: String,
-    /// A name from `~/.ssh/config` or `user@host`.
+    /// A name from `~/.ssh/config`, `user@host` or `wsl:<distro>`.
     pub destination: String,
 }
 

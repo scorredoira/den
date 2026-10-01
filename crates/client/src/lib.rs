@@ -6,6 +6,8 @@ mod ssh;
 
 #[cfg(windows)]
 pub mod windows_pipe;
+#[cfg(windows)]
+pub mod wsl;
 
 pub use ssh::{AGENT_LINUX_X86_64, connect_ssh};
 
@@ -50,7 +52,7 @@ pub struct Client {
     /// Receive the events not tied to a specific terminal (activity).
     watchers: Arc<Mutex<Vec<Watcher>>>,
     on_disconnect: Arc<Mutex<Vec<OnDisconnect>>>,
-    /// The server's `ssh` destination, for connections over SSH.
+    /// The server's `ssh` destination (or `wsl:<distro>`), for remote connections.
     destination: Option<String>,
     /// Ports of the server forwarded to this machine: remote → local.
     forwards: Mutex<HashMap<u16, ssh::Forward>>,

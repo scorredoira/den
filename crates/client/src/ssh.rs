@@ -1,7 +1,8 @@
 //! Connection to a server's agent over SSH: uses the system `ssh` (with
 //! `~/.ssh/config`, keys, agent and ProxyJump) and, if the server doesn't have
 //! this version's agent, uploads it over the same connection (compressed:
-//! it's a few MB, and a home uplink takes seconds for each).
+//! it's a few MB, and a home uplink takes seconds for each). On Windows a
+//! `wsl:<distro>` destination goes through `wsl.exe` the same way (`wsl.rs`).
 
 use std::{
     io::Write as _,
@@ -74,7 +75,12 @@ fn ssh_command() -> Command {
 }
 
 /// `ssh` that uses the master connection if it exists (and its own otherwise).
+/// The next argument is the command to run there.
 fn ssh(destination: &str) -> Command {
+    #[cfg(windows)]
+    if let Some(distro) = crate::wsl::distro(destination) {
+        return crate::wsl::shell(distro);
+    }
     let mut command = ssh_command();
     command.args(OPTIONS);
     #[cfg(unix)]
@@ -175,7 +181,12 @@ pub fn connect_ssh(destination: &str, agents: &Path, step: &dyn Fn(&'static str)
     let writer = process.stdin.take().expect("stdin");
     let client = Client::from_stream(Box::new(reader), Box::new(writer), Some(process), None, Some(destination.to_string()));
     match smol::block_on(client.request(Request::Hello { protocol: PROTOCOL }))? {
-        Response::Hello { protocol, .. } if protocol == PROTOCOL => {
+        #[cfg_attr(unix, allow(unused_variables))]
+        Response::Hello { protocol, pid } if protocol == PROTOCOL => {
+            #[cfg(windows)]
+            if let Some(distro) = crate::wsl::distro(destination) {
+                crate::wsl::hold(distro, pid)?;
+            }
             client.check_version(&local);
             Ok(client)
         }
@@ -297,6 +308,10 @@ impl Drop for Forward {
 #[cfg(windows)]
 pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
     use std::{net::TcpStream, time::{Duration, Instant}};
+    // WSL2 already forwards the distro's localhost.
+    if crate::wsl::distro(destination).is_some() {
+        return Ok(Forward { port: url.port, process: None });
+    }
     let port = if port_free(url.port) { url.port } else {
         TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port()
     };

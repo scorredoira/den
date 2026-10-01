@@ -1651,8 +1651,8 @@ impl Sik {
         }
     }
 
-    /// Registers the server `destination` (from `~/.ssh/config` or
-    /// `user@host`) and connects; returns whether it was added.
+    /// Registers the server `destination` (from `~/.ssh/config`,
+    /// `user@host` or, on Windows, `wsl:<distro>`) and connects; returns whether it was added.
     fn add_host_named(&mut self, destination: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if destination.is_empty() || destination.contains(char::is_whitespace) {
             return false;
@@ -1683,13 +1683,30 @@ impl Sik {
         true
     }
 
-    /// Button next to "add server": those in `~/.ssh/config` not added yet.
+    /// Button next to "add server": those in `~/.ssh/config` (and, on
+    /// Windows, the WSL distros) not added yet. Listing the distros runs
+    /// `wsl.exe`, which takes seconds if WSL isn't running: in the background.
     fn open_host_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let hosts: Vec<String> = ssh_hosts()
-            .into_iter()
-            .filter(|host| self.host(host).is_none())
-            .collect();
-        let picker = cx.new(|cx| Picker::new(Arc::new(hosts), "Server from ~/.ssh/config…", false, window, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let hosts = cx
+                .background_executor()
+                .spawn(async {
+                    #[allow(unused_mut)]
+                    let mut hosts = ssh_hosts();
+                    #[cfg(windows)]
+                    hosts.extend(client::wsl::destinations());
+                    hosts
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| this.show_host_picker(hosts, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    fn show_host_picker(&mut self, mut hosts: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        hosts.retain(|host| self.host(host).is_none());
+        let placeholder = if cfg!(windows) { "Server from ~/.ssh/config or WSL distro…" } else { "Server from ~/.ssh/config…" };
+        let picker = cx.new(|cx| Picker::new(Arc::new(hosts), placeholder, false, window, cx));
         let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
             this.host_picker = None;
             if let PickerEvent::Pick(host) = event {
