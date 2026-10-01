@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Sik — ramas</title>
+  <defs>
+    <linearGradient id="surface" x2="0.4" y2="1">
+      <stop stop-color="#7378ef"/><stop offset="1" stop-color="#4545b5"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#surface)"/>
+  <rect x="102" y="102" width="820" height="820" rx="188" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width="4"/>
+  <path d="M380 694V330M380 584C380 450 644 562 644 330" fill="none" stroke="#f5f3ff" stroke-width="76" stroke-linecap="round"/>
+  <circle cx="380" cy="330" r="66" fill="#f5f3ff"/>
+  <circle cx="644" cy="330" r="66" fill="#f5f3ff"/>
+  <circle cx="380" cy="694" r="66" fill="#f5f3ff"/>
+</svg>

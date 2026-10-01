@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <title>Sik — Petróleo y menta</title>
+  <title>Sik — Cereza</title>
   <defs>
     <linearGradient id="surface" x2="0.25" y2="1">
-      <stop stop-color="#244c50"/><stop offset="1" stop-color="#102f34"/>
+      <stop stop-color="#d85370"/><stop offset="1" stop-color="#942440"/>
     </linearGradient>
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="190" fill="url(#surface)"/>
   <rect x="102" y="102" width="820" height="820" rx="188" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width="4"/>
-  <path d="M710 298H418L290 426V468L586 608H314V726H606L734 598V556L438 416H710Z" fill="#a5f0d1"/>
+  <path d="M710 298H418L290 426V468L586 608H314V726H606L734 598V556L438 416H710Z" fill="#fff2ec"/>
 </svg>
