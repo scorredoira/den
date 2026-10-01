@@ -76,15 +76,6 @@ actions!(
         ShowShortcuts,
         PreviousTask,
         ToggleTasks,
-        ActivateTask1,
-        ActivateTask2,
-        ActivateTask3,
-        ActivateTask4,
-        ActivateTask5,
-        ActivateTask6,
-        ActivateTask7,
-        ActivateTask8,
-        ActivateTask9,
     ]
 );
 

@@ -23,8 +23,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{Event, Request, Response, TaskInfo};
 
 use crate::{
-    ActivateTask1, ActivateTask2, ActivateTask3, ActivateTask4, ActivateTask5, ActivateTask6,
-    ActivateTask7, ActivateTask8, ActivateTask9, NewTask, OpenCommandPalette, OpenSettings, OpenTaskPicker, PreviousTask,
+    NewTask, OpenCommandPalette, OpenSettings, OpenTaskPicker, PreviousTask,
     ShowShortcuts, ToggleTasks,
     config::{self, Config, HostConfig, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
@@ -672,12 +671,6 @@ impl Sik {
         }
         self.active = Some(key);
         cx.notify();
-    }
-
-    fn activate_nth(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(key) = self.ordered(cx).get(ix).map(|(key, _)| key.clone()) {
-            self.activate(key, window, cx);
-        }
     }
 
     /// Unsaved files across all tasks, relative to their own task.
@@ -1690,15 +1683,6 @@ impl Render for Sik {
             .on_action(cx.listener(Self::previous_task))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
             .relative()
-            .on_action(cx.listener(|this, _: &ActivateTask1, window, cx| this.activate_nth(0, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask2, window, cx| this.activate_nth(1, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask3, window, cx| this.activate_nth(2, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask4, window, cx| this.activate_nth(3, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask5, window, cx| this.activate_nth(4, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask6, window, cx| this.activate_nth(5, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask7, window, cx| this.activate_nth(6, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask8, window, cx| this.activate_nth(7, window, cx)))
-            .on_action(cx.listener(|this, _: &ActivateTask9, window, cx| this.activate_nth(8, window, cx)))
             // Our own bar, in the theme's color (macOS's is gray): the traffic
             // lights on the left, the active task in the middle, and it drags
             // and zooms like the system one.

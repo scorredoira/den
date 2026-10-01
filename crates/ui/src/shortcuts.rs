@@ -73,15 +73,6 @@ shortcuts![
     (OpenTaskPicker, "Find Task", "secondary-k"),
     (PreviousTask, "Previous Task", "secondary-e"),
     (ToggleTasks, "Toggle Tasks Column", "secondary-shift-b"),
-    (ActivateTask1, "Go to Task 1", "secondary-1"),
-    (ActivateTask2, "Go to Task 2", "secondary-2"),
-    (ActivateTask3, "Go to Task 3", "secondary-3"),
-    (ActivateTask4, "Go to Task 4", "secondary-4"),
-    (ActivateTask5, "Go to Task 5", "secondary-5"),
-    (ActivateTask6, "Go to Task 6", "secondary-6"),
-    (ActivateTask7, "Go to Task 7", "secondary-7"),
-    (ActivateTask8, "Go to Task 8", "secondary-8"),
-    (ActivateTask9, "Go to Task 9", "secondary-9"),
 ];
 
 impl Shortcut {
