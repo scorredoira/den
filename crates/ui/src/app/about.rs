@@ -159,9 +159,72 @@ impl Sik {
             )
     }
 
+    /// Help → Keyboard Shortcuts: the guide, as a tab of the workspace, or
+    /// in the window while none is open.
+    pub(super) fn open_guide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = crate::guide::markdown(cx);
+        match self.active_workspace() {
+            Some(workspace) => {
+                workspace.update(cx, |workspace, cx| workspace.open_doc(crate::guide::TITLE, text, window, cx))
+            }
+            None => {
+                let guide = cx.new(|cx| gpui_kit::component::text::TextViewState::markdown(&text, cx));
+                self.guide = Some(guide);
+                cx.notify();
+            }
+        }
+    }
+
+    /// The guide while no workspace is open, with the way back.
+    pub(super) fn render_guide(
+        &self,
+        guide: &Entity<gpui_kit::component::text::TextViewState>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .h(px(32.))
+                    .flex_none()
+                    .px_4()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_ui_small(cx)
+                    .child(
+                        div()
+                            .id("guide-back")
+                            .text_color(theme.link)
+                            .hover(|style| style.underline())
+                            .child("← Welcome")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.guide = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .text_size(px(Config::get(cx).font_size(crate::config::TextArea::Preview)))
+                    .child(
+                        gpui_kit::component::text::TextView::new(guide)
+                            .selectable(true)
+                            .scrollable(true)
+                            .size_full()
+                            .px_8()
+                            .py_6(),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// Help → Welcome: the welcome screen, with the open workspace kept;
     /// entering any brings it back.
     pub(super) fn show_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.guide = None;
         if let Some(active) = self.active.take() {
             self.previous = Some(active);
         }

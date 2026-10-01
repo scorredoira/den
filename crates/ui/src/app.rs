@@ -27,7 +27,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{Event, Request, Response, TaskInfo};
 
 use crate::{
-    About, CheckForUpdates, NewTask, OpenCommandPalette, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
+    About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
     PreviousTask, ShowShortcuts, ShowWelcome, ToggleTasks,
     config::{self, Config, HostConfig, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
@@ -298,6 +298,9 @@ pub struct Sik {
     quit_saving: bool,
     /// About, if open (its focus, for Esc).
     about: Option<FocusHandle>,
+    /// The shortcuts guide, shown in place of the welcome screen while no
+    /// workspace is open (with one, it's a tab of its own).
+    guide: Option<Entity<gpui_kit::component::text::TextViewState>>,
     /// Tasks column and workspace.
     split: config::Split,
     /// Settings, if open.
@@ -379,6 +382,7 @@ impl Sik {
             quit_confirm: None,
             quit_saving: false,
             about: None,
+            guide: None,
             split: config::Split::new(cx),
             settings: None,
             focus_handle: cx.focus_handle(),
@@ -2369,6 +2373,7 @@ impl Render for Sik {
             .on_action(cx.listener(|this, _: &About, window, cx| this.open_about(window, cx)))
             .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| this.check_for_updates(window, cx)))
             .on_action(cx.listener(|this, _: &ShowWelcome, window, cx| this.show_welcome(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenShortcutsGuide, window, cx| this.open_guide(window, cx)))
             .relative()
             // Our own bar, in the theme's color (macOS's is gray): the traffic
             // lights on the left, the active task in the middle, and it drags
@@ -2461,7 +2466,10 @@ impl Render for Sik {
                     )
                     .child(resizable_panel().child(match self.active_workspace() {
                         Some(workspace) => div().size_full().child(workspace).into_any_element(),
-                        None => self.render_welcome(cx),
+                        None => match &self.guide {
+                            Some(guide) => self.render_guide(guide, cx),
+                            None => self.render_welcome(cx),
+                        },
                     }))
                     .on_resize(move |state, _, cx| {
                         if visible && let Some(width) = state.read(cx).sizes().first() {

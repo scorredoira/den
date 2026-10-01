@@ -16,6 +16,7 @@ mod file_tree;
 mod language;
 mod menu;
 mod folder_picker;
+mod guide;
 mod picker;
 mod search;
 mod shortcuts;
@@ -56,6 +57,7 @@ actions!(
         About,
         CheckForUpdates,
         ShowWelcome,
+        OpenShortcutsGuide,
         Hide,
         HideOthers,
         ShowAll,

@@ -51,6 +51,10 @@ impl Sik {
                 action("welcome-open-remote", "Open Folder on Server…", keys("OpenRemoteFolder")).on_click(
                     cx.listener(|this, _, window, cx| this.open_remote_folder(&OpenRemoteFolder, window, cx)),
                 ),
+            )
+            .child(
+                action("welcome-shortcuts", "Keyboard Shortcuts", "learn them".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_guide(window, cx))),
             );
 
         let recents = self.recents(cx);

@@ -27,7 +27,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
-            MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+            MenuItem::action("Keyboard Shortcuts", OpenShortcutsGuide),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
@@ -130,7 +130,7 @@ pub fn set(cx: &mut App) {
         ]),
         Menu::new("Help").items([
             MenuItem::action("Welcome", ShowWelcome),
-            MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+            MenuItem::action("Keyboard Shortcuts", OpenShortcutsGuide),
         ]),
     ]);
     if !mac {

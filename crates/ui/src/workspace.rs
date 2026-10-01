@@ -117,7 +117,7 @@ impl FileTab {
     /// The tab that holds the file itself (its saved text, whether it has
     /// changes, its blame): not a diff or another view of it.
     fn is_file(&self) -> bool {
-        self.diff.is_none() && !self.view
+        self.diff.is_none() && !self.view && !self.doc
     }
 
     /// The file or one of its views, in either group.
@@ -171,6 +171,9 @@ struct FileTab {
     /// Another view of a file open in another tab (the other group): its own
     /// editor, kept in sync with the file's, and the same rendered Markdown.
     view: bool,
+    /// A page of the app's own (the shortcuts guide), with no file behind
+    /// it: read-only, never saved, not reopened with the session.
+    doc: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -504,7 +507,7 @@ impl Workspace {
     /// What is open now (excluding diff tabs).
     fn session(&self, cx: &App) -> Session {
         let mut session = Session { split: self.editor_split, ..Session::default() };
-        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none()) {
+        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.doc) {
             if self.active == Some(ix) {
                 session.active = Some(session.tabs.len());
             }
@@ -682,6 +685,32 @@ impl Workspace {
             None => dir.join(path),
         };
         self.open(normalize(&path), true, window, cx);
+    }
+
+    /// Shows `text`, Markdown, in a tab called `title` of its own (the
+    /// shortcuts guide): rendered, read-only, with no file behind it. Open
+    /// already, it gets the new text.
+    pub fn open_doc(&mut self, title: &str, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let path = PathBuf::from(title);
+        let ix = match self.tabs.iter().position(|tab| tab.doc && tab.path == path) {
+            Some(ix) => ix,
+            None => {
+                let mut tab = self.new_tab_with(path, false, "markdown", window, cx);
+                tab.doc = true;
+                tab.grab_focus = false;
+                self.place_tab(tab, true)
+            }
+        };
+        let tab = &mut self.tabs[ix];
+        tab.content = Content::Ready;
+        tab.saved = text.clone();
+        tab.show_source = false;
+        if let Some(markdown) = &tab.markdown {
+            markdown.update(cx, |view, cx| view.set_text(&text, cx));
+        }
+        tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
+        self.activate_with(ix, false, window, cx);
+        cx.notify();
     }
 
     /// Opens `path`; with `focus`, the keyboard goes to the editor.
@@ -1602,6 +1631,7 @@ impl Workspace {
             group: self.group,
             shown: 0,
             view: false,
+            doc: false,
             _subscriptions: subscriptions,
         }
     }
@@ -2662,7 +2692,7 @@ impl Workspace {
                         )
                         .into_any_element(),
                     None => {
-                        let readonly = tab.diff.is_some();
+                        let readonly = tab.diff.is_some() || tab.doc;
                         let file = self.tabs.iter().find(|file| file.path == tab.path && file.is_file());
                         let blame = file.filter(|file| !file.dirty && tab.diff.is_none()).and_then(|file| file.blame.clone());
                         let editor = Editor::new(&tab.editor)
