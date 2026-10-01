@@ -1,6 +1,7 @@
 //! Connection to a server's agent over SSH: uses the system `ssh` (with
 //! `~/.ssh/config`, keys, agent and ProxyJump) and, if the server doesn't have
-//! this version's agent, uploads it over the same connection.
+//! this version's agent, uploads it over the same connection (compressed:
+//! it's a few MB, and a home uplink takes seconds for each).
 
 use std::{
     io::Write as _,
@@ -105,8 +106,8 @@ fn run(destination: &str, script: &str, input: Option<&[u8]>) -> Result<String> 
 
 /// Installs the agent on the server (if needed) and returns its path there
 /// and the path of the matching local binary. `agents` is the folder with the
-/// agents for other systems.
-fn install(destination: &str, agents: &Path) -> Result<(String, std::path::PathBuf)> {
+/// agents for other systems. `step` is told what it's doing.
+fn install(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Result<(String, std::path::PathBuf)> {
     let system = run(destination, "uname -sm", None)?;
     let name = match system.trim() {
         "Linux x86_64" => AGENT_LINUX_X86_64,
@@ -121,27 +122,48 @@ fn install(destination: &str, agents: &Path) -> Result<(String, std::path::PathB
     let binary = std::fs::read(&local)
         .with_context(|| format!("missing the agent for the server: {}", local.display()))?;
     let remote = format!("{REMOTE_DIR}/sik-agent-{PROTOCOL}-{}", proto::build_id(&binary));
-    let present = run(destination, &format!("test -x {remote} && echo si || true"), None)?;
-    if present.trim() != "si" {
+    // Whether it's there and, if not, whether the server can unpack gzip.
+    let present = run(
+        destination,
+        &format!("test -x {remote} && echo si || {{ command -v gzip >/dev/null && echo gzip || echo raw; }}"),
+        None,
+    )?;
+    let present = present.trim();
+    if present != "si" {
+        step("uploading the agent…");
+        let (unpack, payload) = if present == "gzip" {
+            ("gzip -dc", gzip(&binary)?)
+        } else {
+            ("cat", binary)
+        };
         run(
             destination,
             // Old versions are deleted: an agent still using them doesn't notice.
             &format!(
-                "mkdir -p {REMOTE_DIR} && cat > {remote}.part && chmod +x {remote}.part && mv {remote}.part {remote} \
+                "mkdir -p {REMOTE_DIR} && {unpack} > {remote}.part && chmod +x {remote}.part && mv {remote}.part {remote} \
                  && find {REMOTE_DIR} -maxdepth 1 -name 'sik-agent-*' ! -path {remote} -delete"
             ),
-            Some(&binary),
+            Some(&payload),
         )
         .context("could not upload the agent")?;
+        step("starting the agent…");
     }
     Ok((remote, local))
 }
 
+/// `bytes` as `gzip -dc` reads them.
+fn gzip(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(bytes)?;
+    Ok(encoder.finish()?)
+}
+
 /// Connects to the agent on `destination` (a name from `~/.ssh/config` or
-/// `user@host`), installing it if needed.
-pub fn connect_ssh(destination: &str, agents: &Path) -> Result<Arc<Client>> {
+/// `user@host`), installing it if needed. `step` is told what it's doing
+/// when it isn't just connecting (uploading the agent takes a while).
+pub fn connect_ssh(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Result<Arc<Client>> {
     ensure_master(destination)?;
-    let (remote, local) = install(destination, agents)?;
+    let (remote, local) = install(destination, agents, step)?;
     let mut process = ssh(destination)
         .arg(format!("{remote} bridge"))
         .stdin(Stdio::piped())
@@ -298,6 +320,24 @@ pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
 #[cfg(test)]
 mod tests {
     use super::LoopbackUrl;
+
+    /// The upload is unpacked on the server with `gzip -dc`.
+    #[test]
+    #[cfg(unix)]
+    fn the_upload_unpacks_with_gzip() {
+        use std::io::Write as _;
+        let binary: Vec<u8> = (0..200_000u32).flat_map(|n| (n % 251).to_le_bytes()).collect();
+        let packed = super::gzip(&binary).unwrap();
+        assert!(packed.len() < binary.len() / 2);
+        let mut child = std::process::Command::new("gzip")
+            .arg("-dc")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&packed).unwrap();
+        assert_eq!(child.wait_with_output().unwrap().stdout, binary);
+    }
 
     #[test]
     fn parses_loopback_urls() {

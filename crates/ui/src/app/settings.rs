@@ -428,7 +428,7 @@ impl Sik {
             let name = host.name.clone();
             let status = match &host.status {
                 HostStatus::Connected => "connected",
-                HostStatus::Connecting => "connecting…",
+                HostStatus::Connecting(step) => step,
                 HostStatus::Failed(_) => "offline",
             };
             rows.push(

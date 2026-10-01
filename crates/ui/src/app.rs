@@ -49,8 +49,14 @@ pub const LOCAL: &str = "local";
 /// Width of the title bar's workspaces column button.
 const TOGGLE_WIDTH: f32 = 22.;
 
-/// Width of the fold arrow before a repo with worktrees.
+/// Width of the fold arrow at the end of a repo with worktrees.
 const FOLD_WIDTH: f32 = 12.;
+
+/// How far a server's workspaces sit in from its name.
+const ROW_INDENT: f32 = 24.;
+
+/// What a server shows while connecting, unless it's doing something longer.
+const CONNECTING: &str = "connecting…";
 
 /// How many folders Open Recent remembers.
 const RECENT: usize = 20;
@@ -81,7 +87,8 @@ impl TaskKey {
 }
 
 enum HostStatus {
-    Connecting,
+    /// What it's doing: connecting, or uploading the agent first.
+    Connecting(&'static str),
     Connected,
     Failed(SharedString),
 }
@@ -337,7 +344,7 @@ impl Sik {
                 name: host.name.clone().into(),
                 destination: Some(host.destination.clone()),
                 client: None,
-                status: HostStatus::Connecting,
+                status: HostStatus::Connecting(CONNECTING),
                 tasks: Vec::new(),
                 loose: Vec::new(),
                 repos: Vec::new(),
@@ -475,12 +482,34 @@ impl Sik {
         host.generation += 1;
         let generation = host.generation;
         let destination = host.destination.clone();
-        host.status = HostStatus::Connecting;
+        host.status = HostStatus::Connecting(CONNECTING);
         cx.notify();
         let agents = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
             .unwrap_or_default();
+        // Uploading the agent takes a while: the column says so.
+        let (step_tx, step_rx) = smol::channel::unbounded::<&'static str>();
+        let step_name = name.clone();
+        cx.spawn(async move |this, cx| {
+            while let Ok(step) = step_rx.recv().await {
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if let Some(host) = this.host_mut(&step_name)
+                            && host.generation == generation
+                            && matches!(host.status, HostStatus::Connecting(_))
+                        {
+                            host.status = HostStatus::Connecting(step);
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn_in(window, async move |this, cx| {
             let mut delay = Duration::ZERO;
             loop {
@@ -493,12 +522,16 @@ impl Sik {
                 if !current {
                     return;
                 }
-                let (destination, agents) = (destination.clone(), agents.clone());
+                let (destination, agents, step_tx) = (destination.clone(), agents.clone(), step_tx.clone());
                 let result = cx
                     .background_executor()
                     .spawn(async move {
                         match destination {
-                            Some(destination) => client::connect_ssh(&destination, &agents),
+                            Some(destination) => {
+                                client::connect_ssh(&destination, &agents, &|step| {
+                                    let _ = step_tx.try_send(step);
+                                })
+                            }
                             None => crate::agent::connect(),
                         }
                     })
@@ -1618,7 +1651,7 @@ impl Sik {
             name: name.clone(),
             destination: Some(destination),
             client: None,
-            status: HostStatus::Connecting,
+            status: HostStatus::Connecting(CONNECTING),
             tasks: Vec::new(),
             loose: Vec::new(),
             repos: Vec::new(),
@@ -1757,10 +1790,11 @@ impl Sik {
 
     fn render_host_header(&self, host: &Host, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (dot, color, detail): (&str, Hsla, Option<SharedString>) = match &host.status {
-            HostStatus::Connected => ("●", theme.success, None),
-            HostStatus::Connecting => ("○", theme.muted_foreground, Some("connecting…".into())),
-            HostStatus::Failed(err) => ("✕", theme.danger, Some(err.clone())),
+        // The connection's state is the icon's color.
+        let (color, detail): (Hsla, Option<SharedString>) = match &host.status {
+            HostStatus::Connected => (theme.success, None),
+            HostStatus::Connecting(step) => (theme.muted_foreground, Some((*step).into())),
+            HostStatus::Failed(err) => (theme.danger, Some(err.clone())),
         };
         let name = host.name.clone();
         let retry = matches!(host.status, HostStatus::Failed(_));
@@ -1780,7 +1814,12 @@ impl Sik {
                     .gap_1()
                     .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
-                    .child(div().text_color(color).child(dot))
+                    .child(
+                        svg()
+                            .path(if host.destination.is_none() { "icons/monitor.svg" } else { "icons/server.svg" })
+                            .size(px(12.))
+                            .text_color(color),
+                    )
                     .child(name.clone())
                     .when(retry, |el| {
                         el.child(div().flex_1())
@@ -1980,12 +2019,14 @@ impl Sik {
                 h_flex()
                     .id(SharedString::from(format!("repo-{fold_key}")))
                     .h(px(26.))
-                    .px_3()
-                    .gap_1()
+                    .pl(px(ROW_INDENT))
+                    .pr_3()
+                    .gap_2()
                     .text_ui(cx)
                     .text_color(theme.muted_foreground)
+                    .child(svg().path("icons/folder.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                    .child(div().flex_1().child(folder_name(&first_task.repo)))
                     .child(fold_chevron(collapsed, cx))
-                    .child(folder_name(&first_task.repo))
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(&fold_key, cx)))
                     .into_any_element()
             }
@@ -1999,7 +2040,7 @@ impl Sik {
         v_flex()
             .my_1()
             .child(header)
-            .when(!collapsed, |el| el.child(v_flex().ml(px(18.)).border_l_1().border_color(line).children(rows)))
+            .when(!collapsed, |el| el.child(v_flex().ml(px(ROW_INDENT + 7.)).border_l_1().border_color(line).children(rows)))
             .into_any_element()
     }
 
@@ -2083,28 +2124,27 @@ impl Sik {
             .text_ui(cx)
             .when(active, |el| el.bg(theme.sidebar_accent))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
-            .when_some(fold, |row, fold| {
-                row.pl_1().child(match fold {
-                    Some((fold_key, collapsed)) => div()
-                        .id(SharedString::from(format!("fold-{fold_key}")))
-                        .child(fold_chevron(collapsed, cx))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_fold(&fold_key, cx);
-                        }))
-                        .into_any_element(),
-                    None => div().w(px(FOLD_WIDTH)).flex_none().into_any_element(),
-                })
-            })
-            .child(div().text_color(color).child(dot))
+            .when(fold.is_some(), |row| row.pl(px(ROW_INDENT)))
+            // What it is: a folder, or a repo's worktree.
+            .child(
+                svg()
+                    .path(kind_icon(task))
+                    .size(px(14.))
+                    .flex_none()
+                    .text_color(if active { theme.sidebar_foreground } else { theme.muted_foreground }),
+            )
             .child(
                 div()
-                    .flex_1()
+                    .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .child(label.clone()),
             )
+            // Claude's state, only when there's one: working, waiting for an
+            // answer or finished unseen.
+            .when(dot != "○", |row| row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)))
+            .child(div().flex_1())
             .children(branch.map(|branch| {
                 div()
                     .flex_none()
@@ -2116,6 +2156,17 @@ impl Sik {
                     .text_color(theme.muted_foreground)
                     .child(branch)
             }))
+            .when_some(fold.flatten(), |row, (fold_key, collapsed)| {
+                row.child(
+                    div()
+                        .id(SharedString::from(format!("fold-{fold_key}")))
+                        .child(fold_chevron(collapsed, cx))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_fold(&fold_key, cx);
+                        })),
+                )
+            })
             .on_drag(
                 TaskDrag {
                     key: key.clone(),
@@ -2445,6 +2496,11 @@ fn recent_label(key: &TaskKey) -> String {
         _ => key.path.display().to_string(),
     };
     if key.host == LOCAL { path } else { format!("{}: {path}", key.host) }
+}
+
+/// A workspace's icon: a folder, or a branch for a repo's worktree.
+fn kind_icon(task: &TaskInfo) -> &'static str {
+    if task.main { "icons/folder.svg" } else { "icons/git-branch.svg" }
 }
 
 /// The arrow that folds a repo's worktrees under its checkout.

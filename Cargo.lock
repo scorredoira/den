@@ -995,6 +995,7 @@ name = "client"
 version = "0.1.7"
 dependencies = [
  "anyhow",
+ "flate2",
  "proto",
  "smol",
  "tokio",
