@@ -38,6 +38,7 @@ use crate::{
 };
 
 mod about;
+mod confirm;
 mod settings;
 mod theme;
 mod welcome;
@@ -266,10 +267,10 @@ pub struct Sik {
     /// Tasks waiting for an answer (Claude is asking something): in red.
     blocked: HashSet<TaskKey>,
     new_task: Option<NewTaskInput>,
-    /// Task whose deletion is being confirmed.
-    confirm_remove: Option<TaskKey>,
-    /// Server whose agent is about to be restarted (confirming).
-    confirm_restart: Option<SharedString>,
+    /// Worktree whose deletion is being confirmed, in a dialog.
+    confirm_remove: Option<(TaskKey, FocusHandle)>,
+    /// Server whose agent is about to be restarted, confirming in a dialog.
+    confirm_restart: Option<(SharedString, FocusHandle)>,
     removing: HashSet<TaskKey>,
     /// Last error from a column action, with the task it affects.
     error: Option<(Option<TaskKey>, SharedString)>,
@@ -613,8 +614,10 @@ impl Sik {
     }
 
     /// Shuts down the server's agent; reconnecting starts the new one.
-    fn restart_agent(&mut self, name: SharedString, cx: &mut Context<Self>) {
-        self.confirm_restart = None;
+    fn restart_agent(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirm_restart.take().is_some() {
+            self.focus_active(window, cx);
+        }
         if let Some(client) = self.client(&name) {
             client.notify(Request::Shutdown);
         }
@@ -987,17 +990,6 @@ impl Sik {
             1 => "There is 1 unsaved file".to_string(),
             n => format!("There are {n} unsaved files"),
         };
-        let button = |id: &'static str, label: &'static str| {
-            div()
-                .id(id)
-                .px_3()
-                .py_1()
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(theme.border)
-                .hover(|style| style.bg(theme.secondary_hover))
-                .child(label)
-        };
         div()
             .absolute()
             .inset_0()
@@ -1060,9 +1052,9 @@ impl Sik {
                         h_flex()
                             .gap_2()
                             .justify_end()
-                            .child(button("quit-cancel", "Cancel").on_click(cx.listener(|this, _, window, cx| this.cancel_quit(window, cx))))
+                            .child(dialog_button("quit-cancel", "Cancel", cx).on_click(cx.listener(|this, _, window, cx| this.cancel_quit(window, cx))))
                             .child(
-                                button("quit-discard", "Quit Without Saving")
+                                dialog_button("quit-discard", "Quit Without Saving", cx)
                                     .text_color(theme.danger)
                                     .on_click(cx.listener(|_, _, _, cx| cx.quit())),
                             )
@@ -1478,7 +1470,9 @@ impl Sik {
         let Some(client) = self.client(&key.host) else {
             return;
         };
-        self.confirm_remove = None;
+        if self.confirm_remove.take().is_some() {
+            self.focus_active(window, cx);
+        }
         self.error = None;
         self.removing.insert(key.clone());
         cx.notify();
@@ -1827,8 +1821,7 @@ impl Sik {
         let name = host.name.clone();
         let retry = matches!(host.status, HostStatus::Failed(_));
         let outdated = host.client.as_ref().is_some_and(|client| client.outdated());
-        let confirming = self.confirm_restart.as_ref() == Some(&name);
-        let (restart, cancel) = (name.clone(), name.clone());
+        let restart = name.clone();
         let connected = host.client.is_some();
         let weak = cx.entity().downgrade();
         let menu_name = name.clone();
@@ -1854,7 +1847,7 @@ impl Sik {
                             .child(div().hover(|style| style.underline()).child("retry"))
                             .on_click(cx.listener(move |this, _, window, cx| this.connect(name.clone(), window, cx)))
                     })
-                    .when(outdated && !confirming, |el| {
+                    .when(outdated, |el| {
                         el.child(div().flex_1())
                             .child(
                                 div()
@@ -1862,57 +1855,10 @@ impl Sik {
                                     .hover(|style| style.underline())
                                     .child("outdated agent · restart"),
                             )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.confirm_restart = Some(restart.clone());
-                                cx.notify();
-                            }))
+                            .on_click(cx.listener(move |this, _, window, cx| this.ask_restart(restart.clone(), window, cx)))
                     })
                     .context_menu(move |menu, _, _| host_menu(menu, &menu_name, connected, &weak)),
             )
-            .when(confirming, |el| {
-                el.child(
-                    v_flex()
-                        .mt_1()
-                        .p_2()
-                        .gap_1()
-                        .rounded(theme.radius)
-                        .border_1()
-                        .border_color(theme.warning)
-                        .bg(theme.background)
-                        .text_ui_small(cx)
-                        .child(
-                            div()
-                                .whitespace_normal()
-                                .child("A new version of the agent is available. Restarting it restarts its terminals: they reopen in place, without their scrollback, and Claude Code resumes its conversation."),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!("restart-{cancel}")))
-                                        .text_color(theme.warning)
-                                        .hover(|style| style.underline())
-                                        .child("Restart")
-                                        .on_click(cx.listener({
-                                            let name = cancel.clone();
-                                            move |this, _, _, cx| this.restart_agent(name.clone(), cx)
-                                        })),
-                                )
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!("restart-cancel-{cancel}")))
-                                        .text_color(theme.muted_foreground)
-                                        .hover(|style| style.underline())
-                                        .child("Cancel")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.confirm_restart = None;
-                                            cx.notify();
-                                        })),
-                                ),
-                        ),
-                )
-            })
             .children(detail.map(|detail| {
                 div()
                     .pl_3()
@@ -2261,65 +2207,21 @@ impl Sik {
                         )
                     })
                     .when(removable, |menu| {
-                        menu.item(menu::item("Delete Worktree…", &weak, move |this, _, cx| {
-                            this.confirm_remove = Some(remove.clone());
-                            this.error = None;
-                            cx.notify();
+                        menu.item(menu::item("Delete Worktree…", &weak, move |this, window, cx| {
+                            this.ask_remove(remove.clone(), window, cx)
                         }))
                     })
                 }
             });
 
 
-        let confirm = (self.confirm_remove.as_ref() == Some(key)).then(|| {
-            let detail = if local && task.repo.join(".sik/remove").is_file() {
-                "The repo's .sik/remove deletes it; depending on the repo, along with its uncommitted changes."
-            } else {
-                "With the repo's .sik/remove if it has one; otherwise git worktree remove, which won't delete with uncommitted changes."
-            };
-            v_flex()
-                .mx_2()
-                .my_1()
-                .p_2()
-                .gap_1()
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(theme.danger)
-                .bg(theme.background)
-                .text_ui_small(cx)
-                .child(div().text_ui(cx).child(format!("Delete {label}?")))
-                .child(div().text_color(theme.muted_foreground).whitespace_normal().child(detail))
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .child(
-                            div()
-                                .id("confirm-remove")
-                                .text_color(theme.danger)
-                                .hover(|style| style.underline())
-                                .child("Delete")
-                                .on_click(cx.listener({
-                                    let key = key.clone();
-                                    move |this, _, window, cx| this.remove_task(key.clone(), window, cx)
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id("cancel-remove")
-                                .text_color(theme.muted_foreground)
-                                .hover(|style| style.underline())
-                                .child("Cancel")
-                                .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
-                        ),
-                )
-        });
         let error = self
             .error
             .as_ref()
             .filter(|(target, _)| target.as_ref() == Some(key))
             .map(|(_, error)| div().mx_3().mb_1().child(error_text(error.clone(), cx)));
 
-        v_flex().child(row).children(confirm).children(error).into_any_element()
+        v_flex().child(row).children(error).into_any_element()
     }
 }
 
@@ -2488,8 +2390,24 @@ impl Render for Sik {
                     .map(|picker| div().absolute().top(px(44.)).left_0().right_0().flex().justify_center().child(picker)),
             )
             .children(self.about.as_ref().map(|focus| self.render_about(focus, cx)))
+            .children(self.confirm_remove.as_ref().map(|(key, focus)| self.render_confirm_remove(key, focus, cx)))
+            .children(self.confirm_restart.as_ref().map(|(name, focus)| self.render_confirm_restart(name, focus, cx)))
             .children(self.quit_confirm.as_ref().map(|focus| self.render_quit_confirm(focus, cx)))
     }
+}
+
+/// A dialog's secondary button.
+fn dialog_button(id: &'static str, label: &'static str, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    div()
+        .id(id)
+        .px_3()
+        .py_1()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .hover(|style| style.bg(theme.secondary_hover))
+        .child(label)
 }
 
 fn error_text(error: SharedString, cx: &App) -> impl IntoElement {

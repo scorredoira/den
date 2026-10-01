@@ -79,13 +79,12 @@ impl Sik {
                 .gap_3()
                 .child(div().flex_1().child(host.name.clone()))
                 .child(div().text_color(color).child(state))
-                // The column asks first: restarting restarts its terminals.
+                // Asks first: restarting restarts its terminals.
                 .when(outdated, |row| {
                     row.child(
                         link(format!("about-restart-agent-{name}").into(), "Restart…").on_click(cx.listener(move |this, _, window, cx| {
-                            this.confirm_restart = Some(name.clone());
-                            this.show_tasks_column(true, cx);
                             this.close_about(window, cx);
+                            this.ask_restart(name.clone(), window, cx);
                         })),
                     )
                 })
