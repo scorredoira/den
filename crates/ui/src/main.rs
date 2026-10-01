@@ -94,8 +94,11 @@ actions!(
 fn main() {
     crash::install();
     let cwd = std::env::current_dir().expect("could not read the current folder");
-    // Opened from the Dock or the Finder, the current folder is `/`.
-    let launched = cwd == Path::new("/");
+    // Opened from the Dock or the Finder, the current folder is `/`; from the
+    // Start menu, a shortcut or a double click, it's whatever they set (the
+    // user's folder, the app's), not something to open: only a terminal
+    // means it.
+    let launched = cwd == Path::new("/") || !std::io::IsTerminal::is_terminal(&std::io::stdin());
     let cwd = match std::env::home_dir() {
         Some(home) if launched => home,
         _ => cwd,

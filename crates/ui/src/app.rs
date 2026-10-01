@@ -2255,7 +2255,11 @@ impl Render for Sik {
         };
         if let Some(workspace) = self.active_workspace() {
             let width = window.viewport_size().width - tasks;
-            workspace.update(cx, |workspace, cx| workspace.set_width(width, cx));
+            let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_width(width, cx);
+                workspace.set_branch(branch, cx);
+            });
         }
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| "sik".into());
         v_flex()
@@ -2301,6 +2305,8 @@ impl Render for Sik {
                             .tooltip(|window, cx| Tooltip::new("Toggle Workspaces Column").build(window, cx))
                             .on_click(cx.listener(|this, _, window, cx| this.toggle_tasks(&ToggleTasks, window, cx))),
                     )
+                    // Windows and Linux: the menus, which only macOS draws itself.
+                    .children(crate::app_menu::bar(cx))
                     .child(
                         div()
                             .flex_1()

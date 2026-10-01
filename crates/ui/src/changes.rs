@@ -1,7 +1,8 @@
 //! Changes panel, in two views: what isn't committed yet (staged and
-//! unstaged, with the commit box) and the history, with its search, or only
-//! a file's or folder's. At the top, the branch. The agent does all the
-//! reading and work.
+//! unstaged) and the history, with its search, or only a file's or folder's.
+//! It only reads: committing, staging, discarding and switching branches
+//! are done in a terminal. The branch is in the status bar. The agent does
+//! all the reading.
 
 use std::{
     collections::HashMap,
@@ -41,8 +42,6 @@ pub enum ChangesEvent {
     OpenCommit { commit: String, short: String, pin: bool },
     /// Show `file` as it was in a commit.
     OpenFileAt { commit: String, short: String, file: String },
-    /// Choose which branch to switch to.
-    ChooseBranch { branches: Vec<String> },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -70,15 +69,10 @@ pub struct ChangesPanel {
     commit_files: HashMap<String, Vec<ChangedFile>>,
     /// History search: hash, message or author.
     query: Option<Entity<InputState>>,
-    message: Option<Entity<InputState>>,
-    /// The commit succeeded: the message is cleared on the next paint.
-    clear_message: bool,
     /// Selected row (`s:`, `u:` or `c:<hash>:` plus the path, or `h:<hash>`
     /// in a file's history).
     selected: Option<String>,
     loading: bool,
-    /// Operation in progress (push, pull, commit…), to display it.
-    busy: Option<SharedString>,
     error: Option<SharedString>,
     /// Needs rereading when the panel becomes visible.
     stale: bool,
@@ -102,11 +96,8 @@ impl ChangesPanel {
             expanded: None,
             commit_files: HashMap::new(),
             query: None,
-            message: None,
-            clear_message: false,
             selected: None,
             loading: false,
-            busy: None,
             error: None,
             stale: true,
             refresh: None,
@@ -129,8 +120,8 @@ impl ChangesPanel {
         }
     }
 
-    /// Showing the panel always rereads: commits, pushes or branch switches
-    /// made from a terminal only touch `.git`, which isn't watched.
+    /// Showing the panel always rereads: while hidden, changes only mark it
+    /// stale.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
         self.schedule(Duration::ZERO, cx);
     }
@@ -216,104 +207,9 @@ impl ChangesPanel {
         self.schedule(Duration::ZERO, cx);
     }
 
-    /// Runs a git operation and, when it finishes, rereads everything.
-    fn run(&mut self, op: GitOp, busy: Option<&'static str>, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        if self.busy.is_some() {
-            return;
-        }
-        let path = self.root.clone();
-        let commit = matches!(op, GitOp::Commit { .. });
-        self.busy = busy.map(SharedString::from);
-        self.error = None;
-        cx.spawn(async move |this, cx| {
-            let result = client.request(Request::Git { path, op }).await;
-            this.update(cx, |this, cx| {
-                this.busy = None;
-                match result {
-                    Ok(_) => {
-                        if commit {
-                            this.clear_message = true;
-                        }
-                        this.schedule(Duration::ZERO, cx);
-                    }
-                    Err(err) => this.error = Some(format!("{err:#}").into()),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-        cx.notify();
-    }
-
-    /// Fetches the branches and lets the workspace show the picker.
-    fn choose_branch(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let path = self.root.clone();
-        cx.spawn(async move |this, cx| {
-            let result = client.request(Request::Git { path, op: GitOp::Branches }).await;
-            this.update(cx, |this, cx| match result {
-                Ok(Response::Branches { current, branches }) => {
-                    let branches = branches.into_iter().filter(|branch| Some(branch) != current.as_ref()).collect();
-                    cx.emit(ChangesEvent::ChooseBranch { branches });
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    this.error = Some(format!("{err:#}").into());
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    pub fn switch_branch(&mut self, branch: String, cx: &mut Context<Self>) {
-        self.run(GitOp::Switch { branch }, Some("Switching branch…"), cx);
-    }
-
-    fn commit(&mut self, cx: &mut Context<Self>) {
-        let Some(message) = &self.message else {
-            return;
-        };
-        let text = message.read(cx).value().trim().to_string();
-        if text.is_empty() {
-            self.error = Some("Commit message is missing".into());
-            cx.notify();
-            return;
-        }
-        let all = self.status.staged.is_empty();
-        if all && self.status.unstaged.is_empty() {
-            return;
-        }
-        self.run(GitOp::Commit { message: text, all }, Some("Committing…"), cx);
-    }
-
-    /// Discarding can't be undone (except new files, which go to the Trash), so
-    /// it asks first.
-    fn discard(&mut self, files: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let message = match files.as_slice() {
-            [file] => format!("Discard changes to {file}?"),
-            files => format!("Discard changes to {} files?", files.len()),
-        };
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            &message,
-            Some("Modified files are restored to their previous state; new files are moved to the Trash."),
-            &[PromptButton::new("Cancel"), PromptButton::new("Discard")],
-            cx,
-        );
-        cx.spawn(async move |this, cx| {
-            if matches!(answer.await, Ok(1)) {
-                this.update(cx, |this, cx| this.run(GitOp::Discard { files }, None, cx)).ok();
-            }
-        })
-        .detach();
+    /// The checked-out branch, as last read; `None` if detached or not read yet.
+    pub fn branch(&self) -> Option<&str> {
+        self.status.branch.as_deref()
     }
 
     fn toggle_commit(&mut self, hash: String, cx: &mut Context<Self>) {
@@ -388,22 +284,6 @@ impl ChangesPanel {
         self.query = Some(input);
     }
 
-    fn ensure_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.message.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
-            self._subscriptions.push(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.commit(cx);
-                }
-            }));
-            self.message = Some(input);
-        }
-        if std::mem::take(&mut self.clear_message)
-            && let Some(input) = &self.message
-        {
-            input.update(cx, |input, cx| input.set_value("", window, cx));
-        }
-    }
 }
 
 /// A small text button, like the ones in the header.
@@ -477,14 +357,6 @@ fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: 
         )
 }
 
-/// A row button that only shows on hover.
-fn row_action(id: impl Into<ElementId>, label: &'static str, cx: &App) -> Stateful<Div> {
-    link(id, label, cx)
-        .flex_none()
-        .opacity(0.)
-        .group_hover("file-row", |style| style.opacity(1.))
-}
-
 /// "5 min ago", "3 d ago"…
 pub fn ago(time: i64) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
@@ -517,8 +389,6 @@ impl ChangesPanel {
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.set_view(view, cx)))
         };
-        let status = &self.status;
-        let branch = status.branch.clone().unwrap_or_else(|| "Detached HEAD".into());
         v_flex()
             .child(
                 h_flex()
@@ -526,38 +396,9 @@ impl ChangesPanel {
                     .py_1()
                     .gap_1()
                     .child(tab("changes-uncommitted", "Uncommitted", View::Uncommitted))
-                    .child(tab("changes-history", "History", View::History))
-                    .child(div().flex_1())
-                    .child(
-                        link("changes-refresh", if self.loading { "…" } else { "↻" }, cx)
-                            .on_click(cx.listener(|this, _, _, cx| this.schedule(Duration::ZERO, cx))),
-                    ),
+                    .child(tab("changes-history", "History", View::History)),
             )
-            .child(
-                h_flex()
-                    .px_2()
-                    .pb_1()
-                    .gap_1()
-                    .text_ui_small(cx)
-                    .child(
-                        div()
-                            .id("changes-switch")
-                            .flex_1()
-                            .min_w_0()
-                            .px_1()
-                            .rounded(theme.radius)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .text_color(theme.sidebar_foreground)
-                            .hover(|style| style.bg(theme.sidebar_accent))
-                            .child(format!("⎇ {branch}"))
-                            .on_click(cx.listener(|this, _, _, cx| this.choose_branch(cx))),
-                    )
-                    .when_some(self.busy.clone(), |el, busy| {
-                        el.child(div().flex_none().text_color(theme.muted_foreground).child(busy))
-                    }),
-            )
+
     }
 
     fn file_menu(&self, file: &ChangedFile, cx: &mut Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
@@ -595,11 +436,10 @@ impl ChangesPanel {
 
     /// A file row in the Branch and Uncommitted views: click to see its
     /// changes, double-click to open it.
-    fn change_row(&self, key: String, file: &ChangedFile, actions: Vec<Stateful<Div>>, cx: &mut Context<Self>) -> AnyElement {
+    fn change_row(&self, key: String, file: &ChangedFile, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.as_ref() == Some(&key);
         let path = file.path.clone();
         file_row(SharedString::from(format!("change-{key}")).into(), file, selected, 0., cx)
-            .children(actions)
             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                 this.selected = Some(key.clone());
                 cx.emit(ChangesEvent::OpenDiff { file: path.clone(), pin: event.click_count() >= 2 });
@@ -609,18 +449,14 @@ impl ChangesPanel {
             .into_any_element()
     }
 
-    fn section_title(&self, id: &'static str, title: String, action: Option<(&'static str, GitOp)>, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        h_flex()
+    fn section_title(&self, title: String, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
             .px_3()
             .pt_2()
             .pb_0p5()
             .text_ui_small(cx)
-            .text_color(theme.muted_foreground)
-            .child(div().flex_1().child(title))
-            .when_some(action, |el, (label, op)| {
-                el.child(link(id, label, cx).on_click(cx.listener(move |this, _, _, cx| this.run(op.clone(), None, cx))))
-            })
+            .text_color(cx.theme().muted_foreground)
+            .child(title)
     }
 
     fn commit_file_menu(
@@ -652,84 +488,18 @@ impl ChangesPanel {
         }
     }
 
+    /// What isn't committed, as git sees it: committing, staging and
+    /// discarding are done in a terminal.
     fn render_uncommitted(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = cx.theme();
         let status = &self.status;
-        let nothing = status.staged.is_empty() && status.unstaged.is_empty();
-        let commit_label = if status.staged.is_empty() { "Commit All" } else { "Commit" };
         let mut rows = Vec::new();
-        if let Some(message) = &self.message {
-            rows.push(
-                v_flex()
-                    .px_3()
-                    .pb_1()
-                    .gap_1()
-                    .child(Input::new(message).small())
-                    .child(
-                        div()
-                            .id("changes-commit")
-                            .py_0p5()
-                            .text_ui_small(cx)
-                            .text_center()
-                            .rounded(theme.radius)
-                            .when(nothing || self.busy.is_some(), |el| {
-                                el.bg(theme.muted).text_color(theme.muted_foreground)
-                            })
-                            .when(!nothing && self.busy.is_none(), |el| {
-                                el.bg(theme.primary)
-                                    .text_color(theme.primary_foreground)
-                                    .hover(|style| style.bg(theme.primary_hover))
-                                    .on_click(cx.listener(|this, _, _, cx| this.commit(cx)))
-                            })
-                            .child(commit_label),
-                    )
-                    .into_any_element(),
-            );
-        }
-        if !status.staged.is_empty() {
-            let files: Vec<String> = status.staged.iter().map(|file| file.path.clone()).collect();
-            rows.push(
-                self.section_title(
-                    "unstage-all",
-                    format!("Staged Changes ({})", status.staged.len()),
-                    Some(("− all", GitOp::Unstage { files })),
-                    cx,
-                )
-                .into_any_element(),
-            );
-            for (ix, file) in status.staged.iter().enumerate() {
-                let path = file.path.clone();
-                let unstage = row_action(("unstage", ix), "−", cx).on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.run(GitOp::Unstage { files: vec![path.clone()] }, None, cx);
-                }));
-                rows.push(self.change_row(format!("s:{}", file.path), file, vec![unstage], cx));
+        for (title, prefix, files) in [("Staged Changes", "s", &status.staged), ("Changes", "u", &status.unstaged)] {
+            if files.is_empty() {
+                continue;
             }
-        }
-        if !status.unstaged.is_empty() {
-            let files: Vec<String> = status.unstaged.iter().map(|file| file.path.clone()).collect();
-            rows.push(
-                self.section_title(
-                    "stage-all",
-                    format!("Changes ({})", status.unstaged.len()),
-                    Some(("+ all", GitOp::Stage { files })),
-                    cx,
-                )
-                .into_any_element(),
-            );
-            for (ix, file) in status.unstaged.iter().enumerate() {
-                let (stage, discard) = (file.path.clone(), file.path.clone());
-                let actions = vec![
-                    row_action(("discard", ix), "↺", cx).on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.discard(vec![discard.clone()], window, cx);
-                    })),
-                    row_action(("stage", ix), "+", cx).on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.run(GitOp::Stage { files: vec![stage.clone()] }, None, cx);
-                    })),
-                ];
-                rows.push(self.change_row(format!("u:{}", file.path), file, actions, cx));
+            rows.push(self.section_title(format!("{title} ({})", files.len()), cx).into_any_element());
+            for file in files {
+                rows.push(self.change_row(format!("{prefix}:{}", file.path), file, cx));
             }
         }
         rows
@@ -923,12 +693,11 @@ impl ChangesPanel {
 
 impl Render for ChangesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_message(window, cx);
         self.ensure_query(window, cx);
         let (rows, empty) = match self.view {
             View::Uncommitted => (
                 self.render_uncommitted(cx),
-                (self.status.staged.is_empty() && self.status.unstaged.is_empty()).then_some("Nothing to commit"),
+                (self.status.staged.is_empty() && self.status.unstaged.is_empty()).then_some("No changes"),
             ),
             View::History => (self.render_history(cx), self.commits.is_empty().then_some("No commits")),
         };

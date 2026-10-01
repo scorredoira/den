@@ -1,9 +1,14 @@
-//! The menu bar (macOS), as VS Code's: every entry is an action that already
-//! has a shortcut, and the menu shows it next to it. Items whose action nobody
+//! The menu bar, as VS Code's: every entry is an action that already has a
+//! shortcut, and the menu shows it next to it. Items whose action nobody
 //! handles where the focus is (Undo in a terminal) show up disabled.
+//!
+//! macOS draws it at the top of the screen; on Windows and Linux nobody
+//! does, so the window draws it in its title bar (`bar`), and what the Sik
+//! menu has there goes in File and Help.
 
 use gpui_base::input;
-use gpui_kit::{App, Menu, MenuItem, OsAction, SystemMenuType};
+use gpui_kit::component::{GlobalState, menu::AppMenuBar};
+use gpui_kit::{App, Entity, Global, Menu, MenuItem, OsAction, SystemMenuType};
 
 use crate::{
     config::Config,
@@ -14,8 +19,10 @@ use crate::{
 /// Sets the menus; again after something they show changes (Word Wrap's check).
 pub fn set(cx: &mut App) {
     let wrap = Config::get(cx).word_wrap;
-    cx.set_menus(vec![
-        Menu::new("Sik").items([
+    let mac = cfg!(target_os = "macos");
+    let mut menus = Vec::new();
+    if mac {
+        menus.push(Menu::new("Sik").items([
             MenuItem::action("About Sik", About),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
@@ -28,7 +35,9 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
             MenuItem::action("Quit Sik", Quit),
-        ]),
+        ]));
+    }
+    menus.extend([
         Menu::new("File").items([
             MenuItem::action("Open Folder…", OpenFolder),
             MenuItem::action("Open Folder on Server…", OpenRemoteFolder),
@@ -120,6 +129,43 @@ pub fn set(cx: &mut App) {
         ]),
         Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", ShowShortcuts)]),
     ]);
+    if !mac {
+        for menu in &mut menus {
+            match menu.name.as_ref() {
+                "File" => menu.items.extend([
+                    MenuItem::separator(),
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
+                    MenuItem::action("Exit", Quit),
+                ]),
+                "Help" => menu.items.extend([MenuItem::separator(), MenuItem::action("About Sik", About)]),
+                _ => {}
+            }
+        }
+    }
+    cx.set_menus(menus);
+    if !mac {
+        if let Some(menus) = cx.get_menus() {
+            GlobalState::global_mut(cx).set_app_menus(menus);
+        }
+        match cx.try_global::<Bar>().map(|bar| bar.0.clone()) {
+            Some(bar) => bar.update(cx, |bar, cx| bar.reload(cx)),
+            None => {
+                let bar = AppMenuBar::new(cx);
+                cx.set_global(Bar(bar));
+            }
+        }
+    }
+}
+
+/// The menu bar the window draws, on Windows and Linux.
+struct Bar(Entity<AppMenuBar>);
+
+impl Global for Bar {}
+
+/// The menu bar for the title bar; `None` on macOS, which draws its own.
+pub fn bar(cx: &App) -> Option<Entity<AppMenuBar>> {
+    cx.try_global::<Bar>().map(|bar| bar.0.clone())
 }
 
 /// The Sik menu's actions, which belong to the app rather than to a view.

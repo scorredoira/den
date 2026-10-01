@@ -230,6 +230,8 @@ pub struct Workspace {
     /// Side panel, code and terminals.
     split: config::Split,
     width: Pixels,
+    /// The checked-out branch, from the workspaces list (see `set_branch`).
+    branch: Option<String>,
     client: Option<Arc<Client>>,
     /// On this machine (not on a server).
     local: bool,
@@ -339,7 +341,6 @@ impl Workspace {
                 ChangesEvent::OpenFileAt { commit, short, file } => {
                     this.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
                 }
-                ChangesEvent::ChooseBranch { branches } => this.choose_branch(branches.clone(), window, cx),
             }),
             cx.subscribe_in(&search, window, |this, search, event: &SearchEvent, window, cx| match event {
                 SearchEvent::Open { file, line, column, pin } => {
@@ -385,6 +386,7 @@ impl Workspace {
             terminals_maximized: false,
             split: config::Split::new(cx),
             width: px(0.),
+            branch: None,
             client: agent,
             local,
             changes,
@@ -1141,26 +1143,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Branch picker for the Changes mode, in Cmd-P's spot.
-    fn choose_branch(&mut self, branches: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let picker = cx.new(|cx| Picker::new(Arc::new(branches), "Switch to Branch…", false, window, cx));
-        let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
-            this.finder = None;
-            match event {
-                PickerEvent::Pick(branch) => {
-                    let branch = branch.clone();
-                    this.changes.update(cx, |changes, cx| changes.switch_branch(branch, cx));
-                    this.focus_ide(window, cx);
-                }
-                PickerEvent::Dismiss => this.focus_ide(window, cx),
-                PickerEvent::Close => {}
-            }
-            cx.notify();
-        });
-        self.finder = Some((picker, subscription));
-        cx.notify();
-    }
-
     /// Cmd-P: find a file by name.
     fn open_file_finder(&mut self, _: &OpenFileFinder, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((finder, _)) = &self.finder {
@@ -1501,6 +1483,16 @@ impl Workspace {
     pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
         if self.width != width {
             self.width = width;
+            cx.notify();
+        }
+    }
+
+    /// The branch the workspaces list knows for this folder (refreshed every
+    /// few seconds); `None` for a folder outside the known repos, which
+    /// shows the one the Changes panel last read.
+    pub fn set_branch(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
+        if self.branch != branch {
+            self.branch = branch;
             cx.notify();
         }
     }
@@ -2788,6 +2780,16 @@ impl Workspace {
         let theme = cx.theme();
         let mut left = h_flex().gap_3().min_w_0().overflow_hidden();
         let mut right = h_flex().gap_3().flex_none().whitespace_nowrap();
+        let branch = self.branch.clone().or_else(|| self.changes.read(cx).branch().map(str::to_string));
+        if let Some(branch) = branch {
+            left = left.child(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .child(svg().path("icons/git-branch.svg").size(px(12.)).text_color(theme.muted_foreground))
+                    .child(branch),
+            );
+        }
         if let Some(tab) = self.active.map(|ix| &self.tabs[ix]) {
             let relative = tab.path.strip_prefix(&self.root).unwrap_or(&tab.path);
             left = left.child(relative.display().to_string());

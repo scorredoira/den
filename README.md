@@ -16,7 +16,7 @@
 - **Tasks.** The tasks of all your servers in one column; switching tasks switches the file tree, changes, search and terminals at once. A dot per task: red when Claude is asking something, yellow while it works, green when it finished unseen. No hooks: sik reads the terminals.
 - **Terminals that don't die.** They live in an agent that survives closing the app or losing SSH, and reattach with their history.
 - **Code next to the agent.** Tree-sitter highlighting, F12, Shift-F12, completions and signatures over LSP, search, Cmd-P, Markdown and images; Cmd-click a `file:line` in a terminal to open it.
-- **Git.** Uncommitted changes, stage, commit, the history (of everything or of one file) and side-by-side diffs. Open a commit to see its message, author, date and all its file changes together; click a file name to open its diff in a separate tab. Only the local repo: pushing and pulling is left to you.
+- **Git.** Uncommitted changes, the history (of everything or of one file) and side-by-side diffs; the branch in the status bar. Open a commit to see its message, author, date and all its file changes together; click a file name to open its diff in a separate tab. Sik only reads: committing, staging, switching branches, pushing and pulling are done in a terminal.
 - **Remote like local.** A server is a name from `~/.ssh/config`; sik uploads its agent and everything works as it does locally.
 
 ## Install
