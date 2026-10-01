@@ -1131,11 +1131,13 @@ impl Sik {
                     restore(this, window, cx);
                     if let Some(shortcut) = SHORTCUTS.iter().find(|shortcut| shortcut.label == label) {
                         match &previous {
-                            // Once this update is over: dispatching on a focus
-                            // handle runs now, and the action may reach `Sik`.
+                            // Once this update is over, and outside `Sik`:
+                            // dispatching on a focus handle runs now, and the
+                            // action may reach `Sik` (Settings), which can't be
+                            // updated from within itself (`defer_in` would be).
                             Some(focus) => {
                                 let (focus, action) = (focus.clone(), shortcut.action());
-                                cx.defer_in(window, move |_, window, cx| focus.dispatch_action(action.as_ref(), window, cx));
+                                window.defer(cx, move |window, cx| focus.dispatch_action(action.as_ref(), window, cx));
                             }
                             None => window.dispatch_action(shortcut.action(), cx),
                         }
@@ -2600,5 +2602,37 @@ mod tests {
             let syntax = &colors[mode];
             assert!(syntax.keyword.is_some() && syntax.string.is_some() && syntax.title.is_some(), "{mode}");
         }
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use core::prelude::v1::test;
+
+    use gpui_kit::*;
+
+    use super::Sik;
+    use crate::{config::Config, picker::PickerEvent};
+
+    /// Settings from the command palette: the action reaches `Sik` itself,
+    /// which must not be in the middle of an update then.
+    #[gpui_kit::test]
+    fn the_palette_opens_settings(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
+        cx.update(|window, cx| {
+            sik.update(cx, |sik, cx| {
+                sik.focus_handle.focus(window, cx);
+                sik.open_command_palette(window, cx);
+            })
+        });
+        cx.run_until_parked();
+        let picker = sik.read_with(cx, |sik, _| sik.command_palette.as_ref().map(|(picker, _)| picker.clone()).unwrap());
+        picker.update(cx, |_, cx| cx.emit(PickerEvent::Pick("Settings".into())));
+        cx.run_until_parked();
+        assert!(sik.read_with(cx, |sik, _| sik.settings.is_some()));
     }
 }
