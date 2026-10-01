@@ -1,11 +1,12 @@
-## What's new in 0.1.2
+## What's new in 0.1.5
 
-- Fix TypeScript language server startup when Sik is opened from the macOS Dock or Finder, restoring completions, Go to Definition, references and signature help.
-- Show a discreet `LSP unavailable` indicator in the status bar when language features fail, with the reason on hover.
-- Add **Settings → Editor → Auto Save on Focus Loss**. It is off by default, respects Format on Save, and saves when moving to another tab, panel or window.
-- Remove obsolete numbered task shortcut indicators.
+- **Workspaces column** (formerly Tasks): each row shows its folder name, with the branch only when it differs. A repo's worktrees fold under its checkout. Drag a checkout to move it along with its worktrees.
+- **`sik <path>`** opens a folder, or a file in its repo, from any terminal, starting Sik if it isn't running. Over SSH it opens in the app connected to that server. `sik task` is now `sik worktree`.
+- **Repo hooks** move from `.task/` to `.sik/` (`create`, `remove`, `format`). Rename the folder in your repos.
+- **Automatic updates:** an installed Sik checks for new releases every few hours, installs them and restarts once nothing is unsaved. Terminals keep running across the restart.
+- Fix LSP crashes and make language servers sturdier.
 
-After upgrading, reopen Sik and restart an outdated agent from the task list to apply the LSP startup fix. Restarting the agent also restarts its terminals.
+After upgrading, restart the outdated agent from the workspaces column so that `sik <path>` and the `.sik/` hooks work. Restarting the agent also restarts its terminals.
 
 ## Downloads
 
