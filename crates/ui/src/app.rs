@@ -27,8 +27,8 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{Event, Request, Response, TaskInfo};
 
 use crate::{
-    NewTask, OpenCommandPalette, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    PreviousTask, ShowShortcuts, ToggleTasks,
+    About, CheckForUpdates, NewTask, OpenCommandPalette, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
+    PreviousTask, ShowShortcuts, ShowWelcome, ToggleTasks,
     config::{self, Config, HostConfig, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -37,6 +37,7 @@ use crate::{
     workspace::Workspace,
 };
 
+mod about;
 mod settings;
 mod welcome;
 
@@ -294,6 +295,8 @@ pub struct Sik {
     quit_confirm: Option<FocusHandle>,
     /// Saving everything before quitting.
     quit_saving: bool,
+    /// About, if open (its focus, for Esc).
+    about: Option<FocusHandle>,
     /// Tasks column and workspace.
     split: config::Split,
     /// Settings, if open.
@@ -374,6 +377,7 @@ impl Sik {
             folder_picker: None,
             quit_confirm: None,
             quit_saving: false,
+            about: None,
             split: config::Split::new(cx),
             settings: None,
             focus_handle: cx.focus_handle(),
@@ -2358,6 +2362,9 @@ impl Render for Sik {
             .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| this.open_command_palette(window, cx)))
             .on_action(cx.listener(Self::previous_task))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
+            .on_action(cx.listener(|this, _: &About, window, cx| this.open_about(window, cx)))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| this.check_for_updates(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowWelcome, window, cx| this.show_welcome(window, cx)))
             .relative()
             // Our own bar, in the theme's color (macOS's is gray): the traffic
             // lights on the left, the active task in the middle, and it drags
@@ -2396,7 +2403,7 @@ impl Render for Sik {
                             .text_color(cx.theme().muted_foreground)
                             .child(title),
                     )
-                    .children(cx.try_global::<crate::update::Updates>().and_then(|updates| updates.ready.clone()).map(|version| {
+                    .children(cx.try_global::<crate::update::Updates>().and_then(|updates| updates.ready().map(str::to_string)).map(|version| {
                         div()
                             .id("restart-to-update")
                             .flex_none()
@@ -2477,6 +2484,7 @@ impl Render for Sik {
                     .or_else(|| self.folder_picker.as_ref().map(|(picker, _)| picker.clone().into_any_element()))
                     .map(|picker| div().absolute().top(px(44.)).left_0().right_0().flex().justify_center().child(picker)),
             )
+            .children(self.about.as_ref().map(|focus| self.render_about(focus, cx)))
             .children(self.quit_confirm.as_ref().map(|focus| self.render_quit_confirm(focus, cx)))
     }
 }
@@ -2670,5 +2678,21 @@ mod palette_tests {
         picker.update(cx, |_, cx| cx.emit(PickerEvent::Pick("Settings".into())));
         cx.run_until_parked();
         assert!(sik.read_with(cx, |sik, _| sik.settings.is_some()));
+    }
+
+    /// Check for Updates opens About; a build that isn't installed says so
+    /// instead of asking GitHub.
+    #[gpui_kit::test]
+    fn check_for_updates_opens_about(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            crate::update::init(cx);
+        });
+        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
+        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.check_for_updates(window, cx)));
+        cx.run_until_parked();
+        assert!(sik.read_with(cx, |sik, _| sik.about.is_some()));
+        assert!(cx.update(|_, cx| crate::update::status(cx) == crate::update::Status::NotInstalled));
     }
 }

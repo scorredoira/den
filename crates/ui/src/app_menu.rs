@@ -24,6 +24,7 @@ pub fn set(cx: &mut App) {
     if mac {
         menus.push(Menu::new("Sik").items([
             MenuItem::action("About Sik", About),
+            MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
@@ -127,7 +128,10 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PrevTab),
         ]),
-        Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", ShowShortcuts)]),
+        Menu::new("Help").items([
+            MenuItem::action("Welcome", ShowWelcome),
+            MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+        ]),
     ]);
     if !mac {
         for menu in &mut menus {
@@ -138,7 +142,11 @@ pub fn set(cx: &mut App) {
                     MenuItem::separator(),
                     MenuItem::action("Exit", Quit),
                 ]),
-                "Help" => menu.items.extend([MenuItem::separator(), MenuItem::action("About Sik", About)]),
+                "Help" => menu.items.extend([
+                    MenuItem::separator(),
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
+                    MenuItem::action("About Sik", About),
+                ]),
                 _ => {}
             }
         }
@@ -182,19 +190,5 @@ pub fn init(cx: &mut App) {
         if let Some(window) = cx.active_window() {
             window.update(cx, |_, window, _| window.zoom_window()).ok();
         }
-    });
-    // The action arrives while the window is busy dispatching it, and it
-    // can't be entered from there: show it right afterwards.
-    cx.on_action(|_: &About, cx| {
-        cx.defer(|cx| {
-            if let Some(window) = cx.active_window() {
-                window
-                    .update(cx, |_, window, cx| {
-                        let detail = format!("Version {}", env!("CARGO_PKG_VERSION"));
-                        let _ = window.prompt(gpui_kit::PromptLevel::Info, "Sik", Some(&detail), &["OK"], cx);
-                    })
-                    .ok();
-            }
-        });
     });
 }

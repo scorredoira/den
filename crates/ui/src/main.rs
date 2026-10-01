@@ -54,6 +54,8 @@ actions!(
         SplitEditorDown,
         OpenPreviewToSide,
         About,
+        CheckForUpdates,
+        ShowWelcome,
         Hide,
         HideOthers,
         ShowAll,

@@ -1,7 +1,8 @@
 //! Keeping an installed sik on its latest release, as sid does: every few
-//! hours it asks GitHub for the latest release and, if it's newer, installs
-//! it in place of this one and restarts into it. Right away when nothing is
-//! unsaved; otherwise once it's saved, or from the title bar's button.
+//! hours (or with Check for Updates) it asks GitHub for the latest release
+//! and, if it's newer, installs it in place of this one and restarts into
+//! it. Right away when nothing is unsaved; otherwise once it's saved, or
+//! from the title bar's button.
 //! Terminals live in the agent, so they're still there after restarting.
 //!
 //! Only an installed app updates: `Sik.app` on macOS, or what the Linux
@@ -33,10 +34,25 @@ enum Install {
     Linux(PathBuf),
 }
 
-/// An update installed and waiting for the restart.
+/// Where updating is at, for About.
+#[derive(Clone, Default, PartialEq)]
+pub enum Status {
+    /// Not checked yet.
+    #[default]
+    Idle,
+    Checking,
+    /// The latest release, which is this one or older.
+    UpToDate(String),
+    Failed(String),
+    /// A build run from `target`: it doesn't update.
+    NotInstalled,
+    /// Installed: restarting runs it.
+    Ready(String),
+}
+
 #[derive(Default)]
 pub struct Updates {
-    pub ready: Option<String>,
+    pub status: Status,
     /// What to start once the app has quit, when restarting into it.
     relaunch: Option<Vec<String>>,
     restarting: bool,
@@ -44,31 +60,78 @@ pub struct Updates {
 
 impl Global for Updates {}
 
-/// Starts checking for updates in the background.
+impl Updates {
+    /// The version installed and waiting for the restart.
+    pub fn ready(&self) -> Option<&str> {
+        match &self.status {
+            Status::Ready(version) => Some(version),
+            _ => None,
+        }
+    }
+}
+
+/// Where updating is at.
+pub fn status(cx: &App) -> Status {
+    cx.try_global::<Updates>().map(|updates| updates.status.clone()).unwrap_or_default()
+}
+
+/// Starts checking for updates in the background: shortly after starting,
+/// then every few hours.
 pub fn init(cx: &mut App) {
     cx.set_global(Updates::default());
-    let Some(install) = install() else {
+    if install().is_none() {
+        cx.global_mut::<Updates>().status = Status::NotInstalled;
         return;
-    };
+    }
     cx.spawn(async move |cx| {
         cx.background_executor().timer(FIRST_CHECK).await;
         loop {
-            let install = install.clone();
-            let result = cx.background_executor().spawn(async move { check_and_install(&install) }).await;
-            match result {
-                Ok(Some((version, relaunch))) => {
-                    cx.update(|cx| {
-                        let updates = cx.global_mut::<Updates>();
-                        updates.ready = Some(version);
-                        updates.relaunch = Some(relaunch);
-                        cx.refresh_windows();
-                    });
-                    break;
-                }
-                Ok(None) => {}
-                Err(err) => eprintln!("update: {err:#}"),
-            }
+            cx.update(check_now);
             cx.background_executor().timer(CHECK_EVERY).await;
+        }
+    })
+    .detach();
+}
+
+/// Asks for the latest release now and, if it's newer, installs it; once
+/// installed, it restarts as soon as nothing would be lost. Check for
+/// Updates, and the periodic check.
+pub fn check_now(cx: &mut App) {
+    let Some(install) = install() else {
+        cx.default_global::<Updates>().status = Status::NotInstalled;
+        cx.refresh_windows();
+        return;
+    };
+    let updates = cx.default_global::<Updates>();
+    if matches!(updates.status, Status::Checking | Status::Ready(_)) {
+        return;
+    }
+    updates.status = Status::Checking;
+    cx.refresh_windows();
+    cx.spawn(async move |cx| {
+        let result = cx.background_executor().spawn(async move { check_and_install(&install) }).await;
+        let ready = cx.update(|cx| {
+            let updates = cx.global_mut::<Updates>();
+            let ready = match result {
+                Ok(Ok(latest)) => {
+                    updates.status = Status::UpToDate(latest);
+                    false
+                }
+                Ok(Err((version, relaunch))) => {
+                    updates.status = Status::Ready(version);
+                    updates.relaunch = Some(relaunch);
+                    true
+                }
+                Err(err) => {
+                    updates.status = Status::Failed(format!("{err:#}"));
+                    false
+                }
+            };
+            cx.refresh_windows();
+            ready
+        });
+        if !ready {
+            return;
         }
         // Installed: restart as soon as nothing would be lost.
         loop {
@@ -161,11 +224,14 @@ fn latest() -> Result<String> {
     Ok(url.trim().rsplit('/').next().unwrap_or_default().to_string())
 }
 
-/// Installs the latest release if it's newer: its version and what starts it.
-fn check_and_install(install: &Install) -> Result<Option<(String, Vec<String>)>> {
+/// Installs the latest release if it's newer. `Ok` with the latest version
+/// if there's nothing to install; `Err` with the version installed and what
+/// starts it.
+#[allow(clippy::type_complexity)]
+fn check_and_install(install: &Install) -> Result<std::result::Result<String, (String, Vec<String>)>> {
     let tag = latest()?;
     if !is_newer(&tag, env!("CARGO_PKG_VERSION")) {
-        return Ok(None);
+        return Ok(Ok(tag.trim_start_matches('v').to_string()));
     }
     let version = tag.trim_start_matches('v').to_string();
     let (platform, extension) = match install {
@@ -200,7 +266,7 @@ fn check_and_install(install: &Install) -> Result<Option<(String, Vec<String>)>>
         }
     })();
     let _ = std::fs::remove_dir_all(&work);
-    Ok(Some((version, result?)))
+    Ok(Err((version, result?)))
 }
 
 /// Unpacks the release's `Sik.app` beside `bundle` and swaps it in. The
