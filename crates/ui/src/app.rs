@@ -14,7 +14,7 @@ use std::{
 
 use client::Client;
 use gpui_kit::component::{
-    ActiveTheme as _, StyledExt as _, Theme, ThemeMode, TitleBar, h_flex, h_resizable,
+    ActiveTheme as _, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, h_flex, h_resizable,
     highlighter::SyntaxColors,
     input::{Input, InputEvent, InputState},
     kbd::Kbd,
@@ -112,7 +112,7 @@ struct Host {
     generation: u64,
 }
 
-/// Inline "New task", in the column.
+/// A new worktree being named, in a row under its repo.
 struct NewTaskInput {
     host: SharedString,
     repo: PathBuf,
@@ -1390,11 +1390,21 @@ impl Sik {
         if !self.tasks_visible(cx) {
             self.show_tasks_column(true, cx);
         }
+        // The new row goes under the repo's checkout, with its worktrees.
+        let fold_key = TaskKey { host: host.clone(), path: repo.clone() }.config();
+        if Config::get(cx).collapsed.contains(&fold_key) {
+            self.toggle_fold(&fold_key, cx);
+        }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("branch name"));
-        let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = event {
-                this.create_task(window, cx);
+        let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.create_task(window, cx),
+            // Like a new file in the tree: clicking elsewhere drops it,
+            // unless it's already being created.
+            InputEvent::Blur if this.new_task.as_ref().is_some_and(|form| !form.busy) => {
+                this.new_task = None;
+                cx.notify();
             }
+            _ => {}
         });
         input.update(cx, |input, cx| input.focus(window, cx));
         self.new_task = Some(NewTaskInput {
@@ -1436,8 +1446,8 @@ impl Sik {
                         this.new_task = None;
                         this.activate(TaskKey { host, path: task.path }, window, cx);
                     }
-                    Ok(other) => this.new_task_error(format!("Unexpected response: {other:?}"), cx),
-                    Err(err) => this.new_task_error(format!("{err:#}"), cx),
+                    Ok(other) => this.new_task_error(format!("Unexpected response: {other:?}"), window, cx),
+                    Err(err) => this.new_task_error(format!("{err:#}"), window, cx),
                 }
             })
             .ok();
@@ -1445,10 +1455,12 @@ impl Sik {
         .detach();
     }
 
-    fn new_task_error(&mut self, error: String, cx: &mut Context<Self>) {
+    /// The name back in its row, to fix and try again.
+    fn new_task_error(&mut self, error: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(form) = &mut self.new_task {
             form.busy = false;
             form.error = Some(error.into());
+            form.input.update(cx, |input, cx| input.focus(window, cx));
         }
         cx.notify();
     }
@@ -1913,37 +1925,6 @@ impl Sik {
     }
 
     fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
-        let new_task = self.new_task.as_ref().map(|form| {
-            let theme = cx.theme();
-            let place = if form.host == LOCAL {
-                folder_name(&form.repo)
-            } else {
-                format!("{}: {}", form.host, folder_name(&form.repo))
-            };
-            v_flex()
-                .mx_2()
-                .mb_2()
-                .p_2()
-                .gap_1()
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.background)
-                .text_ui(cx)
-                .child(
-                    div()
-                        .text_ui_small(cx)
-                        .text_color(theme.muted_foreground)
-                        .child(format!("New worktree in {place}")),
-                )
-                .child(Input::new(&form.input))
-                .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(if form.busy {
-                    "Creating…"
-                } else {
-                    "Enter to create · Esc to cancel"
-                }))
-                .children(form.error.clone().map(|error| error_text(error, cx)))
-        });
         let ordered = self.ordered(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
         for host in &self.hosts {
@@ -1991,7 +1972,6 @@ impl Sik {
                     .child("WORKSPACES")
                     .context_menu(move |menu, _, _| column_menu(menu, &header_menu)),
             )
-            .children(new_task)
             .child(
                 v_flex()
                     .id("task-list")
@@ -2022,12 +2002,19 @@ impl Sik {
         let Some(&(ref first, first_task)) = group.first() else {
             return div().into_any_element();
         };
-        if worktrees.is_empty() {
+        let new_task = self
+            .new_task
+            .as_ref()
+            .filter(|form| form.host == first.host && form.repo == first_task.repo)
+            .map(|form| render_new_task(form, cx));
+        if worktrees.is_empty() && new_task.is_none() {
             return self.render_task(first, first_task, Some(None), &[], cx);
         }
         let fold_key = TaskKey { host: first.host.clone(), path: first_task.repo.clone() }.config();
         let collapsed = Config::get(cx).collapsed.contains(&fold_key);
         let header = match head {
+            // Only its new worktree under it: nothing to fold yet.
+            Some((key, task)) if worktrees.is_empty() => self.render_task(key, task, Some(None), &[], cx),
             Some((key, task)) => self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx),
             // Its checkout is hidden: the repo's name, which only folds.
             None => {
@@ -2050,7 +2037,11 @@ impl Sik {
         let rows: Vec<AnyElement> = if collapsed {
             Vec::new()
         } else {
-            worktrees.iter().map(|(key, task)| self.render_task(key, task, None, &[], cx)).collect()
+            worktrees
+                .iter()
+                .map(|(key, task)| self.render_task(key, task, None, &[], cx))
+                .chain(new_task)
+                .collect()
         };
         let line = cx.theme().sidebar_border;
         v_flex()
@@ -2559,6 +2550,36 @@ fn recent_label(key: &TaskKey) -> String {
 /// A workspace's icon: a folder, or a branch for a repo's worktree.
 fn kind_icon(task: &TaskInfo) -> &'static str {
     if task.main { "icons/folder.svg" } else { "icons/git-branch.svg" }
+}
+
+/// The worktree being named: a row at the end of its repo's worktrees, like
+/// a new file in the tree.
+fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let name = form.input.read(cx).value().trim().to_string();
+    v_flex()
+        .child(
+            h_flex()
+                .h(px(26.))
+                .px_3()
+                .gap_2()
+                .text_ui(cx)
+                .child(svg().path("icons/git-branch.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                .child(if form.busy {
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .text_color(theme.muted_foreground)
+                        .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                        .child(div().flex_none().text_ui_small(cx).child("…"))
+                        .into_any_element()
+                } else {
+                    div().flex_1().min_w_0().child(Input::new(&form.input).xsmall()).into_any_element()
+                }),
+        )
+        .children(form.error.clone().map(|error| div().px_3().pb_1().child(error_text(error, cx))))
+        .into_any_element()
 }
 
 /// The arrow that folds a repo's worktrees under its checkout.
