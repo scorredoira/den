@@ -17,8 +17,8 @@ def version():
     return re.search(r'^version = "([^"]+)"', (ROOT / "Cargo.toml").read_text(), re.M)[1]
 
 
-def package(target, agent, output):
-    binaries = ROOT / "target" / target / "release"
+def package(target, agent, output, binaries=None):
+    binaries = binaries or ROOT / "target" / target / "release"
     platform = "macos" if "apple" in target else "windows" if "windows" in target else "linux"
     arch = target.split("-")[0]
     label = f"sik-{version()}-{platform}-{arch}"
@@ -28,6 +28,10 @@ def package(target, agent, output):
     stage.mkdir(parents=True)
     output.mkdir(parents=True, exist_ok=True)
     suffix = ".exe" if platform == "windows" else ""
+    result = subprocess.run([str((binaries / ("sik-agent" + suffix)).resolve()), "--version"],
+                            check=True, capture_output=True, text=True, timeout=10)
+    if not result.stdout.startswith(f"sik-agent {version()} (protocol "):
+        raise RuntimeError("Agent version does not match Cargo.toml; rebuild before packaging")
     if platform == "macos":
         app = stage / "Sik.app"
         bindir = app / "Contents" / "MacOS"
@@ -64,6 +68,10 @@ def package(target, agent, output):
         archive.unlink(missing_ok=True)
         subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)], check=True)
     elif platform == "linux":
+        linked = subprocess.run(["ldd", str((binaries / "sik").resolve())],
+                                check=True, capture_output=True, text=True)
+        if "not found" in linked.stdout:
+            raise RuntimeError(f"Missing GUI runtime libraries:\n{linked.stdout}")
         shutil.copy2(ROOT / "packaging/macos/sik.svg", stage)
         shutil.copy2(ROOT / "packaging/linux/sik.desktop", stage)
         shutil.copy2(ROOT / "packaging/linux/install.sh", stage)
@@ -84,6 +92,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
     parser.add_argument("--agent", type=Path, required=True, help="Linux x86_64 musl agent")
+    parser.add_argument("--binary-dir", type=Path, help="Override the native binary directory")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     args = parser.parse_args()
-    package(args.target, args.agent.resolve(), args.output.resolve())
+    package(args.target, args.agent.resolve(), args.output.resolve(), args.binary_dir)

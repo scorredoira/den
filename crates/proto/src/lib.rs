@@ -515,6 +515,7 @@ pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read) -> Result<Option<
 
 /// The app's state directory (the agent's socket and log).
 pub fn state_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SIK_STATE_DIR") { return Ok(path.into()); }
     let base = dirs::state_dir()
         .or_else(dirs::data_local_dir)
         .context("no state directory")?;
@@ -523,6 +524,7 @@ pub fn state_dir() -> Result<PathBuf> {
 
 /// The app's config directory.
 pub fn config_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SIK_CONFIG_DIR") { return Ok(path.into()); }
     Ok(dirs::config_dir().context("no config directory")?.join(APP))
 }
 

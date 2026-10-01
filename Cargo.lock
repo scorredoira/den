@@ -117,6 +117,7 @@ dependencies = [
  "anyhow",
  "client",
  "dirs 6.0.0",
+ "dunce",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",

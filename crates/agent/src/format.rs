@@ -37,11 +37,11 @@ pub fn format(task: &Path, path: &Path, text: &str) -> Result<Response> {
 
 /// Runs the repo's `.task/format`; `None` if there's none or the file isn't its.
 fn script(task: &Path, path: &Path, text: &str) -> Result<Option<String>> {
-    let Some(script) = crate::platform::repo_script(&task.join(SCRIPT)) else {
+    let Some(script) = crate::platform::repo_script(&task.join(SCRIPT)).filter(|path| crate::platform::is_executable_script(path)) else {
         return Ok(None);
     };
     let mut child = crate::platform::script_command(&script)
-        .arg(path)
+        .arg(dunce::simplified(path))
         .current_dir(task)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -274,6 +274,18 @@ mod tests {
         assert_eq!(indentation("{\n    \"a\": {\n        \"b\": 1\n    }\n}"), Some(Indent::Spaces(4)));
         assert_eq!(indentation("{\n\t\"a\": 1\n}"), Some(Indent::Tabs));
         assert_eq!(indentation("{}"), None);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn formats_with_powershell_hook() {
+        let task = std::env::temp_dir().join(format!("sik-format-ps-{}", std::process::id()));
+        std::fs::create_dir_all(task.join(".task")).unwrap();
+        std::fs::write(task.join(".task/format.ps1"),
+            "[Console]::Out.Write([Console]::In.ReadToEnd().ToUpperInvariant())").unwrap();
+        let Response::Formatted { text, .. } = format(&task, &task.join("a.txt"), "hello").unwrap() else { panic!() };
+        assert_eq!(text.as_deref(), Some("HELLO"));
+        let _ = std::fs::remove_dir_all(task);
     }
 
     #[test]

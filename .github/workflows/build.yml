@@ -10,29 +10,35 @@ env:
 jobs:
   linux-agent:
     name: Linux SSH agent
+    timeout-minutes: 20
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-on-failure: true
           key: linux-agent
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Test release command
+        run: python3 -m unittest discover -s packaging/tests -v
       - run: cargo build --release --locked -p agent --target x86_64-unknown-linux-musl
       - name: Prepare agent
         run: |
           mkdir -p ssh-agent
           cp target/x86_64-unknown-linux-musl/release/sik-agent ssh-agent/sik-agent-linux-x86_64
           file ssh-agent/sik-agent-linux-x86_64
-      - uses: actions/upload-artifact@v4
+          ./ssh-agent/sik-agent-linux-x86_64 --version
+      - uses: actions/upload-artifact@v7
         with:
           name: ssh-agent
           path: ssh-agent/sik-agent-linux-x86_64
           if-no-files-found: error
   desktop:
     name: ${{ matrix.name }}
+    timeout-minutes: 60
     needs: linux-agent
     strategy:
       fail-fast: false
@@ -59,32 +65,35 @@ jobs:
       RUSTFLAGS: ${{ matrix.rustflags }}
       MACOSX_DEPLOYMENT_TARGET: '15.0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-on-failure: true
           key: ${{ matrix.target }}
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc g++ clang cmake pkg-config libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ssh-agent
           path: ssh-agent
-      - name: Test
-        run: cargo test --release --locked --workspace --target ${{ matrix.target }}
+      - name: Test agent
+        run: cargo test --release --locked -p proto -p client -p agent --target ${{ matrix.target }}
+      - name: Test UI
+        run: cargo test --release --locked -p ui -p ui-term --target ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked -p ui -p agent --target ${{ matrix.target }}
       - name: Package
         run: python packaging/package.py --target ${{ matrix.target }} --agent ssh-agent/sik-agent-linux-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: package-${{ matrix.target }}
           path: dist/*

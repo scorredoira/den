@@ -19,7 +19,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: version
@@ -50,10 +50,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: package-*
           merge-multiple: true
@@ -69,4 +69,5 @@ jobs:
         run: |
           flags=()
           if [[ "$PRERELEASE" == true || "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "Sik $RELEASE_TAG" --generate-notes "${flags[@]}"
+          gh release create "$RELEASE_TAG" dist/* --target "$GITHUB_SHA" --title "Sik $RELEASE_TAG" --generate-notes --notes-file packaging/release-notes.txt --draft "${flags[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false

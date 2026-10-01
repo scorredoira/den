@@ -202,7 +202,7 @@ A host is a name from `~/.ssh/config` or `user@machine`, and the app does the re
 
 ## Platforms
 
-Portable architecture from scratch, but for now only tested on the Mac. Linux uses the same Unix code as macOS. Windows is left prepared: when it's wanted, it'll be a matter of filling gaps, not changing the design.
+The desktop builds and tests run in GitHub Actions on macOS (Apple Silicon and Intel), Linux x86_64 and Windows x86_64. Linux shares the Unix transport with macOS; Windows uses per-user named pipes and ConPTY. Real desktop installation and GPU behavior still need manual smoke testing.
 
 **Rules to keep it portable from now on:**
 
@@ -217,14 +217,14 @@ Portable architecture from scratch, but for now only tested on the Mac. Linux us
 | Rendering (GPUI) | Metal | wgpu, Wayland and X11 | GPUI's own backend; should just work |
 | App modifier | Cmd | Ctrl | Ctrl |
 | App shortcuts inside the terminal | Cmd | Ctrl-Shift | Ctrl-Shift |
-| Transport to the local agent | Unix socket | Unix socket | Named pipe: not implemented |
-| Daemon startup | `fork` and `setsid` | `fork` and `setsid` | Detached process: not implemented |
-| Pty | `portable-pty` | `portable-pty` | `portable-pty` (ConPTY): untested |
-| A terminal's current directory | `proc_pidinfo` | `/proc/<pid>/cwd` | Shell's OSC 7: not implemented |
+| Transport to the local agent | Unix socket | Unix socket | Named pipe with owner-only permissions |
+| Daemon startup | `fork` and `setsid` | `fork` and `setsid` | Process without an inherited console |
+| Pty | `portable-pty` | `portable-pty` | `portable-pty` (ConPTY) |
+| A terminal's current directory | `proc_pidinfo` | `/proc/<pid>/cwd` | OSC 7; integrated into the default PowerShell prompt |
 | Config and state | `~/Library/Application Support/sik` | `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` | `%APPDATA%\sik` via `dirs` |
 | SSH | `ssh` with `ControlMaster` | `ssh` with `ControlMaster` | OpenSSH without `ControlMaster`: one connection per stream |
-| `C:\path:12` paths in the terminal | — | — | Not implemented |
-| Package | `.app` signed with the development certificate (Developer ID and notarization pending) | AppImage or `.tar.gz`: pending | `.msi` or `.zip`: pending |
+| `C:\path:12` paths in the terminal | — | — | Supported |
+| Package | Ad hoc signed `.app` in `.zip`; no notarization | `.tar.gz` with per-user installer | Portable `.zip` with optional per-user installer |
 
 ## Repo structure and build
 
@@ -267,7 +267,7 @@ Each phase leaves something usable every day; the persistent terminal comes earl
 4. **Phase 3, SSH:** adding servers, agent upload, `bridge`, reconnection; tasks from several servers in the list. Done when: working on a server feels the same as locally and cutting the wifi for 1 minute loses nothing. (Done and tested with bill: Linux agent built with cargo-zigbuild and uploaded over the same connection; files, search, changes and terminals go through each server's agent; reconnection with increasing backoff and terminals that reattach.)
 5. **Phase 4, search and changes:** global search and Cmd-P in the panel, Changes mode with git relative to the base branch. Done when: it replaces sid's search. (Done.)
 6. **Phase 5, LSP:** F12 and Shift-F12 with the References panel. Done when: it works in TypeScript, Go and Rust, locally and over SSH. (Done: `lsp.rs` in the agent, tested against rust-analyzer, gopls and TypeScript 7; Ctrl-Opt-←/→ to go back and forward.)
-7. **Phase 6, polish:** themes, settings, signed `.app` and Linux package. (Done on Mac: `./install` builds in release, assembles `Sik.app` with its icon and agents, signs it with the development certificate and installs it in `/Applications`. Still missing: Developer ID with notarization, for distributing it, and the Linux package.)
+7. **Phase 6, polish:** themes, settings, signed `.app` and Linux package. (Done on Mac: `./install` builds in release, assembles `Sik.app` with its icon and agents, signs it with the development certificate and installs it in `/Applications`. Release automation now builds macOS ZIPs, Linux tarballs and Windows ZIPs. Developer ID signing and notarization remain optional future work.)
 8. **Phase 7, Windows:** fill in the gaps in the Platforms table (named pipe, daemon startup, ConPTY, OSC 7, `C:\` paths) and package it. Done when: the app is used daily on Windows with PowerShell and Claude Code, against a Linux server over SSH.
 
 ## Status and next steps

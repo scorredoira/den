@@ -26,6 +26,10 @@ fn terminals_come_back_after_a_restart() {
     let socket = dir.join("agent.sock");
     // SAFETY: the test is the only thread touching the environment.
     unsafe { std::env::set_var("SIK_AGENT_SOCKET", &socket) };
+    unsafe {
+        std::env::set_var("SIK_STATE_DIR", dir.join("state"));
+        std::env::set_var("SIK_CONFIG_DIR", dir.join("config"));
+    }
     let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
 
     let client = Client::connect_local(agent).unwrap();

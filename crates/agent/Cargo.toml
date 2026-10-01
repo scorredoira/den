@@ -27,3 +27,4 @@ grep-matcher = "0.1"
 regex = "1"
 url = "2"
 dirs.workspace = true
+dunce = "1"

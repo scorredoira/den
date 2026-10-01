@@ -34,7 +34,7 @@ impl ShellCwd {
         // OSC 7 includes the local hostname; it is not a UNC network share.
         let _ = url.set_host(None);
         if let Ok(path) = url.to_file_path() {
-            self.path = path;
+            self.path = path.canonicalize().unwrap_or(path);
         }
     }
 }

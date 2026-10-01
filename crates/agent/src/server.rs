@@ -746,7 +746,9 @@ fn restore_after_restart(state: &Shared) {
 fn resume_command(args: &str) -> Option<String> {
     let words: Vec<&str> = args.split_whitespace().collect();
     let start = words.iter().position(|word| {
-        word.rsplit('/').next() == Some("claude") || word.contains("@anthropic-ai/claude-code")
+        let word = word.trim_matches('"');
+        matches!(word.rsplit(['/', '\\']).next(), Some("claude" | "claude.exe" | "claude.cmd"))
+            || word.replace('\\', "/").contains("@anthropic-ai/claude-code")
     })?;
     let mut command = vec!["claude"];
     command.extend(words[start + 1..].iter().filter(|word| !matches!(**word, "-c" | "--continue")));
@@ -910,6 +912,8 @@ mod restart_tests {
             resume("node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js --model opus").as_deref(),
             Some("claude --model opus --continue")
         );
+        assert_eq!(resume(r#""C:\Users\me\.local\bin\claude.exe" --model opus"#).as_deref(), Some("claude --model opus --continue"));
+        assert_eq!(resume(r"node C:\npm\@anthropic-ai\claude-code\cli.js -c").as_deref(), Some("claude --continue"));
         assert_eq!(resume("-zsh"), None);
         assert_eq!(resume("vim claude.md"), None);
     }

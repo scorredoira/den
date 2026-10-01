@@ -24,6 +24,10 @@ fn terminal_survives_reconnect() {
     std::fs::create_dir_all(&dir).unwrap();
     // SAFETY: the test is the only thread touching the environment.
     unsafe { std::env::set_var("SIK_AGENT_SOCKET", dir.join("agent.sock")) };
+    unsafe {
+        std::env::set_var("SIK_STATE_DIR", dir.join("state"));
+        std::env::set_var("SIK_CONFIG_DIR", dir.join("config"));
+    }
     let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
 
     // First connection: starts the agent and creates a terminal.

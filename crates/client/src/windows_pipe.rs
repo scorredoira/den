@@ -69,7 +69,10 @@ impl Listener {
 
     pub fn accept(&self) -> io::Result<Stream> {
         let mut next = self.next.lock().unwrap();
-        runtime().block_on(next.connect())?;
+        if let Err(error) = runtime().block_on(next.connect()) {
+            *next = server(&self.name, false)?;
+            return Err(error);
+        }
         // Keep a listening instance alive so clients never see a missing pipe.
         let connected = std::mem::replace(&mut *next, server(&self.name, false)?);
         Ok(Stream::new(Pipe::Server(connected)))

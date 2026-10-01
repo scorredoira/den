@@ -150,8 +150,8 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
-/// Current directory of a process. Not implemented: on Windows it will be
-/// read from the OSC 7 sequence the shell emits.
+/// Windows directories are tracked from OSC 7 by `shell_cwd`, rather than
+/// reading another process's undocumented memory layout.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
     None
@@ -168,9 +168,37 @@ pub fn process_args(pid: u32) -> Option<String> {
     (output.status.success() && !args.is_empty()).then_some(args)
 }
 
-#[cfg(not(unix))]
-pub fn process_args(_pid: u32) -> Option<String> {
-    None
+#[cfg(windows)]
+pub fn process_args(pid: u32) -> Option<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::Duration;
+    // ConPTY doesn't expose a foreground process group. At restart, inspect
+    // descendants of this terminal's shell and find the Claude process there.
+    // This runs only when explicitly restarting the agent, never while typing.
+    let script = format!(r#"
+$all = @(Get-CimInstance Win32_Process)
+$ids = @([uint32]{pid})
+do {{
+    $children = @($all | Where-Object {{ $_.ParentProcessId -in $ids -and $_.ProcessId -notin $ids }})
+    $ids += @($children | ForEach-Object {{ $_.ProcessId }})
+}} while ($children.Count -gt 0)
+$all | Where-Object {{ $_.ProcessId -in $ids -and ($_.Name -eq 'claude.exe' -or ($_.Name -eq 'node.exe' -and $_.CommandLine -match '@anthropic-ai[\\/]claude-code')) }} | Select-Object -First 1 -ExpandProperty CommandLine
+"#);
+    let mut child = command("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        let _ = tx.send(out);
+    });
+    let out = rx.recv_timeout(Duration::from_secs(3)).ok();
+    let _ = child.kill();
+    let _ = child.wait();
+    out.map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
 }
 
 /// Link `link` pointing to `target` (replaces any previous one).
@@ -265,16 +293,11 @@ pub fn repo_script(path: &Path) -> Option<PathBuf> {
         let candidate = path.with_extension(ext);
         if candidate.is_file() { return Some(candidate); }
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        return path.metadata().ok().filter(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).map(|_| path.to_path_buf());
-    }
-    #[cfg(windows)]
     path.is_file().then(|| path.to_path_buf())
 }
 
 pub fn script_command(path: &Path) -> std::process::Command {
+    let path = dunce::simplified(path);
     #[cfg(windows)]
     {
         let ext = path.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
@@ -296,4 +319,21 @@ pub fn script_command(path: &Path) -> std::process::Command {
     }
     #[cfg(unix)]
     std::process::Command::new(path)
+}
+
+/// Background helper with the same behavior on every desktop platform.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    configure_background(&mut command);
+    command
+}
+
+pub fn is_executable_script(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(windows)]
+    path.is_file()
 }

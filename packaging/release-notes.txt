@@ -1,0 +1,9 @@
+Download the archive for your operating system and architecture below.
+
+- **macOS:** unzip and move `Sik.app` to Applications. These builds are not notarized. After attempting the first launch, allow Sik in **System Settings → Privacy & Security → Open Anyway**.
+- **Linux:** extract the tarball and run `./install.sh`, or launch `./sik` directly. Requires Ubuntu 24.04 or compatible, a Wayland/X11 desktop and a working Vulkan driver.
+- **Windows:** extract the entire ZIP and open `sik.exe`. `install.ps1` optionally installs a Start menu shortcut. These binaries are unsigned.
+
+Install Git, and OpenSSH for remote connections. Every package includes the agent for Linux x86_64 SSH servers. `SHA256SUMS` contains the checksums of the release archives.
+
+[Installation details and requirements](https://github.com/scorredoira/sik#install)

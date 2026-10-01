@@ -3,7 +3,6 @@
 
 use std::{
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -132,14 +131,14 @@ pub fn create(path: &Path, name: &str) -> Result<TaskInfo> {
             .map(|folder| folder.to_string_lossy().into_owned())
             .unwrap_or_default();
         let target = repo.with_file_name(format!("{folder}-{}", name.replace('/', "-")));
-        let target = target.to_string_lossy().into_owned();
+        let target = dunce::simplified(&target).to_string_lossy().into_owned();
         let exists = git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok();
         let args: Vec<&str> = if exists {
             vec!["worktree", "add", &target, name]
         } else {
             vec!["worktree", "add", "-b", name, &target]
         };
-        Command::new("git").args(args).current_dir(repo).output()?
+        crate::platform::command("git").args(args).current_dir(repo).output()?
     };
     let log = output_log(&output);
     if !output.status.success() {
@@ -164,10 +163,10 @@ pub fn remove(path: &Path) -> Result<()> {
     let name = task.branch.clone().unwrap_or_default();
     let script = crate::platform::repo_script(&repo.join(REMOVE_SCRIPT));
     let output = if let Some(script) = script {
-        run_script(&repo, &script, &[&name, &path.to_string_lossy()])?
+        run_script(&repo, &script, &[&name, &dunce::simplified(path).to_string_lossy()])?
     } else {
-        Command::new("git")
-            .args(["worktree", "remove", &path.to_string_lossy()])
+        crate::platform::command("git")
+            .args(["worktree", "remove", &dunce::simplified(path).to_string_lossy()])
             .current_dir(&repo)
             .output()?
     };
@@ -190,7 +189,7 @@ fn run_script(repo: &Path, script: &Path, args: &[&str]) -> Result<std::process:
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     #[cfg(unix)]
     let mut command = {
-        let mut command = Command::new(shell);
+        let mut command = std::process::Command::new(shell);
         command.args(["-l", "-i", "-c", "\"$0\" \"$@\""]).arg(script);
         command
     };
@@ -209,7 +208,7 @@ fn output_log(output: &std::process::Output) -> String {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).current_dir(dir).output()?;
+    let output = crate::platform::command("git").args(args).current_dir(dir).output()?;
     if !output.status.success() {
         bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim());
     }
@@ -221,7 +220,7 @@ mod tests {
     use super::*;
 
     fn run(dir: &Path, args: &[&str]) {
-        assert!(Command::new("git").args(args).current_dir(dir).output().unwrap().status.success());
+        assert!(crate::platform::command("git").args(args).current_dir(dir).output().unwrap().status.success());
     }
 
     fn repo(name: &str) -> PathBuf {
@@ -258,6 +257,17 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let task = create(&repo, "payments").unwrap();
         assert_eq!(task.path.file_name().unwrap(), "other-place-payments");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn calls_powershell_repo_script() {
+        let repo = repo("powershell");
+        std::fs::create_dir_all(repo.join(".task")).unwrap();
+        std::fs::write(repo.join(".task/create.ps1"),
+            "param([string]$TaskName)\ngit worktree add -q -b $TaskName \"../custom-$TaskName\"\nexit $LASTEXITCODE\n").unwrap();
+        let task = create(&repo, "windows").unwrap();
+        assert_eq!(task.path.file_name().unwrap(), "custom-windows");
     }
 
     #[test]

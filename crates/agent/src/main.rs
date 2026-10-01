@@ -27,6 +27,10 @@ use anyhow::{Context as _, Result};
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("--version" | "-V") => {
+            println!("sik-agent {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
+            Ok(())
+        }
         Some("daemon") => daemon(),
         None if !cli::invoked_as_sik() => daemon(),
         Some("bridge") => bridge(),
