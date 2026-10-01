@@ -1,10 +1,10 @@
-## What's new in 0.1.10
+## What's new in 0.1.11
 
-- **Workspaces are folders:** open any folder and it stays in the workspaces column across restarts. If it's a git repo, its worktrees show under it and New Worktree is available. "Add Repo…" is gone, since Open Folder does it, and "Remove from Workspaces" takes a folder off the list without touching the disk.
-- **Settings → Workspaces** replaces Repos and Hidden Workspaces: each server's folders and their worktrees, with hide and show on each.
-- A title bar button shows or hides the terminals.
+- **About** shows the version, whether it's up to date, each server's agent and links to GitHub, the release notes and the license.
+- **Check for Updates…** (in the Sik menu, or Help on Windows and Linux) checks right away instead of waiting for the next periodic check.
+- **Help → Welcome** shows the welcome screen without closing anything.
 
-Also in 0.1.9: a fix for the crash when running Settings from the command palette. In 0.1.8: icons in the workspaces column and faster connections to servers after an update. In 0.1.7: the focused terminal of a split is marked by its title, and branches show only when they aren't `master` or `main`. In 0.1.6: the menu bar on Windows and Linux, the welcome screen on first launch, the branch in the status bar, and a read-only Changes panel that refreshes on its own.
+Also in 0.1.10: any folder can be a workspace and stays across restarts, Settings → Workspaces, and a title bar button for the terminals. In 0.1.9: a fix for the crash when running Settings from the command palette. In 0.1.8: icons in the workspaces column and faster connections to servers after an update.
 
 After upgrading, restart the outdated agent from the workspaces column so that changes made in a terminal refresh the Changes panel. Restarting the agent also restarts its terminals.
 
