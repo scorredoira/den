@@ -37,24 +37,29 @@ impl Tree {
 
     /// Places `new` next to `target`, along `axis` (after it).
     pub fn split(&mut self, target: TermId, new: TermId, axis: Axis) -> bool {
+        self.insert(target, &Tree::Leaf(new), axis, false)
+    }
+
+    /// Places a terminal or an existing group beside a leaf, preserving its sessions.
+    pub fn insert(&mut self, target: TermId, new: &Tree, axis: Axis, before: bool) -> bool {
         match self {
             Tree::Leaf(term) if *term == target => {
+                let old = Tree::Leaf(target);
                 *self = Tree::Split {
                     axis,
-                    children: vec![Tree::Leaf(target), Tree::Leaf(new)],
+                    children: if before { vec![new.clone(), old] } else { vec![old, new.clone()] },
                 };
                 true
             }
             Tree::Leaf(_) => false,
             Tree::Split { axis: own, children } => {
-                // If the parent already goes that way, the new one is just another sibling.
                 if *own == axis
                     && let Some(ix) = children.iter().position(|child| *child == Tree::Leaf(target))
                 {
-                    children.insert(ix + 1, Tree::Leaf(new));
+                    children.insert(ix + usize::from(!before), new.clone());
                     return true;
                 }
-                children.iter_mut().any(|child| child.split(target, new, axis))
+                children.iter_mut().any(|child| child.insert(target, new, axis, before))
             }
         }
     }

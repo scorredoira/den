@@ -2,6 +2,11 @@
 //! resizable rows and columns. The processes live in the agent; here we only
 //! store which terminal goes where, to restore it when the app is reopened.
 
+mod drag;
+
+use drag::{Source, TerminalDrag};
+use crate::drag_drop::DropPlacement;
+
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
@@ -62,6 +67,8 @@ pub struct TerminalArea {
     views: HashMap<TermId, Entity<TerminalView>>,
     active: usize,
     next_id: usize,
+    terminal_drop: Option<(TermId, DropPlacement)>,
+    drag_origin: Option<usize>,
     /// Size of the terminal area at the last paint, so each shell is created
     /// at its final size (otherwise it redraws the prompt when resized).
     body_size: Rc<Cell<Option<Size<Pixels>>>>,
@@ -84,6 +91,8 @@ impl TerminalArea {
             views: HashMap::new(),
             active: 0,
             next_id: 0,
+            terminal_drop: None,
+            drag_origin: None,
             body_size: Rc::default(),
             local,
             weak: cx.entity().downgrade(),
@@ -453,6 +462,10 @@ impl TerminalArea {
 
     /// Saves which terminal goes where.
     fn save(&self) {
+        // Offscreen interaction tests must never overwrite the user's layout.
+        if cfg!(test) {
+            return;
+        }
         let mut layouts = SavedLayouts::load();
         layouts.groups.insert(
             self.group.clone(),
@@ -475,6 +488,7 @@ impl TerminalArea {
             .border_b_1()
             .border_color(theme.border)
             .overflow_x_scroll()
+            .on_drop(cx.listener(|this, drag: &TerminalDrag, window, cx| this.drop_on_bar(drag, None, window, cx)))
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
                 let active = ix == self.active;
                 let title = self
@@ -483,8 +497,18 @@ impl TerminalArea {
                     .map(|view| view.read(cx).title(cx))
                     .unwrap_or_default();
                 let count = tab.tree.leaves().len();
+                let id = tab.id;
                 h_flex()
                     .id(("terminal-tab", tab.id))
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("terminal-tab-{id}")))
+                    .map(|el| self.draggable(el, Source::Tab(id), title.clone().into()))
+                    .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
+                    .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<TerminalDrag>, window, cx| {
+                        this.hover_tab(id, event, window, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &TerminalDrag, window, cx| {
+                        this.drop_on_bar(drag, Some(id), window, cx);
+                    }))
                     .h_full()
                     .flex_none()
                     .max_w(px(220.))
@@ -540,10 +564,19 @@ impl TerminalArea {
                     .child("+")
                     .on_click(cx.listener(|this, _, window, cx| this.new_terminal(window, cx))),
             )
+            .child(
+                div()
+                    .id("terminal-tab-end")
+                    .h_full()
+                    .flex_1()
+                    .min_w(px(24.))
+                    .when(cfg!(test), |el| el.debug_selector(|| "terminal-tab-end".into()))
+                    .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary)),
+            )
     }
 
     /// Renders a branch of the tree; `path` makes each split's ids unique.
-    fn render_tree(&self, tab: &TerminalTab, tree: &Tree, path: String, cx: &App) -> AnyElement {
+    fn render_tree(&self, tab: &TerminalTab, tree: &Tree, path: String, cx: &mut Context<Self>) -> AnyElement {
         match tree {
             Tree::Leaf(term) => {
                 let Some(view) = self.views.get(term) else {
@@ -553,9 +586,18 @@ impl TerminalArea {
                 let theme = cx.theme();
                 let term = *term;
                 let this = self.weak.clone();
-                div()
+                v_flex()
                     .id(("terminal-pane", term))
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("terminal-pane-{term}")))
+                    .relative()
                     .size_full()
+                    .overflow_hidden()
+                    .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<TerminalDrag>, _, cx| {
+                        this.track_drop(term, event, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &TerminalDrag, window, cx| {
+                        this.drop_on_pane(drag, term, window, cx);
+                    }))
                     .when(split, |el| {
                         el.border_1().border_color(if term == tab.active {
                             theme.primary.opacity(0.6)
@@ -563,7 +605,30 @@ impl TerminalArea {
                             theme.background
                         })
                     })
-                    .child(view.clone())
+                    .when(split, |el| {
+                        let title = view.read(cx).title(cx);
+                        el.child(self.draggable(
+                            div()
+                                .id(("terminal-pane-handle", term))
+                                .when(cfg!(test), |el| el.debug_selector(move || format!("terminal-pane-handle-{term}")))
+                                .h(px(24.))
+                                .flex_none()
+                                .px_2()
+                                .text_ui_small(cx)
+                                .bg(theme.tab_bar)
+                                .text_color(theme.muted_foreground)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(title.clone()),
+                            Source::Pane(term),
+                            title.into(),
+                        ))
+                    })
+                    .child(div().flex_1().min_h_0().w_full().child(view.clone()))
+                    .when_some(self.terminal_drop.filter(|(target, _)| *target == term && cx.has_active_drag()), |el, (_, placement)| {
+                        el.child(placement.indicator(cx))
+                    })
                     .context_menu(move |menu, _, cx| match this.upgrade() {
                         Some(area) => area.read(cx).pane_menu(term, menu, cx),
                         None => menu,
@@ -587,7 +652,10 @@ impl TerminalArea {
 }
 
 impl Render for TerminalArea {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.cancel_drag(window, cx);
+        }
         let body = match self.tabs.get(self.active) {
             None => {
                 let theme = cx.theme();
@@ -609,6 +677,14 @@ impl Render for TerminalArea {
         };
         let theme = cx.theme();
         v_flex()
+            .id("terminal-area")
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && cx.stop_active_drag(window) {
+                    this.cancel_drag(window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .size_full()
             .bg(theme.background)
             .border_l_1()
