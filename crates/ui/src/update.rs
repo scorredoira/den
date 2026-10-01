@@ -1,9 +1,10 @@
-//! Keeping an installed sik on its latest release, as sid does: every few
-//! hours (or with Check for Updates) it asks GitHub for the latest release
-//! and, if it's newer, installs it in place of this one and restarts into
-//! it. Right away when nothing is unsaved; otherwise once it's saved, or
-//! from the title bar's button.
-//! Terminals live in the agent, so they're still there after restarting.
+//! Keeping an installed sik on its latest release: every few hours (unless
+//! turned off in Settings) or with Check for Updates, it asks GitHub for the
+//! latest release and, if it's newer, installs it in the background in place
+//! of this one. It never restarts by itself: the title bar says there's an
+//! update, and its button asks before restarting into it. Workspaces and
+//! their tabs reopen as they were, and terminals live in the agent, so
+//! they're still there after restarting.
 //!
 //! Only an installed app updates: `Sik.app` on macOS, or what the Linux
 //! package's `install.sh` installed. A build run from `target` doesn't.
@@ -22,8 +23,6 @@ const RELEASES: &str = "https://github.com/scorredoira/sik/releases";
 /// The first check, once the app has settled.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
-/// With an update ready but files unsaved, how often it looks again.
-const RETRY_RESTART: Duration = Duration::from_secs(60);
 
 /// How this sik was installed, which is what an update replaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +75,7 @@ pub fn status(cx: &App) -> Status {
 }
 
 /// Starts checking for updates in the background: shortly after starting,
-/// then every few hours.
+/// then every few hours, while Settings has it on.
 pub fn init(cx: &mut App) {
     cx.set_global(Updates::default());
     if install().is_none() {
@@ -86,16 +85,19 @@ pub fn init(cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(FIRST_CHECK).await;
         loop {
-            cx.update(check_now);
+            cx.update(|cx| {
+                if crate::config::Config::get(cx).checks_for_updates() {
+                    check_now(cx);
+                }
+            });
             cx.background_executor().timer(CHECK_EVERY).await;
         }
     })
     .detach();
 }
 
-/// Asks for the latest release now and, if it's newer, installs it; once
-/// installed, it restarts as soon as nothing would be lost. Check for
-/// Updates, and the periodic check.
+/// Asks for the latest release now and, if it's newer, installs it for the
+/// next start. Check for Updates, and the periodic check.
 pub fn check_now(cx: &mut App) {
     let Some(install) = install() else {
         cx.default_global::<Updates>().status = Status::NotInstalled;
@@ -110,37 +112,18 @@ pub fn check_now(cx: &mut App) {
     cx.refresh_windows();
     cx.spawn(async move |cx| {
         let result = cx.background_executor().spawn(async move { check_and_install(&install) }).await;
-        let ready = cx.update(|cx| {
+        cx.update(|cx| {
             let updates = cx.global_mut::<Updates>();
-            let ready = match result {
-                Ok(Ok(latest)) => {
-                    updates.status = Status::UpToDate(latest);
-                    false
-                }
+            match result {
+                Ok(Ok(latest)) => updates.status = Status::UpToDate(latest),
                 Ok(Err((version, relaunch))) => {
                     updates.status = Status::Ready(version);
                     updates.relaunch = Some(relaunch);
-                    true
                 }
-                Err(err) => {
-                    updates.status = Status::Failed(format!("{err:#}"));
-                    false
-                }
-            };
-            cx.refresh_windows();
-            ready
-        });
-        if !ready {
-            return;
-        }
-        // Installed: restart as soon as nothing would be lost.
-        loop {
-            if cx.update(|cx| !crate::app::anything_unsaved(cx)) {
-                cx.update(restart);
-                return;
+                Err(err) => updates.status = Status::Failed(format!("{err:#}")),
             }
-            cx.background_executor().timer(RETRY_RESTART).await;
-        }
+            cx.refresh_windows();
+        });
     })
     .detach();
 }

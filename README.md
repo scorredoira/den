@@ -85,7 +85,7 @@ Cmd-1…9 go to a workspace, Cmd-E back to the previous one, Cmd-K finds one acr
 
 ## Updates
 
-An installed Sik (`Sik.app` on macOS, or installed with the Linux package's `install.sh`) checks for a new release every few hours, installs it and restarts into it: right away if nothing is unsaved, otherwise once it is, or with the title bar's button. Terminals keep running in the agent across the restart.
+An installed Sik (`Sik.app` on macOS, or installed with the Linux package's `install.sh`) checks for a new release every few hours and installs it in the background; Settings → Updates turns this off, and Check for Updates still works. It never restarts by itself: the title bar shows a discreet Restart to update button, which asks before restarting. Workspaces and open files reopen as they were, and terminals keep running in the agent across the restart.
 
 Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
 

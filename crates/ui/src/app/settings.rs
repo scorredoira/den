@@ -9,7 +9,7 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 5] = ["Appearance", "Editor", "Servers", "Workspaces", "Keyboard Shortcuts"];
+const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Servers", "Workspaces", "Updates", "Keyboard Shortcuts"];
 
 pub(super) const SERVERS: usize = 2;
 
@@ -209,6 +209,7 @@ impl Sik {
             self.render_editor(settings, &matches, cx),
             self.render_hosts(&matches, cx),
             self.render_workspaces(&matches, cx),
+            self.render_updates(&matches, cx),
             self.render_shortcuts(settings, &matches, cx),
         ];
         let visible: Vec<bool> = sections.iter().map(|(_, visible)| *visible).collect();
@@ -527,8 +528,29 @@ impl Sik {
         Self::section(SECTIONS[3], rows, title_matches || any, cx)
     }
 
+    fn render_updates(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let visible = [SECTIONS[4], "Check for Updates", "automatically", "release", "version"].iter().any(|text| matches(text));
+        let check = Switch::new("check-for-updates")
+            .accessibility_label("Check for Updates Automatically")
+            .checked(Config::get(cx).checks_for_updates())
+            .on_click(cx.listener(|_, checked, _, cx| {
+                Config::update(cx, |config| config.check_for_updates = Some(*checked));
+                if *checked {
+                    crate::update::check_now(cx);
+                }
+                cx.notify();
+            }));
+        let rows = vec![setting(
+            "Check for Updates Automatically",
+            "Every few hours, look for a new release and install it in the background. The title bar shows when it's ready; it restarts only when you choose, asking first. Off, Check for Updates in the menu still works.",
+            check,
+            cx,
+        )];
+        Self::section(SECTIONS[4], rows, visible, cx)
+    }
+
     fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[4]) || matches("keybindings");
+        let title_matches = matches(SECTIONS[5]) || matches("keybindings");
         let recording = settings.recording.as_ref().map(|(id, _)| *id);
         let mut rows = Vec::new();
         for shortcut in SHORTCUTS {
@@ -540,7 +562,7 @@ impl Sik {
             rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
         }
         let visible = title_matches || !rows.is_empty();
-        Self::section(SECTIONS[4], rows, visible, cx)
+        Self::section(SECTIONS[5], rows, visible, cx)
     }
 
     fn shortcut_row(

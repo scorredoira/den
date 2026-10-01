@@ -226,11 +226,6 @@ pub fn handle_open(host: SharedString, root: PathBuf, file: Option<PathBuf>, cx:
     cx.activate(true);
 }
 
-/// Whether there are unsaved files.
-pub fn anything_unsaved(cx: &App) -> bool {
-    main_window(cx).is_some_and(|(_, sik)| !sik.read(cx).unsaved(cx).is_empty())
-}
-
 /// Cmd-Q: quits once there are no unsaved files, or they're saved.
 pub fn quit(cx: &mut App) {
     if let Some((handle, sik)) = main_window(cx) {
@@ -271,6 +266,8 @@ pub struct Sik {
     confirm_remove: Option<(TaskKey, FocusHandle)>,
     /// Server whose agent is about to be restarted, confirming in a dialog.
     confirm_restart: Option<(SharedString, FocusHandle)>,
+    /// The update about to be restarted into, confirming in a dialog.
+    confirm_update: Option<(SharedString, FocusHandle)>,
     removing: HashSet<TaskKey>,
     /// Last error from a column action, with the task it affects.
     error: Option<(Option<TaskKey>, SharedString)>,
@@ -369,6 +366,7 @@ impl Sik {
             new_task: None,
             confirm_remove: None,
             confirm_restart: None,
+            confirm_update: None,
             removing: HashSet::new(),
             error: None,
             host_input: None,
@@ -2318,9 +2316,9 @@ impl Render for Sik {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(format!("Restart to update to {version}"))
                             .tooltip(|window, cx| {
-                                Tooltip::new("Installed. It restarts by itself once nothing is unsaved; terminals stay as they are.").build(window, cx)
+                                Tooltip::new("Installed: it asks before restarting, and everything reopens as it was.").build(window, cx)
                             })
-                            .on_click(|_, _, cx| crate::update::restart(cx))
+                            .on_click(cx.listener(move |this, _, window, cx| this.ask_update(version.clone().into(), window, cx)))
                     }))
                     // Without a workspace there are no terminals to show.
                     .children(terminals_visible.map(|visible| {
@@ -2392,6 +2390,7 @@ impl Render for Sik {
             .children(self.about.as_ref().map(|focus| self.render_about(focus, cx)))
             .children(self.confirm_remove.as_ref().map(|(key, focus)| self.render_confirm_remove(key, focus, cx)))
             .children(self.confirm_restart.as_ref().map(|(name, focus)| self.render_confirm_restart(name, focus, cx)))
+            .children(self.confirm_update.as_ref().map(|(version, focus)| self.render_confirm_update(version, focus, cx)))
             .children(self.quit_confirm.as_ref().map(|focus| self.render_quit_confirm(focus, cx)))
     }
 }
@@ -2645,5 +2644,29 @@ mod palette_tests {
         cx.run_until_parked();
         assert!(sik.read_with(cx, |sik, _| sik.about.is_some()));
         assert!(cx.update(|_, cx| crate::update::status(cx) == crate::update::Status::NotInstalled));
+    }
+
+    /// Restart to update asks first; cancelling leaves everything as it was.
+    #[gpui_kit::test]
+    fn restarting_to_update_asks_first(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
+        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.ask_update("9.9.9".into(), window, cx)));
+        cx.run_until_parked();
+        assert!(sik.read_with(cx, |sik, _| sik.confirm_update.is_some()));
+        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.cancel_confirm(window, cx)));
+        assert!(sik.read_with(cx, |sik, _| sik.confirm_update.is_none()));
+    }
+
+    /// Checking for updates is on unless turned off.
+    #[test]
+    fn checks_for_updates_unless_turned_off() {
+        let config: Config = serde_json::from_str("{}").unwrap();
+        assert!(config.checks_for_updates());
+        let config: Config = serde_json::from_str(r#"{"check_for_updates": false}"#).unwrap();
+        assert!(!config.checks_for_updates());
     }
 }

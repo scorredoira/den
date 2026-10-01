@@ -57,9 +57,15 @@ impl Sik {
             .gap_3()
             .child(div().flex_1().min_w_0().whitespace_normal().text_color(color).child(text))
             .child(match &status {
-                Status::Ready(_) => link("about-restart".into(), "Restart to Update")
-                    .on_click(|_, _, cx| update::restart(cx))
-                    .into_any_element(),
+                Status::Ready(latest) => {
+                    let latest: SharedString = latest.clone().into();
+                    link("about-restart".into(), "Restart to Update…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_about(window, cx);
+                            this.ask_update(latest.clone(), window, cx);
+                        }))
+                        .into_any_element()
+                }
                 Status::Checking | Status::NotInstalled => div().into_any_element(),
                 _ => link("about-check".into(), "Check for Updates")
                     .on_click(|_, _, cx| update::check_now(cx))

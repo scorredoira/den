@@ -1,5 +1,5 @@
-//! Confirming in a dialog what can't be undone: deleting a worktree and
-//! restarting a server's agent. Enter confirms, Esc or a click outside cancels.
+//! Confirming in a dialog what can't be undone: deleting a worktree,
+//! restarting a server's agent and restarting into an update. Enter confirms, Esc or a click outside cancels.
 
 use super::*;
 
@@ -17,6 +17,12 @@ impl Sik {
         cx.notify();
     }
 
+    /// Restart to update, in the title bar or About.
+    pub(super) fn ask_update(&mut self, version: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_update = Some((version, self.confirm_focus(window, cx)));
+        cx.notify();
+    }
+
     /// The dialog's focus, given once whatever opened it is done: a menu
     /// gives the focus back to where it was when it closes.
     fn confirm_focus(&self, window: &mut Window, cx: &mut Context<Self>) -> FocusHandle {
@@ -28,9 +34,10 @@ impl Sik {
         focus
     }
 
-    fn cancel_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn cancel_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm_remove = None;
         self.confirm_restart = None;
+        self.confirm_update = None;
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -51,6 +58,20 @@ impl Sik {
         let title = format!("Restart the agent on {name}?");
         let detail = "A new version of the agent is available. Restarting it restarts its terminals: they reopen in place, without their scrollback, and Claude Code resumes its conversation.";
         self.render_confirm(focus, title, detail, "Restart", false, move |this, window, cx| this.restart_agent(name.clone(), window, cx), cx)
+    }
+
+    pub(super) fn render_confirm_update(&self, version: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = format!("Restart to update to Sik {version}?");
+        let detail = "Workspaces, open files and terminals reopen as they are, and whatever runs in the terminals keeps running. Unsaved files are asked about first.";
+        self.render_confirm(focus, title, detail, "Restart", false, |this, window, cx| this.restart_to_update(window, cx), cx)
+    }
+
+    fn restart_to_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_update = None;
+        self.focus_active(window, cx);
+        cx.notify();
+        // Once this click is done: quitting may open the unsaved files dialog.
+        cx.defer_in(window, |_, _, cx| crate::update::restart(cx));
     }
 
     /// The dialog: what's about to happen and its button, red if it

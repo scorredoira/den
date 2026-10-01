@@ -150,6 +150,9 @@ pub struct Config {
     pub auto_save_on_focus_loss: bool,
     /// Extensions (`json`, `ts`…) formatted on saving.
     pub format_on_save: Vec<String>,
+    /// Look for new releases every few hours; unset, it does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_for_updates: Option<bool>,
 }
 
 /// Text sizes chosen in Settings; unset, the default.
@@ -203,6 +206,11 @@ impl Config {
     pub fn font_size(&self, area: TextArea) -> f32 {
         let mut sizes = self.font_sizes;
         area.slot(&mut sizes).unwrap_or(area.default_size()).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+
+    /// Whether it looks for new releases by itself.
+    pub fn checks_for_updates(&self) -> bool {
+        self.check_for_updates.unwrap_or(true)
     }
 
     /// Whether saving `path` formats it first.
