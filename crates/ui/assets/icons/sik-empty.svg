@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="192 192 640 640" width="640" height="640">
+  <!-- The branch-shaped S from the app icon, sampled on a quiet dot grid. -->
+  <defs>
+    <pattern id="dots" width="10" height="10" patternUnits="userSpaceOnUse">
+      <circle cx="5" cy="5" r="2.3" fill="#000"/>
+    </pattern>
+  </defs>
+  <g fill="url(#dots)">
+    <path d="M664 300 C664 300 360 250 360 400 C360 530 664 490 664 624 C664 770 360 724 360 724"
+      fill="none" stroke="url(#dots)" stroke-width="92" stroke-linecap="round"/>
+    <circle cx="664" cy="300" r="95"/>
+    <circle cx="360" cy="724" r="95"/>
+  </g>
+</svg>

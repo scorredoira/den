@@ -2503,12 +2503,19 @@ impl Workspace {
         let body = match self.shown_in(group).map(|ix| &self.tabs[ix]) {
             None => div()
                 .size_full()
+                .overflow_hidden()
+                .p_6()
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_ui(cx)
-                .text_color(theme.muted_foreground)
-                .child("Open a file from the tree")
+                .child(
+                    svg()
+                        .path("icons/sik-empty.svg")
+                        .size(px(360.))
+                        .max_w_full()
+                        .max_h_full()
+                        .text_color(theme.muted_foreground.opacity(0.22)),
+                )
                 .into_any_element(),
             Some(tab) => match &tab.content {
                 Content::Loading => div().size_full().into_any_element(),
