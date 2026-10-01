@@ -17,6 +17,11 @@ the gutter, painted in `src/input/base/element.rs`), `target_scroll_offset`,
 and a notification when the scrollbar moves the offset, so the other side can
 follow it.
 
+Markdown previews use `resolve_image_source` in `src/text/text_view.rs` and
+`src/text/node.rs` to load file images through the workspace's agent, while
+keeping the default handling of HTTP and embedded data URLs. The component
+facade exposes this hook in `src/text/compat.rs`.
+
 And one fix marked `(sik)` in `src/input/editor/lsp/completions.rs`: the
 completion menu forgot where it had opened only on hiding its own copy, so
 after the first completion typing before that point asked for nothing; and it

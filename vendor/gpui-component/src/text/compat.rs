@@ -64,6 +64,14 @@ impl TextView {
             stream_fade: None,
         }
     }
+    /// (sik) Resolve file images while preserving default URI/data URL handling.
+    pub fn resolve_image_source<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync + 'static,
+    {
+        self.inner = self.inner.resolve_image_source(resolver);
+        self
+    }
     /// Creates a text view that parses `text` as Markdown.
     pub fn markdown(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
         let id = id.into();

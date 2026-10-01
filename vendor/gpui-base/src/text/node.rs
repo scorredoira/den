@@ -2005,10 +2005,9 @@ pub(crate) struct NodeContext {
 
 impl NodeContext {
     fn image_source(&self, image: &ImageNode) -> ImageSource {
-        match &self.image_source {
-            Some(resolve) => resolve(&image.url),
-            None => image.source(),
-        }
+        // (sik) Unhandled URLs retain the default, including embedded images.
+        self.image_source.as_ref().and_then(|resolve| resolve(&image.url))
+            .unwrap_or_else(|| image.source())
     }
 
     pub(super) fn add_ref(&mut self, identifier: SharedString, link: LinkMark) {

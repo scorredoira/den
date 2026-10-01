@@ -41,6 +41,7 @@ use crate::{
 };
 
 mod tab_drag;
+mod markdown_images;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2561,6 +2562,9 @@ impl Workspace {
                         .text_size(px(Config::get(cx).font_size(TextArea::Preview)))
                         .child(
                             TextView::new(markdown)
+                                .resolve_image_source(markdown_images::resolver(
+                                    self.client.clone(), self.root.clone(), tab.path.clone(),
+                                ))
                                 .on_link_click({
                                     let workspace = cx.entity().downgrade();
                                     let dir = tab.path.parent().map(Path::to_path_buf).unwrap_or_default();

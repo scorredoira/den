@@ -75,7 +75,7 @@ impl TextViewDefaults {
 pub(crate) type TableActionsFn =
     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
-pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> gpui::ImageSource + Send + Sync;
+pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync;
 
 pub(crate) type LinkClickHandlerFn =
     dyn Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync;
@@ -246,6 +246,16 @@ impl TextView {
     pub fn image_source<F>(mut self, resolver: F) -> Self
     where
         F: Fn(&gpui::SharedUri) -> gpui::ImageSource + Send + Sync + 'static,
+    {
+        self.image_source = Some(Arc::new(move |url| Some(resolver(url))));
+        self
+    }
+
+    /// (sik) Resolves document images selectively. `None` keeps the default
+    /// URI/data URL handling; a returned source stays authoritative while loading.
+    pub fn resolve_image_source<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync + 'static,
     {
         self.image_source = Some(Arc::new(resolver));
         self
