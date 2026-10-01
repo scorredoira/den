@@ -1,10 +1,11 @@
-## What's new in 0.1.11
+## What's new in 0.1.12
 
-- **About** shows the version, whether it's up to date, each server's agent and links to GitHub, the release notes and the license.
-- **Check for Updates…** (in the Sik menu, or Help on Windows and Linux) checks right away instead of waiting for the next periodic check.
-- **Help → Welcome** shows the welcome screen without closing anything.
-
-Also in 0.1.10: any folder can be a workspace and stays across restarts, Settings → Workspaces, and a title bar button for the terminals. In 0.1.9: a fix for the crash when running Settings from the command palette. In 0.1.8: icons in the workspaces column and faster connections to servers after an update.
+- **Keyboard shortcuts guide** (Help → Keyboard Shortcuts, or from the welcome screen): every shortcut, grouped by category and with the keys as they are now, plus multiple cursors explained.
+- **About** with the version, whether it's up to date and each server's agent; **Check for Updates…** checks right away; **Help → Welcome** shows the welcome screen.
+- **Workspaces are folders:** open any folder and it stays in the workspaces column across restarts; a git repo shows its worktrees under it. Settings → Workspaces lists each server's folders, with hide and show.
+- **Icons in the workspaces column**, the branch in the status bar, and a read-only Changes panel that refreshes on its own.
+- **Windows and Linux:** the menu bar in the window's title bar, and the welcome screen on first launch.
+- Faster connections to servers after an update, and fixes for the side panel jumping while resized and for a crash running Settings from the command palette.
 
 After upgrading, restart the outdated agent from the workspaces column so that changes made in a terminal refresh the Changes panel. Restarting the agent also restarts its terminals.
 
