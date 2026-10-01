@@ -9,7 +9,7 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Servers", "Repos", "Hidden Workspaces", "Keyboard Shortcuts"];
+const SECTIONS: [&str; 5] = ["Appearance", "Editor", "Servers", "Workspaces", "Keyboard Shortcuts"];
 
 pub(super) const SERVERS: usize = 2;
 
@@ -59,7 +59,7 @@ impl Sik {
         for ix in 0..self.hosts.len() {
             if self.hosts[ix].repo_input.is_none() {
                 let name = self.hosts[ix].name.clone();
-                let input = cx.new(|cx| InputState::new(window, cx).placeholder("add repo: ~/path"));
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("add folder: ~/path"));
                 let subscription = cx.subscribe_in(&input, window, move |this, _, event: &InputEvent, window, cx| {
                     if let InputEvent::PressEnter { .. } = event {
                         this.add_repo(name.clone(), window, cx);
@@ -208,8 +208,7 @@ impl Sik {
             self.render_appearance(&matches, cx),
             self.render_editor(settings, &matches, cx),
             self.render_hosts(&matches, cx),
-            self.render_repos(&matches, cx),
-            self.render_hidden(&matches, cx),
+            self.render_workspaces(&matches, cx),
             self.render_shortcuts(settings, &matches, cx),
         ];
         let visible: Vec<bool> = sections.iter().map(|(_, visible)| *visible).collect();
@@ -468,19 +467,22 @@ impl Sik {
         Self::section(SECTIONS[2], rows, title_matches || any, cx)
     }
 
-    fn render_repos(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[3]);
-        let theme = cx.theme();
+    /// Each server's folders, its repos' worktrees under them: shown in the
+    /// column or hidden, removed from it, and the field to add another.
+    fn render_workspaces(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let title_matches = matches(SECTIONS[3]) || matches("repos") || matches("hidden") || matches("folders");
+        let hidden = Config::get(cx).hidden.clone();
+        let muted = cx.theme().muted_foreground;
         let mut rows = Vec::new();
         let mut any = false;
         for host in self.hosts.iter().filter(|host| host.client.is_some()) {
             let host_matches = title_matches || matches(&host.name);
-            let repos: Vec<&PathBuf> = host
+            let folders: Vec<&PathBuf> = host
                 .repos
                 .iter()
-                .filter(|repo| host_matches || matches(&repo.to_string_lossy()))
+                .filter(|folder| host_matches || matches(&folder.to_string_lossy()))
                 .collect();
-            if !host_matches && repos.is_empty() {
+            if !host_matches && folders.is_empty() {
                 continue;
             }
             any = true;
@@ -489,19 +491,25 @@ impl Sik {
                     .pt_2()
                     .text_ui_small(cx)
                     .font_semibold()
-                    .text_color(theme.muted_foreground)
+                    .text_color(muted)
                     .child(host.name.to_uppercase())
                     .into_any_element(),
             );
-            for repo in repos {
-                let (name, repo) = (host.name.clone(), repo.clone());
+            for folder in folders {
+                let key = TaskKey { host: host.name.clone(), path: folder.clone() };
+                let (name, path) = (host.name.clone(), folder.clone());
                 rows.push(
-                    list_row(folder_name(&repo), &repo.display().to_string(), cx)
-                        .child(link(format!("repo-remove-{name}-{}", repo.display()), "remove", cx).on_click(
-                            cx.listener(move |this, _, window, cx| this.remove_repo(name.clone(), repo.clone(), window, cx)),
+                    visibility(list_row(folder_name(folder), &folder.display().to_string(), cx), &key, &hidden, cx)
+                        .child(link(format!("folder-remove-{}", key.config()), "remove", cx).on_click(
+                            cx.listener(move |this, _, window, cx| this.remove_repo(name.clone(), path.clone(), window, cx)),
                         ))
                         .into_any_element(),
                 );
+                for worktree in host.tasks.iter().filter(|task| task.repo == *folder && !task.main) {
+                    let key = TaskKey { host: host.name.clone(), path: worktree.path.clone() };
+                    let row = list_row(folder_name(&worktree.path), &worktree.path.display().to_string(), cx).pl(px(28.));
+                    rows.push(visibility(row, &key, &hidden, cx).into_any_element());
+                }
             }
             let name = host.name.clone();
             rows.extend(host.repo_input.as_ref().map(|input| {
@@ -510,8 +518,8 @@ impl Sik {
                     .gap_1()
                     .max_w(px(480.))
                     .child(div().flex_1().child(Input::new(input)))
-                    .child(icon_button(format!("pick-repo-{name}"), "icons/tree-folder.svg", cx).on_click(
-                        cx.listener(move |this, _, window, cx| this.open_folder_picker(name.clone(), FolderPurpose::AddRepo, window, cx)),
+                    .child(icon_button(format!("pick-folder-{name}"), "icons/tree-folder.svg", cx).on_click(
+                        cx.listener(move |this, _, window, cx| this.open_folder_picker(name.clone(), FolderPurpose::AddFolder, window, cx)),
                     ))
                     .into_any_element()
             }));
@@ -519,36 +527,8 @@ impl Sik {
         Self::section(SECTIONS[3], rows, title_matches || any, cx)
     }
 
-    fn render_hidden(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[4]);
-        let hidden: Vec<String> = Config::get(cx).hidden.clone();
-        let theme = cx.theme();
-        let mut rows = Vec::new();
-        for config in hidden.iter().filter(|config| title_matches || matches(config)) {
-            let config = config.clone();
-            rows.push(
-                list_row(config.clone(), "", cx)
-                    .child(link(format!("task-show-{config}"), "show", cx).on_click(cx.listener(
-                        move |this, _, _, cx| this.show_task(&config, cx),
-                    )))
-                    .into_any_element(),
-            );
-        }
-        let any = !rows.is_empty();
-        if title_matches && hidden.is_empty() {
-            rows.push(
-                div()
-                    .text_ui_small(cx)
-                    .text_color(theme.muted_foreground)
-                    .child("None. Right-click a workspace → Hide.")
-                    .into_any_element(),
-            );
-        }
-        Self::section(SECTIONS[4], rows, title_matches || any, cx)
-    }
-
     fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[5]) || matches("keybindings");
+        let title_matches = matches(SECTIONS[4]) || matches("keybindings");
         let recording = settings.recording.as_ref().map(|(id, _)| *id);
         let mut rows = Vec::new();
         for shortcut in SHORTCUTS {
@@ -560,7 +540,7 @@ impl Sik {
             rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
         }
         let visible = title_matches || !rows.is_empty();
-        Self::section(SECTIONS[5], rows, visible, cx)
+        Self::section(SECTIONS[4], rows, visible, cx)
     }
 
     fn shortcut_row(
@@ -656,6 +636,24 @@ fn setting(title: &'static str, description: &'static str, control: impl IntoEle
 }
 
 /// A list row (servers, repos, hidden tasks).
+/// A workspace row's "hide" or "show": whether the column lists it.
+fn visibility(row: Div, key: &TaskKey, hidden: &[String], cx: &mut Context<Sik>) -> Div {
+    let (key, config) = (key.clone(), key.config());
+    let shown = !hidden.contains(&config);
+    let muted = cx.theme().muted_foreground;
+    row.when(!shown, |row| row.text_color(muted)).child(
+        link(format!("workspace-visibility-{config}"), if shown { "hide" } else { "show" }, cx).on_click(cx.listener(
+            move |this, _, _, cx| {
+                if shown {
+                    this.hide_task(&key, cx)
+                } else {
+                    this.show_task(&config, cx)
+                }
+            },
+        )),
+    )
+}
+
 fn list_row(name: String, detail: &str, cx: &App) -> Div {
     let theme = cx.theme();
     h_flex()

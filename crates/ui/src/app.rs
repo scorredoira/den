@@ -64,7 +64,7 @@ const RECENT: usize = 20;
 /// What a folder chosen in the folder picker is for.
 #[derive(Clone, Copy)]
 enum FolderPurpose {
-    AddRepo,
+    AddFolder,
     Open,
 }
 
@@ -849,10 +849,13 @@ impl Sik {
 
     /// Enters task `key`; if it isn't one, it opens as a folder on its own.
     fn activate(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
+        // A folder opened for the first time: shown right away, and added to
+        // the server's list so that it stays (a repo shows its worktrees).
         if self.task(&key).is_none()
             && let Some(host) = self.host_mut(&key.host)
         {
             host.loose.push(loose_task(&key.path));
+            self.add_folder(key.host.clone(), key.path.clone(), window, cx);
         }
         self.attention.remove(&key);
         let workspace = match self.workspaces.get(&key) {
@@ -1308,8 +1311,21 @@ impl Sik {
         cx.notify();
     }
 
-    /// Closes a folder opened on its own (tasks are hidden instead). Its
-    /// terminals stay in the agent and come back if it's opened again.
+    /// Takes a folder (a repo's checkout, with its worktrees) off the server's
+    /// list and closes it. Nothing on disk is touched; its terminals stay in
+    /// the agent and come back if it's opened again.
+    fn remove_folder(&mut self, key: &TaskKey, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(client) = self.client(&key.host) {
+            cx.spawn_in(window, async move |this, cx| {
+                let _ = client.request(Request::RepoRemove { path: folder }).await;
+                this.update_in(cx, |this, window, cx| this.refresh_repos(window, cx)).ok();
+            })
+            .detach();
+        }
+        self.close_folder(key, window, cx);
+    }
+
+    /// Closes a folder's workspace.
     fn close_folder(&mut self, key: &TaskKey, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(host) = self.host_mut(&key.host) {
             host.loose.retain(|task| task.path != key.path);
@@ -1330,33 +1346,19 @@ impl Sik {
         cx.notify();
     }
 
-    /// Registers the repo of `path` on `host`, so tasks can be created in it.
-    fn add_repo_path(&mut self, host: SharedString, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// Adds `path` to the folders `host`'s agent keeps (its repo, if it's in
+    /// one). Quietly: it's already open, and without an agent it just
+    /// doesn't stay.
+    fn add_folder(&mut self, host: SharedString, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client(&host) else {
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
-            let result = client.request(Request::RepoAdd { path }).await;
-            this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok(_) => {
-                        this.error = None;
-                        this.show_tasks_column(true, cx);
-                    }
-                    Err(err) => this.error = Some((None, format!("{err:#}").into())),
-                }
-                this.refresh_repos(window, cx);
-            })
-            .ok();
+            if client.request(Request::RepoAdd { path }).await.is_ok() {
+                this.update_in(cx, |this, window, cx| this.refresh_repos(window, cx)).ok();
+            }
         })
         .detach();
-    }
-
-    /// "Add Repo…" for this machine: the system's folder dialog.
-    fn add_local_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pick_local_folder("Add Repo", window, cx, |this, path, window, cx| {
-            this.add_repo_path(LOCAL.into(), path, window, cx)
-        });
     }
 
     /// Cmd-N: new task in the active task's repo.
@@ -1683,9 +1685,9 @@ impl Sik {
         cx.notify();
     }
 
-    /// Browse the server's folders, starting next to its repos or open
-    /// folders (or in its home folder): to add a repo ("add repo" in
-    /// settings) or to open one.
+    /// Browse the server's folders, starting next to its known or open
+    /// folders (or in its home folder): to add one (in settings) or to open
+    /// one.
     fn open_folder_picker(&mut self, host: SharedString, purpose: FolderPurpose, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client(&host) else {
             return;
@@ -1697,7 +1699,7 @@ impl Sik {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("~"));
         let title = match purpose {
-            FolderPurpose::AddRepo => format!("ADD REPO ON {}", host.to_uppercase()),
+            FolderPurpose::AddFolder => format!("ADD FOLDER ON {}", host.to_uppercase()),
             FolderPurpose::Open => format!("OPEN FOLDER ON {}", host.to_uppercase()),
         };
         let picker = cx.new(|cx| FolderPicker::new(client.clone(), title, start, window, cx));
@@ -1941,8 +1943,8 @@ impl Sik {
             }
         }
         let theme = cx.theme();
-        // Without repos the column only has open folders: say what it's for.
-        let hint = self.hosts.iter().all(|host| host.tasks.is_empty()).then(|| {
+        // Nothing in it yet: say what it's for.
+        let hint = self.hosts.iter().all(|host| host.tasks.is_empty() && host.loose.is_empty()).then(|| {
             v_flex()
                 .px_3()
                 .py_2()
@@ -1950,15 +1952,15 @@ impl Sik {
                 .text_ui_small(cx)
                 .text_color(theme.muted_foreground)
                 .child(div().whitespace_normal().child(
-                    "Add a repo to work on several branches at once: each worktree is a workspace with its own terminals and Claude Code session.",
+                    "The folders you open stay here. A git repo shows its worktrees, each a workspace with its own terminals and Claude Code session.",
                 ))
                 .child(
                     div()
-                        .id("hint-add-repo")
+                        .id("hint-open-folder")
                         .text_color(theme.sidebar_foreground)
                         .hover(|style| style.underline())
-                        .child("Add Repo…")
-                        .on_click(cx.listener(|this, _, window, cx| this.add_local_repo(window, cx))),
+                        .child("Open Folder…")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_folder(&OpenFolder, window, cx))),
                 )
         });
         let weak = cx.entity().downgrade();
@@ -2187,14 +2189,22 @@ impl Sik {
             }))
             .when(!known, |row| {
                 let path = key.path.display().to_string();
-                row.tooltip(move |window, cx| Tooltip::new(format!("{path} · a folder, not a repo")).build(window, cx))
+                row.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
             })
             .context_menu({
                 let key = key.clone();
                 let repo = task.repo.clone();
                 let repo_name = folder_name(&task.repo);
-                let can_create = known && self.client(&key.host).is_some();
                 let connected = self.client(&key.host).is_some();
+                // Only a repo makes worktrees: one with a branch, or with
+                // worktrees of its own.
+                let git = known
+                    && (task.branch.is_some()
+                        || !task.main
+                        || self.host(&key.host).is_some_and(|host| {
+                            host.tasks.iter().any(|other| other.repo == task.repo && !other.main)
+                        }));
+                let main = task.main;
                 // Closing would lose unsaved changes: save them first.
                 let unsaved = self
                     .workspaces
@@ -2203,23 +2213,25 @@ impl Sik {
                 move |menu, _, _| {
                     let (create, copy, finder, hide, remove, close, add) =
                         (key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone());
-                    let repo = repo.clone();
-                    let menu = if known {
+                    let (repo, folder) = (repo.clone(), repo.clone());
+                    menu.when(git, |menu| {
                         menu.item(
                             menu::item(format!("New Worktree in {repo_name}…"), &weak, move |this, window, cx| {
                                 this.start_new_task(create.host.clone(), repo.clone(), window, cx)
                             })
-                            .disabled(!can_create),
+                            .disabled(!connected),
                         )
-                    } else {
+                        .separator()
+                    })
+                    .when(!known, |menu| {
                         menu.item(
-                            menu::item("Add Repo to Workspaces", &weak, move |this, window, cx| {
-                                this.add_repo_path(add.host.clone(), add.path.clone(), window, cx)
+                            menu::item("Add to Workspaces", &weak, move |this, window, cx| {
+                                this.add_folder(add.host.clone(), add.path.clone(), window, cx)
                             })
                             .disabled(!connected),
                         )
-                    };
-                    menu.separator()
+                        .separator()
+                    })
                     .item(menu::item("Copy Path", &weak, move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy.path.to_string_lossy().into_owned()))
                     }))
@@ -2227,24 +2239,31 @@ impl Sik {
                         menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path))
                             .disabled(!local),
                     )
+                    .separator()
                     .when(known, |menu| {
                         menu.item(menu::item("Hide", &weak, move |this, _, cx| this.hide_task(&hide, cx)))
                     })
-                    .when(!known, |menu| {
+                    // A folder (with its worktrees, if it's a repo) leaves the
+                    // list; a worktree is deleted instead.
+                    .when(main, |menu| {
                         menu.item(
-                            menu::item("Close Folder", &weak, move |this, window, cx| this.close_folder(&close, window, cx))
-                                .disabled(unsaved),
+                            menu::item("Remove from Workspaces", &weak, move |this, window, cx| {
+                                if known {
+                                    this.remove_folder(&close, folder.clone(), window, cx)
+                                } else {
+                                    this.close_folder(&close, window, cx)
+                                }
+                            })
+                            .disabled(unsaved),
                         )
                     })
-                    .separator()
-                    .item(
-                        menu::item("Delete Worktree…", &weak, move |this, _, cx| {
+                    .when(removable, |menu| {
+                        menu.item(menu::item("Delete Worktree…", &weak, move |this, _, cx| {
                             this.confirm_remove = Some(remove.clone());
                             this.error = None;
                             cx.notify();
-                        })
-                        .disabled(!removable),
-                    )
+                        }))
+                    })
                 }
             });
 
@@ -2319,6 +2338,7 @@ impl Render for Sik {
             });
         }
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| "sik".into());
+        let terminals_visible = self.active_workspace().map(|workspace| workspace.read(cx).terminals_visible());
         v_flex()
             .id("sik")
             .key_context("Sik")
@@ -2369,7 +2389,9 @@ impl Render for Sik {
                             .flex_1()
                             .flex()
                             .justify_center()
-                            .pr(px(72. + TOGGLE_WIDTH))
+                            // Centered on the window: the traffic lights and
+                            // the toggles on each side.
+                            .pr(px(72. + if terminals_visible.is_some() { 0. } else { TOGGLE_WIDTH }))
                             .text_ui(cx)
                             .text_color(cx.theme().muted_foreground)
                             .child(title),
@@ -2390,6 +2412,29 @@ impl Render for Sik {
                                 Tooltip::new("Installed. It restarts by itself once nothing is unsaved; terminals stay as they are.").build(window, cx)
                             })
                             .on_click(|_, _, cx| crate::update::restart(cx))
+                    }))
+                    // Without a workspace there are no terminals to show.
+                    .children(terminals_visible.map(|visible| {
+                        div()
+                            .id("toggle-terminals")
+                            .flex_none()
+                            .w(px(TOGGLE_WIDTH))
+                            .mr_2()
+                            .p_1()
+                            .rounded(cx.theme().radius)
+                            .hover(|style| style.bg(cx.theme().secondary_hover))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(svg().path("icons/panel-right.svg").size(px(14.)).text_color(if visible {
+                                cx.theme().foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            }))
+                            .tooltip(|window, cx| Tooltip::new("Toggle Terminals").build(window, cx))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(workspace) = this.active_workspace() {
+                                    workspace.update(cx, |workspace, cx| workspace.set_terminals_visible(!visible, window, cx));
+                                }
+                            }))
                     })),
             )
             .child({
@@ -2458,7 +2503,6 @@ fn column_menu(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
             this.open_remote_folder(&OpenRemoteFolder, window, cx)
         }))
         .separator()
-        .item(menu::item("Add Repo…", sik, |this, window, cx| this.add_local_repo(window, cx)))
         .item(menu::item("Add Server…", sik, |this, window, cx| {
             this.open_settings_at(settings::SERVERS, window, cx)
         }))
@@ -2469,20 +2513,12 @@ fn column_menu(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
 /// Right-click on a server's name in the tasks column.
 fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, sik: &WeakEntity<Sik>) -> PopupMenu {
     if name == LOCAL {
-        return menu
-            .item(menu::item("Open Folder…", sik, |this, window, cx| this.open_folder(&OpenFolder, window, cx)))
-            .item(menu::item("Add Repo…", sik, |this, window, cx| this.add_local_repo(window, cx)));
+        return menu.item(menu::item("Open Folder…", sik, |this, window, cx| this.open_folder(&OpenFolder, window, cx)));
     }
-    let (open, add, reconnect, remove) = (name.clone(), name.clone(), name.clone(), name.clone());
+    let (open, reconnect, remove) = (name.clone(), name.clone(), name.clone());
     menu.item(
         menu::item(format!("Open Folder on {name}…"), sik, move |this, window, cx| {
             this.open_folder_picker(open.clone(), FolderPurpose::Open, window, cx)
-        })
-        .disabled(!connected),
-    )
-    .item(
-        menu::item(format!("Add Repo on {name}…"), sik, move |this, window, cx| {
-            this.open_folder_picker(add.clone(), FolderPurpose::AddRepo, window, cx)
         })
         .disabled(!connected),
     )

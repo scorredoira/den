@@ -1456,14 +1456,24 @@ impl Workspace {
     /// them and focus returns to the IDE.
     fn toggle_terminals(&mut self, _: &ToggleTerminals, window: &mut Window, cx: &mut Context<Self>) {
         let focused = self.terminals.read(cx).contains_focus(window, cx);
-        if self.terminals_visible && focused {
-            self.terminals_visible = false;
-            self.terminals_maximized = false;
-            self.focus_ide(window, cx);
-        } else {
+        self.set_terminals_visible(!(self.terminals_visible && focused), window, cx);
+    }
+
+    pub fn terminals_visible(&self) -> bool {
+        self.terminals_visible
+    }
+
+    /// Shows the terminals and focuses them, or hides them and focus returns to
+    /// the IDE. The title bar's button, which ignores where the focus is.
+    pub fn set_terminals_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if visible {
             self.terminals_visible = true;
             self.terminals
                 .update(cx, |terminals, cx| terminals.focus(window, cx));
+        } else {
+            self.terminals_visible = false;
+            self.terminals_maximized = false;
+            self.focus_ide(window, cx);
         }
         cx.notify();
     }

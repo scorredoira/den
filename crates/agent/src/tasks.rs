@@ -1,5 +1,6 @@
-//! Repos and tasks. A task is a git worktree; how it's created is up to
-//! each repo through its `.sik/create` script, which the agent calls if present.
+//! The workspaces: the folders this agent was given and, for those that are
+//! git repos, their worktrees. How a worktree is created is up to each repo
+//! through its `.sik/create` script, which the agent calls if present.
 
 use std::{
     path::{Path, PathBuf},
@@ -19,7 +20,7 @@ fn repos_file() -> Result<PathBuf> {
     Ok(proto::config_dir()?.join("repos.json"))
 }
 
-/// Repos this agent knows about (their main checkout).
+/// Folders this agent knows about: a repo's main checkout, or any folder.
 pub fn repos() -> Vec<PathBuf> {
     repos_file()
         .ok()
@@ -28,9 +29,9 @@ pub fn repos() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Adds the repo of `path` (which may be a worktree) and returns its main checkout.
+/// Adds `path` (see `folder_for`) and returns what it added.
 pub fn add_repo(path: &Path) -> Result<PathBuf> {
-    let main = main_checkout(path)?;
+    let main = folder_for(path)?;
     let mut repos = repos();
     if !repos.contains(&main) {
         repos.push(main.clone());
@@ -44,6 +45,16 @@ pub fn add_repo(path: &Path) -> Result<PathBuf> {
     Ok(main)
 }
 
+/// What adding `path` keeps: its repo's main checkout if it's in a git repo
+/// (a worktree adds its repo), the folder itself otherwise.
+fn folder_for(path: &Path) -> Result<PathBuf> {
+    match main_checkout(path) {
+        Ok(main) => Ok(main),
+        Err(_) if path.is_dir() => Ok(path.canonicalize()?),
+        Err(err) => Err(err).with_context(|| format!("{} is not a folder", path.display())),
+    }
+}
+
 /// `~/something` → this machine's home folder plus `something`.
 pub fn expand_home(path: &Path) -> PathBuf {
     match (path.strip_prefix("~"), dirs::home_dir()) {
@@ -52,7 +63,7 @@ pub fn expand_home(path: &Path) -> PathBuf {
     }
 }
 
-/// Forgets a repo.
+/// Forgets a folder (nothing on disk is touched).
 pub fn remove_repo(path: &Path) -> Result<()> {
     let mut repos = repos();
     repos.retain(|repo| repo != path);
@@ -71,12 +82,18 @@ fn main_checkout(path: &Path) -> Result<PathBuf> {
         .context("git listed no worktrees")
 }
 
-/// Tasks from every known repo. The caller fills in `working`.
+/// Every known folder's workspaces: a repo's worktrees, the main one
+/// first, or the folder alone (no branch) if it isn't a repo. The caller
+/// fills in `working`.
 pub fn list() -> Vec<TaskInfo> {
     repos()
         .iter()
-        .filter_map(|repo| worktrees(repo).ok())
-        .flatten()
+        .filter(|folder| folder.is_dir())
+        .flat_map(|folder| {
+            worktrees(folder).unwrap_or_else(|_| {
+                vec![TaskInfo { repo: folder.clone(), path: folder.clone(), branch: None, main: true, working: false }]
+            })
+        })
         .collect()
 }
 
@@ -231,6 +248,19 @@ mod tests {
         run(&repo, &["init", "-q", "-b", "master"]);
         run(&repo, &["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "initial"]);
         repo.canonicalize().unwrap()
+    }
+
+    /// A folder that isn't a repo is kept as it is.
+    #[test]
+    fn plain_folders_are_kept_as_they_are() {
+        let base = std::env::temp_dir().join(format!("sik-tasks-{}-plain", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let folder = base.canonicalize().unwrap();
+        assert_eq!(folder_for(&folder).unwrap(), folder);
+        assert!(folder_for(&folder.join("missing")).is_err());
+        assert!(create(&folder, "x").is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

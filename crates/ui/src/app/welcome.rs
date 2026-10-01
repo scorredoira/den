@@ -1,6 +1,5 @@
 //! What the window shows with no folder open: the logo and, below it, how to
-//! open one (here or on a server), the recent ones and, without repos, how to
-//! add one for tasks.
+//! open one (here or on a server) and the recent ones.
 
 use super::*;
 
@@ -41,8 +40,6 @@ impl Sik {
                 .child(div().flex_1().text_color(theme.primary).child(label))
                 .child(div().text_color(theme.muted_foreground).child(detail))
         };
-        // Tasks need a repo: without any, the way to add one.
-        let no_repos = self.hosts.iter().all(|host| host.tasks.is_empty());
 
         let start = v_flex()
             .child(heading("START"))
@@ -54,13 +51,7 @@ impl Sik {
                 action("welcome-open-remote", "Open Folder on Server…", keys("OpenRemoteFolder")).on_click(
                     cx.listener(|this, _, window, cx| this.open_remote_folder(&OpenRemoteFolder, window, cx)),
                 ),
-            )
-            .when(no_repos, |el| {
-                el.child(
-                    action("welcome-add-repo", "Add Repo…", "worktrees: branches side by side".into())
-                        .on_click(cx.listener(|this, _, window, cx| this.add_local_repo(window, cx))),
-                )
-            });
+            );
 
         let recents = self.recents(cx);
         let more = recents.len() > SHOWN;
