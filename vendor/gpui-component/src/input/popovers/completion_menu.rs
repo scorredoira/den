@@ -23,9 +23,10 @@ use crate::{
 
 struct ContextMenuDelegate {
     query: SharedString,
-    menu: Entity<CompletionMenu>,
-    /// (sik) The menu's editor, kept here because the menu may be leased
-    /// (e.g. during `show`) when the selection changes.
+    /// (sik) Weak: the menu owns this list, and a strong handle back would
+    /// keep both alive after the menu goes.
+    menu: WeakEntity<CompletionMenu>,
+    /// (sik) The menu's editor, kept here so resolving doesn't read the menu.
     editor: WeakEntity<EditorState>,
     items: Vec<Rc<CompletionItem>>,
     selected_ix: usize,
@@ -181,7 +182,10 @@ fn matched(label: &str, query: &str) -> Vec<std::ops::Range<usize>> {
         return Vec::new();
     }
     if label.to_lowercase().starts_with(&query.to_lowercase()) {
-        return vec![0..query.len().min(label.len())];
+        // As many characters as the query has: lowercase may change byte
+        // lengths (`İ`), so the query's length in bytes may end mid-character.
+        let end = label.char_indices().nth(query.chars().count()).map_or(label.len(), |(ix, _)| ix);
+        return vec![0..end];
     }
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
     let mut wanted = query.chars().flat_map(char::to_lowercase).peekable();
@@ -250,7 +254,13 @@ impl ListDelegate for ContextMenuDelegate {
         cx: &mut Context<ListState<Self>>,
     ) {
         self.selected_ix = ix.map(|i| i.row).unwrap_or(0);
-        self.resolve_selected(cx);
+        // (sik) Resolved once the current update is over: the selection
+        // changes while the editor (arrow keys) or the menu (`show`) is
+        // leased, and resolving reads the editor.
+        let list = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = list.update(cx, |list, cx| list.delegate_mut().resolve_selected(cx));
+        });
         cx.notify();
     }
 
@@ -259,7 +269,7 @@ impl ListDelegate for ContextMenuDelegate {
             return;
         };
 
-        self.menu.update(cx, |this, cx| {
+        let _ = self.menu.update(cx, |this, cx| {
             this.select_item(&item, window, cx);
         });
     }
@@ -288,10 +298,9 @@ impl CompletionMenu {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let view = cx.entity();
             let menu = ContextMenuDelegate {
                 query: SharedString::default(),
-                menu: view,
+                menu: cx.entity().downgrade(),
                 editor: editor.downgrade(),
                 items: vec![],
                 selected_ix: 0,

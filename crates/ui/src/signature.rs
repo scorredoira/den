@@ -38,7 +38,8 @@ pub fn render(hint: &SignatureHint, cx: &App) -> Option<AnyElement> {
         .map(|(start, end)| {
             let byte = |chars: u32| signature.label.char_indices().nth(chars as usize).map_or(signature.label.len(), |(ix, _)| ix);
             let style = HighlightStyle { font_weight: Some(FontWeight::BOLD), color: Some(theme.blue), ..Default::default() };
-            vec![(byte(start)..byte(end), style)]
+            // In order, even if the server gives it backwards.
+            vec![(byte(start.min(end))..byte(start.max(end)), style)]
         })
         .unwrap_or_default();
     let popover = div()

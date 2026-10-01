@@ -18,7 +18,7 @@ use std::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -30,6 +30,10 @@ use serde_json::{Value, json};
 /// How long a server may take to start (rust-analyzer on a large repo).
 const INIT_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// After a server fails to start, how long before trying again.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
+/// Messages beyond this size are taken as garbage.
+const MAX_MESSAGE: usize = 64 << 20;
 /// LSP "content modified" error: retried.
 const CONTENT_MODIFIED: i64 = -32801;
 /// Beyond this many, a completion list counts as incomplete.
@@ -118,7 +122,16 @@ fn project_root(language: &Language, task: &Path, file: &Path) -> PathBuf {
     found.unwrap_or_else(|| task.to_path_buf())
 }
 
-static SERVERS: LazyLock<Mutex<HashMap<(PathBuf, &'static str), Arc<Server>>>> = LazyLock::new(Default::default);
+static SERVERS: LazyLock<Mutex<HashMap<(PathBuf, &'static str), Arc<Mutex<Slot>>>>> = LazyLock::new(Default::default);
+
+/// A project and language's server. Locked on its own while the server
+/// starts, so other servers aren't kept waiting.
+#[derive(Default)]
+struct Slot {
+    server: Option<Arc<Server>>,
+    /// When and why it last failed to start.
+    failed: Option<(Instant, String)>,
+}
 /// Binaries already looked up (including missing ones).
 static BINARIES: LazyLock<Mutex<HashMap<String, Option<PathBuf>>>> = LazyLock::new(Default::default);
 
@@ -135,7 +148,6 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
     let Some(server) = server(language, &root)? else {
         return Ok(none());
     };
-    server.sync(path, text, language_id)?;
     let line_text = text.lines().nth(line as usize).unwrap_or("");
     let mut params = json!({
         "textDocument": { "uri": uri(path) },
@@ -157,7 +169,8 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
     // keep retrying for a while.
     let mut tries = 0;
     let result = loop {
-        match server.request(method, params.clone(), REQUEST_TIMEOUT) {
+        let sent = server.sync_and_send(path, text, language_id, method, params.clone())?;
+        match server.wait(sent, REQUEST_TIMEOUT) {
             Err(err) if err.to_string().contains(&format!("({CONTENT_MODIFIED})")) && tries < 20 => {
                 tries += 1;
                 std::thread::sleep(Duration::from_millis(250));
@@ -191,7 +204,11 @@ pub fn resolve(task: &Path, path: &Path, list: u64, item: u32) -> Result<Respons
         return Ok(nothing);
     };
     let key = (project_root(language, task, path), language.name);
-    let Some(server) = SERVERS.lock().unwrap().get(&key).cloned() else {
+    let Some(slot) = SERVERS.lock().unwrap().get(&key).cloned() else {
+        return Ok(nothing);
+    };
+    // If it's starting there's no list to resolve yet.
+    let Some(server) = slot.try_lock().ok().and_then(|slot| slot.server.clone()) else {
         return Ok(nothing);
     };
     let raw = {
@@ -218,7 +235,6 @@ pub fn format(task: &Path, path: &Path, text: &str, indent: Option<Indent>) -> R
     if !server.formats {
         return Ok(None);
     }
-    server.sync(path, text, language_id)?;
     let (tab_size, spaces) = match indent {
         Some(Indent::Spaces(n)) => (n, true),
         _ => (4, false),
@@ -227,7 +243,8 @@ pub fn format(task: &Path, path: &Path, text: &str, indent: Option<Indent>) -> R
         "textDocument": { "uri": uri(path) },
         "options": { "tabSize": tab_size, "insertSpaces": spaces, "trimTrailingWhitespace": true, "insertFinalNewline": true },
     });
-    let edits = server.request("textDocument/formatting", params, REQUEST_TIMEOUT)?;
+    let sent = server.sync_and_send(path, text, language_id, "textDocument/formatting", params)?;
+    let edits = server.wait(sent, REQUEST_TIMEOUT)?;
     Ok(Some((server.apply(text, &edits), language.name.to_string())))
 }
 
@@ -235,12 +252,18 @@ pub fn format(task: &Path, path: &Path, text: &str, indent: Option<Indent>) -> R
 /// `None` if it isn't installed.
 fn server(language: &'static Language, root: &Path) -> Result<Option<Arc<Server>>> {
     let key = (root.to_path_buf(), language.name);
-    let mut servers = SERVERS.lock().unwrap();
-    if let Some(server) = servers.get(&key) {
+    let slot = SERVERS.lock().unwrap().entry(key).or_default().clone();
+    let mut slot = slot.lock().unwrap();
+    if let Some(server) = &slot.server {
         if server.alive.load(Ordering::Relaxed) {
             return Ok(Some(server.clone()));
         }
-        servers.remove(&key);
+        slot.server = None;
+    }
+    if let Some((when, why)) = &slot.failed
+        && when.elapsed() < RETRY_AFTER
+    {
+        bail!("{why}");
     }
     let command = if language.name == TYPESCRIPT.name {
         typescript_command(root)
@@ -268,10 +291,19 @@ fn server(language: &'static Language, root: &Path) -> Result<Option<Arc<Server>
     }
     let mut command = crate::platform::script_command(&program);
     command.args(args).env("PATH", std::env::join_paths(path)?);
-    // Starting may take a while; meanwhile, other LSP requests wait.
-    let server = Server::start(command, root, options).with_context(|| format!("{} did not start", language.name))?;
-    servers.insert(key, server.clone());
-    Ok(Some(server))
+    // Starting may take a while; meanwhile, requests for this server wait.
+    match Server::start(command, root, options) {
+        Ok(server) => {
+            slot.server = Some(server.clone());
+            slot.failed = None;
+            Ok(Some(server))
+        }
+        Err(err) => {
+            let why = format!("{} did not start: {err:#}", language.name);
+            slot.failed = Some((Instant::now(), why.clone()));
+            bail!("{why}")
+        }
+    }
 }
 
 /// TypeScript server, as in VS Code: the project's `typescript` or, if it has
@@ -365,7 +397,7 @@ fn from_shell(name: &str) -> Option<PathBuf> {
 fn from_shell(_name: &str) -> Option<PathBuf> { None }
 
 struct Server {
-    stdin: Mutex<ChildStdin>,
+    stdin: Arc<Mutex<ChildStdin>>,
     next_id: AtomicI64,
     pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Result<Value, String>>>>>,
     /// The currently open document and its version (only one: the rest come from disk).
@@ -379,9 +411,23 @@ struct Server {
     /// The last completion list and its items, for `resolve`.
     last_completions: Mutex<(u64, Vec<Value>)>,
     alive: Arc<AtomicBool>,
-    _child: Mutex<Child>,
+    child: Mutex<Option<Child>>,
     /// Tells the server what changes on disk while it lives.
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
+}
+
+/// A server that failed to start or was replaced: its process goes too,
+/// even if it hung.
+impl Drop for Server {
+    fn drop(&mut self) {
+        let child = self.child.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        if let Some(mut child) = child {
+            std::thread::spawn(move || {
+                let _ = child.kill();
+                let _ = child.wait();
+            });
+        }
+    }
 }
 
 impl Server {
@@ -416,8 +462,29 @@ impl Server {
             let (pending, alive) = (pending.clone(), alive.clone());
             std::thread::spawn(move || read_loop(stdout, pending, alive, replies_tx));
         }
+        let stdin = Arc::new(Mutex::new(stdin));
+        // Requests from the server (configuration, capability registration,
+        // progress) are answered on their own thread, from the start: some
+        // servers ask before answering `initialize`.
+        {
+            let stdin = stdin.clone();
+            std::thread::spawn(move || {
+                while let Ok(request) = replies_rx.recv() {
+                    let result = match request["method"].as_str() {
+                        Some("workspace/configuration") => {
+                            let items = request["params"]["items"].as_array().map_or(0, Vec::len);
+                            Value::Array(vec![Value::Null; items])
+                        }
+                        _ => Value::Null,
+                    };
+                    if send(&stdin, &json!({ "jsonrpc": "2.0", "id": request["id"], "result": result })).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         let mut server = Server {
-            stdin: Mutex::new(stdin),
+            stdin,
             next_id: AtomicI64::new(1),
             pending,
             open: Mutex::new(None),
@@ -426,7 +493,7 @@ impl Server {
             formats: false,
             last_completions: Default::default(),
             alive,
-            _child: Mutex::new(child),
+            child: Mutex::new(Some(child)),
             watcher: Mutex::new(None),
         };
         let init = server.request(
@@ -488,24 +555,6 @@ impl Server {
         server.formats = formatting == true || formatting.is_object();
         server.notify("initialized", json!({}))?;
         let server = Arc::new(server);
-        // Requests from the server (configuration, capability
-        // registration, progress) are answered on their own thread.
-        {
-            let weak = Arc::downgrade(&server);
-            std::thread::spawn(move || {
-                while let Ok(request) = replies_rx.recv() {
-                    let Some(server) = weak.upgrade() else { break };
-                    let result = match request["method"].as_str() {
-                        Some("workspace/configuration") => {
-                            let items = request["params"]["items"].as_array().map_or(0, Vec::len);
-                            Value::Array(vec![Value::Null; items])
-                        }
-                        _ => Value::Null,
-                    };
-                    let _ = server.send(&json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }));
-                }
-            });
-        }
         // Whatever changes on disk (minus ignored files) goes to the server.
         *server.watcher.lock().unwrap() = {
             let weak = Arc::downgrade(&server);
@@ -523,12 +572,7 @@ impl Server {
     }
 
     fn send(&self, message: &Value) -> Result<()> {
-        let body = serde_json::to_vec(message)?;
-        let mut stdin = self.stdin.lock().unwrap();
-        write!(stdin, "Content-Length: {}\r\n\r\n", body.len())?;
-        stdin.write_all(&body)?;
-        stdin.flush()?;
-        Ok(())
+        send(&self.stdin, message)
     }
 
     fn notify(&self, method: &str, params: Value) -> Result<()> {
@@ -536,23 +580,54 @@ impl Server {
     }
 
     fn request(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
+        let sent = self.send_request(method, params)?;
+        self.wait(sent, timeout)
+    }
+
+    /// Sends a request; its answer comes with `wait`.
+    fn send_request(&self, method: &str, params: Value) -> Result<Sent> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
+        // Once the reader has stopped nobody would answer.
+        if !self.alive.load(Ordering::Relaxed) {
+            self.pending.lock().unwrap().remove(&id);
+            bail!("{method}: the server exited");
+        }
+        if let Err(err) = self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })) {
+            self.pending.lock().unwrap().remove(&id);
+            return Err(err);
+        }
+        Ok(Sent { id, method: method.to_string(), rx })
+    }
+
+    fn wait(&self, sent: Sent, timeout: Duration) -> Result<Value> {
+        let Sent { id, method, rx } = sent;
         let result = rx.recv_timeout(timeout);
         self.pending.lock().unwrap().remove(&id);
         match result {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => bail!("{method}: {error}"),
-            Err(mpsc::RecvTimeoutError::Timeout) => bail!("{method}: the server did not respond (still indexing?)"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // So it doesn't keep working on it.
+                let _ = self.notify("$/cancelRequest", json!({ "id": id }));
+                bail!("{method}: the server did not respond (still indexing?)")
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => bail!("{method}: the server exited"),
         }
     }
 
-    /// Leaves `path` open on the server with `text`; closes the previous one.
-    fn sync(&self, path: &Path, text: &str, language_id: &str) -> Result<()> {
+    /// Sends a request about `path` as it is in `text`. Both go out together:
+    /// a request sent after another thread synced other text would ask
+    /// about positions in a document they don't belong to.
+    fn sync_and_send(&self, path: &Path, text: &str, language_id: &str, method: &str, params: Value) -> Result<Sent> {
         let mut open = self.open.lock().unwrap();
+        self.sync(&mut open, path, text, language_id)?;
+        self.send_request(method, params)
+    }
+
+    /// Leaves `path` open on the server with `text`; closes the previous one.
+    fn sync(&self, open: &mut Option<(PathBuf, i64, String)>, path: &Path, text: &str, language_id: &str) -> Result<()> {
         match open.as_mut() {
             Some((open_path, _, open_text)) if open_path == path && open_text == text => return Ok(()),
             Some((open_path, version, open_text)) if open_path == path => {
@@ -818,6 +893,22 @@ fn strip_snippet(snippet: &str) -> String {
     out
 }
 
+/// A request sent and not yet answered.
+struct Sent {
+    id: i64,
+    method: String,
+    rx: mpsc::Receiver<Result<Value, String>>,
+}
+
+fn send(stdin: &Mutex<ChildStdin>, message: &Value) -> Result<()> {
+    let body = serde_json::to_vec(message)?;
+    let mut stdin = stdin.lock().unwrap();
+    write!(stdin, "Content-Length: {}\r\n\r\n", body.len())?;
+    stdin.write_all(&body)?;
+    stdin.flush()?;
+    Ok(())
+}
+
 /// Reads the server's messages: responses go to whoever awaits them, the
 /// server's requests to `replies`; notifications are ignored.
 fn read_loop(
@@ -827,7 +918,9 @@ fn read_loop(
     replies: mpsc::Sender<Value>,
 ) {
     let mut reader = BufReader::new(stdout);
+    // Only a closed or broken pipe ends it; a bad message is skipped.
     while let Ok(message) = read_message(&mut reader) {
+        let Some(message) = message else { continue };
         let is_request = message.get("method").is_some() && message.get("id").is_some();
         if is_request {
             let _ = replies.send(message);
@@ -854,29 +947,40 @@ fn read_loop(
     pending.lock().unwrap().clear();
 }
 
-fn read_message(reader: &mut impl BufRead) -> Result<Value> {
+/// The next message; `None` if it isn't one (bad header or JSON), which is
+/// skipped. Errors only when the pipe closes or breaks.
+fn read_message(reader: &mut impl BufRead) -> std::io::Result<Option<Value>> {
     let mut length = None;
     loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 {
-            bail!("end");
+        let mut header = Vec::new();
+        if reader.read_until(b'\n', &mut header)? == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
+        let header = String::from_utf8_lossy(&header);
         let header = header.trim_end();
         if header.is_empty() {
             break;
         }
         if let Some(value) = header.strip_prefix("Content-Length:") {
-            length = Some(value.trim().parse::<usize>()?);
+            length = value.trim().parse::<usize>().ok();
         }
     }
-    let mut body = vec![0; length.ok_or_else(|| anyhow!("no Content-Length"))?];
+    let Some(length) = length else {
+        return Ok(None);
+    };
+    if length > MAX_MESSAGE {
+        std::io::copy(&mut reader.take(length as u64), &mut std::io::sink())?;
+        return Ok(None);
+    }
+    let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
-    Ok(serde_json::from_slice(&body)?)
+    Ok(serde_json::from_slice(&body).ok())
 }
 
 /// `file://` with the path encoded.
 fn uri(path: &Path) -> String {
-    url::Url::from_file_path(path).expect("absolute LSP path").into()
+    // Paths are absolute; just in case, a bad URI and not a panic.
+    url::Url::from_file_path(path).map_or_else(|()| format!("file://{}", path.display()), Into::into)
 }
 
 fn path_from_uri(uri: &str) -> Option<PathBuf> {
@@ -893,6 +997,16 @@ mod tests {
         assert_eq!(strip_snippet("fn ${1}() {\\}"), "fn () {}");
         assert_eq!(word_start("    let ñame", 12), 8);
         assert_eq!(word_start("foo.", 4), 4);
+    }
+
+    #[test]
+    fn bad_messages_are_skipped() {
+        let stream = b"Content-Length: x\r\n\r\nContent-Length: 3\r\n\r\n{x}Content-Length: 2\r\n\r\n{}";
+        let mut reader = BufReader::new(&stream[..]);
+        assert!(read_message(&mut reader).unwrap().is_none());
+        assert!(read_message(&mut reader).unwrap().is_none());
+        assert_eq!(read_message(&mut reader).unwrap(), Some(json!({})));
+        assert!(read_message(&mut reader).is_err());
     }
 
     #[test]

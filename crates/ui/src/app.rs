@@ -959,7 +959,12 @@ impl Sik {
                     restore(this, window, cx);
                     if let Some(shortcut) = SHORTCUTS.iter().find(|shortcut| shortcut.label == label) {
                         match &previous {
-                            Some(focus) => focus.dispatch_action(shortcut.action().as_ref(), window, cx),
+                            // Once this update is over: dispatching on a focus
+                            // handle runs now, and the action may reach `Sik`.
+                            Some(focus) => {
+                                let (focus, action) = (focus.clone(), shortcut.action());
+                                cx.defer_in(window, move |_, window, cx| focus.dispatch_action(action.as_ref(), window, cx));
+                            }
                             None => window.dispatch_action(shortcut.action(), cx),
                         }
                     }

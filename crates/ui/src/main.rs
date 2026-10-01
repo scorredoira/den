@@ -5,6 +5,7 @@ mod app;
 mod app_menu;
 mod assets;
 mod config;
+mod crash;
 mod drag_drop;
 mod diff;
 mod editing;
@@ -91,6 +92,7 @@ actions!(
 /// Opened from the Dock or the Finder with nothing to resume, there's no
 /// folder: the welcome screen offers to open one.
 fn main() {
+    crash::install();
     let cwd = std::env::current_dir().expect("could not read the current folder");
     // Opened from the Dock or the Finder, the current folder is `/`.
     let launched = cwd == Path::new("/");
