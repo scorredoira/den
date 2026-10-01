@@ -1,0 +1,295 @@
+//! A whole commit in one tab (VS Code's multi-diff): its message, author and
+//! date, and then each file's changes side by side, one after another, with
+//! the lines highlighted as the file's language. Read-only rows in one list;
+//! a file's name opens that file's diff in its own tab.
+
+use std::{ops::Range, rc::Rc};
+
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, highlighter::SyntaxHighlighter, input::Rope};
+use gpui_kit::{prelude::FluentBuilder as _, *};
+
+use crate::{
+    config::{Config, TextArea, UiText as _},
+    diff::{self, Kind},
+    language,
+};
+
+/// Beyond this many rows a file's changes aren't drawn: its name opens them.
+const MAX_FILE_ROWS: usize = 3000;
+/// Sides larger than this aren't highlighted.
+const MAX_HIGHLIGHTED: usize = 256 * 1024;
+
+pub enum CommitViewEvent {
+    OpenFile(String),
+}
+
+pub struct CommitView {
+    rows: Rc<Vec<Row>>,
+    scroll: UniformListScrollHandle,
+}
+
+impl EventEmitter<CommitViewEvent> for CommitView {}
+
+enum Row {
+    Subject(SharedString),
+    Body(SharedString),
+    Meta(SharedString),
+    Blank,
+    File { path: SharedString, added: usize, removed: usize },
+    Note(SharedString),
+    /// Lines skipped between two groups of changes.
+    Skip,
+    Line { old: Half, new: Half },
+}
+
+struct Half {
+    number: Option<u32>,
+    kind: Kind,
+    text: SharedString,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
+impl CommitView {
+    /// From `git show --format=fuller --patch` of the commit.
+    pub fn new(show: &str, cx: &mut Context<Self>) -> Self {
+        Self { rows: Rc::new(rows(show, cx)), scroll: UniformListScrollHandle::new() }
+    }
+}
+
+fn rows(show: &str, cx: &App) -> Vec<Row> {
+    let (header, patch) = match show.find("\ndiff --git ") {
+        Some(at) => (&show[..at], &show[at + 1..]),
+        None => (show, ""),
+    };
+    let mut rows = header_rows(header);
+    let theme = cx.theme();
+    let word = (theme.danger.opacity(0.3), theme.success.opacity(0.3));
+    for section in patch.split("\ndiff --git ").filter(|section| !section.trim().is_empty()) {
+        let path = section_path(section);
+        rows.push(Row::Blank);
+        let Some(sides) = diff::split(section) else {
+            rows.push(Row::File { path: path.clone().into(), added: 0, removed: 0 });
+            let note = if section.contains("Binary files") { "Binary file" } else { "No changes to show" };
+            rows.push(Row::Note(note.into()));
+            continue;
+        };
+        let count = |side: &diff::Side| side.lines.iter().filter(|line| line.kind == Kind::Changed).count();
+        rows.push(Row::File { path: path.clone().into(), added: count(&sides.new), removed: count(&sides.old) });
+        if sides.old.lines.len() > MAX_FILE_ROWS {
+            rows.push(Row::Note(format!("{} lines: open the file to see them", sides.old.lines.len()).into()));
+            continue;
+        }
+        let language = language::for_path(std::path::Path::new(&path));
+        let old = halves(&sides.old, language, word.0, cx);
+        let new = halves(&sides.new, language, word.1, cx);
+        let mut last: Option<(Option<u32>, Option<u32>)> = None;
+        for (old, new) in old.into_iter().zip(new) {
+            if let Some((old_last, new_last)) = last {
+                let jumped = |last: Option<u32>, now: Option<u32>| matches!((last, now), (Some(last), Some(now)) if now > last + 1);
+                if jumped(old_last, old.number) || jumped(new_last, new.number) {
+                    rows.push(Row::Skip);
+                }
+            }
+            let (old_last, new_last) = last.unwrap_or_default();
+            last = Some((old.number.or(old_last), new.number.or(new_last)));
+            rows.push(Row::Line { old, new });
+        }
+    }
+    rows
+}
+
+/// The message (its first line in bold), who wrote it and when.
+fn header_rows(header: &str) -> Vec<Row> {
+    let field = |name: &str| {
+        header
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    };
+    let hash = header.lines().next().and_then(|line| line.strip_prefix("commit ")).unwrap_or("");
+    let short: String = hash.chars().take(10).collect();
+    let author = field("Author:");
+    let author = author.split(" <").next().unwrap_or(&author).to_string();
+    let mut rows = Vec::new();
+    let mut message = header.lines().filter_map(|line| line.strip_prefix("    ")).peekable();
+    if let Some(subject) = message.next() {
+        rows.push(Row::Subject(subject.to_string().into()));
+    }
+    for line in message {
+        rows.push(if line.is_empty() { Row::Blank } else { Row::Body(line.to_string().into()) });
+    }
+    rows.push(Row::Meta(format!("{author} · {} · {short}", field("AuthorDate:")).into()));
+    rows
+}
+
+/// The file a section is about: the new name, or the old one if deleted.
+fn section_path(section: &str) -> String {
+    let line = |prefix: &str| {
+        section
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .filter(|path| *path != "/dev/null")
+            .map(|path| path.get(2..).unwrap_or(path).to_string())
+    };
+    line("+++ ").or_else(|| line("--- ")).unwrap_or_else(|| {
+        // `a/x b/x` in the section's first line, for binary files.
+        let first = section.lines().next().unwrap_or("");
+        first.rsplit(" b/").next().unwrap_or(first).to_string()
+    })
+}
+
+/// Each line of a side, with its syntax colors and what changed within it.
+fn halves(side: &diff::Side, language: &str, word: Hsla, cx: &App) -> Vec<Half> {
+    let highlighter = (side.text.len() <= MAX_HIGHLIGHTED).then(|| {
+        let mut highlighter = SyntaxHighlighter::new(language);
+        highlighter.update(None, &Rope::from(side.text.as_str()), None);
+        highlighter
+    });
+    let theme = cx.theme().highlight_theme.clone();
+    let mut start = 0;
+    side.text
+        .split('\n')
+        .zip(&side.lines)
+        .map(|(text, line)| {
+            let range = start..start + text.len();
+            start = range.end + 1;
+            let relative = |absolute: &Range<usize>| absolute.start.max(range.start) - range.start..absolute.end.min(range.end) - range.start;
+            let syntax: Vec<(Range<usize>, HighlightStyle)> = highlighter
+                .as_ref()
+                .map(|highlighter| highlighter.styles(&range, theme.as_ref()))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(absolute, style)| (relative(&absolute), style))
+                .filter(|(range, _)| !range.is_empty())
+                .collect();
+            let changed: Vec<(Range<usize>, HighlightStyle)> = line
+                .changed
+                .iter()
+                .map(|absolute| relative(absolute))
+                .filter(|range| !range.is_empty())
+                .map(|range| (range, HighlightStyle { background_color: Some(word), ..Default::default() }))
+                .collect();
+            Half {
+                number: line.number,
+                kind: line.kind,
+                text: text.to_string().into(),
+                highlights: combine_highlights(syntax, changed).collect(),
+            }
+        })
+        .collect()
+}
+
+impl Render for CommitView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.rows.clone();
+        let view = cx.entity().downgrade();
+        let size = Config::get(cx).font_size(TextArea::Editor);
+        let height = px((size * 1.6).round());
+        let theme = cx.theme();
+        let digits = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Line { old, new } => old.number.max(new.number),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(1)
+            .to_string()
+            .len();
+        let gutter = px(size * 0.62 * (digits + 2) as f32);
+        let (removed, added) = (theme.danger.opacity(0.14), theme.success.opacity(0.14));
+        uniform_list("commit-view", rows.len(), move |range, _, cx| {
+            let theme = cx.theme();
+            let half = |half: &Half, background: Hsla, marker: &str| {
+                let changed = half.kind == Kind::Changed;
+                h_flex()
+                    .w_1_2()
+                    .h_full()
+                    .overflow_hidden()
+                    .when(changed, |el| el.bg(background))
+                    .when(half.kind == Kind::Gap, |el| el.bg(theme.muted.opacity(0.5)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(gutter)
+                            .pr_2()
+                            .text_right()
+                            .text_color(theme.muted_foreground)
+                            .child(half.number.map(|number| format!("{number}{}", if changed { marker } else { " " })).unwrap_or_default()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(StyledText::new(half.text.clone()).with_highlights(half.highlights.clone())),
+                    )
+            };
+            range
+                .map(|ix| {
+                    let row = div().id(ix).h(height).w_full().flex().items_center();
+                    match &rows[ix] {
+                        Row::Subject(text) => row.px_4().text_ui(cx).font_semibold().child(text.clone()),
+                        Row::Body(text) => row.px_4().text_ui(cx).child(text.clone()),
+                        Row::Meta(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(text.clone()),
+                        Row::Blank => row,
+                        Row::Note(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(text.clone()),
+                        Row::Skip => row
+                            .px_4()
+                            .bg(theme.muted.opacity(0.3))
+                            .text_color(theme.muted_foreground)
+                            .font_family(theme.mono_font_family.clone())
+                            .text_size(px(size))
+                            .child("⋯"),
+                        Row::File { path, added, removed } => {
+                            let file = path.to_string();
+                            let view = view.clone();
+                            row.px_4()
+                                .gap_3()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .bg(theme.secondary)
+                                .text_ui(cx)
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme.secondary_hover))
+                                .child(div().font_semibold().child(path.clone()))
+                                .child(div().text_color(theme.success).child(format!("+{added}")))
+                                .child(div().text_color(theme.danger).child(format!("−{removed}")))
+                                .on_click(move |_, _, cx| {
+                                    view.update(cx, |_, cx| cx.emit(CommitViewEvent::OpenFile(file.clone()))).ok();
+                                })
+                        }
+                        Row::Line { old, new } => row
+                            .font_family(theme.mono_font_family.clone())
+                            .text_size(px(size))
+                            .child(half(old, removed, "−"))
+                            .child(div().flex_none().w(px(1.)).h_full().bg(theme.border))
+                            .child(half(new, added, "+")),
+                    }
+                    .into_any_element()
+                })
+                .collect()
+        })
+        .track_scroll(&self.scroll)
+        .size_full()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{header_rows, section_path, Row};
+
+    #[test]
+    fn header_and_paths() {
+        let header = "commit 0123456789abcdef (HEAD)\nAuthor:     Ana <a@b.c>\nAuthorDate: Wed Sep 30 23:42:58 2026 +0200\nCommit:     Ana <a@b.c>\n\n    Subject\n    \n    Body line\n";
+        let rows = header_rows(header);
+        assert!(matches!(&rows[0], Row::Subject(text) if text == "Subject"));
+        assert!(matches!(&rows[1], Row::Blank));
+        assert!(matches!(&rows[2], Row::Body(text) if text == "Body line"));
+        assert!(matches!(&rows[3], Row::Meta(text) if text == "Ana · Wed Sep 30 23:42:58 2026 +0200 · 0123456789"));
+        assert_eq!(section_path("a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n"), "x.rs");
+        assert_eq!(section_path("a/gone.rs b/gone.rs\ndeleted file mode 100644\n--- a/gone.rs\n+++ /dev/null\n"), "gone.rs");
+        assert_eq!(section_path("a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n"), "i.png");
+    }
+}

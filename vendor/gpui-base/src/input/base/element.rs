@@ -1136,7 +1136,7 @@ impl<M: InputModeKind> TextElement<M> {
             line_number_len = state
                 .line_styles
                 .iter()
-                .filter_map(|style| style.number.as_ref().map(|number| number.len()))
+                .filter_map(|style| style.number.as_ref().map(|number| number.chars().count()))
                 .max()
                 .unwrap_or(0)
                 .max(1);
@@ -2882,11 +2882,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 }
                 .into();
 
-                let runs = if current_row == Some(buffer_line) {
-                    &current_line_runs
+                let mut runs = if current_row == Some(buffer_line) {
+                    current_line_runs.clone()
                 } else {
-                    &other_line_runs
+                    other_line_runs.clone()
                 };
+                // (sik) A label's width is in characters and a run's length
+                // in bytes: they differ with a label like `12−`.
+                runs[0].len = line_no.len();
 
                 let mut sub_lines: SmallVec<[ShapedLine; 1]> = SmallVec::new();
                 sub_lines.push(

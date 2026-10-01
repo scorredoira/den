@@ -26,6 +26,7 @@ use crate::{
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     changes::{self, ChangesEvent, ChangesPanel},
+    commit_view::{CommitView, CommitViewEvent},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, SavedTab, Session, TextArea, UiText},
@@ -121,6 +122,8 @@ struct FileTab {
     diff: Option<DiffOf>,
     /// A file's diff shown side by side: `editor` has the new side.
     old: Option<OldSide>,
+    /// A whole commit: its message and every file's changes.
+    commit: Option<Entity<CommitView>>,
     /// Reopened on returning to the task: if the file is gone, it closes itself.
     restored: bool,
     /// Who last changed each line, as it was on disk when read or saved.
@@ -867,6 +870,23 @@ impl Workspace {
                     cx.notify();
                     return;
                 }
+                if let (Ok(Response::Text(show)), Some((hash, short))) = (&response, &of.commit)
+                    && of.file.is_empty()
+                    && !of.source
+                {
+                    let view = cx.new(|cx| CommitView::new(show, cx));
+                    let (hash, short) = (hash.clone(), short.clone());
+                    let subscription = cx.subscribe_in(&view, window, move |this, _, event: &CommitViewEvent, window, cx| {
+                        let CommitViewEvent::OpenFile(file) = event;
+                        this.open_diff(DiffOf::commit(hash.clone(), short.clone(), file.clone(), false), true, window, cx);
+                    });
+                    let tab = &mut this.tabs[ix];
+                    tab.commit = Some(view);
+                    tab._subscriptions.push(subscription);
+                    tab.content = Content::Ready;
+                    cx.notify();
+                    return;
+                }
                 let tab = &mut this.tabs[ix];
                 tab.old = None;
                 match response {
@@ -1523,6 +1543,7 @@ impl Workspace {
             grab_focus: true,
             diff: None,
             old: None,
+            commit: None,
             restored: false,
             blame: None,
             occurrences: None,
@@ -2533,6 +2554,7 @@ impl Workspace {
                     .justify_center()
                     .child(img(image.clone()).max_w_full().max_h_full().object_fit(ObjectFit::Contain))
                     .into_any_element(),
+                Content::Ready if let Some(commit) = &tab.commit => div().size_full().child(commit.clone()).into_any_element(),
                 Content::Ready => match tab.rendered() {
                     Some(markdown) => div()
                         .size_full()

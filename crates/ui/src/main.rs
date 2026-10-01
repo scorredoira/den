@@ -9,6 +9,7 @@ mod drag_drop;
 mod diff;
 mod editing;
 mod changes;
+mod commit_view;
 mod completion;
 mod file_tree;
 mod language;
