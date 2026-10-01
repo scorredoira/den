@@ -80,12 +80,16 @@ impl CompletionProvider for Completions {
         };
         let request = Request::Lsp { root, path, text: text.to_string(), line, column, op: LspOp::Completion };
         let last = self.last.clone();
-        cx.spawn(async move |_| {
-            let Response::Completions { list, items, incomplete, .. } = client.request(request).await? else {
+        cx.spawn(async move |cx| {
+            let response = client.request(request).await;
+            workspace.update(cx, |workspace, cx| workspace.report_lsp(&editor, &response, cx));
+            let Response::Completions { server, list, items, incomplete } = response? else {
                 return Ok(CompletionResponse::Array(Vec::new()));
             };
             let shown = matching(list, &items, &prefix, line, column);
-            *last.borrow_mut() = (!incomplete).then_some(Answer { list, line, start, before, prefix, items });
+            // A missing server isn't a cacheable empty completion list:
+            // typing again must retry and allow the status to recover.
+            *last.borrow_mut() = (server.is_some() && !incomplete).then_some(Answer { list, line, start, before, prefix, items });
             Ok(CompletionResponse::Array(shown))
         })
     }
@@ -102,9 +106,11 @@ impl CompletionProvider for Completions {
         let Some((list, ix)) = item.data.as_ref().and_then(|data| Some((data["list"].as_u64()?, data["item"].as_u64()?))) else {
             return Task::ready(Ok(item));
         };
-        cx.spawn(async move |_| {
+        cx.spawn(async move |cx| {
             let request = Request::LspResolve { root, path, list, item: ix as u32 };
-            if let Response::Resolved { detail, documentation } = client.request(request).await? {
+            let response = client.request(request).await;
+            workspace.update(cx, |workspace, cx| workspace.report_lsp(&editor, &response, cx));
+            if let Response::Resolved { detail, documentation } = response? {
                 item.detail = detail;
                 item.documentation = documentation.map(markdown);
             }

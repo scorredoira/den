@@ -250,11 +250,26 @@ fn server(language: &'static Language, root: &Path) -> Result<Option<Arc<Server>
             binary(command[0]).map(|binary| (binary, args, Value::Null))
         })
     };
-    let Some((binary, args, options)) = command else {
+    let Some((program, args, options)) = command else {
         return Ok(None);
     };
+    // GUI apps and SSH sessions may have a minimal PATH. Finding the server
+    // by absolute path isn't enough: npm scripts use `/usr/bin/env node`,
+    // and servers may spawn other tools from their installation directory.
+    let mut path = binary_dirs();
+    if let Some(dir) = program.parent() {
+        path.push(dir.to_path_buf());
+    }
+    if language.name == TYPESCRIPT.name
+        && let Some(node) = binary("node")
+        && let Some(dir) = node.parent()
+    {
+        path.push(dir.to_path_buf());
+    }
+    let mut command = crate::platform::script_command(&program);
+    command.args(args).env("PATH", std::env::join_paths(path)?);
     // Starting may take a while; meanwhile, other LSP requests wait.
-    let server = Server::start(&binary, &args, root, options).with_context(|| format!("{} did not start", language.name))?;
+    let server = Server::start(command, root, options).with_context(|| format!("{} did not start", language.name))?;
     servers.insert(key, server.clone());
     Ok(Some(server))
 }
@@ -292,6 +307,16 @@ fn binary(name: &str) -> Option<PathBuf> {
     if let Some(found) = BINARIES.lock().unwrap().get(name) {
         return found.clone();
     }
+    let found = binary_dirs()
+        .iter()
+        .find_map(|dir| crate::platform::executable(dir, name))
+        .or_else(|| from_shell(name));
+    BINARIES.lock().unwrap().insert(name.to_string(), found.clone());
+    found
+}
+
+/// Share lookup directories with the environment inherited by servers.
+fn binary_dirs() -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
@@ -303,12 +328,7 @@ fn binary(name: &str) -> Option<PathBuf> {
     );
     #[cfg(unix)]
     dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].into_iter().map(PathBuf::from));
-    let found = dirs
-        .iter()
-        .find_map(|dir| crate::platform::executable(dir, name))
-        .or_else(|| from_shell(name));
-    BINARIES.lock().unwrap().insert(name.to_string(), found.clone());
-    found
+    dirs
 }
 
 /// `command -v` in an interactive user shell (nvm, pyenv… are configured
@@ -365,9 +385,8 @@ struct Server {
 }
 
 impl Server {
-    fn start(binary: &Path, args: &[String], root: &Path, options: Value) -> Result<Arc<Server>> {
-        let mut child = crate::platform::script_command(binary)
-            .args(args)
+    fn start(mut command: std::process::Command, root: &Path, options: Value) -> Result<Arc<Server>> {
+        let mut child = command
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -887,8 +906,8 @@ mod tests {
     /// With real servers: `cargo test -p agent lsp -- --ignored`.
     #[test]
     #[ignore]
-    fn definition_and_references_with_real_servers() {
-        let dir = std::env::temp_dir().join(format!("sik-lsp-real-{}", std::process::id()));
+    fn rust_with_real_server() {
+        let dir = std::env::temp_dir().join(format!("sik-lsp-rust-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let rust = dir.join("rust");
@@ -927,7 +946,16 @@ mod tests {
         };
         let twice = items.iter().find(|item| item.label.starts_with("twice")).expect("twice");
         assert_eq!((twice.start, twice.text.as_str()), (column - 2, "twice"), "{twice:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
+    /// Also run the compiled test with PATH=/usr/bin:/bin to reproduce a
+    /// macOS GUI launch: both the server and Node must be discovered.
+    #[test]
+    #[ignore]
+    fn typescript_with_real_server() {
+        let dir = std::env::temp_dir().join(format!("sik-lsp-typescript-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let ts = dir.join("ts");
         std::fs::create_dir_all(&ts).unwrap();
         std::fs::write(ts.join("tsconfig.json"), "{}").unwrap();
@@ -962,7 +990,14 @@ mod tests {
         let (start, end) = signature.active.expect("active parameter");
         let active: String = signature.label.chars().skip(start as usize).take((end - start) as usize).collect();
         assert_eq!(active, "x: number", "{signature:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
+    #[test]
+    #[ignore]
+    fn go_with_real_server() {
+        let dir = std::env::temp_dir().join(format!("sik-lsp-go-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let go = dir.join("go");
         std::fs::create_dir_all(go.join("util")).unwrap();
         std::fs::write(go.join("go.mod"), "module demo\n\ngo 1.21\n").unwrap();

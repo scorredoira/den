@@ -137,7 +137,9 @@ pub struct Config {
     pub font_sizes: FontSizes,
     /// Long lines wrap in the editor (Opt-Z).
     pub word_wrap: bool,
-    /// Extensions (`json`, `ts`…) formatted on saving with Cmd-S.
+    /// Save edited files when their editor loses focus.
+    pub auto_save_on_focus_loss: bool,
+    /// Extensions (`json`, `ts`…) formatted on saving.
     pub format_on_save: Vec<String>,
 }
 

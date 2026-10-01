@@ -15,6 +15,7 @@ use gpui_kit::component::{
     menu::ContextMenuExt as _,
     resizable_panel,
     text::{TextView, TextViewState},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -42,6 +43,8 @@ use crate::{
 
 mod tab_drag;
 mod markdown_images;
+#[cfg(test)]
+mod autosave_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,6 +84,31 @@ enum Content {
     Failed(SharedString),
 }
 
+/// An empty result is normal (no definition, no suggestions, outside a call).
+/// Only a missing server or a failed request makes the LSP unavailable.
+#[derive(Default)]
+struct LspStatus {
+    problem: Option<SharedString>,
+}
+
+impl LspStatus {
+    fn observe(&mut self, response: &anyhow::Result<Response>) {
+        match response {
+            Err(error) => self.problem = Some(format!("{error:#}").into()),
+            Ok(Response::Lsp { server, .. } | Response::Completions { server, .. }) => {
+                self.problem = server.is_none().then(|| "No language server is available for this file.".into());
+            }
+            Ok(Response::Signature(Some(_))) => self.problem = None,
+            Ok(Response::Resolved { detail, documentation }) if detail.is_some() || documentation.is_some() => {
+                self.problem = None;
+            }
+            // Signature(None) and an unresolved item don't say whether a
+            // server exists, so they mustn't hide a previous failure.
+            _ => {}
+        }
+    }
+}
+
 impl FileTab {
     fn rendered(&self) -> Option<&Entity<TextViewState>> {
         self.markdown.as_ref().filter(|_| !self.show_source)
@@ -108,8 +136,11 @@ struct FileTab {
     /// For Markdown, the source is shown instead of the rendered view.
     show_source: bool,
     content: Content,
+    lsp_status: LspStatus,
     /// Text as it is on disk, to tell whether there are unsaved changes.
     saved: String,
+    /// Serialize writes so rapid focus changes cannot save an older version last.
+    save_lock: Arc<smol::lock::Mutex<()>>,
     dirty: bool,
     preview: bool,
     /// Cmd-W was already pressed once with unsaved changes.
@@ -1190,6 +1221,15 @@ impl Workspace {
         Some((self.client.clone()?, self.root.clone(), tab.path.clone()))
     }
 
+    /// Keep failures on the tab that made the request, even if focus moved
+    /// while the server was answering. Saving doesn't clear this status.
+    pub fn report_lsp(&mut self, editor: &Entity<EditorState>, response: &anyhow::Result<Response>, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tab_index(editor) {
+            self.tabs[ix].lsp_status.observe(response);
+            cx.notify();
+        }
+    }
+
     /// Asks for the signature of the call at the cursor of `editor` when
     /// `(` or `,` was just typed, or if it's already shown there.
     fn ask_signature(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
@@ -1216,6 +1256,7 @@ impl Workspace {
         self.signature_task = cx.spawn(async move |this, cx| {
             let response = client.request(request).await;
             this.update(cx, |this, cx| {
+                this.report_lsp(&editor, &response, cx);
                 this.signature = match response {
                     Ok(Response::Signature(Some(signature))) => Some(SignatureHint { editor, signature }),
                     _ => None,
@@ -1258,6 +1299,7 @@ impl Workspace {
             return;
         };
         let state = tab.editor.read(cx);
+        let editor = tab.editor.clone();
         let text = state.text().to_string();
         let cursor = state.cursor_position();
         let path = tab.path.clone();
@@ -1282,12 +1324,11 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let response = client.request(request).await;
             this.update_in(cx, |this, window, cx| {
+                this.report_lsp(&editor, &response, cx);
                 this.message = None;
                 match (response, op) {
                     // No language server: F12 can't; Shift-F12 searches for the word.
-                    (Ok(Response::Lsp { server: None, .. }), LspOp::Definition) => {
-                        this.message = Some("F12: no language server for this file".into());
-                    }
+                    (Ok(Response::Lsp { server: None, .. }), LspOp::Definition) => {}
                     (Ok(Response::Lsp { server: None, .. }), LspOp::References) => {
                         this.word_references(word, cx);
                     }
@@ -1313,7 +1354,7 @@ impl Workspace {
                         this.references.update(cx, |references, cx| references.set_results(title, Ok(hits), cx));
                     }
                     (Ok(other), _) => this.message = Some(format!("Unexpected response: {other:?}").into()),
-                    (Err(err), LspOp::Definition) => this.message = Some(format!("{err:#}").into()),
+                    (Err(_), LspOp::Definition) => {}
                     (Err(err), _) => {
                         let title = format!("References to {name}");
                         this.references
@@ -1516,7 +1557,12 @@ impl Workspace {
             lsp.completion_menu.max_width = px(480.);
             editor
         });
+        let focus_handle = editor.read(cx).focus_handle(cx);
         let subscriptions = vec![
+            cx.on_blur(&focus_handle, window, {
+                let editor = editor.clone();
+                move |this, window, cx| this.auto_save_editor(&editor, window, cx)
+            }),
             cx.subscribe_in(&editor, window, move |this, editor, event: &InputEvent, window, cx| {
                 if let InputEvent::Change = event {
                     this.on_edit(editor, window, cx);
@@ -1536,7 +1582,9 @@ impl Workspace {
             markdown,
             show_source: false,
             content: Content::Loading,
+            lsp_status: LspStatus::default(),
             saved: String::new(),
+            save_lock: Default::default(),
             dirty: false,
             preview,
             confirm_close: false,
@@ -1955,6 +2003,27 @@ impl Workspace {
         let Some(ix) = self.active_file() else {
             return;
         };
+        self.save_file(ix, window, cx);
+    }
+
+    fn auto_save_editor(&mut self, editor: &Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>) {
+        if !Config::get(cx).auto_save_on_focus_loss {
+            return;
+        }
+        let Some(tab) = self.tabs.iter().find(|tab| &tab.editor == editor && tab.diff.is_none()) else {
+            return;
+        };
+        // A split view edits the same file; save the owning tab, not the tab
+        // that happens to be active after the focus change.
+        let Some(ix) = self.tabs.iter().position(|file| file.path == tab.path && file.is_file()) else {
+            return;
+        };
+        if self.tabs[ix].dirty {
+            self.save_file(ix, window, cx);
+        }
+    }
+
+    fn save_file(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if !Config::get(cx).formats_on_save(&self.tabs[ix].path) {
             self.save_tab(ix, cx).detach();
             return;
@@ -2058,14 +2127,23 @@ impl Workspace {
         let text = tab.editor.read(cx).text().to_string();
         let editor = tab.editor.clone();
         let Some(client) = self.client.clone() else {
+            self.message = Some("Couldn't save: no agent".into());
+            cx.notify();
             return Task::ready(false);
         };
-        let write = client.request(Request::WriteFile {
-            path: path.clone(),
-            data: text.clone().into_bytes(),
-        });
+        let save_lock = tab.save_lock.clone();
         cx.spawn(async move |this, cx| {
-            let result = write.await;
+            let _guard = save_lock.lock().await;
+            // Read the current buffer after previous writes finish. A tab
+            // closed meanwhile still has its captured text saved.
+            let text = this.update(cx, |this, cx| {
+                this.tabs.iter().find(|tab| tab.editor == editor && tab.path == path)
+                    .map(|tab| tab.editor.read(cx).text().to_string())
+            }).ok().flatten().unwrap_or(text);
+            let result = client.request(Request::WriteFile {
+                path: path.clone(),
+                data: text.clone().into_bytes(),
+            }).await;
             this.update(cx, |this, cx| {
                 let ok = result.is_ok();
                 match result {
@@ -2708,8 +2786,8 @@ impl Workspace {
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let mut left = h_flex().gap_3();
-        let mut right = h_flex().gap_3();
+        let mut left = h_flex().gap_3().min_w_0().overflow_hidden();
+        let mut right = h_flex().gap_3().flex_none().whitespace_nowrap();
         if let Some(tab) = self.active.map(|ix| &self.tabs[ix]) {
             let relative = tab.path.strip_prefix(&self.root).unwrap_or(&tab.path);
             left = left.child(relative.display().to_string());
@@ -2722,6 +2800,22 @@ impl Workspace {
                     right = right.child(format!("Ln {}, Col {}", pos.line + 1, pos.character + 1));
                 }
                 right = right.child(state.language_name());
+            }
+            if matches!(tab.content, Content::Ready) && tab.image.is_none() && tab.diff.is_none() {
+                let problem = if !self.client.as_ref().is_some_and(|client| client.is_connected()) {
+                    Some(SharedString::from("The agent is disconnected. Language features are unavailable."))
+                } else {
+                    tab.lsp_status.problem.clone()
+                };
+                if let Some(problem) = problem {
+                    right = right.child(
+                        div()
+                            .id("lsp-status")
+                            .text_color(theme.warning)
+                            .child("LSP unavailable")
+                            .tooltip(move |window, cx| Tooltip::new(problem.clone()).max_w(px(480.)).build(window, cx)),
+                    );
+                }
             }
             if tab.markdown.is_some() {
                 let label = if tab.show_source { "Show Preview" } else { "Show Source" };
@@ -3084,7 +3178,40 @@ fn normalize(path: &Path) -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{normalize, percent_decode, word_at};
+    use super::{LspStatus, normalize, percent_decode, word_at};
+    use proto::Response;
+
+    #[test]
+    fn lsp_failure_persists_until_a_server_responds() {
+        let mut status = LspStatus::default();
+        let failure = anyhow::anyhow!("env: node: No such file or directory").context("typescript did not start");
+        status.observe(&Err(failure));
+        assert_eq!(status.problem.as_deref(), Some("typescript did not start: env: node: No such file or directory"));
+
+        // Ambiguous replies mustn't clear this failure.
+        status.observe(&Ok(Response::Signature(None)));
+        status.observe(&Ok(Response::Resolved { detail: None, documentation: None }));
+        assert!(status.problem.is_some());
+
+        // A working server can legitimately return no suggestions.
+        status.observe(&Ok(Response::Completions {
+            server: Some("typescript".into()), list: 1, items: Vec::new(), incomplete: false,
+        }));
+        assert!(status.problem.is_none());
+    }
+
+    #[test]
+    fn lsp_missing_server_differs_from_no_definition() {
+        let mut status = LspStatus::default();
+        status.observe(&Ok(Response::Lsp { server: None, locations: Vec::new() }));
+        assert!(status.problem.is_some());
+        status.observe(&Ok(Response::Lsp { server: Some("typescript".into()), locations: Vec::new() }));
+        assert!(status.problem.is_none());
+        status.observe(&Ok(Response::Completions {
+            server: None, list: 0, items: Vec::new(), incomplete: false,
+        }));
+        assert!(status.problem.is_some());
+    }
 
     #[test]
     fn word_under_cursor() {

@@ -2,7 +2,7 @@
 //! At the top a search box that filters everything; on the left an index of
 //! sections; on the right the sections, one after another.
 
-use gpui_kit::component::{input::InputEvent, kbd::Kbd};
+use gpui_kit::component::{input::InputEvent, kbd::Kbd, switch::Switch};
 
 use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
@@ -374,11 +374,24 @@ impl Sik {
     }
 
     fn render_editor(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[1], "Format on Save", "Format Document", "json"].iter().any(|text| matches(text));
+        let visible = [SECTIONS[1], "Auto Save", "autosave", "focus", "Format on Save", "Format Document", "json"]
+            .iter().any(|text| matches(text));
         let input = div().max_w(px(480.)).child(Input::new(&settings.format_on_save));
+        let auto_save = Switch::new("auto-save-on-focus-loss")
+            .accessibility_label("Auto Save on Focus Loss")
+            .checked(Config::get(cx).auto_save_on_focus_loss)
+            .on_click(cx.listener(|_, checked, _, cx| {
+                Config::update(cx, |config| config.auto_save_on_focus_loss = *checked);
+                cx.notify();
+            }));
         let rows = vec![setting(
+            "Auto Save on Focus Loss",
+            "Save changed files when switching editor tabs, moving focus to another panel, or leaving the window. Uses Format on Save when enabled for the file type.",
+            auto_save,
+            cx,
+        ), setting(
             "Format on Save",
-            "File types formatted when saved with Cmd-S, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .task/format if it has one, else the language server; JSON works without either.",
+            "File types formatted when saved, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .task/format if it has one, else the language server; JSON works without either.",
             input,
             cx,
         )];
