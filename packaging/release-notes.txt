@@ -1,13 +1,14 @@
-## What's new in 0.1.12
+## Sik 1.0
 
-- **Keyboard shortcuts guide** (Help → Keyboard Shortcuts, or from the welcome screen): every shortcut, grouped by category and with the keys as they are now, plus multiple cursors explained.
-- **About** with the version, whether it's up to date and each server's agent; **Check for Updates…** checks right away; **Help → Welcome** shows the welcome screen.
-- **Workspaces are folders:** open any folder and it stays in the workspaces column across restarts; a git repo shows its worktrees under it. Settings → Workspaces lists each server's folders, with hide and show.
-- **Icons in the workspaces column**, the branch in the status bar, and a read-only Changes panel that refreshes on its own.
-- **Windows and Linux:** the menu bar in the window's title bar, and the welcome screen on first launch.
-- Faster connections to servers after an update, and fixes for the side panel jumping while resized and for a crash running Settings from the command palette.
+A native IDE for working with coding agents. Every folder you open is a workspace with its files, its changes and its terminals; a git repo's worktrees are workspaces too, so several branches can be open side by side, each with its own Claude Code session.
 
-After upgrading, restart the outdated agent from the workspaces column so that changes made in a terminal refresh the Changes panel. Restarting the agent also restarts its terminals.
+- **Workspaces on every machine:** this one, SSH servers and, on Windows, WSL distros. Terminals live in an agent next to the files: closing Sik doesn't stop them, and they come back as they were.
+- **The state of each session at a glance:** red when Claude is asking something, yellow while it works, green when it finished unseen.
+- **Code:** tree-sitter highlighting, multiple cursors, Go to Definition, references and completions through language servers, search and replace across the workspace, and Markdown preview.
+- **Git:** uncommitted changes, the history and side-by-side diffs. Committing and everything else is done in a terminal.
+- **`sik <path>`** from any terminal opens a folder or a file in Sik.
+- **Updates:** Sik checks for new releases and installs them; it restarts when you say so. Settings → Updates turns the check off.
+- **Help → Keyboard Shortcuts:** every shortcut, grouped by category, with the keys as they are now.
 
 ## Downloads
 
