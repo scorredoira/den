@@ -2044,8 +2044,12 @@ impl Sik {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let label: SharedString = folder_name(&task.path).into();
-        // The branch, when the folder's name doesn't say it.
-        let branch = task.branch.clone().filter(|branch| *branch != *label);
+        // The branch only when it says something: a checkout off its main
+        // branch, a worktree whose folder isn't named after it.
+        let branch = task
+            .branch
+            .clone()
+            .filter(|branch| *branch != *label && !(task.main && matches!(branch.as_str(), "master" | "main")));
         let active = self.active.as_ref() == Some(key);
         let (mut dot, mut color) = self.status(key, task, cx);
         if let Some(Some((_, true))) = &fold {

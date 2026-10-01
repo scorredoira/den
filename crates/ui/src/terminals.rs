@@ -599,13 +599,10 @@ impl TerminalArea {
                         this.drop_on_pane(drag, term, window, cx);
                     }))
                     .when(split, |el| {
-                        el.border_1().border_color(if term == tab.active {
-                            theme.primary.opacity(0.6)
-                        } else {
-                            theme.background
-                        })
-                    })
-                    .when(split, |el| {
+                        // The pane with the focus, by its title: in the
+                        // text's color, with a line on top like the active
+                        // tab's; the rest muted.
+                        let active = term == tab.active;
                         let title = view.read(cx).title(cx);
                         el.child(self.draggable(
                             div()
@@ -616,7 +613,9 @@ impl TerminalArea {
                                 .px_2()
                                 .text_ui_small(cx)
                                 .bg(theme.tab_bar)
-                                .text_color(theme.muted_foreground)
+                                .border_t_2()
+                                .border_color(if active { theme.primary } else { theme.tab_bar })
+                                .text_color(if active { theme.foreground } else { theme.muted_foreground })
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
