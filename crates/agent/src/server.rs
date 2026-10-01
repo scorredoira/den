@@ -812,7 +812,9 @@ fn create(
                 };
                 let mut state = state.lock().unwrap();
                 let Some(entry) = state.terms.get_mut(&term) else {
-                    break;
+                    // ConPTY may emit final output while closing. Keep draining
+                    // until EOF; its close runs on a separate thread.
+                    continue;
                 };
                 entry.cwd.advance(&buf[..n]);
                 entry.parser.advance(&mut entry.emulator, &buf[..n]);

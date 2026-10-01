@@ -47,7 +47,7 @@ pub fn link_at(line: &str, col: usize, cwd: Option<&Path>, local: bool) -> Optio
         std::env::home_dir()?.join(rest)
     } else {
         let path = Path::new(path);
-        if path.is_absolute() || word.starts_with('/') {
+        if path.has_root() {
             path.to_path_buf()
         } else {
             cwd?.join(path)

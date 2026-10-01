@@ -337,3 +337,47 @@ pub fn is_executable_script(path: &Path) -> bool {
     #[cfg(windows)]
     path.is_file()
 }
+
+#[cfg(unix)]
+pub fn default_shell() -> portable_pty::CommandBuilder { portable_pty::CommandBuilder::new_default_prog() }
+
+#[cfg(windows)]
+pub fn default_shell() -> portable_pty::CommandBuilder {
+    // Prefer PowerShell 7, falling back to Windows PowerShell. Load the user's
+    // profile normally, preserve their prompt, and append a directory report.
+    let shell = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find_map(|dir| crate::platform::executable(&dir, "pwsh"))
+    }).unwrap_or_else(|| "powershell.exe".into());
+    let mut command = portable_pty::CommandBuilder::new(shell);
+    command.args(["-NoLogo", "-NoExit", "-Command", r#"$global:SikOriginalPrompt = $function:prompt; function global:prompt { $p = & $global:SikOriginalPrompt; if ($PWD.Provider.Name -eq 'FileSystem') { $u = [Uri]::new($PWD.ProviderPath).AbsoluteUri; [Console]::Write(([char]27).ToString() + ']7;' + $u + [char]7) }; $p }"#]);
+    command
+}
+
+/// Closing ConPTY can wait for its output to drain on Windows 10 / Server 2022.
+/// Never do it while holding the agent state lock needed by the output reader.
+pub fn close_pty(master: Box<dyn portable_pty::MasterPty + Send>) {
+    #[cfg(windows)]
+    std::thread::spawn(move || drop(master));
+    #[cfg(unix)]
+    drop(master);
+}
+
+pub fn close_failed_pty(pair: portable_pty::PtyPair) {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        if let Ok(mut output) = pair.master.try_clone_reader() {
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut output, &mut std::io::sink());
+            });
+        }
+        // portable-pty requests cursor inheritance. Answer even if the child
+        // failed to start, so closing an unused pseudoconsole can complete.
+        if let Ok(mut input) = pair.master.take_writer() {
+            let _ = input.write_all(b"\x1b[1;1R");
+        }
+        std::thread::spawn(move || drop(pair));
+    }
+    #[cfg(unix)]
+    drop(pair);
+}

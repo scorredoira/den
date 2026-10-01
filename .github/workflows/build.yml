@@ -85,10 +85,16 @@ jobs:
         with:
           name: ssh-agent
           path: ssh-agent
+      - name: Compile agent tests
+        run: cargo test --release --locked -p proto -p client -p agent --no-run --target ${{ matrix.target }}
       - name: Test agent
-        run: cargo test --release --locked -p proto -p client -p agent --target ${{ matrix.target }}
+        timeout-minutes: 3
+        run: cargo test --release --locked -p proto -p client -p agent --target ${{ matrix.target }} -- --nocapture
+      - name: Compile UI tests
+        run: cargo test --release --locked -p ui -p ui-term --no-run --target ${{ matrix.target }}
       - name: Test UI
-        run: cargo test --release --locked -p ui -p ui-term --target ${{ matrix.target }}
+        timeout-minutes: 3
+        run: cargo test --release --locked -p ui -p ui-term --target ${{ matrix.target }} -- --nocapture
       - name: Build
         run: cargo build --release --locked -p ui -p agent --target ${{ matrix.target }}
       - name: Package

@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result};
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 pub struct Pty {
-    master: Box<dyn MasterPty + Send>,
+    master: Option<Box<dyn MasterPty + Send>>,
     input: mpsc::Sender<Vec<u8>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     pid: Option<u32>,
@@ -35,7 +35,7 @@ impl Pty {
                 cmd.args(args);
                 cmd
             }
-            _ => default_shell(),
+            _ => crate::platform::default_shell(),
         };
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
@@ -66,10 +66,13 @@ impl Pty {
             }
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .context("could not start the shell")?;
+        let child = match pair.slave.spawn_command(cmd) {
+            Ok(child) => child,
+            Err(error) => {
+                crate::platform::close_failed_pty(pair);
+                return Err(error).context("could not start the shell");
+            }
+        };
         drop(pair.slave);
         let pid = child.process_id();
         let killer = child.clone_killer();
@@ -88,7 +91,7 @@ impl Pty {
 
         Ok((
             Self {
-                master: pair.master,
+                master: Some(pair.master),
                 input: input_tx,
                 killer,
                 pid,
@@ -102,7 +105,7 @@ impl Pty {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
-        let _ = self.master.resize(size(cols, rows));
+        let _ = self.master.as_ref().unwrap().resize(size(cols, rows));
     }
 
     /// The shell (or command) the terminal started.
@@ -112,13 +115,16 @@ impl Pty {
 
     /// The pty's foreground process, or the shell if unknown.
     pub fn foreground_pid(&self) -> Option<u32> {
-        crate::platform::foreground_pid(self.master.as_ref()).or(self.pid)
+        crate::platform::foreground_pid(self.master.as_ref().unwrap().as_ref()).or(self.pid)
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
         let _ = self.killer.kill();
+        if let Some(master) = self.master.take() {
+            crate::platform::close_pty(master);
+        }
     }
 }
 
@@ -129,19 +135,4 @@ fn size(cols: u16, rows: u16) -> PtySize {
         pixel_width: 0,
         pixel_height: 0,
     }
-}
-
-#[cfg(unix)]
-fn default_shell() -> CommandBuilder { CommandBuilder::new_default_prog() }
-
-#[cfg(windows)]
-fn default_shell() -> CommandBuilder {
-    // Prefer PowerShell 7, falling back to Windows PowerShell. Load the user's
-    // profile normally, preserve their prompt, and append a directory report.
-    let shell = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path).find_map(|dir| crate::platform::executable(&dir, "pwsh"))
-    }).unwrap_or_else(|| "powershell.exe".into());
-    let mut command = CommandBuilder::new(shell);
-    command.args(["-NoLogo", "-NoExit", "-Command", r#"$global:SikOriginalPrompt = $function:prompt; function global:prompt { $p = & $global:SikOriginalPrompt; if ($PWD.Provider.Name -eq 'FileSystem') { $u = [Uri]::new($PWD.ProviderPath).AbsoluteUri; [Console]::Write(([char]27).ToString() + ']7;' + $u + [char]7) }; $p }"#]);
-    command
 }

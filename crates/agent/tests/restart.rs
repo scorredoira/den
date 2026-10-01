@@ -32,6 +32,7 @@ fn terminals_come_back_after_a_restart() {
     }
     let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
 
+    eprintln!("connecting to the agent for restart test");
     let client = Client::connect_local(agent).unwrap();
     let Response::TermCreated { term } = smol::block_on(client.request(Request::TermCreate {
         group: "restart".into(),
@@ -43,6 +44,7 @@ fn terminals_come_back_after_a_restart() {
     .unwrap() else {
         panic!("no terminal");
     };
+    eprintln!("requesting agent shutdown");
     client.notify(Request::Shutdown);
     let saved = socket.with_extension("restart.json");
     wait_for("the restart file", || saved.exists());
@@ -50,6 +52,7 @@ fn terminals_come_back_after_a_restart() {
     std::thread::sleep(Duration::from_millis(300));
 
     // The new agent opens it again under the same id, in the same folder and size.
+    eprintln!("connecting to the agent for restart test");
     let client = Client::connect_local(agent).unwrap();
     let Response::TermList(terms) =
         smol::block_on(client.request(Request::TermList { group: "restart".into() })).unwrap()
@@ -70,6 +73,7 @@ fn terminals_come_back_after_a_restart() {
         )
     });
 
+    eprintln!("requesting agent shutdown");
     client.notify(Request::Shutdown);
     std::thread::sleep(Duration::from_millis(300));
     let _ = std::fs::remove_dir_all(&dir);
