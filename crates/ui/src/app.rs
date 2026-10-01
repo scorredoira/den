@@ -1739,22 +1739,6 @@ impl Sik {
                             .context_menu(move |menu, _, _| column_menu(menu, &weak)),
                     ),
             )
-            .child(
-                h_flex()
-                    .id("open-settings")
-                    .h(px(32.))
-                    .flex_none()
-                    .px_3()
-                    .gap_2()
-                    .text_ui(cx)
-                    .text_color(theme.muted_foreground)
-                    .border_t_1()
-                    .border_color(theme.sidebar_border)
-                    .hover(|style| style.text_color(theme.sidebar_foreground))
-                    .child(svg().path("icons/settings.svg").size(px(14.)).text_color(theme.muted_foreground))
-                    .child("Settings")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
-            )
             .into_any_element()
     }
 

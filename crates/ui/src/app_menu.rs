@@ -137,14 +137,18 @@ pub fn init(cx: &mut App) {
             window.update(cx, |_, window, _| window.zoom_window()).ok();
         }
     });
+    // The action arrives while the window is busy dispatching it, and it
+    // can't be entered from there: show it right afterwards.
     cx.on_action(|_: &About, cx| {
-        if let Some(window) = cx.active_window() {
-            window
-                .update(cx, |_, window, cx| {
-                    let detail = format!("Version {}", env!("CARGO_PKG_VERSION"));
-                    let _ = window.prompt(gpui_kit::PromptLevel::Info, "Sik", Some(&detail), &["OK"], cx);
-                })
-                .ok();
-        }
+        cx.defer(|cx| {
+            if let Some(window) = cx.active_window() {
+                window
+                    .update(cx, |_, window, cx| {
+                        let detail = format!("Version {}", env!("CARGO_PKG_VERSION"));
+                        let _ = window.prompt(gpui_kit::PromptLevel::Info, "Sik", Some(&detail), &["OK"], cx);
+                    })
+                    .ok();
+            }
+        });
     });
 }
