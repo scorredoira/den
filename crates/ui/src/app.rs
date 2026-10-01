@@ -39,6 +39,7 @@ use crate::{
 
 mod about;
 mod settings;
+mod theme;
 mod welcome;
 
 /// How often the task list is re-read (worktrees created elsewhere).
@@ -384,7 +385,7 @@ impl Sik {
             _tasks: Vec::new(),
             _subscriptions: vec![appearance, bounds],
         };
-        Self::install_code_colors(cx);
+        Self::install_theme(cx);
         this.apply_theme(window, cx);
 
         let sik = cx.entity().downgrade();
@@ -734,9 +735,9 @@ impl Sik {
         }
     }
 
-    /// Code colors like VS Code's 2026 theme (light and dark): only the
-    /// highlighting changes, the rest of the app's theme stays.
-    fn install_code_colors(cx: &mut App) {
+    /// Keep the default light surfaces and use layered charcoal surfaces in
+    /// dark mode, with VS Code's 2026 syntax colors in both modes.
+    fn install_theme(cx: &mut App) {
         let mut colors: HashMap<String, SyntaxColors> =
             serde_json::from_str(include_str!("../assets/themes/vscode-2026.json")).expect("vscode-2026.json");
         if !cx.has_global::<Theme>() {
@@ -749,6 +750,9 @@ impl Sik {
             let mut style = updated.highlight.clone().unwrap_or_default();
             style.syntax = syntax;
             updated.highlight = Some(style);
+            if mode == "dark" {
+                theme::dark_surfaces(&mut updated);
+            }
             *config = Rc::new(updated);
         }
     }

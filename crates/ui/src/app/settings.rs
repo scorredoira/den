@@ -278,7 +278,7 @@ impl Sik {
                     .rounded(theme.radius_lg)
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.background)
+                    .bg(theme.popover)
                     .shadow_lg()
                     .text_ui(cx)
                     // A click outside closes it, except in the pickers it opens.
