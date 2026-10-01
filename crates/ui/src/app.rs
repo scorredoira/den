@@ -1453,12 +1453,10 @@ impl Sik {
         });
         let ordered = self.ordered(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
-        let mut number = 0;
         for host in &self.hosts {
             sections.push(self.render_host_header(host, cx));
             for (key, task) in ordered.iter().filter(|(key, _)| key.host == host.name) {
-                sections.push(self.render_task(number, key, task, cx));
-                number += 1;
+                sections.push(self.render_task(key, task, cx));
             }
         }
         let theme = cx.theme();
@@ -1502,7 +1500,7 @@ impl Sik {
             .into_any_element()
     }
 
-    fn render_task(&self, ix: usize, key: &TaskKey, task: &TaskInfo, cx: &mut Context<Self>) -> AnyElement {
+    fn render_task(&self, key: &TaskKey, task: &TaskInfo, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let label: SharedString = task_label(task).into();
         let active = self.active.as_ref() == Some(key);
@@ -1541,14 +1539,6 @@ impl Sik {
                     .text_ellipsis()
                     .child(label.clone()),
             )
-            .when(ix < 9, |el| {
-                el.child(
-                    div()
-                        .text_ui_small(cx)
-                        .text_color(theme.muted_foreground)
-                        .child(format!("⌘{}", ix + 1)),
-                )
-            })
             .on_drag(
                 TaskDrag {
                     key: key.clone(),
