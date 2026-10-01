@@ -80,16 +80,22 @@ actions!(
         ShowShortcuts,
         PreviousTask,
         ToggleTasks,
+        OpenFolder,
+        OpenRemoteFolder,
+        OpenRecent,
     ]
 );
 
 /// `editor [folder | file]`: given a file, opens it; the project is the
 /// current folder if it contains the file, otherwise the file's folder.
+/// Opened from the Dock or the Finder with nothing to resume, there's no
+/// folder: the welcome screen offers to open one.
 fn main() {
     let cwd = std::env::current_dir().expect("could not read the current folder");
-    // Opened from the Dock or the Finder, the current folder is `/`: home is better.
+    // Opened from the Dock or the Finder, the current folder is `/`.
+    let launched = cwd == Path::new("/");
     let cwd = match std::env::home_dir() {
-        Some(home) if cwd == Path::new("/") => home,
+        Some(home) if launched => home,
         _ => cwd,
     };
     // Old versions of macOS pass `-psn_…` to apps opened from the Finder.
@@ -107,10 +113,11 @@ fn main() {
             } else {
                 path.parent().map(PathBuf::from).unwrap_or(cwd)
             };
-            (root, Some(path))
+            (Some(root), Some(path))
         }
-        Some(path) => (path, None),
-        None => (cwd, None),
+        Some(path) => (Some(path), None),
+        None if launched => (None, None),
+        None => (Some(cwd), None),
     };
 
     // Terminals live in the agent; if it doesn't start, the app works without them.
@@ -129,10 +136,13 @@ fn main() {
             app_menu::init(cx);
             app_menu::set(cx);
 
-            let title = root
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| root.display().to_string());
+            let title = match &root {
+                Some(root) => root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| root.display().to_string()),
+                None => "sik".to_string(),
+            };
             // The app draws the title bar itself (`TitleBar`), in the theme's color.
             let options = WindowOptions {
                 titlebar: Some(TitlebarOptions {

@@ -1,6 +1,7 @@
 //! Settings, in a modal (Cmd-, or the gear): they're app-wide, not per task.
-//! At the top a search box that filters everything; on the left an index of
-//! sections; on the right the sections, one after another.
+//! At the top a search box that searches everything; on the left an index of
+//! sections; on the right the chosen section, as its own page (while
+//! searching, every section with a match).
 
 use gpui_kit::component::{input::InputEvent, kbd::Kbd, switch::Switch};
 
@@ -10,12 +11,14 @@ use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 /// Sections, in index order.
 const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Servers", "Repos", "Hidden Tasks", "Keyboard Shortcuts"];
 
+pub(super) const SERVERS: usize = 2;
+
 pub(super) struct Settings {
     focus: FocusHandle,
     search: Entity<InputState>,
     /// The extensions formatted on save, as typed.
     format_on_save: Entity<InputState>,
-    /// The sections column, to jump to one from the index.
+    /// The page, to start each one at its top.
     scroll: ScrollHandle,
     section: usize,
     /// Shortcut waiting for its new key combination, and what intercepts keys
@@ -101,6 +104,12 @@ impl Sik {
         cx.notify();
     }
 
+    /// Opens settings at one of its sections.
+    pub(super) fn open_settings_at(&mut self, section: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings(window, cx);
+        self.go_to_section(section, window, cx);
+    }
+
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings = None;
         self.host_picker = None;
@@ -109,10 +118,12 @@ impl Sik {
         cx.notify();
     }
 
-    fn go_to_section(&mut self, ix: usize, cx: &mut Context<Self>) {
+    /// Shows a section's page; a search in progress ends.
+    fn go_to_section(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(settings) = &mut self.settings {
             settings.section = ix;
-            settings.scroll.scroll_to_item(ix);
+            settings.scroll.set_offset(point(px(0.), px(0.)));
+            settings.search.update(cx, |search, cx| search.set_value("", window, cx));
             cx.notify();
         }
     }
@@ -192,6 +203,7 @@ impl Sik {
         let query = settings.search.read(cx).value().trim().to_lowercase();
         let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
 
+        let searching = !query.is_empty();
         let sections: Vec<(AnyElement, bool)> = vec![
             self.render_appearance(&matches, cx),
             self.render_editor(settings, &matches, cx),
@@ -202,6 +214,13 @@ impl Sik {
         ];
         let visible: Vec<bool> = sections.iter().map(|(_, visible)| *visible).collect();
         let nothing = !visible.iter().any(|visible| *visible);
+        // A page per section; searching, every section with a match.
+        let shown: Vec<AnyElement> = sections
+            .into_iter()
+            .enumerate()
+            .filter(|(ix, (_, visible))| if searching { *visible } else { *ix == settings.section })
+            .map(|(_, (section, _))| section)
+            .collect();
 
         let theme = cx.theme();
         let index = v_flex()
@@ -213,7 +232,7 @@ impl Sik {
             .border_r_1()
             .border_color(theme.border)
             .children(SECTIONS.iter().enumerate().map(|(ix, title)| {
-                let selected = settings.section == ix;
+                let selected = !searching && settings.section == ix;
                 div()
                     .id(("settings-index", ix))
                     .px_3()
@@ -221,10 +240,10 @@ impl Sik {
                     .rounded(theme.radius)
                     .when(selected, |el| el.font_semibold().text_color(theme.foreground))
                     .when(!selected, |el| el.text_color(theme.muted_foreground))
-                    .when(!visible[ix], |el| el.opacity(0.4))
+                    .when(searching && !visible[ix], |el| el.opacity(0.4))
                     .hover(|style| style.bg(theme.accent))
                     .child(*title)
-                    .on_click(cx.listener(move |this, _, _, cx| this.go_to_section(ix, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| this.go_to_section(ix, window, cx)))
             }));
 
         let content = v_flex()
@@ -237,7 +256,7 @@ impl Sik {
             .pl_6()
             .pr_4()
             .pb_8()
-            .children(sections.into_iter().map(|(section, _)| section))
+            .children(shown)
             .when(nothing, |el| {
                 el.child(div().pt_4().text_color(theme.muted_foreground).child("No settings match your search."))
             });
@@ -293,9 +312,7 @@ impl Sik {
             )
     }
 
-    /// Section title and its rows; the whole section hides if nothing
-    /// matches the search (while remaining a child, so the index still
-    /// knows which one to jump to).
+    /// Section title and its rows, and whether anything in it matches the search.
     fn section(title: &'static str, rows: Vec<AnyElement>, visible: bool, cx: &App) -> (AnyElement, bool) {
         let theme = cx.theme();
         let element = v_flex()
@@ -494,7 +511,7 @@ impl Sik {
                     .max_w(px(480.))
                     .child(div().flex_1().child(Input::new(input)))
                     .child(icon_button(format!("pick-repo-{name}"), "icons/tree-folder.svg", cx).on_click(
-                        cx.listener(move |this, _, window, cx| this.open_folder_picker(name.clone(), window, cx)),
+                        cx.listener(move |this, _, window, cx| this.open_folder_picker(name.clone(), FolderPurpose::AddRepo, window, cx)),
                     ))
                     .into_any_element()
             }));

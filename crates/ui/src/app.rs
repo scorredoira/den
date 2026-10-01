@@ -1,6 +1,8 @@
-//! The sik window: the tasks column, grouped by server, and the active task's
-//! workspace. Each task (a worktree) has its own workspace, which is kept
-//! when switching from one to another.
+//! The sik window: the open folder's workspace and, optionally, the tasks
+//! column, grouped by server. Any folder can be opened; a task is a folder
+//! that is a worktree of a known repo. Each open folder has its own
+//! workspace, which is kept when switching from one to another. With none
+//! open, a welcome screen offers to open one.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -16,15 +18,17 @@ use gpui_kit::component::{
     highlighter::SyntaxColors,
     input::{Input, InputEvent, InputState},
     kbd::Kbd,
-    menu::ContextMenuExt as _,
-    resizable_panel, v_flex,
+    menu::{ContextMenuExt as _, PopupMenu},
+    resizable_panel,
+    tooltip::Tooltip,
+    v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{Event, Request, Response, TaskInfo};
 
 use crate::{
-    NewTask, OpenCommandPalette, OpenSettings, OpenTaskPicker, PreviousTask,
-    ShowShortcuts, ToggleTasks,
+    NewTask, OpenCommandPalette, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
+    PreviousTask, ShowShortcuts, ToggleTasks,
     config::{self, Config, HostConfig, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -34,12 +38,26 @@ use crate::{
 };
 
 mod settings;
+mod welcome;
 
 /// How often the task list is re-read (worktrees created elsewhere).
 const REFRESH: Duration = Duration::from_secs(5);
 
 /// Name of this machine in the tasks column.
 const LOCAL: &str = "local";
+
+/// Width of the title bar's tasks column button.
+const TOGGLE_WIDTH: f32 = 22.;
+
+/// How many folders Open Recent remembers.
+const RECENT: usize = 20;
+
+/// What a folder chosen in the folder picker is for.
+#[derive(Clone, Copy)]
+enum FolderPurpose {
+    AddRepo,
+    Open,
+}
 
 /// A task on a server.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -72,6 +90,8 @@ struct Host {
     client: Option<Arc<Client>>,
     status: HostStatus,
     tasks: Vec<TaskInfo>,
+    /// Open folders that aren't one of its tasks.
+    loose: Vec<TaskInfo>,
     repos: Vec<PathBuf>,
     /// This server's "Add repo" input, in settings.
     repo_input: Option<Entity<InputState>>,
@@ -115,15 +135,12 @@ impl Render for DragPreview {
 
 pub struct Sik {
     hosts: Vec<Host>,
-    /// Open local folders that don't belong to any known repo.
-    loose: Vec<TaskInfo>,
     active: Option<TaskKey>,
     workspaces: HashMap<TaskKey, Entity<Workspace>>,
     /// Tasks that finished working without being looked at.
     attention: HashSet<TaskKey>,
     /// Tasks waiting for an answer (Claude is asking something): in red.
     blocked: HashSet<TaskKey>,
-    panel_visible: bool,
     new_task: Option<NewTaskInput>,
     /// Task whose deletion is being confirmed.
     confirm_remove: Option<TaskKey>,
@@ -145,6 +162,8 @@ pub struct Sik {
     task_picker: Option<(Entity<Picker>, Subscription)>,
     /// Cmd-Shift-P and F1: run any command, with its shortcut beside it.
     command_palette: Option<(Entity<Picker>, Subscription)>,
+    /// Cmd-Shift-O: a folder opened before.
+    recent_picker: Option<(Entity<Picker>, Subscription)>,
     /// Settings: pick a server from `~/.ssh/config`.
     host_picker: Option<(Entity<Picker>, Subscription)>,
     /// Settings: pick a repo's folder on a server.
@@ -164,7 +183,7 @@ pub struct Sik {
 
 impl Sik {
     pub fn new(
-        root: PathBuf,
+        root: Option<PathBuf>,
         open_file: Option<PathBuf>,
         resume: bool,
         client: Option<Arc<Client>>,
@@ -191,6 +210,7 @@ impl Sik {
             },
             client: client.clone(),
             tasks: Vec::new(),
+            loose: Vec::new(),
             repos: Vec::new(),
             repo_input: None,
             generation: 0,
@@ -204,6 +224,7 @@ impl Sik {
                 client: None,
                 status: HostStatus::Connecting,
                 tasks: Vec::new(),
+                loose: Vec::new(),
                 repos: Vec::new(),
                 repo_input: None,
                 generation: 0,
@@ -211,12 +232,10 @@ impl Sik {
             .collect();
         let mut this = Self {
             hosts: std::iter::once(local).chain(remotes).collect(),
-            loose: Vec::new(),
             active: None,
             workspaces: HashMap::new(),
             attention: HashSet::new(),
             blocked: HashSet::new(),
-            panel_visible: true,
             new_task: None,
             confirm_remove: None,
             confirm_restart: None,
@@ -228,6 +247,7 @@ impl Sik {
             previous: None,
             task_picker: None,
             command_palette: None,
+            recent_picker: None,
             host_picker: None,
             folder_picker: None,
             quit_confirm: None,
@@ -261,26 +281,29 @@ impl Sik {
         this._tasks.push(refresh);
 
         let Some(client) = client else {
-            this.loose.push(loose_task(&root));
-            this.activate(TaskKey { host: LOCAL.into(), path: root }, window, cx);
+            match root {
+                Some(root) => this.activate(TaskKey { host: LOCAL.into(), path: root }, window, cx),
+                None => this.focus_handle.focus(window, cx),
+            }
             return this;
         };
         this.watch_host(LOCAL.into(), client.clone(), window, cx);
         this.track(LOCAL.into(), &client, window, cx);
 
-        // Registers the open folder's repo (if it is one), reads the tasks and
-        // enters the one containing the folder.
+        // Reads the tasks and enters the one containing the folder, if any;
+        // otherwise the folder on its own.
         let startup = cx.spawn_in(window, async move |this, cx| {
-            let _ = client.request(Request::RepoAdd { path: root.clone() }).await;
             let tasks = list_tasks(&client).await.unwrap_or_default();
             this.update_in(cx, |this, window, cx| {
                 this.hosts[0].tasks = tasks;
-                let task = this.hosts[0]
-                    .tasks
-                    .iter()
-                    .filter(|task| root.starts_with(&task.path))
-                    .max_by_key(|task| task.path.components().count())
-                    .map(|task| task.path.clone());
+                let task = root.as_ref().and_then(|root| {
+                    this.hosts[0]
+                        .tasks
+                        .iter()
+                        .filter(|task| root.starts_with(&task.path))
+                        .max_by_key(|task| task.path.components().count())
+                        .map(|task| task.path.clone())
+                });
                 // No folder at launch, and outside a task: go to the last one.
                 let last = resume.then(|| Config::get(cx).last.clone()).flatten();
                 let key = match (task, last) {
@@ -295,15 +318,16 @@ impl Sik {
                         return;
                     }
                     (None, Some(last)) if last.host == LOCAL && last.path.is_dir() => {
-                        if !this.hosts[0].tasks.iter().any(|task| task.path == last.path) {
-                            this.loose.push(loose_task(&last.path));
-                        }
                         TaskKey { host: LOCAL.into(), path: last.path }
                     }
-                    (None, _) => {
-                        this.loose.push(loose_task(&root));
-                        TaskKey { host: LOCAL.into(), path: root.clone() }
-                    }
+                    (None, _) => match root {
+                        Some(root) => TaskKey { host: LOCAL.into(), path: root },
+                        // Nothing to open: the welcome screen.
+                        None => {
+                            this.focus_handle.focus(window, cx);
+                            return;
+                        }
+                    },
                 };
                 let config = key.config();
                 Config::update(cx, |c| c.hidden.retain(|hidden| hidden != &config));
@@ -601,7 +625,8 @@ impl Sik {
         let config = Config::get(cx);
         let mut entries: Vec<(usize, TaskKey, &TaskInfo)> = Vec::new();
         for (ix, host) in self.hosts.iter().enumerate() {
-            let loose = if ix == 0 { self.loose.as_slice() } else { &[] };
+            // A folder opened on its own that has since become a task shows once.
+            let loose = host.loose.iter().filter(|loose| !host.tasks.iter().any(|task| task.path == loose.path));
             for task in host.tasks.iter().chain(loose) {
                 let key = TaskKey {
                     host: host.name.clone(),
@@ -628,8 +653,20 @@ impl Sik {
 
     fn task(&self, key: &TaskKey) -> Option<&TaskInfo> {
         let host = self.host(&key.host)?;
-        let loose = if key.host == LOCAL { self.loose.as_slice() } else { &[] };
-        host.tasks.iter().chain(loose).find(|task| task.path == key.path)
+        host.tasks.iter().chain(&host.loose).find(|task| task.path == key.path)
+    }
+
+    /// Whether the tasks column shows: as last chosen or, if never chosen,
+    /// once there's something in it (a repo or a server).
+    fn tasks_visible(&self, cx: &App) -> bool {
+        Config::get(cx)
+            .tasks_column
+            .unwrap_or_else(|| self.hosts.len() > 1 || self.hosts.iter().any(|host| !host.tasks.is_empty()))
+    }
+
+    fn show_tasks_column(&mut self, visible: bool, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.tasks_column = Some(visible));
+        cx.notify();
     }
 
     fn label(&self, key: &TaskKey) -> String {
@@ -640,8 +677,13 @@ impl Sik {
         if key.host == LOCAL { label } else { format!("{}: {label}", key.host) }
     }
 
-    /// Enters task `key`.
+    /// Enters task `key`; if it isn't one, it opens as a folder on its own.
     fn activate(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task(&key).is_none()
+            && let Some(host) = self.host_mut(&key.host)
+        {
+            host.loose.push(loose_task(&key.path));
+        }
         self.attention.remove(&key);
         let workspace = match self.workspaces.get(&key) {
             Some(workspace) => workspace.clone(),
@@ -664,7 +706,12 @@ impl Sik {
             host: key.host.to_string(),
             path: key.path.clone(),
         };
-        Config::update(cx, |config| config.last = Some(last));
+        Config::update(cx, |config| {
+            config.recent.retain(|recent| *recent != last);
+            config.recent.insert(0, last.clone());
+            config.recent.truncate(RECENT);
+            config.last = Some(last);
+        });
         self.pending_last = None;
         if let Some(old) = self.active.take().filter(|old| *old != key) {
             self.previous = Some(old);
@@ -933,8 +980,171 @@ impl Sik {
     }
 
     fn toggle_tasks(&mut self, _: &ToggleTasks, _: &mut Window, cx: &mut Context<Self>) {
-        self.panel_visible = !self.panel_visible;
+        let visible = !self.tasks_visible(cx);
+        self.show_tasks_column(visible, cx);
+    }
+
+    /// Opens `path` on `host`: the task it is, or the folder on its own.
+    fn open_path(&mut self, host: SharedString, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let key = TaskKey { host, path };
+        let config = key.config();
+        Config::update(cx, |c| c.hidden.retain(|hidden| hidden != &config));
+        self.activate(key, window, cx);
+    }
+
+    /// Cmd-O: a local folder, with the system's dialog.
+    fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick_local_folder("Open", window, cx, |this, path, window, cx| {
+            this.open_path(LOCAL.into(), path, window, cx)
+        });
+    }
+
+    /// The system's dialog for choosing a folder on this machine.
+    fn pick_local_folder(
+        &mut self,
+        prompt: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, PathBuf, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(prompt.into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            if let Some(path) = paths.into_iter().next() {
+                this.update_in(cx, |this, window, cx| then(this, path, window, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Cmd-Alt-O: a folder on a server, browsed through its agent. With
+    /// several servers, it asks which first; with none, settings show where
+    /// to add one.
+    fn open_remote_folder(&mut self, _: &OpenRemoteFolder, window: &mut Window, cx: &mut Context<Self>) {
+        let hosts: Vec<String> = self
+            .hosts
+            .iter()
+            .skip(1)
+            .filter(|host| host.client.is_some())
+            .map(|host| host.name.to_string())
+            .collect();
+        match hosts.as_slice() {
+            [] => self.open_settings_at(settings::SERVERS, window, cx),
+            [host] => self.open_folder_picker(host.clone().into(), FolderPurpose::Open, window, cx),
+            _ => {
+                let picker = cx.new(|cx| Picker::new(Arc::new(hosts), "Open a folder on…", false, window, cx));
+                let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
+                    this.host_picker = None;
+                    match event {
+                        PickerEvent::Pick(host) => {
+                            this.open_folder_picker(host.clone().into(), FolderPurpose::Open, window, cx)
+                        }
+                        PickerEvent::Dismiss => this.focus_active(window, cx),
+                        PickerEvent::Close => {}
+                    }
+                    cx.notify();
+                });
+                self.host_picker = Some((picker, subscription));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Folders opened before, the most recent first (without the open one).
+    fn recents(&self, cx: &App) -> Vec<(TaskKey, String)> {
+        Config::get(cx)
+            .recent
+            .iter()
+            .map(|recent| TaskKey { host: recent.host.clone().into(), path: recent.path.clone() })
+            .filter(|key| self.active.as_ref() != Some(key) && self.host(&key.host).is_some())
+            .map(|key| {
+                let label = recent_label(&key);
+                (key, label)
+            })
+            .collect()
+    }
+
+    /// Cmd-Shift-O: jump to a folder opened before.
+    fn open_recent(&mut self, _: &OpenRecent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recent_picker.is_some() {
+            return;
+        }
+        let labels: Vec<String> = self.recents(cx).into_iter().map(|(_, label)| label).collect();
+        let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Open recent…", false, window, cx));
+        let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
+            this.recent_picker = None;
+            match event {
+                PickerEvent::Pick(label) => {
+                    match this.recents(cx).into_iter().find(|(_, other)| other == label) {
+                        Some((key, _)) => this.open_path(key.host, key.path, window, cx),
+                        None => this.focus_active(window, cx),
+                    }
+                }
+                PickerEvent::Dismiss => this.focus_active(window, cx),
+                PickerEvent::Close => {}
+            }
+            cx.notify();
+        });
+        self.recent_picker = Some((picker, subscription));
         cx.notify();
+    }
+
+    /// Closes a folder opened on its own (tasks are hidden instead). Its
+    /// terminals stay in the agent and come back if it's opened again.
+    fn close_folder(&mut self, key: &TaskKey, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(host) = self.host_mut(&key.host) {
+            host.loose.retain(|task| task.path != key.path);
+        }
+        self.workspaces.remove(key);
+        if self.previous.as_ref() == Some(key) {
+            self.previous = None;
+        }
+        if self.active.as_ref() == Some(key) {
+            self.active = None;
+            Config::update(cx, |config| config.last = None);
+            window.set_window_title("sik");
+            match self.previous.clone().filter(|key| self.task(key).is_some()) {
+                Some(previous) => self.activate(previous, window, cx),
+                None => self.focus_handle.focus(window, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Registers the repo of `path` on `host`, so tasks can be created in it.
+    fn add_repo_path(&mut self, host: SharedString, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self.client(&host) else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = client.request(Request::RepoAdd { path }).await;
+            this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(_) => {
+                        this.error = None;
+                        this.show_tasks_column(true, cx);
+                    }
+                    Err(err) => this.error = Some((None, format!("{err:#}").into())),
+                }
+                this.refresh_repos(window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// "Add Repo…" for this machine: the system's folder dialog.
+    fn add_local_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick_local_folder("Add Repo", window, cx, |this, path, window, cx| {
+            this.add_repo_path(LOCAL.into(), path, window, cx)
+        });
     }
 
     /// Cmd-N: new task in the active task's repo.
@@ -951,7 +1161,9 @@ impl Sik {
         if self.client(&host).is_none() {
             return;
         }
-        self.panel_visible = true;
+        if !self.tasks_visible(cx) {
+            self.show_tasks_column(true, cx);
+        }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("branch name"));
         let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { .. } = event {
@@ -1195,6 +1407,7 @@ impl Sik {
             client: None,
             status: HostStatus::Connecting,
             tasks: Vec::new(),
+            loose: Vec::new(),
             repos: Vec::new(),
             repo_input: None,
             generation: 0,
@@ -1222,23 +1435,31 @@ impl Sik {
         cx.notify();
     }
 
-    /// Button next to "add repo": browse the server's folders, starting next
-    /// to its repos (or in its home folder).
-    fn open_folder_picker(&mut self, host: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    /// Browse the server's folders, starting next to its repos or open
+    /// folders (or in its home folder): to add a repo ("add repo" in
+    /// settings) or to open one.
+    fn open_folder_picker(&mut self, host: SharedString, purpose: FolderPurpose, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client(&host) else {
             return;
         };
         let start = self
             .host(&host)
-            .and_then(|host| host.repos.first())
+            .and_then(|host| host.repos.first().or(host.tasks.first().map(|task| &task.repo)))
             .and_then(|repo| repo.parent())
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("~"));
-        let title = format!("ADD REPO ON {}", host.to_uppercase());
+        let title = match purpose {
+            FolderPurpose::AddRepo => format!("ADD REPO ON {}", host.to_uppercase()),
+            FolderPurpose::Open => format!("OPEN FOLDER ON {}", host.to_uppercase()),
+        };
         let picker = cx.new(|cx| FolderPicker::new(client.clone(), title, start, window, cx));
         let subscription = cx.subscribe_in(&picker, window, move |this, picker, event: &FolderPickerEvent, window, cx| {
             match event {
                 FolderPickerEvent::Dismiss => this.folder_picker = None,
+                FolderPickerEvent::Pick(path) if matches!(purpose, FolderPurpose::Open) => {
+                    this.folder_picker = None;
+                    this.open_path(host.clone(), path.clone(), window, cx);
+                }
                 FolderPickerEvent::Pick(path) => {
                     let (client, path, picker) = (client.clone(), path.clone(), picker.clone());
                     cx.spawn_in(window, async move |this, cx| {
@@ -1333,6 +1554,9 @@ impl Sik {
         let outdated = host.client.as_ref().is_some_and(|client| client.outdated());
         let confirming = self.confirm_restart.as_ref() == Some(&name);
         let (restart, cancel) = (name.clone(), name.clone());
+        let connected = host.client.is_some();
+        let weak = cx.entity().downgrade();
+        let menu_name = name.clone();
         v_flex()
             .px_3()
             .pt_2()
@@ -1362,7 +1586,8 @@ impl Sik {
                                 this.confirm_restart = Some(restart.clone());
                                 cx.notify();
                             }))
-                    }),
+                    })
+                    .context_menu(move |menu, _, _| host_menu(menu, &menu_name, connected, &weak)),
             )
             .when(confirming, |el| {
                 el.child(
@@ -1460,17 +1685,41 @@ impl Sik {
             }
         }
         let theme = cx.theme();
+        // Without repos the column only has open folders: say what it's for.
+        let hint = self.hosts.iter().all(|host| host.tasks.is_empty()).then(|| {
+            v_flex()
+                .px_3()
+                .py_2()
+                .gap_1()
+                .text_ui_small(cx)
+                .text_color(theme.muted_foreground)
+                .child(div().whitespace_normal().child(
+                    "Add a repo to work on several branches at once: each task is a worktree with its own terminals and Claude Code session.",
+                ))
+                .child(
+                    div()
+                        .id("hint-add-repo")
+                        .text_color(theme.sidebar_foreground)
+                        .hover(|style| style.underline())
+                        .child("Add Repo…")
+                        .on_click(cx.listener(|this, _, window, cx| this.add_local_repo(window, cx))),
+                )
+        });
+        let weak = cx.entity().downgrade();
+        let header_menu = weak.clone();
         v_flex()
             .size_full()
             .child(
                 h_flex()
+                    .id("tasks-header")
                     .h(px(34.))
                     .flex_none()
                     .px_3()
                     .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
-                    .child("TASKS"),
+                    .child("TASKS")
+                    .context_menu(move |menu, _, _| column_menu(menu, &header_menu)),
             )
             .children(new_task)
             .child(
@@ -1479,7 +1728,16 @@ impl Sik {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .children(sections),
+                    .children(sections)
+                    .children(hint)
+                    // The empty space below: right-click to add things.
+                    .child(
+                        div()
+                            .id("task-list-space")
+                            .flex_1()
+                            .min_h(px(32.))
+                            .context_menu(move |menu, _, _| column_menu(menu, &weak)),
+                    ),
             )
             .child(
                 h_flex()
@@ -1555,22 +1813,41 @@ impl Sik {
                 let key = key.clone();
                 move |this, _, window, cx| this.activate(key.clone(), window, cx)
             }))
+            .when(!known, |row| {
+                let path = key.path.display().to_string();
+                row.tooltip(move |window, cx| Tooltip::new(format!("{path} · a folder, not a task")).build(window, cx))
+            })
             .context_menu({
                 let key = key.clone();
                 let repo = task.repo.clone();
                 let repo_name = folder_name(&task.repo);
                 let can_create = known && self.client(&key.host).is_some();
+                let connected = self.client(&key.host).is_some();
+                // Closing would lose unsaved changes: save them first.
+                let unsaved = self
+                    .workspaces
+                    .get(&key)
+                    .is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty());
                 move |menu, _, _| {
-                    let (create, copy, finder, hide, remove) =
-                        (key.clone(), key.clone(), key.clone(), key.clone(), key.clone());
+                    let (create, copy, finder, hide, remove, close, add) =
+                        (key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone());
                     let repo = repo.clone();
-                    menu.item(
-                        menu::item(format!("New Task in {repo_name}…"), &weak, move |this, window, cx| {
-                            this.start_new_task(create.host.clone(), repo.clone(), window, cx)
-                        })
-                        .disabled(!can_create),
-                    )
-                    .separator()
+                    let menu = if known {
+                        menu.item(
+                            menu::item(format!("New Task in {repo_name}…"), &weak, move |this, window, cx| {
+                                this.start_new_task(create.host.clone(), repo.clone(), window, cx)
+                            })
+                            .disabled(!can_create),
+                        )
+                    } else {
+                        menu.item(
+                            menu::item("Add Repo to Tasks", &weak, move |this, window, cx| {
+                                this.add_repo_path(add.host.clone(), add.path.clone(), window, cx)
+                            })
+                            .disabled(!connected),
+                        )
+                    };
+                    menu.separator()
                     .item(menu::item("Copy Path", &weak, move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy.path.to_string_lossy().into_owned()))
                     }))
@@ -1578,7 +1855,15 @@ impl Sik {
                         menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path))
                             .disabled(!local),
                     )
-                    .item(menu::item("Hide", &weak, move |this, _, cx| this.hide_task(&hide, cx)))
+                    .when(known, |menu| {
+                        menu.item(menu::item("Hide", &weak, move |this, _, cx| this.hide_task(&hide, cx)))
+                    })
+                    .when(!known, |menu| {
+                        menu.item(
+                            menu::item("Close Folder", &weak, move |this, window, cx| this.close_folder(&close, window, cx))
+                                .disabled(unsaved),
+                        )
+                    })
                     .separator()
                     .item(
                         menu::item("Delete Task…", &weak, move |this, _, cx| {
@@ -1590,6 +1875,7 @@ impl Sik {
                     )
                 }
             });
+
 
         let confirm = (self.confirm_remove.as_ref() == Some(key)).then(|| {
             let detail = if local && task.repo.join(".task/remove").is_file() {
@@ -1647,8 +1933,9 @@ impl Render for Sik {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // While the tasks column's edge is being dragged, its width is already
         // in the state before painting.
+        let tasks_visible = self.tasks_visible(cx);
         let tasks = match self.split.state(window.viewport_size().width, cx).read(cx).sizes().first() {
-            Some(width) if self.panel_visible => *width,
+            Some(width) if tasks_visible => *width,
             _ => px(0.),
         };
         if let Some(workspace) = self.active_workspace() {
@@ -1666,6 +1953,9 @@ impl Render for Sik {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
+            .on_action(cx.listener(Self::open_folder))
+            .on_action(cx.listener(Self::open_remote_folder))
+            .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(Self::new_task_action))
             .on_action(cx.listener(Self::open_task_picker))
             .on_action(cx.listener(|this, _: &OpenCommandPalette, window, cx| this.open_command_palette(window, cx)))
@@ -1677,19 +1967,38 @@ impl Render for Sik {
             // lights on the left, the active task in the middle, and it drags
             // and zooms like the system one.
             .child(
-                TitleBar::new().child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .justify_center()
-                        .pr(px(72.))
-                        .text_ui(cx)
-                        .text_color(cx.theme().muted_foreground)
-                        .child(title),
-                ),
+                TitleBar::new()
+                    .child(
+                        div()
+                            .id("toggle-tasks")
+                            .flex_none()
+                            .w(px(TOGGLE_WIDTH))
+                            .p_1()
+                            .rounded(cx.theme().radius)
+                            .hover(|style| style.bg(cx.theme().secondary_hover))
+                            // A click, not the start of dragging the window.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(svg().path("icons/panel-left.svg").size(px(14.)).text_color(if tasks_visible {
+                                cx.theme().foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            }))
+                            .tooltip(|window, cx| Tooltip::new("Toggle Tasks Column").build(window, cx))
+                            .on_click(cx.listener(|this, _, window, cx| this.toggle_tasks(&ToggleTasks, window, cx))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .justify_center()
+                            .pr(px(72. + TOGGLE_WIDTH))
+                            .text_ui(cx)
+                            .text_color(cx.theme().muted_foreground)
+                            .child(title),
+                    ),
             )
             .child({
-                let visible = self.panel_visible;
+                let visible = tasks_visible;
                 div().flex_1().min_h_0().w_full().child(h_resizable("sik-split")
                     .with_state(self.split.state(window.viewport_size().width, cx))
                     .child(
@@ -1699,7 +2008,10 @@ impl Render for Sik {
                             .visible(visible)
                             .child(self.render_column(cx)),
                     )
-                    .child(resizable_panel().child(div().size_full().children(self.active_workspace())))
+                    .child(resizable_panel().child(match self.active_workspace() {
+                        Some(workspace) => div().size_full().child(workspace).into_any_element(),
+                        None => self.render_welcome(cx),
+                    }))
                     .on_resize(move |state, _, cx| {
                         if visible && let Some(width) = state.read(cx).sizes().first() {
                             let width = f32::from(*width);
@@ -1707,7 +2019,7 @@ impl Render for Sik {
                         }
                     }))
             })
-            .children(self.task_picker.as_ref().or(self.command_palette.as_ref()).map(|(picker, _)| {
+            .children(self.task_picker.as_ref().or(self.command_palette.as_ref()).or(self.recent_picker.as_ref()).map(|(picker, _)| {
                 div()
                     .absolute()
                     .top(px(44.))
@@ -1742,6 +2054,55 @@ async fn list_tasks(client: &Client) -> anyhow::Result<Vec<TaskInfo>> {
         Response::Tasks(tasks) => Ok(tasks),
         other => anyhow::bail!("unexpected response: {other:?}"),
     }
+}
+
+/// Right-click on the tasks column's empty space or its title.
+fn column_menu(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
+    menu.item(menu::item("Open Folder…", sik, |this, window, cx| this.open_folder(&OpenFolder, window, cx)))
+        .item(menu::item("Open Folder on Server…", sik, |this, window, cx| {
+            this.open_remote_folder(&OpenRemoteFolder, window, cx)
+        }))
+        .separator()
+        .item(menu::item("Add Repo…", sik, |this, window, cx| this.add_local_repo(window, cx)))
+        .item(menu::item("Add Server…", sik, |this, window, cx| {
+            this.open_settings_at(settings::SERVERS, window, cx)
+        }))
+        .separator()
+        .item(menu::item("Hide Tasks Column", sik, |this, _, cx| this.show_tasks_column(false, cx)))
+}
+
+/// Right-click on a server's name in the tasks column.
+fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, sik: &WeakEntity<Sik>) -> PopupMenu {
+    if name == LOCAL {
+        return menu
+            .item(menu::item("Open Folder…", sik, |this, window, cx| this.open_folder(&OpenFolder, window, cx)))
+            .item(menu::item("Add Repo…", sik, |this, window, cx| this.add_local_repo(window, cx)));
+    }
+    let (open, add, reconnect, remove) = (name.clone(), name.clone(), name.clone(), name.clone());
+    menu.item(
+        menu::item(format!("Open Folder on {name}…"), sik, move |this, window, cx| {
+            this.open_folder_picker(open.clone(), FolderPurpose::Open, window, cx)
+        })
+        .disabled(!connected),
+    )
+    .item(
+        menu::item(format!("Add Repo on {name}…"), sik, move |this, window, cx| {
+            this.open_folder_picker(add.clone(), FolderPurpose::AddRepo, window, cx)
+        })
+        .disabled(!connected),
+    )
+    .separator()
+    .item(menu::item("Reconnect", sik, move |this, window, cx| this.connect(reconnect.clone(), window, cx)))
+    .item(menu::item("Remove Server", sik, move |this, window, cx| this.remove_host(remove.clone(), window, cx)))
+}
+
+/// In Open Recent: the path (`~/…` locally) and, on a server, its name.
+fn recent_label(key: &TaskKey) -> String {
+    let path = match std::env::home_dir().and_then(|home| key.path.strip_prefix(&home).ok().map(Path::to_path_buf)) {
+        Some(rest) if key.host == LOCAL => format!("~/{}", rest.display()),
+        _ => key.path.display().to_string(),
+    };
+    if key.host == LOCAL { path } else { format!("{}: {path}", key.host) }
 }
 
 /// An open folder that doesn't belong to any known repo.

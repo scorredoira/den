@@ -73,6 +73,9 @@ shortcuts![
     (OpenTaskPicker, "Find Task", "secondary-k"),
     (PreviousTask, "Previous Task", "secondary-e"),
     (ToggleTasks, "Toggle Tasks Column", "secondary-shift-b"),
+    (OpenFolder, "Open Folder", "secondary-o"),
+    (OpenRemoteFolder, "Open Folder on Server", "secondary-alt-o"),
+    (OpenRecent, "Open Recent", "secondary-shift-o"),
 ];
 
 impl Shortcut {

@@ -109,7 +109,7 @@ pub struct Session {
 }
 
 /// A task on a server (`local` is this machine).
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedTask {
     pub host: String,
     pub path: PathBuf,
@@ -132,6 +132,12 @@ pub struct Config {
     pub sessions: HashMap<String, Session>,
     /// The last task visited, to return to on launch.
     pub last: Option<SavedTask>,
+    /// Folders and tasks opened, the most recent first (Open Recent).
+    pub recent: Vec<SavedTask>,
+    /// The tasks column shown or hidden by hand; unset, it shows once
+    /// there's something in it (a repo or a server).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks_column: Option<bool>,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
     pub font_sizes: FontSizes,

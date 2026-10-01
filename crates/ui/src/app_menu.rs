@@ -30,6 +30,10 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Quit Sik", Quit),
         ]),
         Menu::new("File").items([
+            MenuItem::action("Open Folder…", OpenFolder),
+            MenuItem::action("Open Folder on Server…", OpenRemoteFolder),
+            MenuItem::action("Open Recent…", OpenRecent),
+            MenuItem::separator(),
             MenuItem::action("New Task…", NewTask),
             MenuItem::action("New Terminal", NewTerminal),
             MenuItem::separator(),
