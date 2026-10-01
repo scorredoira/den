@@ -24,14 +24,30 @@ fn terminal_survives_reconnect() {
     std::fs::create_dir_all(&dir).unwrap();
     // SAFETY: the test is the only thread touching the environment.
     unsafe { std::env::set_var("SIK_AGENT_SOCKET", dir.join("agent.sock")) };
+    unsafe {
+        std::env::set_var("SIK_STATE_DIR", dir.join("state"));
+        std::env::set_var("SIK_CONFIG_DIR", dir.join("config"));
+    }
     let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
 
     // First connection: starts the agent and creates a terminal.
+    eprintln!("connecting to the agent");
     let client = Client::connect_local(agent).unwrap();
+    eprintln!("a failed process launch must not block the agent");
+    assert!(smol::block_on(client.request(Request::TermCreate {
+        group: "test".into(), cwd: dir.clone(),
+        command: Some(vec!["sik-command-that-does-not-exist".into()]),
+        cols: 40, rows: 10,
+    })).is_err());
+    eprintln!("creating the terminal");
     let term = match smol::block_on(client.request(Request::TermCreate {
         group: "test".into(),
         cwd: dir.clone(),
-        command: Some(vec!["/bin/sh".into(), "-c".into(), "echo hello; exec cat".into()]),
+        command: Some(if cfg!(windows) {
+            vec!["cmd.exe".into(), "/Q".into(), "/K".into(), "echo hello".into()]
+        } else {
+            vec!["/bin/sh".into(), "-c".into(), "echo hello; exec cat".into()]
+        }),
         cols: 40,
         rows: 10,
     }))
@@ -62,6 +78,7 @@ fn terminal_survives_reconnect() {
     });
     drop(client);
 
+    eprintln!("reconnecting to the persistent terminal");
     // Second connection: the terminal is still there and the snapshot has what came before.
     let client = Client::connect_local(agent).unwrap();
     let Response::TermList(terms) =
@@ -80,7 +97,9 @@ fn terminal_survives_reconnect() {
     assert!(screen.contains("hello") && screen.contains("bye"), "snapshot: {screen:?}");
 
     // Killing it removes it from the list; then the agent shuts down.
+    eprintln!("closing the terminal must not block the agent");
     smol::block_on(client.request(Request::TermKill { term })).unwrap();
+    eprintln!("terminal closed; checking files and notifications");
     let Response::TermList(terms) =
         smol::block_on(client.request(Request::TermList { group: "test".into() })).unwrap()
     else {

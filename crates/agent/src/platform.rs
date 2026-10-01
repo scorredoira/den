@@ -78,39 +78,36 @@ mod unix {
 #[cfg(unix)]
 pub use unix::*;
 
-/// Not implemented on Windows: the named pipe will go here.
-#[cfg(not(unix))]
+#[cfg(windows)]
 mod windows {
     use std::path::Path;
-
-    use anyhow::{Result, bail};
-
+    use anyhow::Result;
     use super::Stream;
 
-    pub struct Listener;
+    impl Stream for client::windows_pipe::Stream {
+        fn try_clone_stream(&self) -> Result<Box<dyn Stream>> {
+            Ok(Box::new(self.clone()))
+        }
+    }
 
+    pub struct Listener(client::windows_pipe::Listener);
     impl Listener {
-        pub fn bind(_path: &Path) -> Result<Self> {
-            bail!("not implemented on Windows")
+        pub fn bind(path: &Path) -> Result<Self> {
+            Ok(Self(client::windows_pipe::Listener::bind(path)?))
         }
-
         pub fn accept(&self) -> Result<Box<dyn Stream>> {
-            bail!("not implemented on Windows")
+            Ok(Box::new(self.0.accept()?))
         }
     }
-
-    pub fn connect(_path: &Path) -> Result<Box<dyn Stream>> {
-        bail!("not implemented on Windows")
+    pub fn connect(path: &Path) -> Result<Box<dyn Stream>> {
+        Ok(Box::new(client::windows_pipe::Stream::connect(path)?))
     }
-
+    // The launcher creates a process without an inherited console.
     pub fn detach_session() {}
-
-    pub fn foreground_pid(_master: &dyn portable_pty::MasterPty) -> Option<u32> {
-        None
-    }
+    pub fn foreground_pid(_master: &dyn portable_pty::MasterPty) -> Option<u32> { None }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub use windows::*;
 
 /// Current directory of a process, via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`.
@@ -153,8 +150,8 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
-/// Current directory of a process. Not implemented: on Windows it will be
-/// read from the OSC 7 sequence the shell emits.
+/// Windows directories are tracked from OSC 7 by `shell_cwd`, rather than
+/// reading another process's undocumented memory layout.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
     None
@@ -171,9 +168,37 @@ pub fn process_args(pid: u32) -> Option<String> {
     (output.status.success() && !args.is_empty()).then_some(args)
 }
 
-#[cfg(not(unix))]
-pub fn process_args(_pid: u32) -> Option<String> {
-    None
+#[cfg(windows)]
+pub fn process_args(pid: u32) -> Option<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::Duration;
+    // ConPTY doesn't expose a foreground process group. At restart, inspect
+    // descendants of this terminal's shell and find the Claude process there.
+    // This runs only when explicitly restarting the agent, never while typing.
+    let script = format!(r#"
+$all = @(Get-CimInstance Win32_Process)
+$ids = @([uint32]{pid})
+do {{
+    $children = @($all | Where-Object {{ $_.ParentProcessId -in $ids -and $_.ProcessId -notin $ids }})
+    $ids += @($children | ForEach-Object {{ $_.ProcessId }})
+}} while ($children.Count -gt 0)
+$all | Where-Object {{ $_.ProcessId -in $ids -and ($_.Name -eq 'claude.exe' -or ($_.Name -eq 'node.exe' -and $_.CommandLine -match '@anthropic-ai[\\/]claude-code')) }} | Select-Object -First 1 -ExpandProperty CommandLine
+"#);
+    let mut child = command("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        let _ = tx.send(out);
+    });
+    let out = rx.recv_timeout(Duration::from_secs(3)).ok();
+    let _ = child.kill();
+    let _ = child.wait();
+    out.map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
 }
 
 /// Link `link` pointing to `target` (replaces any previous one).
@@ -184,10 +209,13 @@ pub fn symlink(target: &Path, link: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Not implemented on Windows: we'll have to copy the binary or use a `.cmd`.
-#[cfg(not(unix))]
-pub fn symlink(_target: &Path, _link: &Path) -> Result<()> {
-    anyhow::bail!("not implemented on Windows")
+/// Hard links need no symlink privilege, and keep the exact agent binary.
+#[cfg(windows)]
+pub fn symlink(target: &Path, link: &Path) -> Result<()> {
+    let link = link.with_extension("exe");
+    let _ = std::fs::remove_file(&link);
+    std::fs::hard_link(target, &link).or_else(|_| std::fs::copy(target, &link).map(|_| ()))?;
+    Ok(())
 }
 
 /// Starts the daemon from this same binary, detached from its launcher.
@@ -211,8 +239,9 @@ pub fn default_lang() -> Option<String> {
 pub fn spawn_daemon(log: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    std::process::Command::new(exe)
-        .arg("daemon")
+    let mut command = std::process::Command::new(exe);
+    configure_background(&mut command);
+    command.arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)
@@ -223,9 +252,132 @@ pub fn spawn_daemon(log: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(unix)]
     fn reads_own_cwd() {
         let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
         let read = super::process_cwd(std::process::id()).map(|path| path.canonicalize().unwrap());
         assert_eq!(read, Some(cwd));
     }
+}
+
+/// Avoid flashing console windows when a GUI-launched agent runs a helper.
+pub fn configure_background(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+/// Resolve executable extensions on Windows (including npm's .cmd shims).
+pub fn executable(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    #[cfg(windows)]
+    {
+        let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        for ext in extensions.split(';') {
+            let candidate = dir.join(format!("{name}{}", ext.to_ascii_lowercase()));
+            if candidate.is_file() { return Some(candidate); }
+        }
+    }
+    path.is_file().then_some(path)
+}
+
+/// On Unix hooks are executable files. Windows supports .ps1/.cmd/.bat/.exe,
+/// plus extensionless shell scripts via Git for Windows' sh on PATH.
+pub fn repo_script(path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    for ext in ["ps1", "cmd", "bat", "exe"] {
+        let candidate = path.with_extension(ext);
+        if candidate.is_file() { return Some(candidate); }
+    }
+    path.is_file().then(|| path.to_path_buf())
+}
+
+pub fn script_command(path: &Path) -> std::process::Command {
+    let path = dunce::simplified(path);
+    #[cfg(windows)]
+    {
+        let ext = path.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+        let mut command = match ext.as_str() {
+            "ps1" => {
+                let mut c = std::process::Command::new("powershell.exe");
+                c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"]).arg(path);
+                c
+            }
+            "exe" | "com" | "cmd" | "bat" => std::process::Command::new(path),
+            _ => {
+                let mut c = std::process::Command::new("sh");
+                c.arg(path);
+                c
+            }
+        };
+        configure_background(&mut command);
+        command
+    }
+    #[cfg(unix)]
+    std::process::Command::new(path)
+}
+
+/// Background helper with the same behavior on every desktop platform.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    configure_background(&mut command);
+    command
+}
+
+pub fn is_executable_script(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(windows)]
+    path.is_file()
+}
+
+#[cfg(unix)]
+pub fn default_shell() -> portable_pty::CommandBuilder { portable_pty::CommandBuilder::new_default_prog() }
+
+#[cfg(windows)]
+pub fn default_shell() -> portable_pty::CommandBuilder {
+    // Prefer PowerShell 7, falling back to Windows PowerShell. Load the user's
+    // profile normally, preserve their prompt, and append a directory report.
+    let shell = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find_map(|dir| crate::platform::executable(&dir, "pwsh"))
+    }).unwrap_or_else(|| "powershell.exe".into());
+    let mut command = portable_pty::CommandBuilder::new(shell);
+    command.args(["-NoLogo", "-NoExit", "-Command", r#"$global:SikOriginalPrompt = $function:prompt; function global:prompt { $p = & $global:SikOriginalPrompt; if ($PWD.Provider.Name -eq 'FileSystem') { $u = [Uri]::new($PWD.ProviderPath).AbsoluteUri; [Console]::Write(([char]27).ToString() + ']7;' + $u + [char]7) }; $p }"#]);
+    command
+}
+
+/// Closing ConPTY can wait for its output to drain on Windows 10 / Server 2022.
+/// Never do it while holding the agent state lock needed by the output reader.
+pub fn close_pty(master: Box<dyn portable_pty::MasterPty + Send>) {
+    #[cfg(windows)]
+    std::thread::spawn(move || drop(master));
+    #[cfg(unix)]
+    drop(master);
+}
+
+pub fn close_failed_pty(pair: portable_pty::PtyPair) {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        if let Ok(mut output) = pair.master.try_clone_reader() {
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut output, &mut std::io::sink());
+            });
+        }
+        // portable-pty requests cursor inheritance. Answer even if the child
+        // failed to start, so closing an unused pseudoconsole can complete.
+        if let Ok(mut input) = pair.master.take_writer() {
+            let _ = input.write_all(b"\x1b[1;1R");
+        }
+        std::thread::spawn(move || drop(pair));
+    }
+    #[cfg(unix)]
+    drop(pair);
 }

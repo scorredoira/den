@@ -55,6 +55,7 @@ impl EventListener for Listener_ {
 struct AgentTerm {
     group: String,
     pty: Pty,
+    cwd: crate::shell_cwd::ShellCwd,
     emulator: Term<Listener_>,
     parser: Processor,
     events: Listener_,
@@ -597,7 +598,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         Request::TermCwd { term } => {
             let state = state.lock().unwrap();
             let entry = state.terms.get(&term).ok_or_else(|| gone(term))?;
-            let cwd = entry.pty.foreground_pid().and_then(platform::process_cwd);
+            let cwd = entry.pty.foreground_pid().and_then(platform::process_cwd).or_else(|| Some(entry.cwd.path.clone()));
             Ok(Response::Path(cwd))
         }
     }
@@ -692,7 +693,7 @@ fn save_for_restart(state: &State) {
                 group: entry.group.clone(),
                 cwd: foreground
                     .and_then(platform::process_cwd)
-                    .unwrap_or_else(|| PathBuf::from(&entry.group)),
+                    .unwrap_or_else(|| entry.cwd.path.clone()),
                 cols: entry.emulator.columns() as u16,
                 rows: entry.emulator.screen_lines() as u16,
                 claude: foreground.and_then(platform::process_args).and_then(|args| resume_command(&args)),
@@ -745,7 +746,9 @@ fn restore_after_restart(state: &Shared) {
 fn resume_command(args: &str) -> Option<String> {
     let words: Vec<&str> = args.split_whitespace().collect();
     let start = words.iter().position(|word| {
-        word.rsplit('/').next() == Some("claude") || word.contains("@anthropic-ai/claude-code")
+        let word = word.trim_matches('"');
+        matches!(word.rsplit(['/', '\\']).next(), Some("claude" | "claude.exe" | "claude.cmd"))
+            || word.replace('\\', "/").contains("@anthropic-ai/claude-code")
     })?;
     let mut command = vec!["claude"];
     command.extend(words[start + 1..].iter().filter(|word| !matches!(**word, "-c" | "--continue")));
@@ -781,6 +784,7 @@ fn create(
             AgentTerm {
                 group,
                 pty,
+                cwd: crate::shell_cwd::ShellCwd::new(cwd),
                 emulator,
                 parser: Processor::new(),
                 events,
@@ -808,8 +812,11 @@ fn create(
                 };
                 let mut state = state.lock().unwrap();
                 let Some(entry) = state.terms.get_mut(&term) else {
-                    break;
+                    // ConPTY may emit final output while closing. Keep draining
+                    // until EOF; its close runs on a separate thread.
+                    continue;
                 };
+                entry.cwd.advance(&buf[..n]);
                 entry.parser.advance(&mut entry.emulator, &buf[..n]);
                 let events = std::mem::take(&mut *entry.events.0.lock().unwrap());
                 let mut title_changed = false;
@@ -907,6 +914,8 @@ mod restart_tests {
             resume("node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js --model opus").as_deref(),
             Some("claude --model opus --continue")
         );
+        assert_eq!(resume(r#""C:\Users\me\.local\bin\claude.exe" --model opus"#).as_deref(), Some("claude --model opus --continue"));
+        assert_eq!(resume(r"node C:\npm\@anthropic-ai\claude-code\cli.js -c").as_deref(), Some("claude --continue"));
         assert_eq!(resume("-zsh"), None);
         assert_eq!(resume("vim claude.md"), None);
     }

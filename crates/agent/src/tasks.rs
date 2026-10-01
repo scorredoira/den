@@ -3,7 +3,6 @@
 
 use std::{
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -47,7 +46,7 @@ pub fn add_repo(path: &Path) -> Result<PathBuf> {
 
 /// `~/something` → this machine's home folder plus `something`.
 pub fn expand_home(path: &Path) -> PathBuf {
-    match (path.strip_prefix("~"), std::env::var_os("HOME")) {
+    match (path.strip_prefix("~"), dirs::home_dir()) {
         (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => path.to_path_buf(),
     }
@@ -91,7 +90,7 @@ fn worktrees(repo: &Path) -> Result<Vec<TaskInfo>> {
         let mut bare = false;
         for line in block.lines() {
             if let Some(rest) = line.strip_prefix("worktree ") {
-                path = Some(PathBuf::from(rest));
+                path = Some(PathBuf::from(rest).canonicalize().unwrap_or_else(|_| PathBuf::from(rest)));
             } else if let Some(rest) = line.strip_prefix("branch ") {
                 branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
             } else if line == "bare" {
@@ -123,8 +122,8 @@ pub fn create(path: &Path, name: &str) -> Result<TaskInfo> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c)) {
         bail!("invalid task name: use letters, digits, `-`, `_`, `.` or `/`");
     }
-    let script = repo.join(CREATE_SCRIPT);
-    let output = if script.is_file() {
+    let script = crate::platform::repo_script(&repo.join(CREATE_SCRIPT));
+    let output = if let Some(script) = script {
         run_script(repo, &script, &[name])?
     } else {
         let folder = repo
@@ -132,14 +131,14 @@ pub fn create(path: &Path, name: &str) -> Result<TaskInfo> {
             .map(|folder| folder.to_string_lossy().into_owned())
             .unwrap_or_default();
         let target = repo.with_file_name(format!("{folder}-{}", name.replace('/', "-")));
-        let target = target.to_string_lossy().into_owned();
+        let target = dunce::simplified(&target).to_string_lossy().into_owned();
         let exists = git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok();
         let args: Vec<&str> = if exists {
             vec!["worktree", "add", &target, name]
         } else {
             vec!["worktree", "add", "-b", name, &target]
         };
-        Command::new("git").args(args).current_dir(repo).output()?
+        crate::platform::command("git").args(args).current_dir(repo).output()?
     };
     let log = output_log(&output);
     if !output.status.success() {
@@ -162,12 +161,12 @@ pub fn remove(path: &Path) -> Result<()> {
         bail!("the main checkout cannot be removed");
     }
     let name = task.branch.clone().unwrap_or_default();
-    let script = repo.join(REMOVE_SCRIPT);
-    let output = if script.is_file() {
-        run_script(&repo, &script, &[&name, &path.to_string_lossy()])?
+    let script = crate::platform::repo_script(&repo.join(REMOVE_SCRIPT));
+    let output = if let Some(script) = script {
+        run_script(&repo, &script, &[&name, &dunce::simplified(path).to_string_lossy()])?
     } else {
-        Command::new("git")
-            .args(["worktree", "remove", &path.to_string_lossy()])
+        crate::platform::command("git")
+            .args(["worktree", "remove", &dunce::simplified(path).to_string_lossy()])
             .current_dir(&repo)
             .output()?
     };
@@ -186,10 +185,16 @@ pub fn remove(path: &Path) -> Result<()> {
 /// Finder: many setups only extend PATH in the rc file (.zshrc), which a
 /// login shell alone does not read.
 fn run_script(repo: &Path, script: &Path, args: &[&str]) -> Result<std::process::Output> {
+    #[cfg(unix)]
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let script = script.to_string_lossy();
-    let mut command = Command::new(shell);
-    command.args(["-l", "-i", "-c", "\"$0\" \"$@\"", &script]);
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = std::process::Command::new(shell);
+        command.args(["-l", "-i", "-c", "\"$0\" \"$@\""]).arg(script);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = crate::platform::script_command(script);
     command.args(args);
     Ok(command.stdin(std::process::Stdio::null()).current_dir(repo).output()?)
 }
@@ -203,7 +208,7 @@ fn output_log(output: &std::process::Output) -> String {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).current_dir(dir).output()?;
+    let output = crate::platform::command("git").args(args).current_dir(dir).output()?;
     if !output.status.success() {
         bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim());
     }
@@ -215,7 +220,7 @@ mod tests {
     use super::*;
 
     fn run(dir: &Path, args: &[&str]) {
-        assert!(Command::new("git").args(args).current_dir(dir).output().unwrap().status.success());
+        assert!(crate::platform::command("git").args(args).current_dir(dir).output().unwrap().status.success());
     }
 
     fn repo(name: &str) -> PathBuf {
@@ -242,6 +247,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn calls_the_repo_script() {
         let repo = repo("script");
         std::fs::create_dir_all(repo.join(".task")).unwrap();
@@ -251,6 +257,17 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let task = create(&repo, "payments").unwrap();
         assert_eq!(task.path.file_name().unwrap(), "other-place-payments");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn calls_powershell_repo_script() {
+        let repo = repo("powershell");
+        std::fs::create_dir_all(repo.join(".task")).unwrap();
+        std::fs::write(repo.join(".task/create.ps1"),
+            "param([string]$TaskName)\ngit worktree add -q -b $TaskName \"../custom-$TaskName\"\nexit $LASTEXITCODE\n").unwrap();
+        let task = create(&repo, "windows").unwrap();
+        assert_eq!(task.path.file_name().unwrap(), "custom-windows");
     }
 
     #[test]
@@ -269,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn remove_script_must_really_remove() {
         let repo = repo("noremove");
         let task = create(&repo, "x").unwrap();
@@ -282,6 +300,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn reports_script_failures() {
         let repo = repo("fails");
         std::fs::create_dir_all(repo.join(".task")).unwrap();

@@ -34,7 +34,7 @@ pub fn invoked_as_sik() -> bool {
     std::env::args_os()
         .next()
         .map(PathBuf::from)
-        .and_then(|path| path.file_name().map(|name| name == proto::APP))
+        .and_then(|path| path.file_stem().map(|name| name == proto::APP))
         .unwrap_or(false)
 }
 

@@ -4,6 +4,9 @@
 mod platform;
 mod ssh;
 
+#[cfg(windows)]
+pub mod windows_pipe;
+
 pub use ssh::{AGENT_LINUX_X86_64, connect_ssh};
 
 use std::{
@@ -50,7 +53,7 @@ pub struct Client {
     /// The server's `ssh` destination, for connections over SSH.
     destination: Option<String>,
     /// Ports of the server forwarded to this machine: remote → local.
-    forwards: Mutex<HashMap<u16, u16>>,
+    forwards: Mutex<HashMap<u16, ssh::Forward>>,
 }
 
 /// Copy of the agent binary to start the daemon from. On macOS, rebuilding a
@@ -67,7 +70,7 @@ fn stable_copy(agent_bin: &Path, state_dir: &Path) -> Result<std::path::PathBuf>
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let name = format!("{}-{PROTOCOL}-{modified}", proto::AGENT_BIN);
+    let name = format!("sik-agent-{PROTOCOL}-{modified}{}", std::env::consts::EXE_SUFFIX);
     let copy = dir.join(&name);
     if !copy.exists() {
         let partial = dir.join(format!("{name}.part"));
@@ -230,11 +233,12 @@ impl Client {
         };
         let mut forwards = self.forwards.lock().unwrap();
         let local = match forwards.get(&target.port) {
-            Some(local) => *local,
+            Some(forward) => forward.port,
             None => {
-                let local = ssh::forward(destination, &target)?;
-                forwards.insert(target.port, local);
-                local
+                let forward = ssh::forward(destination, &target)?;
+                let port = forward.port;
+                forwards.insert(target.port, forward);
+                port
             }
         };
         Ok(target.with_port(local))

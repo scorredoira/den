@@ -1,0 +1,106 @@
+name: Build packages
+on:
+  workflow_call:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+jobs:
+  linux-agent:
+    name: Linux SSH agent
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: linux-agent
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Test release command
+        run: python3 -m unittest discover -s packaging/tests -v
+      - run: cargo build --release --locked -p agent --target x86_64-unknown-linux-musl
+      - name: Prepare agent
+        run: |
+          mkdir -p ssh-agent
+          cp target/x86_64-unknown-linux-musl/release/sik-agent ssh-agent/sik-agent-linux-x86_64
+          file ssh-agent/sik-agent-linux-x86_64
+          ./ssh-agent/sik-agent-linux-x86_64 --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ssh-agent
+          path: ssh-agent/sik-agent-linux-x86_64
+          if-no-files-found: error
+  desktop:
+    name: ${{ matrix.name }}
+    timeout-minutes: 60
+    needs: linux-agent
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            os: macos-15
+            target: aarch64-apple-darwin
+            rustflags: ''
+          - name: macOS Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            rustflags: ''
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            rustflags: ''
+          - name: Windows x86_64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            rustflags: '-C target-feature=+crt-static'
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: ${{ matrix.target }}
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ clang cmake pkg-config libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan1
+      - uses: actions/download-artifact@v8
+        with:
+          name: ssh-agent
+          path: ssh-agent
+      - name: Compile agent tests
+        run: cargo test --release --locked -p proto -p client -p agent --no-run --target ${{ matrix.target }}
+      - name: Test agent
+        timeout-minutes: 3
+        run: cargo test --release --locked -p proto -p client -p agent --target ${{ matrix.target }} -- --nocapture
+      - name: Compile UI tests
+        run: cargo test --release --locked -p ui -p ui-term --no-run --target ${{ matrix.target }}
+      - name: Test UI
+        timeout-minutes: 3
+        run: cargo test --release --locked -p ui -p ui-term --target ${{ matrix.target }} -- --nocapture
+      - name: Build
+        run: cargo build --release --locked -p ui -p agent --target ${{ matrix.target }}
+      - name: Package
+        run: python packaging/package.py --target ${{ matrix.target }} --agent ssh-agent/sik-agent-linux-x86_64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error

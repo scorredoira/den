@@ -5,7 +5,6 @@
 use std::{
     collections::HashMap,
     path::Path,
-    process::Command,
 };
 
 use anyhow::{Result, bail};
@@ -362,7 +361,7 @@ fn diff_with(dir: &Path, file: &str, uncommitted: bool, context: Option<&str>) -
         return git(dir, &args);
     }
     // Untracked: the whole file is new. `--no-index` exits with 1 when there are differences.
-    let output = Command::new("git")
+    let output = crate::platform::command("git")
         .args(["diff", "--no-index"])
         .args(context)
         .args(["--", "/dev/null", file])
@@ -372,7 +371,7 @@ fn diff_with(dir: &Path, file: &str, uncommitted: bool, context: Option<&str>) -
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).current_dir(dir).output()?;
+    let output = crate::platform::command("git").args(args).current_dir(dir).output()?;
     if !output.status.success() {
         bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim());
     }
@@ -386,7 +385,7 @@ mod tests {
     use super::*;
 
     fn run(dir: &Path, args: &[&str]) {
-        let output = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        let output = crate::platform::command("git").args(args).current_dir(dir).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     }
 
@@ -402,6 +401,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         run(&dir, &["init", "-q", "-b", "master"]);
+        run(&dir, &["config", "core.autocrlf", "false"]);
         std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
         std::fs::write(dir.join("b.txt"), "b\n").unwrap();
         std::fs::write(dir.join(".gitignore"), "ignored.log\n").unwrap();
@@ -468,7 +468,10 @@ mod tests {
     fn git_operations_preserve_special_paths() {
         let dir = repo();
         run(&dir, &["config", "core.quotePath", "true"]);
-        let mut names = vec!["niño.txt", "quote\".txt", "tab\tname.txt", "line\nname.txt", "-dash.txt"];
+        let mut names = vec!["niño.txt", "space name.txt", "-dash.txt"];
+        // Windows forbids quotes and control characters in filenames.
+        #[cfg(unix)]
+        names.extend(["quote\".txt", "tab\tname.txt", "line\nname.txt"]);
         names.sort();
         for file in &names {
             std::fs::write(dir.join(file), "original\n").unwrap();

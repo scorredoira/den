@@ -47,7 +47,7 @@ pub fn link_at(line: &str, col: usize, cwd: Option<&Path>, local: bool) -> Optio
         std::env::home_dir()?.join(rest)
     } else {
         let path = Path::new(path);
-        if path.is_absolute() {
+        if path.has_root() {
             path.to_path_buf()
         } else {
             cwd?.join(path)
@@ -56,7 +56,7 @@ pub fn link_at(line: &str, col: usize, cwd: Option<&Path>, local: bool) -> Optio
     let plausible = if local {
         path.exists()
     } else {
-        path.extension().is_some() || word.contains('/')
+        path.extension().is_some() || word.contains(['/', '\\'])
     };
     plausible.then_some((Link::Path { path, line, column }, range))
 }
@@ -92,6 +92,17 @@ mod tests {
         assert_eq!(split_position("src/a.rs"), ("src/a.rs", None, None));
         assert_eq!(split_position("src/a.rs:12"), ("src/a.rs", Some(12), None));
         assert_eq!(split_position("src/a.rs:12:5"), ("src/a.rs", Some(12), Some(5)));
+        assert_eq!(split_position(r"C:\src\a.rs:12:5"), (r"C:\src\a.rs", Some(12), Some(5)));
+        assert_eq!(split_position(r"C:\src\a.rs:12"), (r"C:\src\a.rs", Some(12), None));
+        assert_eq!(split_position(r"C:\src\a.rs"), (r"C:\src\a.rs", None, None));
+    }
+
+    #[test]
+    fn remote_absolute_paths_keep_their_root() {
+        let line = "/home/user/project/main.rs:12";
+        let Some((Link::Path { path, line, .. }, _)) = link_at(line, 3, Some(Path::new("other")), false) else { panic!() };
+        assert_eq!(path, Path::new("/home/user/project/main.rs"));
+        assert_eq!(line, Some(12));
     }
 
     #[test]

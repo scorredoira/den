@@ -8,3 +8,7 @@ version.workspace = true
 proto.workspace = true
 anyhow.workspace = true
 smol.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Authorization"] }

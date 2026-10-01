@@ -249,12 +249,14 @@ mod tests {
         std::fs::create_dir_all(dir.join("target")).unwrap();
         std::fs::write(dir.join("target/x.rs"), "hello\n").unwrap();
 
-        assert_eq!(files(&dir), vec![".gitignore", "notes.md", "src/main.rs"]);
+        let native_path = Path::new("src").join("main.rs");
+        let native_path = native_path.to_string_lossy();
+        assert_eq!(files(&dir), vec![".gitignore", "notes.md", native_path.as_ref()]);
 
         let (hits, truncated) = search(&dir, "hello", false, false, 100).unwrap();
         assert!(!truncated);
         let found: Vec<(&str, u32, u32)> = hits.iter().map(|h| (h.path.as_str(), h.line, h.column)).collect();
-        assert_eq!(found, vec![("notes.md", 1, 0), ("src/main.rs", 2, 8)]);
+        assert_eq!(found, vec![("notes.md", 1, 0), (native_path.as_ref(), 2, 8)]);
 
         let (hits, _) = search(&dir, "hello", false, true, 100).unwrap();
         assert_eq!(hits.len(), 1);

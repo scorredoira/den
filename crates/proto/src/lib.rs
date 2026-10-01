@@ -515,6 +515,7 @@ pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read) -> Result<Option<
 
 /// The app's state directory (the agent's socket and log).
 pub fn state_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SIK_STATE_DIR") { return Ok(path.into()); }
     let base = dirs::state_dir()
         .or_else(dirs::data_local_dir)
         .context("no state directory")?;
@@ -523,10 +524,12 @@ pub fn state_dir() -> Result<PathBuf> {
 
 /// The app's config directory.
 pub fn config_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SIK_CONFIG_DIR") { return Ok(path.into()); }
     Ok(dirs::config_dir().context("no config directory")?.join(APP))
 }
 
-/// The local agent's socket. On Windows it will be a named pipe (not implemented).
+/// The local agent's socket identity. Windows maps it to a per-user named pipe;
+/// the filesystem path also locates restart state.
 /// `SIK_AGENT_SOCKET` overrides it (tests, or a separate development agent).
 pub fn socket_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SIK_AGENT_SOCKET") {
@@ -539,7 +542,7 @@ pub fn socket_path() -> Result<PathBuf> {
 pub const APP: &str = "sik";
 
 /// Name of the agent binary.
-pub const AGENT_BIN: &str = "sik-agent";
+pub const AGENT_BIN: &str = if cfg!(windows) { "sik-agent.exe" } else { "sik-agent" };
 
 #[cfg(test)]
 mod tests {

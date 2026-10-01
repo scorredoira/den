@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Sik
+Comment=Persistent terminals and a code editor for coding agents
+Exec=sik %F
+Icon=sik
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true

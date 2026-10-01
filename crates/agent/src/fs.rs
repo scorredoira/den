@@ -151,7 +151,7 @@ pub fn watch(root: &Path, git: bool, changed: impl Fn(Vec<PathBuf>) + Send + 'st
 /// The repo's own git folder: `root/.git`, or in a worktree the one git
 /// keeps for it inside the main repo.
 fn git_dir(root: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
+    let output = crate::platform::command("git")
         .args(["rev-parse", "--absolute-git-dir"])
         .current_dir(root)
         .output()
@@ -285,7 +285,7 @@ mod tests {
     fn reports_commits_in_a_worktree() {
         let dir = dir("git");
         let git = |dir: &Path, args: &[&str]| {
-            let status = std::process::Command::new("git")
+            let status = crate::platform::command("git")
                 .args(["-c", "user.email=a@b", "-c", "user.name=a"])
                 .args(args)
                 .current_dir(dir)

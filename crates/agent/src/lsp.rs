@@ -12,7 +12,7 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::{
         Arc, LazyLock, Mutex,
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
@@ -292,7 +292,7 @@ fn binary(name: &str) -> Option<PathBuf> {
     if let Some(found) = BINARIES.lock().unwrap().get(name) {
         return found.clone();
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = dirs::home_dir().unwrap_or_default();
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
@@ -301,11 +301,11 @@ fn binary(name: &str) -> Option<PathBuf> {
             .into_iter()
             .map(|dir| home.join(dir)),
     );
+    #[cfg(unix)]
     dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].into_iter().map(PathBuf::from));
     let found = dirs
         .iter()
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
+        .find_map(|dir| crate::platform::executable(dir, name))
         .or_else(|| from_shell(name));
     BINARIES.lock().unwrap().insert(name.to_string(), found.clone());
     found
@@ -313,9 +313,10 @@ fn binary(name: &str) -> Option<PathBuf> {
 
 /// `command -v` in an interactive user shell (nvm, pyenv… are configured
 /// there), with a timeout in case the shell hangs.
+#[cfg(unix)]
 fn from_shell(name: &str) -> Option<PathBuf> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let mut child = Command::new(shell)
+    let mut child = std::process::Command::new(shell)
         .args(["-ilc", &format!("command -v {name}")])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -340,6 +341,9 @@ fn from_shell(name: &str) -> Option<PathBuf> {
         .filter(|path| path.is_file())
 }
 
+#[cfg(windows)]
+fn from_shell(_name: &str) -> Option<PathBuf> { None }
+
 struct Server {
     stdin: Mutex<ChildStdin>,
     next_id: AtomicI64,
@@ -362,7 +366,7 @@ struct Server {
 
 impl Server {
     fn start(binary: &Path, args: &[String], root: &Path, options: Value) -> Result<Arc<Server>> {
-        let mut child = Command::new(binary)
+        let mut child = crate::platform::script_command(binary)
             .args(args)
             .current_dir(root)
             .stdin(Stdio::piped())
@@ -853,32 +857,11 @@ fn read_message(reader: &mut impl BufRead) -> Result<Value> {
 
 /// `file://` with the path encoded.
 fn uri(path: &Path) -> String {
-    let mut out = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
+    url::Url::from_file_path(path).expect("absolute LSP path").into()
 }
 
 fn path_from_uri(uri: &str) -> Option<PathBuf> {
-    let encoded = uri.strip_prefix("file://")?;
-    let bytes = encoded.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut ix = 0;
-    while ix < bytes.len() {
-        if bytes[ix] == b'%' && ix + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[ix + 1..ix + 3]).ok()?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            ix += 3;
-        } else {
-            out.push(bytes[ix]);
-            ix += 1;
-        }
-    }
-    Some(PathBuf::from(String::from_utf8(out).ok()?))
+    url::Url::parse(uri).ok()?.to_file_path().ok()
 }
 
 #[cfg(test)]
@@ -895,8 +878,9 @@ mod tests {
 
     #[test]
     fn uris_round_trip() {
-        let path = Path::new("/tmp/with space/ñ%.rs");
-        assert_eq!(uri(path), "file:///tmp/with%20space/%C3%B1%25.rs");
+        let path = if cfg!(windows) { Path::new(r"C:\tmp\with space\ñ%.rs") } else { Path::new("/tmp/with space/ñ%.rs") };
+        let expected = if cfg!(windows) { "file:///C:/tmp/with%20space/%C3%B1%25.rs" } else { "file:///tmp/with%20space/%C3%B1%25.rs" };
+        assert_eq!(uri(path), expected);
         assert_eq!(path_from_uri(&uri(path)).as_deref(), Some(path));
     }
 

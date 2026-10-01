@@ -35,11 +35,13 @@ const OPTIONS: [&str; 8] = [
 ];
 
 /// Shared master connection: opening more streams to the server is instant.
+#[cfg(unix)]
 const CONTROL_PATH: &str = "ControlPath=~/.ssh/sik-%C";
 
 /// Ensures the master connection. It's created separately with no input or
 /// output: if the first regular `ssh` created it, staying in the background it
 /// would hold on to its output and whoever reads it would never finish.
+#[cfg(unix)]
 fn ensure_master(destination: &str) -> Result<()> {
     let status = Command::new("ssh")
         .args(OPTIONS)
@@ -56,13 +58,27 @@ fn ensure_master(destination: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn ensure_master(_destination: &str) -> Result<()> { Ok(()) }
+
+fn ssh_command() -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new("ssh");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
 /// `ssh` that uses the master connection if it exists (and its own otherwise).
 fn ssh(destination: &str) -> Command {
-    let mut command = Command::new("ssh");
-    command
-        .args(OPTIONS)
-        .args(["-o", "ControlMaster=no", "-o", CONTROL_PATH])
-        .arg(destination);
+    let mut command = ssh_command();
+    command.args(OPTIONS);
+    #[cfg(unix)]
+    command.args(["-o", "ControlMaster=no", "-o", CONTROL_PATH]);
+    command.arg(destination);
     command
 }
 
@@ -213,7 +229,8 @@ fn port_free(port: u16) -> bool {
 /// the master connection, and returns the local port: the same one if it's
 /// free (dev servers often check the `Host` or put the port in redirects),
 /// any free one otherwise.
-pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<u16> {
+#[cfg(unix)]
+pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
     let add = |local: u16| -> Result<()> {
         let output = Command::new("ssh")
             .args(OPTIONS)
@@ -233,11 +250,49 @@ pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<u16> {
         Ok(())
     };
     if port_free(url.port) && add(url.port).is_ok() {
-        return Ok(url.port);
+        return Ok(Forward { port: url.port, process: None });
     }
     let local = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port();
     add(local)?;
-    Ok(local)
+    Ok(Forward { port: local, process: None })
+}
+
+/// A Windows tunnel has its own SSH process, owned by the client connection.
+pub(crate) struct Forward {
+    pub port: u16,
+    process: Option<std::process::Child>,
+}
+
+impl Drop for Forward {
+    fn drop(&mut self) {
+        if let Some(child) = self.process.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
+    use std::{net::TcpStream, time::{Duration, Instant}};
+    let port = if port_free(url.port) { url.port } else {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port()
+    };
+    let child = ssh_command().args(OPTIONS)
+        .args(["-N", "-o", "ExitOnForwardFailure=yes", "-L"])
+        .arg(format!("127.0.0.1:{port}:{}:{}", url.target_host(), url.port))
+        .arg(destination)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    let mut forward = Forward { port, process: Some(child) };
+    let start = Instant::now();
+    loop {
+        if let Some(status) = forward.process.as_mut().unwrap().try_wait()? {
+            bail!("SSH port forwarding failed ({status})");
+        }
+        if TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok() { return Ok(forward); }
+        if start.elapsed() > Duration::from_secs(10) { bail!("SSH port forwarding timed out"); }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[cfg(test)]
