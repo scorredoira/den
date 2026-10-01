@@ -1,9 +1,8 @@
-## What's new in 0.1.8
+## What's new in 0.1.9
 
-- **Icons in the workspaces column:** servers have an icon colored by their connection, workspaces a folder and worktrees a branch. Claude's state shows after the name, only when there's one.
-- **Faster connections after an update:** the agent is uploaded to servers compressed, about 2.5 times faster, and the column says so while it uploads.
+- Fix the crash when running Settings, or any other command the window handles, from the command palette (F1 or Cmd-Shift-P).
 
-Also in 0.1.7: the focused terminal of a split is marked by its title, and branches show only when they aren't `master` or `main`. In 0.1.6: the menu bar on Windows and Linux, the welcome screen on first launch, the branch in the status bar, and a read-only Changes panel that refreshes on its own.
+Also in 0.1.8: icons in the workspaces column, and faster connections to servers after an update. In 0.1.7: the focused terminal of a split is marked by its title, and branches show only when they aren't `master` or `main`. In 0.1.6: the menu bar on Windows and Linux, the welcome screen on first launch, the branch in the status bar, and a read-only Changes panel that refreshes on its own.
 
 After upgrading, restart the outdated agent from the workspaces column so that changes made in a terminal refresh the Changes panel. Restarting the agent also restarts its terminals.
 
