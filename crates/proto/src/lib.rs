@@ -188,6 +188,8 @@ pub enum LspOp {
     Completion,
     /// Responds `Signature`.
     SignatureHelp,
+    /// The file's symbols; `line` and `column` don't matter. Responds `Symbols`.
+    Symbols,
 }
 
 /// The signature of the call the cursor is in.
@@ -232,6 +234,19 @@ pub struct LspLocation {
     pub length: u32,
     /// The whole line, for display.
     pub text: String,
+}
+
+/// A symbol of a file (a function, a class, a method…), for Go to Symbol.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LspSymbol {
+    pub name: String,
+    /// LSP `SymbolKind`.
+    pub kind: u32,
+    /// What it's inside of (its class, its function), if anything.
+    pub container: Option<String>,
+    /// Where its name is: 0-based, the column in characters.
+    pub line: u32,
+    pub column: u32,
 }
 
 /// Git operations of the Changes mode. Files are relative to the task
@@ -349,6 +364,8 @@ pub enum Response {
     Formatted { text: Option<String>, by: Option<String> },
     Count(usize),
     Relay(u64),
+    /// In the order they're in the file. `server` as in `Lsp`.
+    Symbols { server: Option<String>, symbols: Vec<LspSymbol> },
 }
 
 /// A port a process started from a terminal listens on (at loopback or on

@@ -3,7 +3,7 @@
 //! There's one server per project and language, started the first time it's
 //! asked and kept alive as long as the agent lives. Only `initialize`,
 //! `didOpen`, `didChange`, `didClose`, `didChangeWatchedFiles`, `definition`,
-//! `references` and `completion` are used. For the file we send the editor's
+//! `references`, `completion` and `documentSymbol` are used. For the file we send the editor's
 //! text (saved or not) and close it when asking about another one, so the
 //! server reads everything else from disk; changes on disk (from Claude, for
 //! example) reach it through the same watcher the tree uses.
@@ -22,7 +22,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use proto::{LspCompletion, LspLocation, LspOp, LspSignature, Response};
+use proto::{LspCompletion, LspLocation, LspOp, LspSignature, LspSymbol, Response};
 
 use crate::format::Indent;
 use serde_json::{Value, json};
@@ -139,6 +139,7 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
     let none = || match op {
         LspOp::Completion => Response::Completions { server: None, list: 0, items: Vec::new(), incomplete: false },
         LspOp::SignatureHelp => Response::Signature(None),
+        LspOp::Symbols => Response::Symbols { server: None, symbols: Vec::new() },
         _ => Response::Lsp { server: None, locations: Vec::new() },
     };
     let Some((language, language_id)) = language(path) else {
@@ -164,6 +165,10 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
             "textDocument/completion"
         }
         LspOp::SignatureHelp => "textDocument/signatureHelp",
+        LspOp::Symbols => {
+            params = json!({ "textDocument": { "uri": uri(path) } });
+            "textDocument/documentSymbol"
+        }
     };
     // While the project loads, the server may answer "content modified":
     // keep retrying for a while.
@@ -183,6 +188,9 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
     };
     if op == LspOp::SignatureHelp {
         return Ok(Response::Signature(server.signature(&result)));
+    }
+    if op == LspOp::Symbols {
+        return Ok(Response::Symbols { server: Some(language.name.to_string()), symbols: server.symbols(&result, text) });
     }
     if op == LspOp::Completion {
         let (items, raw, incomplete) = server.completions(&result, line, line_text, column);
@@ -514,6 +522,7 @@ impl Server {
                         "synchronization": { "dynamicRegistration": false },
                         "definition": { "linkSupport": true },
                         "references": {},
+                        "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
                         "formatting": {},
                         "signatureHelp": {
                             "signatureInformation": {
@@ -786,6 +795,42 @@ impl Server {
             .or_else(|| documentation(signature))
             .map(|text| text.split("\n\n").next().unwrap_or(&text).trim().to_string());
         Some(LspSignature { label, active: range, documentation })
+    }
+
+    /// The symbols in a `documentSymbol` response, a tree of `DocumentSymbol`
+    /// or a list of `SymbolInformation`, flattened in the order of the file.
+    fn symbols(&self, result: &Value, text: &str) -> Vec<LspSymbol> {
+        fn walk(server: &Server, items: &[Value], container: Option<&str>, lines: &[&str], out: &mut Vec<LspSymbol>) {
+            for item in items {
+                let Some(name) = item["name"].as_str() else { continue };
+                // `DocumentSymbol` has where the name is; `SymbolInformation`, the whole thing.
+                let start = item
+                    .get("selectionRange")
+                    .or_else(|| item.get("range"))
+                    .unwrap_or(&item["location"]["range"]);
+                let Some(line) = start["start"]["line"].as_u64() else { continue };
+                let line = line as u32;
+                let units = start["start"]["character"].as_u64().unwrap_or(0) as u32;
+                let line_text = lines.get(line as usize).copied().unwrap_or("");
+                let container = container.or_else(|| item["containerName"].as_str()).filter(|name| !name.is_empty());
+                out.push(LspSymbol {
+                    name: name.to_string(),
+                    kind: item["kind"].as_u64().unwrap_or(0) as u32,
+                    container: container.map(str::to_string),
+                    line,
+                    column: server.decode_column(line_text, units),
+                });
+                if let Some(children) = item["children"].as_array() {
+                    walk(server, children, Some(name), lines, out);
+                }
+            }
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        let mut symbols = Vec::new();
+        walk(self, result.as_array().map(Vec::as_slice).unwrap_or_default(), None, &lines, &mut symbols);
+        // Stable: a parent stays before the children that start on its line.
+        symbols.sort_by_key(|symbol| (symbol.line, symbol.column));
+        symbols
     }
 
     /// The locations in a `definition` or `references` response: nothing, a
@@ -1104,6 +1149,16 @@ mod tests {
         let (start, end) = signature.active.expect("active parameter");
         let active: String = signature.label.chars().skip(start as usize).take((end - start) as usize).collect();
         assert_eq!(active, "x: number", "{signature:?}");
+        let text = "export class Sale {\n  cancel() {}\n}\nexport function onCronTick() {}\n";
+        let Response::Symbols { symbols, .. } = request(&ts, &ts.join("main.ts"), text, 0, 0, LspOp::Symbols).unwrap() else {
+            panic!()
+        };
+        let found: Vec<_> =
+            symbols.iter().map(|s| (s.name.as_str(), s.kind, s.container.as_deref(), s.line, s.column)).collect();
+        assert_eq!(
+            found,
+            [("Sale", 5, None, 0, 13), ("cancel", 6, Some("Sale"), 1, 2), ("onCronTick", 12, None, 3, 16)],
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

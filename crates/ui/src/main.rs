@@ -22,6 +22,7 @@ mod picker;
 mod search;
 mod shortcuts;
 mod signature;
+mod symbol_picker;
 mod splits;
 mod terminals;
 mod update;
@@ -50,6 +51,7 @@ actions!(
         ShowReferences,
         GoToDefinition,
         GoToLine,
+        GoToSymbol,
         ToggleWordWrap,
         FormatDocument,
         SplitEditorRight,
