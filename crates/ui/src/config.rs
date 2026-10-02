@@ -210,7 +210,7 @@ pub struct Config {
     /// Folders and tasks opened, the most recent first (Open Recent).
     pub recent: Vec<SavedTask>,
     /// The tasks column shown or hidden by hand; unset, it shows once
-    /// there's something in it (a repo or a server).
+    /// there's more than folders to it (a server or a worktree).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks_column: Option<bool>,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).

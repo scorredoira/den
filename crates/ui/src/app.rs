@@ -823,11 +823,11 @@ impl Sik {
     }
 
     /// Whether the tasks column shows: as last chosen or, if never chosen,
-    /// once there's something in it (a repo or a server).
+    /// once there's more than folders to it (a server or a worktree).
     fn tasks_visible(&self, cx: &App) -> bool {
         Config::get(cx)
             .tasks_column
-            .unwrap_or_else(|| self.hosts.len() > 1 || self.hosts.iter().any(|host| !host.tasks.is_empty()))
+            .unwrap_or_else(|| self.hosts.len() > 1 || self.hosts.iter().any(|host| host.tasks.iter().any(|task| !task.main)))
     }
 
     fn show_tasks_column(&mut self, visible: bool, cx: &mut Context<Self>) {

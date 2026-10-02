@@ -57,7 +57,7 @@ Both executables are in `target/release`. On macOS, `./install` builds and insta
 
 ## Workspaces
 
-The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees folded under its checkout. Drag to reorder: a checkout moves along with its worktrees. Its + adds a folder or a server (any name from `~/.ssh/config` or `user@host`), and the + beside a server opens a folder there, or creates one by typing a new name; right-click removes them, and a folder that isn't a repo yet can be made one (Initialize Git Repository).
+The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees folded under its checkout. Drag to reorder: a checkout moves along with its worktrees. Its + adds a folder or a server (any name from `~/.ssh/config` or `user@host`), and the + beside a server opens a folder there, or creates one by typing a new name; right-click removes them, and a folder that isn't a repo yet can be made one (Initialize Git Repository). With only folders open it stays hidden until toggled (Cmd-Shift-B); it shows by itself once there's a server or a worktree.
 
 New Worktree (Cmd-N) creates one with the repo's executable `.sik/create <name>` if it has one, or `git worktree add` otherwise. From a Sik terminal: `cd "$(sik worktree <name>)"`.
 
