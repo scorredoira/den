@@ -1,4 +1,5 @@
-//! Cmd-E, as macOS's Cmd-Tab: the workspaces, the most recently used first,
+//! Cmd-E, as macOS's Cmd-Tab: the workspaces being worked on (the previous
+//! one and those with a coding agent, the ones waiting for an answer first),
 //! with the previous one selected; each E (or ↓) selects the next, Shift-E
 //! (or ↑) the one before, letting go of Cmd enters it and Esc stays.
 
@@ -57,8 +58,10 @@ impl Sik {
         true
     }
 
-    /// Every workspace in the column: the one in front, then the most
-    /// recently used, then the rest in the column's order.
+    /// The workspaces being worked on: the one in front, the previous one (so
+    /// a quick Cmd-E goes back), then those with a coding agent, the ones
+    /// waiting for an answer first, each the most recently used first. With
+    /// no agent anywhere else, every workspace in the column.
     fn recently_used(&self, cx: &App) -> Vec<TaskKey> {
         let column: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
         let recent = Config::get(cx).recent.iter().map(|recent| TaskKey { host: recent.host.clone().into(), path: recent.path.clone() });
@@ -67,6 +70,20 @@ impl Sik {
             if !keys.contains(&key) && column.contains(&key) {
                 keys.push(key);
             }
+        }
+        let rest = keys.split_off(keys.len().min(2));
+        let (waiting, others): (Vec<TaskKey>, Vec<TaskKey>) = rest
+            .iter()
+            .filter(|key| !self.workspace_agents(key).is_empty())
+            .cloned()
+            .partition(|key| {
+                let (dot, color, _) = self.workspace_state(key, cx);
+                urgency(dot, color, cx) == 3
+            });
+        if waiting.is_empty() && others.is_empty() {
+            keys.extend(rest);
+        } else {
+            keys.extend(waiting.into_iter().chain(others));
         }
         keys
     }
@@ -104,6 +121,8 @@ impl Sik {
             let repo = task.filter(|task| !task.main).map(|task| folder_name(&task.repo));
             let place = [repo, (key.host != LOCAL).then(|| key.host.to_string())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
             let (dot, color) = task.map(|task| self.status(key, task, cx)).unwrap_or(("○", theme.muted_foreground));
+            // Every workspace with an agent has its dot, an idle one too.
+            let dotted = dot != "○" || !self.workspace_agents(key).is_empty();
             let key = key.clone();
             h_flex()
                 .id(("switcher", ix))
@@ -117,7 +136,7 @@ impl Sik {
                 .child(div().flex_none().max_w(px(260.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_ui_small(cx).text_color(theme.muted_foreground).child(place))
                 .child(div().flex_1())
-                .when(dot != "○", |row| row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)))
+                .when(dotted, |row| row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.switcher = None;
                     this.activate(key.clone(), window, cx);

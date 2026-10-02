@@ -81,7 +81,7 @@ On Windows, repository hooks can use `.sik/create.ps1`, `.sik/remove.ps1` and `.
 
 Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.sik/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
 
-Cmd-1…9 go to a workspace; Cmd-E switches between them as Cmd-Tab does between apps: holding Cmd, each E goes one further back through the most recently used (Shift-E forward) and letting go enters it. Cmd-K finds one across servers, the most recently used first. Every shortcut can be changed in Settings (Cmd-,).
+Cmd-1…9 go to a workspace; Cmd-E switches between the ones being worked on as Cmd-Tab does between apps: the previous one, then those with a coding agent, the ones waiting for an answer first and each the most recently used first (all of them while no other has an agent); holding Cmd, each E goes one further (Shift-E back) and letting go enters it. Cmd-K finds one across servers, the most recently used first. Every shortcut can be changed in Settings (Cmd-,).
 
 Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
 
