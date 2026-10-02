@@ -3316,6 +3316,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
             // (sik) A click in the gutter goes to whoever asked for it,
             // instead of moving the cursor.
             if let Some(click) = gutter_click {
+                // Over the breakpoints and the numbers, an arrow: they are
+                // clicked, not typed in.
+                window.set_cursor_style(
+                    gpui::CursorStyle::Arrow,
+                    &prepaint.fold_icon_layout.line_number_hitbox,
+                );
                 window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, window, cx| {
                     if !phase.capture() || !gutter_bounds.contains(&event.position) {
                         return;
