@@ -664,6 +664,9 @@ impl Workspace {
     /// tree, panels and terminals carry on with it, and open files are reread.
     pub fn set_client(&mut self, client: Arc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         self.client = Some(client.clone());
+        // Whatever failed with the lost connection ("Couldn't open terminal")
+        // is retried with this one.
+        self.message = None;
         Self::watch_fs(&self.root, &client, window, cx);
         self.file_tree
             .update(cx, |tree, cx| tree.set_client(client.clone(), cx));

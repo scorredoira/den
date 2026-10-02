@@ -161,8 +161,18 @@ impl FolderPicker {
         self.open(parent, cx);
     }
 
+    /// The folder shown, as the agent's machine names it: `~/x` would be a
+    /// different workspace from `/home/me/x`, and only some requests expand it.
     fn pick(&mut self, cx: &mut Context<Self>) {
-        cx.emit(FolderPickerEvent::Pick(self.dir.clone()));
+        let (client, dir) = (self.client.clone(), self.dir.clone());
+        self.load = Some(cx.spawn(async move |this, cx| {
+            // An older agent doesn't know the request: the folder goes as it is.
+            let dir = match client.request(Request::Resolve { path: dir.clone() }).await {
+                Ok(Response::Path(Some(resolved))) => resolved,
+                _ => dir,
+            };
+            this.update(cx, |_, cx| cx.emit(FolderPickerEvent::Pick(dir))).ok();
+        }));
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {

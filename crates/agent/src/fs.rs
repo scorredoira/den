@@ -2,10 +2,10 @@
 //! the same locally as on a server over SSH.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::Read as _,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Mutex, mpsc},
     time::Duration,
 };
 
@@ -173,30 +173,20 @@ fn is_state(git_dir: &Path, path: &Path) -> bool {
         .is_ok_and(|rest| ["index", "HEAD", "MERGE_HEAD", "logs/HEAD"].iter().any(|state| rest == Path::new(state)))
 }
 
-/// What git ignores inside a folder: its `.gitignore` and those of the
-/// folders within it (read when watching starts), plus `.git`.
+/// What git ignores inside a folder: the `.gitignore` of each folder from
+/// the root down to a changed path, read the first time a change happens
+/// there (reading them all up front walks the whole tree, which in a home
+/// folder takes a minute), plus `.git`.
 struct Ignored {
     root: PathBuf,
-    matchers: Vec<ignore::gitignore::Gitignore>,
+    matchers: Mutex<HashMap<PathBuf, Option<ignore::gitignore::Gitignore>>>,
 }
 
 impl Ignored {
     fn new(root: &Path) -> Self {
-        let matchers = ignore::WalkBuilder::new(root)
-            .hidden(false)
-            .require_git(false)
-            .filter_entry(|entry| entry.file_name() != ".git")
-            .build()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name() == ".gitignore")
-            .filter_map(|entry| {
-                let (matcher, _) = ignore::gitignore::Gitignore::new(entry.path());
-                (!matcher.is_empty()).then_some(matcher)
-            })
-            .collect();
         Self {
             root: root.to_path_buf(),
-            matchers,
+            matchers: Mutex::default(),
         }
     }
 
@@ -207,11 +197,26 @@ impl Ignored {
         if relative.components().any(|part| part.as_os_str() == ".git") {
             return true;
         }
+        let mut matchers = self.matchers.lock().unwrap();
+        // An edited `.gitignore` is read again.
+        if path.file_name().is_some_and(|name| name == ".gitignore")
+            && let Some(dir) = path.parent()
+        {
+            matchers.remove(dir);
+        }
         let is_dir = path.is_dir();
-        self.matchers.iter().any(|matcher| {
-            path.starts_with(matcher.path())
-                && matcher.matched_path_or_any_parents(path, is_dir).is_ignore()
-        })
+        path.ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(&self.root))
+            .any(|dir| {
+                let matcher = matchers.entry(dir.to_path_buf()).or_insert_with(|| {
+                    let (matcher, _) = ignore::gitignore::Gitignore::new(dir.join(".gitignore"));
+                    (!matcher.is_empty()).then_some(matcher)
+                });
+                matcher
+                    .as_ref()
+                    .is_some_and(|matcher| matcher.matched_path_or_any_parents(path, is_dir).is_ignore())
+            })
     }
 }
 
@@ -268,6 +273,8 @@ mod tests {
     fn watches_changes() {
         let dir = dir("watch");
         std::fs::write(dir.join(".gitignore"), "logs/\n").unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/.gitignore"), "*.tmp\n").unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let _watcher = watch(&dir, false, {
             let seen = seen.clone();
@@ -277,6 +284,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         std::fs::create_dir_all(dir.join("logs")).unwrap();
         std::fs::write(dir.join("logs/noise.log"), "x").unwrap();
+        std::fs::write(dir.join("sub/noise.tmp"), "x").unwrap();
         std::fs::write(dir.join("new.txt"), "x").unwrap();
         let start = std::time::Instant::now();
         while !seen.lock().unwrap().iter().any(|path| path.ends_with("new.txt")) {
@@ -284,6 +292,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!seen.lock().unwrap().iter().any(|path| path.starts_with(dir.join("logs"))));
+        assert!(!seen.lock().unwrap().iter().any(|path| path.ends_with("noise.tmp")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

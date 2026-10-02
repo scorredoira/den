@@ -261,7 +261,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
 
     let result = (|| -> Result<()> {
         while let Some(decoded) = proto::read_message::<ClientMessage, ClientEnvelope>(&mut stream)? {
-            let message = match decoded {
+            let mut message = match decoded {
                 Decoded::Known(message) => message,
                 // From a newer UI: rejected without dropping the connection.
                 Decoded::Unknown { id } => {
@@ -273,6 +273,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
                 }
             };
             let id = message.id;
+            own_separators(&mut message.request);
             // Answered when the app is done, not now.
             if let Request::Command { args, cwd, term } = message.request {
                 if let Err(err) = send_command(&state, conn, id, args, cwd, term) {
@@ -286,6 +287,16 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
                 let state = state.clone();
                 std::thread::spawn(move || {
                     let reply = handle_slow(&state, message.request);
+                    reply_to(&state, conn, id, reply);
+                });
+                continue;
+            }
+            // Watching a large folder takes a while on Linux (inotify watches
+            // each folder in it).
+            if matches!(message.request, Request::Watch { .. }) {
+                let state = state.clone();
+                std::thread::spawn(move || {
+                    let reply = handle(&state, conn, message.request);
                     reply_to(&state, conn, id, reply);
                 });
                 continue;
@@ -412,6 +423,80 @@ mod frame_tests {
             Some(ServerMessage::Response { id: 7, result: Err(error) }) if error.contains("frame too large")));
         assert!(matches!(proto::read_frame(&mut reader).unwrap(),
             Some(ServerMessage::Response { id: 8, result: Ok(Response::Ok) })));
+    }
+}
+
+/// A UI on Windows builds this machine's paths with its own separator
+/// (`~\Downloads`, `/home/me/repo\src`): on Linux and macOS they become `/`.
+/// A `\` in a file name there is rare enough to give up.
+fn own_separators(request: &mut Request) {
+    if cfg!(windows) {
+        return;
+    }
+    let fix = |path: &mut PathBuf| {
+        if let Some(text) = path.to_str()
+            && text.contains('\\')
+        {
+            *path = PathBuf::from(text.replace('\\', "/"));
+        }
+    };
+    match request {
+        Request::TermCreate { cwd: path, .. }
+        | Request::RepoAdd { path }
+        | Request::RepoRemove { path }
+        | Request::TaskCreate { repo: path, .. }
+        | Request::TaskRemove { path }
+        | Request::GitChanges { path, .. }
+        | Request::GitDiff { path, .. }
+        | Request::FindFiles { path }
+        | Request::Search { path, .. }
+        | Request::ReadFile { path }
+        | Request::WriteFile { path, .. }
+        | Request::ListDir { path }
+        | Request::CreateFile { path }
+        | Request::CreateDir { path }
+        | Request::Trash { path }
+        | Request::Watch { path }
+        | Request::Unwatch { path }
+        | Request::Git { path, .. }
+        | Request::Replace { path, .. }
+        | Request::Command { cwd: path, .. }
+        | Request::Resolve { path } => fix(path),
+        Request::Rename { from, to } => {
+            fix(from);
+            fix(to);
+        }
+        Request::Lsp { root, path, .. } | Request::LspResolve { root, path, .. } | Request::Format { root, path, .. } => {
+            fix(root);
+            fix(path);
+        }
+        Request::Open { root, file } => {
+            fix(root);
+            if let Some(file) = file {
+                fix(file);
+            }
+        }
+        Request::Hello { .. }
+        | Request::Shutdown
+        | Request::TermList { .. }
+        | Request::TermAttach { .. }
+        | Request::TermDetach { .. }
+        | Request::TermInput { .. }
+        | Request::TermResize { .. }
+        | Request::TermKill { .. }
+        | Request::TermCwd { .. }
+        | Request::SavePastedImage { .. }
+        | Request::RepoList
+        | Request::TaskList
+        | Request::Version
+        | Request::BlockedList
+        | Request::Ports
+        | Request::RelayConnect { .. }
+        | Request::RelaySend { .. }
+        | Request::RelayClose { .. }
+        | Request::Serve
+        | Request::CommandDone { .. }
+        | Request::TermRead { .. } => {}
     }
 }
 
@@ -672,13 +757,11 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                     paths,
                 }));
             })?;
-            state
-                .lock()
-                .unwrap()
-                .watchers
-                .entry(conn)
-                .or_default()
-                .insert(path, watcher);
+            // The connection may have closed meanwhile.
+            let mut state = state.lock().unwrap();
+            if state.clients.contains_key(&conn) {
+                state.watchers.entry(conn).or_default().insert(path, watcher);
+            }
             Ok(Response::Ok)
         }
         Request::RelayConnect { port } => {
@@ -736,6 +819,10 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                 state.send(asker, ServerMessage::Response { id, result: result.map(Response::Text) });
             }
             Ok(Response::Ok)
+        }
+        Request::Resolve { path } => {
+            let resolved = tasks::expand_home(&path).canonicalize()?;
+            Ok(Response::Path(Some(resolved)))
         }
         Request::TermRead { term, lines } => {
             let state = state.lock().unwrap();
@@ -1100,5 +1187,30 @@ mod read_tests {
         parser.advance(&mut term, text.as_bytes());
         assert_eq!(last_lines(&term, 100), ["one", "two", "three", "abcdefghijklmnop", "$"]);
         assert_eq!(last_lines(&term, 2), ["abcdefghijklmnop", "$"]);
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn paths_from_a_windows_ui_use_this_machines_separator() {
+        let mut request = Request::Rename {
+            from: PathBuf::from("/home/me/repo\\src\\a.rs"),
+            to: PathBuf::from("~\\Downloads\\a.rs"),
+        };
+        own_separators(&mut request);
+        let Request::Rename { from, to } = request else { unreachable!() };
+        assert_eq!(from, PathBuf::from("/home/me/repo/src/a.rs"));
+        assert_eq!(to, PathBuf::from("~/Downloads/a.rs"));
+    }
+
+    #[test]
+    fn resolves_the_home_folder() {
+        let state: Shared = Arc::default();
+        let home = dirs::home_dir().unwrap().canonicalize().unwrap();
+        let response = handle(&state, 0, Request::Resolve { path: PathBuf::from("~") }).unwrap();
+        assert!(matches!(response, Response::Path(Some(path)) if path == home));
     }
 }

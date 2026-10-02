@@ -175,6 +175,9 @@ pub enum Request {
     /// The text of terminal `term`: its last `lines` lines (screen and
     /// history), without trailing blanks. Responds `Text`.
     TermRead { term: TermId, lines: u32 },
+    /// The folder `path` names on this machine: `~` expanded, links
+    /// followed. Responds `Path`.
+    Resolve { path: PathBuf },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
