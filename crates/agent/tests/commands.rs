@@ -31,13 +31,16 @@ fn the_app_answers_commands_from_its_terminals() {
 
     // a terminal of the workspace `dir` knows its own id
     let group = dir.to_string_lossy().into_owned();
-    let script = "echo term=$SIK_TERM; sleep 30".to_string();
     let Ok(Response::TermCreated { term }) = request(
         &app,
         Request::TermCreate {
             group: group.clone(),
             cwd: dir.clone(),
-            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+            command: Some(if cfg!(windows) {
+                vec!["cmd.exe".into(), "/C".into(), "echo term=%SIK_TERM% & ping -n 30 127.0.0.1 >nul".into()]
+            } else {
+                vec!["/bin/sh".into(), "-c".into(), "echo term=$SIK_TERM; sleep 30".into()]
+            }),
             cols: 80,
             rows: 24,
         },
@@ -55,7 +58,7 @@ fn the_app_answers_commands_from_its_terminals() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(screen, expected);
+    assert!(screen.contains(&expected), "{screen}");
 
     // the app gets the command with the terminal's workspace and answers it
     let (tx, commands) = mpsc::channel();
