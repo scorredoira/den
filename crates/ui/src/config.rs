@@ -79,18 +79,6 @@ impl Panel {
         Panel::Terminals,
         Panel::Debugger,
     ];
-
-    /// The ones with an icon in the activity bar, in its default order: all
-    /// but the code, which never closes.
-    pub const ACTIVITY: [Panel; 7] = [
-        Panel::Workspaces,
-        Panel::Files,
-        Panel::Changes,
-        Panel::Search,
-        Panel::References,
-        Panel::Terminals,
-        Panel::Debugger,
-    ];
 }
 
 /// Panels one above the other. The one with the code takes the width left
@@ -488,11 +476,11 @@ impl Config {
         area.slot(&mut sizes).unwrap_or(area.default_size()).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
     }
 
-    /// The activity bar's icons, top to bottom: each panel with one, once.
+    /// The activity bar's icons, top to bottom: each panel once.
     pub fn activity(&self) -> Vec<Panel> {
         let mut order: Vec<Panel> = Vec::new();
-        for panel in self.activity.iter().chain(&Panel::ACTIVITY) {
-            if Panel::ACTIVITY.contains(panel) && !order.contains(panel) {
+        for panel in self.activity.iter().chain(&Panel::ALL) {
+            if !order.contains(panel) {
                 order.push(*panel);
             }
         }
@@ -502,9 +490,7 @@ impl Config {
     /// Puts `panel`'s icon where `target`'s is, or at the end.
     pub fn move_activity(&mut self, panel: Panel, target: Option<Panel>) {
         let mut order = self.activity();
-        let Some(from) = order.iter().position(|p| *p == panel) else {
-            return;
-        };
+        let from = order.iter().position(|p| *p == panel).expect("every panel has an icon");
         let to = target.and_then(|target| order.iter().position(|p| *p == target)).unwrap_or(order.len() - 1);
         order.remove(from);
         order.insert(to, panel);
@@ -817,7 +803,7 @@ mod layout_tests {
     #[test]
     fn the_activity_bar_order() {
         let mut config = super::Config::default();
-        assert_eq!(config.activity(), Panel::ACTIVITY);
+        assert_eq!(config.activity(), Panel::ALL);
         // Dragged down, an icon takes the place of the one dropped on; up, too.
         config.move_activity(Workspaces, Some(Changes));
         assert_eq!(config.activity()[..3], [Files, Changes, Workspaces]);
@@ -826,8 +812,8 @@ mod layout_tests {
         // Dropped past the icons, it goes last.
         config.move_activity(Debugger, None);
         assert_eq!(config.activity().last(), Some(&Debugger));
-        // A hand-edited one: the code, repeated and missing ones mended.
-        config.activity = vec![Code, Terminals, Terminals];
-        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Changes, Search, References, Debugger]);
+        // A hand-edited one: repeated and missing ones mended.
+        config.activity = vec![Terminals, Terminals];
+        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Changes, Search, References, Code, Debugger]);
     }
 }

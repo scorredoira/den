@@ -206,10 +206,10 @@ impl Workspace {
     fn track_panel_drop(&mut self, anchor: Panel, event: &DragMoveEvent<PanelDrag>, cx: &mut Context<Self>) {
         let dragged = event.drag(cx).0;
         let position = event.event.position;
-        // Over a bar with tabs, it would be one more tab; only where it would
+        // Over a panel's bar, it would join that place; only where it would
         // change something.
-        let on_tabs = position.y < event.bounds.top() + px(BAR_HEIGHT);
-        let next = DropPlacement::at(event.bounds, position, !on_tabs)
+        let on_bar = position.y < event.bounds.top() + px(BAR_HEIGHT);
+        let next = DropPlacement::at(event.bounds, position, !on_bar)
             .filter(|placement| Config::get(cx).layout.clone().move_panel(dragged, anchor, side(*placement)))
             .map(|placement| (anchor, placement));
         // Every stack's listener sees the move. Only clear this stack's own indicator.
@@ -387,9 +387,9 @@ impl Workspace {
 
     fn render_stack_header(&self, stack: &Stack, active: Panel, cx: &mut Context<Self>) -> AnyElement {
         let workspace = cx.entity().downgrade();
-        let tabs = has_tabs(&stack.panels, cx).then(|| stack_tabs(&workspace, &stack.panels, active, cx));
-        // Alone, its title goes where the tabs would.
-        let alone = tabs.is_none();
+        let tabs = has_tabs(cx).then(|| stack_tabs(&workspace, &stack.panels, active, cx));
+        // Without tabs, the title goes where they would.
+        let untabbed = tabs.is_none();
         let theme = cx.theme();
         h_flex()
             .h(px(BAR_HEIGHT))
@@ -406,8 +406,8 @@ impl Workspace {
                     .h_full()
                     .flex()
                     .items_center()
-                    .when(alone, |el| el.pl_1())
-                    .when(!alone, |el| el.justify_end())
+                    .when(untabbed, |el| el.pl_1())
+                    .when(!untabbed, |el| el.justify_end())
                     .pr_1()
                     .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
@@ -422,6 +422,9 @@ impl Workspace {
 
     /// Drawn first in the code's tab bar: the tabs of the stack it is in.
     pub(super) fn code_tabs(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if !has_tabs(cx) {
+            return None;
+        }
         let layout = &Config::get(cx).layout;
         let (column, stack) = layout.find(Panel::Code)?;
         let panels = &layout.columns[column].stacks[stack].panels;
@@ -440,7 +443,7 @@ impl Workspace {
             };
             let panels = layout.columns[column].stacks[stack].panels.clone();
             let workspace = workspace.clone();
-            let leading: Option<Leading> = has_tabs(&panels, cx).then(|| {
+            let leading: Option<Leading> = has_tabs(cx).then(|| {
                 Rc::new(move |_: &mut Window, cx: &mut App| div().px_1().child(stack_tabs(&workspace, &panels, panel, cx)).into_any_element())
                     as Leading
             });
@@ -461,10 +464,10 @@ impl Workspace {
     }
 }
 
-/// Whether a stack shows its tabs: alone, a panel's icon in the activity bar
-/// already shows it and drags it, but for the code's, which has none there.
-fn has_tabs(panels: &[Panel], cx: &App) -> bool {
-    panels.len() > 1 || panels == [Panel::Code] || !Config::get(cx).shows_activity_bar()
+/// Whether the places show their panels' tabs: only without the activity
+/// bar, whose icons show and drag the panels.
+fn has_tabs(cx: &App) -> bool {
+    !Config::get(cx).shows_activity_bar()
 }
 
 /// A stack's tabs: a click shows the panel, dragging one moves it.

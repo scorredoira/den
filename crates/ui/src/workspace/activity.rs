@@ -1,7 +1,8 @@
-//! The activity bar, on the window's left edge: an icon for each panel but
-//! the code (which never closes). A click shows or hides the panel wherever
-//! it's placed; dragging an icon reorders the bar, or places the panel as
-//! dragging its tab does.
+//! The activity bar, on the window's left edge: an icon for each panel. A
+//! click shows or hides the panel wherever it's placed (the code is never
+//! hidden: its place doesn't close); dragging an icon reorders the bar, or
+//! places the panel. While it shows, the places have no tabs: it does their
+//! job.
 use super::*;
 use super::layout::{PanelDrag, icon, title};
 use crate::config::Panel;
@@ -125,8 +126,9 @@ impl Workspace {
         }
     }
 
-    /// Shows the panel, or hides it if it shows. The terminals and the
-    /// search get the focus, as their keys do.
+    /// Shows the panel, or hides it if it shows (but the code, see
+    /// `hide_panel`). The terminals and the search get the focus, as their
+    /// keys do.
     pub(super) fn click_activity(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
         let shown = self.is_shown(panel, cx);
         match panel {

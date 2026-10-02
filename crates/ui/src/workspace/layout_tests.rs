@@ -68,7 +68,7 @@ fn columns_in_any_order(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn dragging_the_terminals_icon_under_the_code(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    // Alone in their place, the terminals have no tab: their icon drags them.
+    // With the activity bar there are no tabs: the icons drag the panels.
     assert!(cx.debug_bounds("panel-tab-Terminals").is_none());
     let start = bounds(cx, "activity-Terminals").center();
     let code = bounds(cx, "stack-Code");
@@ -92,15 +92,15 @@ fn dragging_the_terminals_icon_under_the_code(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn dropping_the_changes_on_the_terminals_bar_makes_them_tabs(cx: &mut TestAppContext) {
+fn dropping_the_changes_on_the_terminals_bar_puts_them_together(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    let start = bounds(cx, "panel-tab-Changes").center();
+    let start = bounds(cx, "activity-Changes").center();
     let terminals = bounds(cx, "stack-Terminals");
     let end = point(terminals.center().x, terminals.top() + px(10.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    // Over the tabs, the preview says it joins them, not that it goes above.
+    // Over their bar, the preview says it joins them, not that it goes above.
     let drop = cx.update(|_, cx| workspace.read(cx).panel_drop);
     assert_eq!(drop, Some((Panel::Terminals, crate::drag_drop::DropPlacement::Center)));
     cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -108,14 +108,12 @@ fn dropping_the_changes_on_the_terminals_bar_makes_them_tabs(cx: &mut TestAppCon
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Terminals).unwrap();
     assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Terminals, Panel::Changes]);
-    // The panel dropped shows; the terminals are a tab away.
+    // The panel dropped shows; the terminals are behind it.
     cx.update(|_, cx| {
         assert!(workspace.read(cx).is_shown(Panel::Changes, cx));
         assert!(!workspace.read(cx).is_shown(Panel::Terminals, cx));
     });
     bounds(cx, "stack-Changes");
-    // Together, they have tabs again.
-    bounds(cx, "panel-tab-Terminals");
 }
 
 #[gpui_kit::test]
@@ -138,10 +136,11 @@ fn closing_a_stack_gives_its_width_to_the_code(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_code_goes_in_tabs_like_any_panel(cx: &mut TestAppContext) {
+fn the_code_shares_a_place_like_any_panel(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    let start = bounds(cx, "panel-tab-Code").center();
-    let end = bounds(cx, "panel-tab-Search").center();
+    let start = bounds(cx, "activity-Code").center();
+    let files = bounds(cx, "stack-Files");
+    let end = point(files.center().x, files.top() + px(10.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
@@ -149,14 +148,22 @@ fn the_code_goes_in_tabs_like_any_panel(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Code).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::Code, Panel::Search, Panel::References]);
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::Search, Panel::References, Panel::Code]);
     bounds(cx, "editor-body-0");
-    // Another tab hides it; hiding that one brings it back, its stack never closes.
+    // Another panel there hides it; hiding that one brings it back, its place
+    // never closes.
     workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Files, cx));
     cx.run_until_parked();
     assert!(cx.debug_bounds("editor-body-0").is_none());
     workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Files, cx));
     cx.run_until_parked();
+    bounds(cx, "editor-body-0");
+    // Its icon brings it to the front, and never hides it.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));
+    cx.run_until_parked();
+    click(cx, "activity-Code");
+    bounds(cx, "editor-body-0");
+    click(cx, "activity-Code");
     bounds(cx, "editor-body-0");
     // Opening a file shows it too.
     workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));
@@ -213,8 +220,6 @@ fn an_icon_shows_and_hides_its_panel_where_it_is(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("terminals").is_none());
     click(cx, "activity-Terminals");
     bounds(cx, "terminals");
-    // The code has none: it never closes.
-    assert!(cx.debug_bounds("activity-Code").is_none());
 }
 
 #[gpui_kit::test]
@@ -245,6 +250,7 @@ fn without_the_activity_bar_every_panel_has_its_tab(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("activity-bar").is_none());
     bounds(cx, "panel-tab-Terminals");
     bounds(cx, "panel-tab-Debugger");
+    bounds(cx, "panel-tab-Code");
 }
 
 /// Run and Debug go on the lines that declare a test, and nowhere else.
