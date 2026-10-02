@@ -89,6 +89,12 @@ struct State {
     /// The relays each connection opened.
     relays: HashMap<ConnId, HashMap<u64, crate::relay::Relay>>,
     next_relay: u64,
+    /// Connections of apps, which run `sik` commands: the last one runs them.
+    apps: Vec<ConnId>,
+    /// `sik` commands an app is running: the app, and who asked (its
+    /// connection and request).
+    commands: HashMap<u64, (ConnId, ConnId, Option<u64>)>,
+    next_command: u64,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -267,6 +273,13 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
                 }
             };
             let id = message.id;
+            // Answered when the app is done, not now.
+            if let Request::Command { args, cwd, term } = message.request {
+                if let Err(err) = send_command(&state, conn, id, args, cwd, term) {
+                    reply_to(&state, conn, id, Err(err));
+                }
+                continue;
+            }
             // Anything that may take a while (task scripts, git, searches) runs on
             // its own thread, so it doesn't hold up terminal keystrokes.
             if is_slow(&message.request) {
@@ -287,11 +300,78 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     state.clients.remove(&conn);
     state.watchers.remove(&conn);
     state.relays.remove(&conn);
+    state.apps.retain(|app| *app != conn);
+    // What that app was running won't be answered.
+    let lost: Vec<_> = state.commands.extract_if(|_, (app, ..)| *app == conn).collect();
+    for (_, (_, asker, id)) in lost {
+        if let Some(id) = id {
+            let result = Err("the app closed before answering".into());
+            state.send(asker, ServerMessage::Response { id, result });
+        }
+    }
     for entry in state.terms.values_mut() {
         entry.subscribers.remove(&conn);
     }
     state.update_idle();
     result
+}
+
+/// Sends a `sik` command to the app that last said it runs them, with the
+/// workspace of the terminal it ran in.
+fn send_command(
+    state: &Shared,
+    conn: ConnId,
+    id: Option<u64>,
+    args: Vec<String>,
+    cwd: PathBuf,
+    term: Option<TermId>,
+) -> Result<()> {
+    let mut state = state.lock().unwrap();
+    let app = *state
+        .apps
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("no sik app is connected to this machine"))?;
+    let group = term.and_then(|term| state.terms.get(&term)).map(|entry| entry.group.clone());
+    let term = term.filter(|_| group.is_some());
+    state.next_command += 1;
+    let command = state.next_command;
+    state.commands.insert(command, (app, conn, id));
+    state.send(app, ServerMessage::Event(Event::Command { command, args, cwd, term, group }));
+    Ok(())
+}
+
+/// The last `count` lines of a terminal's history and screen as text, with
+/// the rows a long line wrapped into joined again. Blank lines at the end
+/// (the empty screen below the prompt) don't count. Read from the bottom,
+/// only as far as needed: the agent's lock is held meanwhile.
+fn last_lines<T: EventListener>(term: &Term<T>, count: usize) -> Vec<String> {
+    use alacritty_terminal::term::cell::Flags;
+    let grid = term.grid();
+    let last = Column(grid.columns() - 1);
+    let top = -(grid.history_size() as i32);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut line = grid.screen_lines() as i32 - 1;
+    while line >= top && lines.len() < count {
+        let row = &grid[Line(line)];
+        let text: String = (0..grid.columns())
+            .map(|col| &row[Column(col)])
+            .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+            .map(|cell| cell.c)
+            .collect();
+        current.insert_str(0, &text);
+        // A row starts its line unless the one above wrapped into it.
+        let continues = line > top && grid[Line(line - 1)][last].flags.contains(Flags::WRAPLINE);
+        if !continues {
+            let text = std::mem::take(&mut current).trim_end().to_string();
+            if !(lines.is_empty() && text.is_empty()) {
+                lines.push(text);
+            }
+        }
+        line -= 1;
+    }
+    lines.reverse();
+    lines
 }
 
 fn reply_to(state: &Shared, conn: ConnId, id: Option<u64>, reply: Result<Response>) {
@@ -643,6 +723,25 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             }
             Ok(Response::Ok)
         }
+        Request::Serve => {
+            let mut state = state.lock().unwrap();
+            state.apps.retain(|app| *app != conn);
+            state.apps.push(conn);
+            Ok(Response::Ok)
+        }
+        Request::Command { .. } => unreachable!("answered when the app is done"),
+        Request::CommandDone { command, result } => {
+            let mut state = state.lock().unwrap();
+            if let Some((_, asker, Some(id))) = state.commands.remove(&command) {
+                state.send(asker, ServerMessage::Response { id, result: result.map(Response::Text) });
+            }
+            Ok(Response::Ok)
+        }
+        Request::TermRead { term, lines } => {
+            let state = state.lock().unwrap();
+            let entry = state.terms.get(&term).ok_or_else(|| gone(term))?;
+            Ok(Response::Text(last_lines(&entry.emulator, lines as usize).join("\n")))
+        }
         Request::Unwatch { path } => {
             if let Some(watchers) = state.lock().unwrap().watchers.get_mut(&conn) {
                 watchers.remove(&path);
@@ -825,17 +924,22 @@ fn create(
     rows: u16,
 ) -> Result<Response> {
     let (cols, rows) = (cols.max(2), rows.max(1));
-    let (pty, io) = Pty::spawn(&cwd, command.as_deref(), cols, rows)?;
+    // The id goes in the terminal's environment, so it's taken before starting it.
+    let term = {
+        let mut state = state.lock().unwrap();
+        let term = id.unwrap_or(state.next_term);
+        state.next_term = state.next_term.max(term + 1);
+        term
+    };
+    let (pty, io) = Pty::spawn(term, &cwd, command.as_deref(), cols, rows)?;
     let events = Listener_::default();
     let emulator = Term::new(
         Config::default(),
         &TermSize::new(cols as usize, rows as usize),
         events.clone(),
     );
-    let term = {
+    {
         let mut state = state.lock().unwrap();
-        let term = id.unwrap_or(state.next_term);
-        state.next_term = state.next_term.max(term + 1);
         state.terms.insert(
             term,
             AgentTerm {
@@ -854,8 +958,7 @@ fn create(
             },
         );
         state.update_idle();
-        term
-    };
+    }
 
     let mut output = io.output;
     std::thread::spawn({
@@ -975,5 +1078,27 @@ mod restart_tests {
         assert_eq!(resume(r"node C:\npm\@anthropic-ai\claude-code\cli.js -c").as_deref(), Some("claude --continue"));
         assert_eq!(resume("-zsh"), None);
         assert_eq!(resume("vim claude.md"), None);
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use alacritty_terminal::{
+        Term,
+        event::VoidListener,
+        term::{Config, test::TermSize},
+        vte::ansi::Processor,
+    };
+
+    use super::last_lines;
+
+    #[test]
+    fn joins_wrapped_lines_and_keeps_the_last_ones() {
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 5), VoidListener);
+        let mut parser: Processor = Processor::new();
+        let text = "one\r\ntwo\r\nthree\r\nabcdefghijklmnop\r\n$ ";
+        parser.advance(&mut term, text.as_bytes());
+        assert_eq!(last_lines(&term, 100), ["one", "two", "three", "abcdefghijklmnop", "$"]);
+        assert_eq!(last_lines(&term, 2), ["abcdefghijklmnop", "$"]);
     }
 }

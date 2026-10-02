@@ -163,6 +163,18 @@ pub enum Request {
     /// Writes `line` and a newline to the relay.
     RelaySend { relay: u64, line: String },
     RelayClose { relay: u64 },
+    /// This connection is an app: `sik` commands that need one are sent to
+    /// it (to the last one that said so) as `Event::Command`.
+    Serve,
+    /// A `sik` command run in a terminal (`args` after `sik`), for the app.
+    /// `term` is the terminal it ran in, if it was one of sik's. Responds
+    /// `Text` once the app answers with `CommandDone`.
+    Command { args: Vec<String>, cwd: PathBuf, term: Option<TermId> },
+    /// The app's answer to `Event::Command`: what to print, or the error.
+    CommandDone { command: u64, result: Result<String, String> },
+    /// The text of terminal `term`: its last `lines` lines (screen and
+    /// history), without trailing blanks. Responds `Text`.
+    TermRead { term: TermId, lines: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -419,6 +431,10 @@ pub enum Event {
     RelayLine { relay: u64, line: String },
     /// The other end closed the relay, or it failed.
     RelayClosed { relay: u64 },
+    /// A `sik` command for the app to run (see `Request::Command`), from
+    /// terminal `term` of workspace `group` if it ran in one. Answered with
+    /// `Request::CommandDone`.
+    Command { command: u64, args: Vec<String>, cwd: PathBuf, term: Option<TermId>, group: Option<String> },
 }
 
 /// Fingerprint of a binary (64-bit FNV-1a): tells agent versions apart.

@@ -20,6 +20,7 @@
 - **Git built in.** Every workspace is a folder, a checkout or a worktree, and New Worktree (Cmd-N) starts one per task. Uncommitted changes, the history of the repo or of a file, side-by-side diffs, commits with all their files, and the blame of the current line. Sik only reads: commit and push from a terminal.
 - **A debugger.** Breakpoints in the gutter (with conditions, hit counts and logpoints), stepping, the values of the variables written in the code as it stops, hover, watches and a console that evaluates and assigns. For any program that speaks [Sik's debug protocol](docs/debugger.md), on your machine or on a server.
 - **Every agent at a glance.** The workspaces of all your servers in one column, with a dot each: red when Claude is asking something, yellow while it works, green when it finished unseen. No hooks: Sik reads the terminals. Cmd-1…9 and Cmd-E jump between them.
+- **Agents drive Sik.** With the `sik` command, Claude shows you the code it's talking about with the range selected, the diff to review or a Markdown report, reads what you selected, and opens terminals, reads them and types in them. Sik installs a Claude Code skill so Claude knows how.
 
 ## Install
 
@@ -54,6 +55,21 @@ Both executables are in `target/release`. On macOS, `./install` builds and insta
 ## Opening from a terminal
 
 `sik <path>` opens a folder, or a file in its repo, as a workspace in Sik. It works from any terminal: the agent links `sik` into `~/.local/bin` if that folder exists. Over SSH it opens in the app connected to that server.
+
+In Sik's terminals, more commands act on the workspace of the terminal they run in, the same over SSH (`sik --help` lists them all):
+
+| Command | What it does |
+| --- | --- |
+| `sik show <file>:<line>` | Opens the file at that line; `<file>:10-20` or `<file>:10:5-12:3` selects that range. The keyboard stays in the terminal unless `--focus`. |
+| `sik diff [<file>]` | Shows the uncommitted changes. |
+| `sik doc [<title>]` | Shows the Markdown read from stdin in a tab. |
+| `sik selection`, `sik tabs` | Print what's selected in the editor, and the open files. |
+| `sik message <text>` | Shows a message in the status bar. |
+| `sik workspaces` | Lists the workspaces and whether each is working, waiting for an answer or finished. |
+| `sik term new [--right\|--down] [<command>]` | Opens a terminal, runs the command in its shell and prints its id. |
+| `sik term list`, `read <id>`, `send <id> <text>`, `focus <id>`, `close <id>` | Lists, reads, types in, shows and closes terminals. |
+
+They are meant for coding agents: when `~/.claude` exists, the agent installs a Claude Code skill (`~/.claude/skills/sik`) that tells Claude about them. Other agents can read `sik --help`. A path that is also a command's name opens with `./`, as in `sik ./tabs`.
 
 ## Workspaces
 

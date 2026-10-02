@@ -174,16 +174,35 @@ fn main() {
 }
 
 /// `sik <path>` in this machine's terminals, also with the window closed.
+/// Other `sik` commands run in the window (see `app::commands`): while it's
+/// closed, they're answered here.
 fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
-    let (tx, rx) = smol::channel::unbounded::<(PathBuf, Option<PathBuf>)>();
-    agent.watch(move |event| {
-        if let proto::Event::Open { root, file } = event {
-            let _ = tx.try_send((root.clone(), file.clone()));
+    enum Received {
+        Open(PathBuf, Option<PathBuf>),
+        Command(u64),
+    }
+    let (tx, rx) = smol::channel::unbounded::<Received>();
+    agent.watch(move |event| match event {
+        proto::Event::Open { root, file } => {
+            let _ = tx.try_send(Received::Open(root.clone(), file.clone()));
         }
+        proto::Event::Command { command, .. } => {
+            let _ = tx.try_send(Received::Command(*command));
+        }
+        _ => {}
     });
+    let agent = agent.clone();
     cx.spawn(async move |cx| {
-        while let Ok((root, file)) = rx.recv().await {
-            cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx));
+        while let Ok(received) = rx.recv().await {
+            match received {
+                Received::Open(root, file) => cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx)),
+                Received::Command(command) => {
+                    if !cx.update(|cx| app::has_window(cx)) {
+                        let result = Err("sik's window is closed".to_string());
+                        agent.notify(proto::Request::CommandDone { command, result });
+                    }
+                }
+            }
         }
     })
     .detach();

@@ -23,8 +23,8 @@ pub struct PtyIo {
 }
 
 impl Pty {
-    /// Starts `command` (or the user's shell) in `cwd`.
-    pub fn spawn(cwd: &Path, command: Option<&[String]>, cols: u16, rows: u16) -> Result<(Self, PtyIo)> {
+    /// Starts `command` (or the user's shell) in `cwd`, as terminal `term`.
+    pub fn spawn(term: proto::TermId, cwd: &Path, command: Option<&[String]>, cols: u16, rows: u16) -> Result<(Self, PtyIo)> {
         let pair = native_pty_system()
             .openpty(size(cols, rows))
             .context("could not open the pty")?;
@@ -43,6 +43,8 @@ impl Pty {
         cmd.env("TERM_PROGRAM", proto::APP);
         // `sik task` knows it runs inside sik, and the app opens the task.
         cmd.env("SIK_TERMINAL", "1");
+        // `sik` commands act on the workspace of the terminal they run in.
+        cmd.env("SIK_TERM", term.to_string());
         if std::env::var_os("LANG").is_none()
             && let Some(lang) = crate::platform::default_lang()
         {

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, bail};
 use client::Client;
-use proto::{Request, Response};
+use proto::{Request, Response, TermId};
 
 use crate::platform;
 
@@ -17,6 +17,36 @@ Usage:
   sik worktree <name> creates a worktree in the repo of the current folder,
                       running its .sik/create if it has one, and prints its
                       path. Inside sik, the app also opens it.
+
+In sik's terminals, these act on the workspace of the terminal they run in.
+Paths are relative to the current folder; lines and columns start at 1. The
+keyboard stays in the terminal unless --focus.
+
+  sik show <file>[:<line>[:<col>]] [--focus]
+                      opens the file with the cursor at that line.
+  sik show <file>:<line>[:<col>]-<line>[:<col>] [--focus]
+                      opens it with that range selected (whole lines
+                      without columns).
+  sik diff [<file>]   shows the uncommitted changes of the file, or the
+                      list of changed files.
+  sik doc [<title>]   shows the Markdown read from stdin in a tab.
+  sik selection       prints the file and range selected in the editor
+                      (path:line:col-line:col), then the selected text.
+  sik tabs            lists the files open in the editor, the active one
+                      with its cursor.
+  sik message <text>  shows a message in the status bar.
+  sik workspaces      lists the workspaces open on every server: working,
+                      waiting (asking something) or finished unseen.
+  sik term list       the workspace's terminals: id, title, `*` the active.
+  sik term new [--right | --down] [--focus] [<command>...]
+                      opens a terminal (a new tab, or split from this
+                      one), types the command in its shell and prints its id.
+  sik term read <id> [<lines>]
+                      prints its last lines (50 by default).
+  sik term send <id> [--no-enter] <text>...
+                      types the text in it, and Enter.
+  sik term focus <id> shows it and gives it the keyboard.
+  sik term close <id> closes it, ending what runs in it.
 ";
 
 /// Folder holding the `sik` link, which the agent puts in its terminals' PATH.
@@ -42,6 +72,25 @@ pub fn install() -> Result<()> {
             platform::symlink(&exe, &link)?;
         }
     }
+    Ok(())
+}
+
+/// The Claude Code skill that tells Claude about the `sik` commands.
+const SKILL: &str = include_str!("skill.md");
+
+/// Installs the skill where Claude Code looks for the user's, if Claude
+/// Code is installed (`~/.claude` exists). Kept up to date with the agent.
+pub fn install_skill() -> Result<()> {
+    let Some(claude) = std::env::home_dir().map(|home| home.join(".claude")).filter(|dir| dir.is_dir()) else {
+        return Ok(());
+    };
+    let dir = claude.join("skills").join(proto::APP);
+    let file = dir.join("SKILL.md");
+    if std::fs::read_to_string(&file).is_ok_and(|text| text == SKILL) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(file, SKILL)?;
     Ok(())
 }
 
@@ -96,4 +145,105 @@ pub fn task(args: &[String]) -> Result<()> {
     };
     println!("{}", task.path.display());
     Ok(())
+}
+
+/// The terminal of sik this runs in, if any.
+fn own_term() -> Option<TermId> {
+    std::env::var("SIK_TERM").ok()?.parse().ok()
+}
+
+fn connect() -> Result<std::sync::Arc<Client>> {
+    Client::connect_local(&std::env::current_exe()?).context("could not talk to the agent")
+}
+
+/// A command the app runs (see `USAGE`): it prints the app's answer.
+pub fn command(args: &[String]) -> Result<()> {
+    let mut args = args.to_vec();
+    // Markdown comes from stdin; the app gets it as the last argument.
+    if args[0] == "doc" {
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            bail!("pipe the Markdown into it: echo \"# Title\" | sik doc");
+        }
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+        let title = match args[1..].join(" ") {
+            title if title.is_empty() => "Notes".to_string(),
+            title => title,
+        };
+        args = vec!["doc".into(), title, text];
+    }
+    let client = connect()?;
+    let response = smol::block_on(client.request(Request::Command {
+        args,
+        cwd: std::env::current_dir()?,
+        term: own_term(),
+    }))?;
+    let Response::Text(text) = response else {
+        bail!("unexpected response from the agent: {response:?}");
+    };
+    print_text(&text);
+    Ok(())
+}
+
+/// `sik term …`: reading, typing in and closing a terminal is the agent's
+/// own; opening one, or anything about where it is, the app's.
+pub fn term(args: &[String]) -> Result<()> {
+    let id = |arg: Option<&String>| -> Result<TermId> {
+        let arg = arg.context("which terminal? (`sik term list`)")?;
+        arg.parse().with_context(|| format!("{arg}: not a terminal id"))
+    };
+    match args.first().map(String::as_str) {
+        Some("read") => {
+            let term = id(args.get(1))?;
+            let lines = match args.get(2) {
+                Some(lines) => lines.parse().with_context(|| format!("{lines}: not a number of lines"))?,
+                None => 50,
+            };
+            let response = smol::block_on(connect()?.request(Request::TermRead { term, lines }))?;
+            let Response::Text(text) = response else {
+                bail!("unexpected response from the agent: {response:?}");
+            };
+            print_text(&text);
+            Ok(())
+        }
+        Some("send") => {
+            let term = id(args.get(1))?;
+            let mut words = &args[2..];
+            let enter = words.first().is_none_or(|word| word != "--no-enter");
+            if !enter {
+                words = &words[1..];
+            }
+            let client = connect()?;
+            let input = |data: Vec<u8>| smol::block_on(client.request(Request::TermInput { term, data }));
+            input(words.join(" ").into_bytes())?;
+            if enter {
+                // Apart from the text: a TUI (Claude Code) takes an Enter in
+                // the same burst as part of a paste, not as sending it.
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                input(b"\r".to_vec())?;
+            }
+            Ok(())
+        }
+        Some("close") => {
+            let term = id(args.get(1))?;
+            smol::block_on(connect()?.request(Request::TermKill { term }))?;
+            Ok(())
+        }
+        Some(_) => command(&[&["term".to_string()], args].concat()),
+        None => {
+            eprint!("{USAGE}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn print_text(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if text.ends_with('\n') {
+        print!("{text}");
+    } else {
+        println!("{text}");
+    }
 }

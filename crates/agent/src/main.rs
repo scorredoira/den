@@ -3,7 +3,8 @@
 //! - `sik-agent daemon`: listens on the local socket (started by the UI).
 //! - `sik-agent bridge`: joins stdin/stdout to the socket, starting the daemon
 //!   if needed. It's what `ssh host sik-agent bridge` runs (phase 3).
-//! - `sik <path>`, `sik worktree <name>`: from a terminal (see `cli.rs`).
+//! - `sik <path>`, `sik worktree <name>`, `sik show <file>`…: from a
+//!   terminal (see `cli.rs`).
 
 mod blocked;
 mod cli;
@@ -36,6 +37,12 @@ fn main() -> Result<()> {
         None if !cli::invoked_as_sik() => daemon(),
         Some("bridge") => bridge(),
         Some("worktree" | "wt" | "task") => cli::task(&args[1..]),
+        Some("help" | "--help" | "-h") => {
+            print!("{}", cli::USAGE);
+            Ok(())
+        }
+        Some("term") => cli::term(&args[1..]),
+        Some("show" | "diff" | "doc" | "selection" | "tabs" | "message" | "workspaces") => cli::command(&args),
         Some(path) if cli::invoked_as_sik() && !path.starts_with('-') && args.len() == 1 => cli::open(path),
         _ => {
             eprint!("{}", cli::USAGE);
@@ -48,6 +55,9 @@ fn daemon() -> Result<()> {
     platform::detach_session();
     if let Err(err) = cli::install() {
         eprintln!("could not install the `sik` command for terminals: {err:#}");
+    }
+    if let Err(err) = cli::install_skill() {
+        eprintln!("could not install the skill for Claude Code: {err:#}");
     }
     let socket = proto::socket_path()?;
     let listener = platform::Listener::bind(&socket)?;

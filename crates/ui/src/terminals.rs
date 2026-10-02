@@ -325,6 +325,47 @@ impl TerminalArea {
         self.open_running(Place::NewTab, Some(line), false, window, cx)
     }
 
+    /// `sik term new`: a terminal in a new tab, or split from `beside` (the
+    /// one the command ran in, if it's here), typing `line` in its shell.
+    pub fn open_for_command(
+        &mut self,
+        beside: Option<TermId>,
+        split: Option<Axis>,
+        line: Option<String>,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<TermId>> {
+        if let Some(term) = beside.filter(|term| self.views.contains_key(term)) {
+            self.select(term, cx);
+        }
+        let place = split.map_or(Place::NewTab, Place::Split);
+        self.open_running(place, line, focus, window, cx)
+    }
+
+    /// The terminals by tab, with their titles and whether each is the active one.
+    pub fn list(&self, cx: &App) -> Vec<(TermId, String, bool)> {
+        let active = self.tabs.get(self.active).map(|tab| tab.active);
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.tree.leaves())
+            .filter_map(|term| {
+                let title = self.views.get(&term)?.read(cx).title(cx);
+                Some((term, title, Some(term) == active))
+            })
+            .collect()
+    }
+
+    /// Shows terminal `term` and gives it the keyboard; false if it isn't here.
+    pub fn focus_term(&mut self, term: TermId, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(view) = self.views.get(&term).cloned() else {
+            return false;
+        };
+        self.select(term, cx);
+        view.read(cx).focus_handle(cx).focus(window, cx);
+        true
+    }
+
     /// Sends Ctrl-C to terminal `term`, which stops what runs in its shell.
     pub fn interrupt(&mut self, term: TermId, cx: &mut Context<Self>) {
         if let Some(view) = self.views.get(&term).cloned() {

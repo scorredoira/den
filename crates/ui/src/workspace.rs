@@ -46,6 +46,7 @@ use crate::{
 
 mod tab_drag;
 mod markdown_images;
+mod commands;
 #[cfg(test)]
 mod autosave_tests;
 #[cfg(test)]
@@ -152,6 +153,8 @@ struct FileTab {
     confirm_close: bool,
     /// Where to put the cursor once loading finishes.
     goto: Option<Position>,
+    /// And, with it, the other end of a range to select (`sik show`).
+    select_to: Option<Position>,
     /// Once loaded, focus goes to this tab (not if it was opened as a preview
     /// from the tree, which keeps the keyboard).
     grab_focus: bool,
@@ -1810,6 +1813,7 @@ impl Workspace {
             preview,
             confirm_close: false,
             goto: None,
+            select_to: None,
             grab_focus: true,
             diff: None,
             old: None,
@@ -1887,6 +1891,9 @@ impl Workspace {
                             } else {
                                 let goto = tab.goto.take().unwrap_or_default();
                                 state.set_cursor_position(goto, window, cx);
+                                if let Some(to) = tab.select_to.take() {
+                                    commands::select(state, goto, to, cx);
+                                }
                             }
                         });
                         if !reload {
@@ -3687,7 +3694,7 @@ fn percent_decode(text: &str) -> String {
 }
 
 /// Resolves `.` and `..` without touching the disk (the file may be on a server).
-fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {

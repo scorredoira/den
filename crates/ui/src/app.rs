@@ -39,6 +39,7 @@ use crate::{
 };
 
 mod about;
+mod commands;
 mod confirm;
 mod settings;
 mod theme;
@@ -189,6 +190,11 @@ pub fn reopen(cx: &mut App) {
     if main_window(cx).is_none() {
         open_window(None, None, true, cx);
     }
+}
+
+/// Whether the window is open: the `sik` commands run in it.
+pub fn has_window(cx: &App) -> bool {
+    main_window(cx).is_some()
 }
 
 /// `sik <path>` in a terminal of `host`: `root` as a workspace, with `file`
@@ -620,6 +626,8 @@ impl Sik {
     /// Receives activity from the server's tasks and the tasks created with
     /// `sik task` on it.
     fn watch_host(&mut self, name: SharedString, client: Arc<Client>, window: &mut Window, cx: &mut Context<Self>) {
+        // The `sik` commands run in its terminals come here.
+        client.notify(Request::Serve);
         let (tx, rx) = smol::channel::unbounded::<Event>();
         let name_for_watch = name.clone();
         client.watch(move |event| {
@@ -633,6 +641,13 @@ impl Sik {
                     blocked: *blocked,
                 },
                 Event::OpenTask { path } => Event::OpenTask { path: path.clone() },
+                Event::Command { command, args, cwd, term, group } => Event::Command {
+                    command: *command,
+                    args: args.clone(),
+                    cwd: cwd.clone(),
+                    term: *term,
+                    group: group.clone(),
+                },
                 // This machine's come to the app (see `main`), even with no window.
                 Event::Open { root, file } if name_for_watch != LOCAL => Event::Open {
                     root: root.clone(),
@@ -681,6 +696,12 @@ impl Sik {
                         let host = name.clone();
                         this.update(cx, |_, cx| cx.defer(move |cx| handle_open(host, root, file, cx))).is_ok()
                     }
+                    Event::Command { command, args, cwd, term, group } => this
+                        .update_in(cx, |this, window, cx| {
+                            let command = commands::Command { id: command, args, cwd, term, group };
+                            this.run_command(name.clone(), client.clone(), command, window, cx)
+                        })
+                        .is_ok(),
                     Event::OpenTask { path } => {
                         let tasks = list_tasks(&client).await;
                         this.update_in(cx, |this, window, cx| {
@@ -1167,16 +1188,7 @@ impl Sik {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = self
-            .host(&host)
-            .and_then(|host| {
-                host.tasks
-                    .iter()
-                    .filter(|task| root.starts_with(&task.path))
-                    .max_by_key(|task| task.path.components().count())
-                    .map(|task| task.path.clone())
-            })
-            .unwrap_or(root);
+        let path = self.workspace_containing(&host, &root);
         self.open_file = file;
         if self.client(&host).is_none() {
             self.pending_last = Some(TaskKey { host, path });
@@ -1187,6 +1199,19 @@ impl Sik {
         if let (Some(file), Some(workspace)) = (self.open_file.take(), self.active_workspace()) {
             workspace.update(cx, |workspace, cx| workspace.open(file, true, window, cx));
         }
+    }
+
+    /// The worktree of `host` containing `path`, or `path` itself.
+    fn workspace_containing(&self, host: &str, path: &Path) -> PathBuf {
+        self.host(host)
+            .and_then(|host| {
+                host.tasks
+                    .iter()
+                    .filter(|task| path.starts_with(&task.path))
+                    .max_by_key(|task| task.path.components().count())
+                    .map(|task| task.path.clone())
+            })
+            .unwrap_or_else(|| path.to_path_buf())
     }
 
     /// Cmd-O: a local folder, with the system's dialog.
