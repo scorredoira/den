@@ -88,6 +88,7 @@ actions!(
         ShowShortcuts,
         PreviousTask,
         ToggleTasks,
+        ToggleActivityBar,
         OpenFolder,
         OpenRemoteFolder,
         OpenRecent,

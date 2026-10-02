@@ -112,12 +112,18 @@ impl ChangesPanel {
     }
 
     /// Something changed on disk: reread (after a short delay, since changes
-    /// arrive in bursts) if the panel is visible, or when it's shown.
+    /// arrive in bursts) if the panel is visible, or when it's shown. Hidden,
+    /// only the status, for the count on its icon.
     pub fn mark_stale(&mut self, visible: bool, cx: &mut Context<Self>) {
         self.stale = true;
-        if visible {
-            self.schedule(DEBOUNCE, cx);
-        }
+        self.schedule_view(DEBOUNCE, visible, cx);
+    }
+
+    /// The files changed, staged or not: the count on the panel's icon.
+    pub fn count(&self) -> usize {
+        let staged = self.status.staged.iter().map(|file| &file.path);
+        let unstaged = self.status.unstaged.iter().map(|file| &file.path);
+        staged.chain(unstaged).collect::<std::collections::HashSet<_>>().len()
     }
 
     /// Showing the panel always rereads: while hidden, changes only mark it
@@ -128,26 +134,31 @@ impl ChangesPanel {
 
     /// Rereads the status and the current view's contents.
     fn schedule(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        self.schedule_view(delay, true, cx);
+    }
+
+    /// Rereads the status, and the current view's contents if `view`.
+    fn schedule_view(&mut self, delay: Duration, view: bool, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
             self.error = Some("No agent".into());
             return;
         };
         let path = self.root.clone();
-        let view = self.view;
+        let view = view.then_some(self.view);
         let log = self.log_op(0, cx);
-        self.loading = true;
+        self.loading = view.is_some();
         self.refresh = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
             }
             let status = client.request(Request::Git { path: path.clone(), op: GitOp::Status }).await;
             let content = match view {
-                View::History => Some(client.request(Request::Git { path, op: log }).await),
-                View::Uncommitted => None,
+                Some(View::History) => Some(client.request(Request::Git { path, op: log }).await),
+                _ => None,
             };
             this.update(cx, |this, cx| {
                 this.loading = false;
-                this.stale = false;
+                this.stale &= view.is_none();
                 this.error = None;
                 match status {
                     Ok(Response::GitStatus(status)) => this.status = status,

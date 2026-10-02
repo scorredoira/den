@@ -79,6 +79,18 @@ impl Panel {
         Panel::Terminals,
         Panel::Debugger,
     ];
+
+    /// The ones with an icon in the activity bar, in its default order: all
+    /// but the code, which never closes.
+    pub const ACTIVITY: [Panel; 7] = [
+        Panel::Workspaces,
+        Panel::Files,
+        Panel::Changes,
+        Panel::Search,
+        Panel::References,
+        Panel::Terminals,
+        Panel::Debugger,
+    ];
 }
 
 /// Panels one above the other. The one with the code takes the width left
@@ -402,6 +414,13 @@ pub struct Config {
     /// there's more than folders to it (a server or a worktree).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks_column: Option<bool>,
+    /// The activity bar's icons, top to bottom, set by dragging; those not
+    /// in it go at the end.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<Panel>,
+    /// The activity bar hidden; unset, it shows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_bar: Option<bool>,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
     pub font_sizes: FontSizes,
@@ -469,6 +488,33 @@ impl Config {
         area.slot(&mut sizes).unwrap_or(area.default_size()).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
     }
 
+    /// The activity bar's icons, top to bottom: each panel with one, once.
+    pub fn activity(&self) -> Vec<Panel> {
+        let mut order: Vec<Panel> = Vec::new();
+        for panel in self.activity.iter().chain(&Panel::ACTIVITY) {
+            if Panel::ACTIVITY.contains(panel) && !order.contains(panel) {
+                order.push(*panel);
+            }
+        }
+        order
+    }
+
+    /// Puts `panel`'s icon where `target`'s is, or at the end.
+    pub fn move_activity(&mut self, panel: Panel, target: Option<Panel>) {
+        let mut order = self.activity();
+        let Some(from) = order.iter().position(|p| *p == panel) else {
+            return;
+        };
+        let to = target.and_then(|target| order.iter().position(|p| *p == target)).unwrap_or(order.len() - 1);
+        order.remove(from);
+        order.insert(to, panel);
+        self.activity = order;
+    }
+
+    pub fn shows_activity_bar(&self) -> bool {
+        self.activity_bar.unwrap_or(true)
+    }
+
     /// Whether it looks for new releases by itself.
     pub fn checks_for_updates(&self) -> bool {
         self.check_for_updates.unwrap_or(true)
@@ -486,7 +532,11 @@ impl Config {
         *area.slot(&mut self.font_sizes) = size.filter(|size| *size != area.default_size());
     }
 
+    /// None in tests: they never touch the real one.
     fn path() -> Option<PathBuf> {
+        if cfg!(test) {
+            return None;
+        }
         proto::config_dir().ok().map(|dir| dir.join("config.json"))
     }
 
@@ -762,5 +812,22 @@ mod layout_tests {
         // Next to its own stack, with others in it, it does move.
         assert!(layout.move_panel(Changes, Changes, Side::Bottom));
         assert_eq!(places(&layout)[1], [vec![Files, Search, References], vec![Changes]]);
+    }
+
+    #[test]
+    fn the_activity_bar_order() {
+        let mut config = super::Config::default();
+        assert_eq!(config.activity(), Panel::ACTIVITY);
+        // Dragged down, an icon takes the place of the one dropped on; up, too.
+        config.move_activity(Workspaces, Some(Changes));
+        assert_eq!(config.activity()[..3], [Files, Changes, Workspaces]);
+        config.move_activity(Debugger, Some(Files));
+        assert_eq!(config.activity()[..2], [Debugger, Files]);
+        // Dropped past the icons, it goes last.
+        config.move_activity(Debugger, None);
+        assert_eq!(config.activity().last(), Some(&Debugger));
+        // A hand-edited one: the code, repeated and missing ones mended.
+        config.activity = vec![Code, Terminals, Terminals];
+        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Changes, Search, References, Debugger]);
     }
 }

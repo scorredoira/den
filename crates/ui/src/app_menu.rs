@@ -19,6 +19,7 @@ use crate::{
 /// Sets the menus; again after something they show changes (Word Wrap's check).
 pub fn set(cx: &mut App) {
     let wrap = Config::get(cx).word_wrap;
+    let activity_bar = Config::get(cx).shows_activity_bar();
     let mac = cfg!(target_os = "macos");
     let mut menus = Vec::new();
     if mac {
@@ -89,6 +90,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Search", ShowSearch),
             MenuItem::action("References", ShowReferences),
             MenuItem::action("Toggle Side Panel", ToggleSidePanel),
+            MenuItem::action("Activity Bar", ToggleActivityBar).checked(activity_bar),
             MenuItem::separator(),
             MenuItem::action("Toggle Workspaces Column", ToggleTasks),
             MenuItem::action("Toggle Terminals", ToggleTerminals),

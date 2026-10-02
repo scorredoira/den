@@ -24,6 +24,12 @@ fn draw(cx: &mut TestAppContext, layout: impl FnOnce(&mut config::Layout)) -> (E
     (workspace, cx)
 }
 
+fn click(cx: &mut VisualTestContext, selector: &'static str) {
+    let at = bounds(cx, selector).center();
+    cx.simulate_click(at, Modifiers::default());
+    cx.run_until_parked();
+}
+
 fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
     cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is drawn"))
 }
@@ -60,9 +66,11 @@ fn columns_in_any_order(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn dragging_the_terminals_tab_under_the_code(cx: &mut TestAppContext) {
+fn dragging_the_terminals_icon_under_the_code(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    let start = bounds(cx, "panel-tab-Terminals").center();
+    // Alone in their place, the terminals have no tab: their icon drags them.
+    assert!(cx.debug_bounds("panel-tab-Terminals").is_none());
+    let start = bounds(cx, "activity-Terminals").center();
     let code = bounds(cx, "stack-Code");
     let end = point(code.center().x, code.bottom() - px(10.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
@@ -84,10 +92,11 @@ fn dragging_the_terminals_tab_under_the_code(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn dropping_the_changes_on_the_terminals_tab_makes_them_tabs(cx: &mut TestAppContext) {
+fn dropping_the_changes_on_the_terminals_bar_makes_them_tabs(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     let start = bounds(cx, "panel-tab-Changes").center();
-    let end = bounds(cx, "panel-tab-Terminals").center();
+    let terminals = bounds(cx, "stack-Terminals");
+    let end = point(terminals.center().x, terminals.top() + px(10.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
@@ -98,13 +107,15 @@ fn dropping_the_changes_on_the_terminals_tab_makes_them_tabs(cx: &mut TestAppCon
     cx.run_until_parked();
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Terminals).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Changes, Panel::Terminals]);
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Terminals, Panel::Changes]);
     // The panel dropped shows; the terminals are a tab away.
     cx.update(|_, cx| {
         assert!(workspace.read(cx).is_shown(Panel::Changes, cx));
-        assert!(!workspace.read(cx).terminals_visible(cx));
+        assert!(!workspace.read(cx).is_shown(Panel::Terminals, cx));
     });
     bounds(cx, "stack-Changes");
+    // Together, they have tabs again.
+    bounds(cx, "panel-tab-Terminals");
 }
 
 #[gpui_kit::test]
@@ -168,7 +179,7 @@ fn the_workspaces_are_a_panel(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let workspaces = bounds(cx, "workspaces");
     assert!(workspaces.right() <= bounds(cx, "stack-Files").left(), "on the left by default");
-    bounds(cx, "panel-tab-Workspaces");
+    assert!(bounds(cx, "activity-Workspaces").right() <= workspaces.left(), "the activity bar, left of everything");
     // Hidden from the workspace, the app's choice changes for every task.
     workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Workspaces, cx));
     cx.run_until_parked();
@@ -182,6 +193,58 @@ fn the_workspaces_are_a_panel(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     bounds(cx, "workspaces");
+}
+
+#[gpui_kit::test]
+fn an_icon_shows_and_hides_its_panel_where_it_is(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let shown = |panel, cx: &mut VisualTestContext| workspace.read_with(cx, |workspace, cx| workspace.is_shown(panel, cx));
+    // The changes, a tab behind the files: to the front.
+    click(cx, "activity-Changes");
+    assert!(shown(Panel::Changes, cx));
+    bounds(cx, "stack-Changes");
+    // Again: their place closes.
+    click(cx, "activity-Changes");
+    assert!(!shown(Panel::Changes, cx));
+    assert!(cx.debug_bounds("stack-Changes").is_none());
+    assert!(cx.debug_bounds("stack-Files").is_none());
+    // The terminals, a column of their own, close and open again.
+    click(cx, "activity-Terminals");
+    assert!(cx.debug_bounds("terminals").is_none());
+    click(cx, "activity-Terminals");
+    bounds(cx, "terminals");
+    // The code has none: it never closes.
+    assert!(cx.debug_bounds("activity-Code").is_none());
+}
+
+#[gpui_kit::test]
+fn dragging_an_icon_within_the_bar_reorders_it(cx: &mut TestAppContext) {
+    let (_, cx) = draw(cx, |_| {});
+    let start = bounds(cx, "activity-Debugger").center();
+    let end = bounds(cx, "activity-Files").center();
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(start - point(px(0.), px(12.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let order = cx.update(|_, cx| Config::get(cx).activity());
+    assert_eq!(order[..3], [Panel::Workspaces, Panel::Debugger, Panel::Files]);
+    assert!(bounds(cx, "activity-Debugger").bottom() <= bounds(cx, "activity-Files").top());
+    // The layout didn't change.
+    let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
+    assert!(layout == config::Layout::default());
+}
+
+#[gpui_kit::test]
+fn without_the_activity_bar_every_panel_has_its_tab(cx: &mut TestAppContext) {
+    let (_, cx) = draw(cx, |_| {});
+    bounds(cx, "activity-bar");
+    cx.update(|_, cx| Config::update(cx, |config| config.activity_bar = Some(false)));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("activity-bar").is_none());
+    bounds(cx, "panel-tab-Terminals");
+    bounds(cx, "panel-tab-Debugger");
 }
 
 /// Run and Debug go on the lines that declare a test, and nowhere else.

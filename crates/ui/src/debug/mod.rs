@@ -403,6 +403,11 @@ impl Debugger {
         self.current().is_some()
     }
 
+    /// A session started or connected.
+    pub fn is_active(&self) -> bool {
+        self.status != Status::Idle
+    }
+
     fn current(&self) -> Option<&VmStop> {
         self.stops.get(&self.focus?)
     }

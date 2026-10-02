@@ -32,9 +32,9 @@ impl Render for WorkspacesPanel {
     }
 }
 
-fn icon(panel: Panel) -> &'static str {
+pub(super) fn icon(panel: Panel) -> &'static str {
     match panel {
-        Panel::Workspaces => "icons/folders.svg",
+        Panel::Workspaces => "icons/layers.svg",
         Panel::Files => "icons/files.svg",
         Panel::Changes => "icons/git-branch.svg",
         Panel::Search => "icons/text-search.svg",
@@ -45,7 +45,7 @@ fn icon(panel: Panel) -> &'static str {
     }
 }
 
-fn title(panel: Panel) -> &'static str {
+pub(super) fn title(panel: Panel) -> &'static str {
     match panel {
         Panel::Workspaces => "Workspaces",
         Panel::Files => "Files",
@@ -387,7 +387,9 @@ impl Workspace {
 
     fn render_stack_header(&self, stack: &Stack, active: Panel, cx: &mut Context<Self>) -> AnyElement {
         let workspace = cx.entity().downgrade();
-        let tabs = stack_tabs(&workspace, &stack.panels, active, cx);
+        let tabs = has_tabs(&stack.panels, cx).then(|| stack_tabs(&workspace, &stack.panels, active, cx));
+        // Alone, its title goes where the tabs would.
+        let alone = tabs.is_none();
         let theme = cx.theme();
         h_flex()
             .h(px(BAR_HEIGHT))
@@ -396,7 +398,7 @@ impl Workspace {
             .gap_1()
             .border_b_1()
             .border_color(theme.sidebar_border)
-            .child(tabs)
+            .children(tabs)
             .child(
                 div()
                     .id("panel-stack-title")
@@ -404,7 +406,8 @@ impl Workspace {
                     .h_full()
                     .flex()
                     .items_center()
-                    .justify_end()
+                    .when(alone, |el| el.pl_1())
+                    .when(!alone, |el| el.justify_end())
                     .pr_1()
                     .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
@@ -437,22 +440,31 @@ impl Workspace {
             };
             let panels = layout.columns[column].stacks[stack].panels.clone();
             let workspace = workspace.clone();
-            let leading: Leading = Rc::new(move |_, cx| div().px_1().child(stack_tabs(&workspace, &panels, panel, cx)).into_any_element());
+            let leading: Option<Leading> = has_tabs(&panels, cx).then(|| {
+                Rc::new(move |_: &mut Window, cx: &mut App| div().px_1().child(stack_tabs(&workspace, &panels, panel, cx)).into_any_element())
+                    as Leading
+            });
             if panel == Panel::Workspaces {
                 if let Some(workspaces) = &self.workspaces {
-                    workspaces.update(cx, |workspaces, _| workspaces.leading = Some(leading));
+                    workspaces.update(cx, |workspaces, _| workspaces.leading = leading);
                 }
             } else if panel == Panel::Terminals {
-                self.terminals.update(cx, |terminals, _| terminals.leading = Some(leading));
+                self.terminals.update(cx, |terminals, _| terminals.leading = leading);
             } else {
                 let tall = Some(column) != code;
                 self.debugger.update(cx, |debugger, _| {
-                    debugger.leading = Some(leading);
+                    debugger.leading = leading;
                     debugger.tall = tall;
                 });
             }
         }
     }
+}
+
+/// Whether a stack shows its tabs: alone, a panel's icon in the activity bar
+/// already shows it and drags it, but for the code's, which has none there.
+fn has_tabs(panels: &[Panel], cx: &App) -> bool {
+    panels.len() > 1 || panels == [Panel::Code] || !Config::get(cx).shows_activity_bar()
 }
 
 /// A stack's tabs: a click shows the panel, dragging one moves it.

@@ -74,6 +74,7 @@ shortcuts![
     (OpenTaskPicker, "Find Workspace", "secondary-k"),
     (PreviousTask, "Previous Workspace", "secondary-e"),
     (ToggleTasks, "Toggle Workspaces Column", "secondary-shift-b"),
+    (ToggleActivityBar, "Toggle Activity Bar", "secondary-alt-b"),
     (OpenFolder, "Open Folder", "secondary-o"),
     (OpenRemoteFolder, "Open Folder on Server", "secondary-alt-o"),
     (OpenRecent, "Open Recent", "secondary-alt-r"),

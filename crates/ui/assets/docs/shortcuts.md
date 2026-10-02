@@ -111,6 +111,9 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{CollapseFileTree}} | Collapse all the folders |
 | {{ShowChanges}} | Changes: what isn't committed, and the history |
 | {{ShowReferences}} | References |
+| {{ToggleActivityBar}} | Show or hide the activity bar |
+
+Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there, as with its tab.
 
 ## Terminals
 

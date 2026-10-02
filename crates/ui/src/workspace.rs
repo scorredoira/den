@@ -47,6 +47,7 @@ use crate::{
 
 mod tab_drag;
 mod layout;
+mod activity;
 mod markdown_images;
 mod commands;
 #[cfg(test)]
@@ -56,6 +57,7 @@ mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
 pub(crate) use layout::{Leading, WorkspacesPanel};
+pub(crate) use activity::{Badge, OnActivity, TaskBadges, activity_bar, activity_width};
 
 enum Content {
     Loading,
@@ -229,6 +231,8 @@ pub struct Workspace {
     /// The app's workspaces column, and whether the app shows it.
     workspaces: Option<Entity<WorkspacesPanel>>,
     workspaces_visible: Option<bool>,
+    /// The app's tasks' state, on the activity bar's icons.
+    badges: TaskBadges,
     file_tree: Entity<FileTree>,
     terminals: Entity<TerminalArea>,
     terminals_maximized: bool,
@@ -308,6 +312,17 @@ impl Workspace {
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
             cx.observe(&debugger, |_, _, cx| cx.notify()),
+            // The count on the changes' icon.
+            cx.observe(&changes, {
+                let mut last = 0;
+                move |_, changes, cx| {
+                    let count = changes.read(cx).count();
+                    if count != last {
+                        last = count;
+                        cx.notify();
+                    }
+                }
+            }),
             cx.observe_self(|this, cx| this.remember(cx)),
             cx.subscribe_in(
                 &file_tree,
@@ -383,6 +398,9 @@ impl Workspace {
             }),
         ];
         terminals.update(cx, |terminals, cx| terminals.restore(window, cx));
+        if has_agent {
+            changes.update(cx, |changes, cx| changes.mark_stale(false, cx));
+        }
         let focus_handle = cx.focus_handle();
         // Disk changes are watched by the agent on the task's machine.
         if let Some(client) = &agent {
@@ -401,6 +419,7 @@ impl Workspace {
             panel_drop: None,
             workspaces: None,
             workspaces_visible: None,
+            badges: TaskBadges::default(),
             file_tree,
             terminals,
             terminals_maximized: false,
@@ -1624,12 +1643,8 @@ impl Workspace {
         self.set_terminals_visible(!(self.is_shown(Panel::Terminals, cx) && focused), window, cx);
     }
 
-    pub fn terminals_visible(&self, cx: &App) -> bool {
-        self.is_shown(Panel::Terminals, cx)
-    }
-
     /// Shows the terminals and focuses them, or hides them and focus returns to
-    /// the IDE. The title bar's button, which ignores where the focus is.
+    /// the IDE. The activity bar's icon, which ignores where the focus is.
     pub fn set_terminals_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         if visible {
             self.show_panel(Panel::Terminals, cx);
@@ -3332,7 +3347,8 @@ impl Render for Workspace {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .text_color(cx.theme().foreground)
-            .child(self.render_layout(window, cx))
+            .children(self.render_activity_bar(cx))
+            .child(div().flex_1().min_w_0().h_full().child(self.render_layout(window, cx)))
             .children(
                 self.finder
                     .as_ref()

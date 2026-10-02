@@ -29,13 +29,13 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    PreviousTask, ShowShortcuts, ShowWelcome, ToggleTasks,
+    PreviousTask, ShowShortcuts, ShowWelcome, ToggleActivityBar, ToggleTasks,
     config::{self, Config, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
     shortcuts::{self, SHORTCUTS},
-    workspace::{Leading, Workspace, WorkspacesPanel},
+    workspace::{Badge, Leading, OnActivity, TaskBadges, Workspace, WorkspacesPanel, activity_bar, activity_width},
 };
 
 mod about;
@@ -50,9 +50,6 @@ const REFRESH: Duration = Duration::from_secs(5);
 
 /// Name of this machine in the tasks column.
 pub const LOCAL: &str = "local";
-
-/// Width of the title bar's workspaces column button.
-const TOGGLE_WIDTH: f32 = 22.;
 
 /// Width of the fold arrow at the end of a repo with worktrees.
 const FOLD_WIDTH: f32 = 12.;
@@ -1198,6 +1195,27 @@ impl Sik {
         self.show_tasks_column(visible, cx);
     }
 
+    fn toggle_activity_bar(&mut self, _: &ToggleActivityBar, _: &mut Window, cx: &mut Context<Self>) {
+        // Hidden, it's remembered; shown again, it's the default.
+        Config::update(cx, |config| config.activity_bar = config.shows_activity_bar().then_some(false));
+        crate::app_menu::set(cx);
+        cx.refresh_windows();
+    }
+
+    /// The tasks' state on the activity bar's icons: the active one's on the
+    /// terminals, the most urgent of the others on the workspaces.
+    fn task_badges(&self, cx: &App) -> TaskBadges {
+        let dot = |(dot, color): (&str, Hsla)| (urgency(dot, color, cx) > 0).then_some(color);
+        let active = self.active.as_ref().and_then(|key| Some(self.status(key, self.task(key)?, cx)));
+        let others = self
+            .ordered(cx)
+            .into_iter()
+            .filter(|(key, _)| self.active.as_ref() != Some(key))
+            .map(|(key, task)| self.status(&key, task, cx))
+            .max_by_key(|(dot, color)| urgency(dot, *color, cx));
+        TaskBadges { terminals: active.and_then(dot), workspaces: others.and_then(dot) }
+    }
+
     /// Opens `path` on `host`: the task it is, or the folder on its own.
     fn open_path(&mut self, host: SharedString, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.activate(TaskKey { host, path }, window, cx);
@@ -1800,12 +1818,22 @@ impl Sik {
             .child(body)
     }
 
-    /// The tasks column, where its panel's column is, and the welcome.
+    /// The activity bar, with only the workspaces' icon; the tasks column,
+    /// where its panel's column is; and the welcome.
     fn render_without_workspace(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let layout = &Config::get(cx).layout;
+        let config = Config::get(cx);
+        let bar = config.shows_activity_bar().then(|| {
+            let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
+            let sik = cx.entity().downgrade();
+            let click: OnActivity = Rc::new(move |_, window, cx| {
+                sik.update(cx, |this, cx| this.toggle_tasks(&ToggleTasks, window, cx)).ok();
+            });
+            activity_bar(vec![(Panel::Workspaces, visible, badge)], click, cx)
+        });
+        let layout = &config.layout;
         let width = layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.);
-        let state = self.split.state(window.viewport_size().width, [visible, true], cx).clone();
-        h_resizable("sik-split")
+        let state = self.split.state(window.viewport_size().width - activity_width(cx), [visible, true], cx).clone();
+        let split = h_resizable("sik-split")
             .with_state(&state)
             .child(
                 resizable_panel()
@@ -1826,8 +1854,8 @@ impl Sik {
                         }
                     });
                 }
-            })
-            .into_any_element()
+            });
+        h_flex().size_full().children(bar).child(div().flex_1().min_w_0().h_full().child(split)).into_any_element()
     }
 
     fn render_host_header(&self, host: &Host, cx: &mut Context<Self>) -> AnyElement {
@@ -2101,15 +2129,9 @@ impl Sik {
         let (mut dot, mut color) = self.status(key, task, cx);
         if let Some(Some((_, true))) = &fold {
             // Folded: the most urgent of its worktrees, if more than its own.
-            let urgency = |dot: &str, color: Hsla| match dot {
-                "●" if color == cx.theme().danger => 3,
-                "◐" => 2,
-                "●" => 1,
-                _ => 0,
-            };
             for (key, task) in folded {
                 let (other, other_color) = self.status(key, task, cx);
-                if urgency(other, other_color) > urgency(dot, color) {
+                if urgency(other, other_color, cx) > urgency(dot, color, cx) {
                     (dot, color) = (other, other_color);
                 }
             }
@@ -2284,21 +2306,33 @@ impl Sik {
     }
 }
 
+/// How much a task's dot (see `Sik::status`) asks to be looked at: waiting
+/// for an answer, working, finished unseen, or nothing.
+fn urgency(dot: &str, color: Hsla, cx: &App) -> u8 {
+    match dot {
+        "●" if color == cx.theme().danger => 3,
+        "◐" => 2,
+        "●" => 1,
+        _ => 0,
+    }
+}
+
 impl Render for Sik {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(workspace) = self.active_workspace() {
-            let width = window.viewport_size().width;
+            let width = window.viewport_size().width - activity_width(cx);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let (panel, visible) = (self.workspaces_panel.clone(), self.tasks_visible(cx));
+            let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
                 workspace.set_workspaces(&panel, visible, cx);
+                workspace.set_badges(badges, cx);
             });
         }
         let tasks_visible = self.tasks_shown(cx);
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| "sik".into());
-        let terminals_visible = self.active_workspace().map(|workspace| workspace.read(cx).terminals_visible(cx));
         v_flex()
             .id("sik")
             .key_context("Sik")
@@ -2309,6 +2343,7 @@ impl Render for Sik {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
+            .on_action(cx.listener(Self::toggle_activity_bar))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_remote_folder))
             .on_action(cx.listener(Self::open_recent))
@@ -2328,24 +2363,6 @@ impl Render for Sik {
             // and zooms like the system one.
             .child(
                 TitleBar::new()
-                    .child(
-                        div()
-                            .id("toggle-tasks")
-                            .flex_none()
-                            .w(px(TOGGLE_WIDTH))
-                            .p_1()
-                            .rounded(cx.theme().radius)
-                            .hover(|style| style.bg(cx.theme().secondary_hover))
-                            // A click, not the start of dragging the window.
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(svg().path("icons/panel-left.svg").size(px(14.)).text_color(if tasks_visible {
-                                cx.theme().foreground
-                            } else {
-                                cx.theme().muted_foreground
-                            }))
-                            .tooltip(|window, cx| Tooltip::new("Toggle Workspaces Column").build(window, cx))
-                            .on_click(cx.listener(|this, _, window, cx| this.toggle_tasks(&ToggleTasks, window, cx))),
-                    )
                     // Windows and Linux: the menus, which only macOS draws itself.
                     .children(crate::app_menu::bar(cx))
                     .child(
@@ -2353,9 +2370,9 @@ impl Render for Sik {
                             .flex_1()
                             .flex()
                             .justify_center()
-                            // Centered on the window: the traffic lights and
-                            // the toggles on each side.
-                            .pr(px(72. + if terminals_visible.is_some() { 0. } else { TOGGLE_WIDTH }))
+                            // Centered on the window: as much on the right
+                            // as the traffic lights take on the left.
+                            .pr(px(80.))
                             .text_ui(cx)
                             .text_color(cx.theme().muted_foreground)
                             .child(title),
@@ -2377,29 +2394,6 @@ impl Render for Sik {
                             })
                             .on_click(cx.listener(move |this, _, window, cx| this.ask_update(version.clone().into(), window, cx)))
                     }))
-                    // Without a workspace there are no terminals to show.
-                    .children(terminals_visible.map(|visible| {
-                        div()
-                            .id("toggle-terminals")
-                            .flex_none()
-                            .w(px(TOGGLE_WIDTH))
-                            .mr_2()
-                            .p_1()
-                            .rounded(cx.theme().radius)
-                            .hover(|style| style.bg(cx.theme().secondary_hover))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(svg().path("icons/panel-right.svg").size(px(14.)).text_color(if visible {
-                                cx.theme().foreground
-                            } else {
-                                cx.theme().muted_foreground
-                            }))
-                            .tooltip(|window, cx| Tooltip::new("Toggle Terminals").build(window, cx))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(workspace) = this.active_workspace() {
-                                    workspace.update(cx, |workspace, cx| workspace.set_terminals_visible(!visible, window, cx));
-                                }
-                            }))
-                    })),
             )
             .child(div().flex_1().min_h_0().w_full().child(match self.active_workspace() {
                 Some(workspace) => workspace.into_any_element(),

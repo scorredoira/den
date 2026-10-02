@@ -87,7 +87,9 @@ Drag a terminal tab to the left, right, top or bottom edge of another terminal t
 
 ## Layout
 
-The workspaces column, Files, Changes, Search, References, the code, the terminals and the debugger each have a tab (an icon at the start of their bar). Drag one onto another tab to put them together, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code takes the space the others leave; its place never closes (hiding a panel that shares it shows the code), and opening a file brings it to the front. Cmd-B shows or hides the place with the files. Right-click the title next to the tabs to hide that place; Reset Layout, in that menu and in the workspaces column's, the terminals' and the debugger's, puts everything back. The places are the same for every workspace.
+The activity bar, on the window's left edge, has an icon for each panel but the code: a click shows the panel wherever it's placed, or hides it if it shows. The icons carry what's going on in their panel: the number of files changed, Claude's state in this workspace's terminals and, on the workspaces', the most urgent of the others; the debugger's is yellow while stopped and green while running. Drag the icons up or down to reorder them; View → Activity Bar (Cmd-Alt-B) hides it.
+
+Panels that share a place have a tab each (an icon at the start of their bar); alone, the icon in the activity bar takes the tab's place. Drag a tab or an icon onto another tab to put them together, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code takes the space the others leave; its place never closes (hiding a panel that shares it shows the code), and opening a file brings it to the front. Cmd-B shows or hides the place with the files. Right-click the title next to the tabs to hide that place; Reset Layout, in that menu and in the workspaces column's, the terminals' and the debugger's, puts everything back. The places are the same for every workspace.
 
 ## Debugging
 
