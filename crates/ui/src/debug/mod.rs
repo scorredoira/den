@@ -294,8 +294,6 @@ pub struct Debugger {
     pub edit: Option<BreakpointEdit>,
     /// Its column is narrow and tall: its parts go one above the other.
     pub tall: bool,
-    /// Drawn first in the toolbar: the tabs of the place it is in.
-    pub leading: Option<crate::workspace::Leading>,
     /// The value shown by hovering its name in the code.
     pub hover: Option<HoverValue>,
     _subscriptions: Vec<Subscription>,
@@ -365,7 +363,6 @@ impl Debugger {
             value_edit: None,
             edit: None,
             tall: false,
-            leading: None,
             hover: None,
             tests: None,
             _subscriptions: subscriptions,

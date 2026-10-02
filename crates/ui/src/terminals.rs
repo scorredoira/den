@@ -72,8 +72,6 @@ pub struct TerminalArea {
     /// Size of the terminal area at the last paint, so each shell is created
     /// at its final size (otherwise it redraws the prompt when resized).
     body_size: Rc<Cell<Option<Size<Pixels>>>>,
-    /// Drawn first in the tab bar: the tabs of the place it is in.
-    pub leading: Option<crate::workspace::Leading>,
     /// Terminals on this machine (not on a server).
     local: bool,
     /// For right-click menus.
@@ -96,7 +94,6 @@ impl TerminalArea {
             terminal_drop: None,
             drag_origin: None,
             body_size: Rc::default(),
-            leading: None,
             local,
             weak: cx.entity().downgrade(),
             _subscriptions: Vec::new(),
@@ -575,8 +572,7 @@ impl TerminalArea {
         }
     }
 
-    fn render_tab_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let leading = self.leading.as_ref().map(|leading| leading(window, cx));
+    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         h_flex()
             .id("terminal-tabs")
@@ -587,7 +583,6 @@ impl TerminalArea {
             .border_color(theme.border)
             .overflow_x_scroll()
             .on_drop(cx.listener(|this, drag: &TerminalDrag, window, cx| this.drop_on_bar(drag, None, window, cx)))
-            .children(leading)
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
                 let active = ix == self.active;
                 let title = self
@@ -789,7 +784,7 @@ impl Render for TerminalArea {
             .size_full()
             .when(cfg!(test), |el| el.debug_selector(|| "terminals".into()))
             .bg(theme.background)
-            .child(self.render_tab_bar(window, cx))
+            .child(self.render_tab_bar(cx))
             .child(
                 div()
                     .relative()

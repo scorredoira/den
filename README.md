@@ -73,7 +73,7 @@ They are meant for coding agents: when `~/.claude` exists, the agent installs a 
 
 ## Workspaces
 
-The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees folded under its checkout. Drag to reorder: a checkout moves along with its worktrees. Its + adds a folder or a server (any name from `~/.ssh/config` or `user@host`), and the + beside a server opens a folder there, or creates one by typing a new name; right-click removes them, and a folder that isn't a repo yet can be made one (Initialize Git Repository). With only folders open it stays hidden until toggled (Cmd-Shift-B); it shows by itself once there's a server or a worktree.
+The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees (named by their branch) folded under its checkout, and a line between repos. Drag to reorder: a checkout moves along with its worktrees. Its + adds a folder or a server (any name from `~/.ssh/config` or `user@host`), and the + beside a server opens a folder there, or creates one by typing a new name; right-click removes them, and a folder that isn't a repo yet can be made one (Initialize Git Repository). With only folders open it stays hidden until toggled (Cmd-Shift-B); it shows by itself once there's a server or a worktree.
 
 New Worktree (Cmd-N) creates one with the repo's executable `.sik/create <name>` if it has one, or `git worktree add` otherwise. From a Sik terminal: `cd "$(sik worktree <name>)"`.
 
@@ -90,8 +90,6 @@ Drag a terminal tab to the left, right, top or bottom edge of another terminal t
 The activity bar, on the window's left edge, has an icon for each panel but the code: a click shows the panel wherever it's placed, or hides it if it shows. The icons carry what's going on in their panel: the number of files changed, Claude's state in this workspace's terminals and, on the workspaces', the most urgent of the others; the debugger's is yellow while stopped and green while running. Drag the icons up or down to reorder them.
 
 Drag an icon onto a panel's bar to put them in the same place, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code takes the space the others leave and, as in any editor, stays put: it has no icon, and the others go around it. Its place never closes (hiding a panel that shares it shows the code), and opening a file brings it to the front. Cmd-B shows or hides the place with the files. Right-click a panel's title to hide its place; Reset Layout, in that menu and in the workspaces column's, the terminals' and the debugger's, puts everything back. The places are the same for every workspace.
-
-View → Activity Bar (Cmd-Alt-B) hides the bar; the places then show a tab for each of their panels (an icon at the start of their bar), which click and drag as the bar's icons do.
 
 ## Debugging
 

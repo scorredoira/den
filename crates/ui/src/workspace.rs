@@ -21,7 +21,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles,
+    CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
@@ -56,8 +56,8 @@ mod autosave_tests;
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::{Leading, WorkspacesPanel};
-pub(crate) use activity::{Badge, OnActivity, TaskBadges, activity_bar, activity_width};
+pub(crate) use layout::WorkspacesPanel;
+pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar};
 
 enum Content {
     Loading,
@@ -246,6 +246,7 @@ pub struct Workspace {
     /// On this machine (not on a server).
     local: bool,
     changes: Entity<ChangesPanel>,
+    history: Entity<ChangesPanel>,
     search: Entity<SearchPanel>,
     /// References panel: the latest F12 (with several targets) or Shift-F12.
     references: Entity<SearchPanel>,
@@ -301,7 +302,8 @@ impl Workspace {
         let file_tree = cx.new(|cx| FileTree::new(root.clone(), agent.clone(), local, cx));
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
-        let changes = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local));
+        let changes = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::Uncommitted));
+        let history = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::History));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
@@ -354,27 +356,8 @@ impl Workspace {
                     }
                 },
             ),
-            cx.subscribe_in(&changes, window, |this, _, event: &ChangesEvent, window, cx| match event {
-                ChangesEvent::OpenFile { file } => this.open(this.root.join(file), true, window, cx),
-                ChangesEvent::OpenDiff { file, pin } => {
-                    let deleted = !this.root.join(file).exists();
-                    if *pin && !deleted {
-                        this.open(this.root.join(file), true, window, cx);
-                    } else {
-                        let of = DiffOf { file: file.clone(), commit: None, source: false };
-                        this.open_diff(of, *pin, window, cx);
-                    }
-                }
-                ChangesEvent::OpenCommitDiff { commit, short, file, pin } => {
-                    this.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), *pin, window, cx);
-                }
-                ChangesEvent::OpenCommit { commit, short, pin } => {
-                    this.open_diff(DiffOf::commit(commit.clone(), short.clone(), String::new(), false), *pin, window, cx);
-                }
-                ChangesEvent::OpenFileAt { commit, short, file } => {
-                    this.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
-                }
-            }),
+            cx.subscribe_in(&changes, window, Self::on_git_event),
+            cx.subscribe_in(&history, window, Self::on_git_event),
             cx.subscribe_in(&search, window, |this, search, event: &SearchEvent, window, cx| match event {
                 SearchEvent::Open { file, line, column, pin } => {
                     let goto = Position::new(line.saturating_sub(1), *column);
@@ -429,6 +412,7 @@ impl Workspace {
             client: agent,
             local,
             changes,
+            history,
             search,
             references,
             finder: None,
@@ -687,9 +671,10 @@ impl Workspace {
         Self::watch_fs(&self.root, &client, window, cx);
         self.file_tree
             .update(cx, |tree, cx| tree.set_client(client.clone(), cx));
-        let changes_visible = self.is_shown(Panel::Changes, cx);
-        self.changes
-            .update(cx, |changes, cx| changes.set_client(client.clone(), changes_visible, cx));
+        for (panel, entity) in self.git_panels() {
+            let visible = self.is_shown(panel, cx);
+            entity.update(cx, |entity, cx| entity.set_client(client.clone(), visible, cx));
+        }
         self.search.update(cx, |search, _| search.set_client(client.clone()));
         self.debugger.update(cx, |debugger, cx| {
             debugger.set_client(client.clone(), cx);
@@ -2122,9 +2107,10 @@ impl Workspace {
         }
         self.file_tree
             .update(cx, |tree, cx| tree.invalidate(&paths, cx));
-        let changes_visible = self.is_shown(Panel::Changes, cx);
-        self.changes
-            .update(cx, |changes, cx| changes.mark_stale(changes_visible, cx));
+        for (panel, entity) in self.git_panels() {
+            let visible = self.is_shown(panel, cx);
+            entity.update(cx, |entity, cx| entity.mark_stale(visible, cx));
+        }
         let reload: Vec<PathBuf> = self
             .tabs
             .iter()
@@ -2717,14 +2703,44 @@ impl Workspace {
     }
 
 
-    /// The Changes panel with the commits that changed `path`.
+    /// What the Changes and History panels ask to open.
+    fn on_git_event(&mut self, _: &Entity<ChangesPanel>, event: &ChangesEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            ChangesEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
+            ChangesEvent::OpenDiff { file, pin } => {
+                let deleted = !self.root.join(file).exists();
+                if *pin && !deleted {
+                    self.open(self.root.join(file), true, window, cx);
+                } else {
+                    let of = DiffOf { file: file.clone(), commit: None, source: false };
+                    self.open_diff(of, *pin, window, cx);
+                }
+            }
+            ChangesEvent::OpenCommitDiff { commit, short, file, pin } => {
+                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), *pin, window, cx);
+            }
+            ChangesEvent::OpenCommit { commit, short, pin } => {
+                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), String::new(), false), *pin, window, cx);
+            }
+            ChangesEvent::OpenFileAt { commit, short, file } => {
+                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
+            }
+        }
+    }
+
+    /// The panels that read git, each with its place in the layout.
+    fn git_panels(&self) -> [(Panel, &Entity<ChangesPanel>); 2] {
+        [(Panel::Changes, &self.changes), (Panel::History, &self.history)]
+    }
+
+    /// The History panel with the commits that changed `path`.
     fn show_history(&mut self, path: &Path, dir: bool, cx: &mut Context<Self>) {
         let Ok(relative) = path.strip_prefix(&self.root) else {
             return;
         };
         let file = relative.to_string_lossy().into_owned();
-        self.show_panel(Panel::Changes, cx);
-        self.changes.update(cx, |changes, cx| changes.show_history(Some((file, dir)), cx));
+        self.show_panel(Panel::History, cx);
+        self.history.update(cx, |history, cx| history.show_history(Some((file, dir)), cx));
         cx.notify();
     }
 
@@ -2744,7 +2760,6 @@ impl Workspace {
             .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
                 this.drop_tab(drag, group, Some(this.tabs.len()), EditorDrop::Center, window, cx);
             }))
-            .when(group == 0, |el| el.children(self.code_tabs(cx)))
             .children(self.tabs.iter().enumerate().filter(|(_, tab)| tab.group == group).map(|(ix, tab)| {
                 let active = shown == Some(ix);
                 let name = tab
@@ -3246,29 +3261,6 @@ impl Workspace {
     }
 }
 
-fn mode_button(
-    id: impl Into<ElementId>,
-    icon: &'static str,
-    active: bool,
-    cx: &App,
-) -> Stateful<Div> {
-    let theme = cx.theme();
-    div()
-        .id(id)
-        .size(px(26.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(theme.radius)
-        .when(active, |el| el.bg(theme.sidebar_accent))
-        .hover(|style| style.bg(theme.sidebar_accent))
-        .child(svg().path(icon).size(px(16.)).text_color(if active {
-            theme.sidebar_accent_foreground
-        } else {
-            theme.muted_foreground
-        }))
-}
-
 fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -3328,6 +3320,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_side_panel))
             .on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.toggle_panel(Panel::Files, cx)))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.toggle_panel(Panel::Changes, cx)))
+            .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.toggle_panel(Panel::History, cx)))
             .on_action(cx.listener(Self::show_search))
             .on_action(cx.listener(Self::open_file_finder))
             // F4 steps through the visible panel's results: References or Search.
@@ -3378,7 +3371,7 @@ impl Render for Workspace {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .text_color(cx.theme().foreground)
-            .children(self.render_activity_bar(cx))
+            .child(self.render_activity_bar(cx))
             .child(div().flex_1().min_w_0().h_full().child(self.render_layout(window, cx)))
             .children(
                 self.finder

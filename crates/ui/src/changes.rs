@@ -1,5 +1,5 @@
-//! Changes panel, in two views: what isn't committed yet (staged and
-//! unstaged) and the history, with its search, or only a file's or folder's.
+//! The Changes and History panels: what isn't committed yet (staged and
+//! unstaged), and the history, with its search, or only a file's or folder's.
 //! It only reads: committing, staging, discarding and switching branches
 //! are done in a terminal. The branch is in the status bar. The agent does
 //! all the reading.
@@ -44,8 +44,10 @@ pub enum ChangesEvent {
     OpenFileAt { commit: String, short: String, file: String },
 }
 
+/// What a panel lists: the Changes panel what isn't committed, the History
+/// panel the commits.
 #[derive(Clone, Copy, PartialEq)]
-enum View {
+pub enum View {
     Uncommitted,
     History,
 }
@@ -83,12 +85,12 @@ pub struct ChangesPanel {
 impl EventEmitter<ChangesEvent> for ChangesPanel {}
 
 impl ChangesPanel {
-    pub fn new(root: PathBuf, client: Option<Arc<Client>>, local: bool) -> Self {
+    pub fn new(root: PathBuf, client: Option<Arc<Client>>, local: bool, view: View) -> Self {
         Self {
             client,
             local,
             root,
-            view: View::Uncommitted,
+            view,
             status: GitStatus::default(),
             commits: Vec::new(),
             file: None,
@@ -113,10 +115,12 @@ impl ChangesPanel {
 
     /// Something changed on disk: reread (after a short delay, since changes
     /// arrive in bursts) if the panel is visible, or when it's shown. Hidden,
-    /// only the status, for the count on its icon.
+    /// the Changes panel rereads the status, for the count on its icon.
     pub fn mark_stale(&mut self, visible: bool, cx: &mut Context<Self>) {
         self.stale = true;
-        self.schedule_view(DEBOUNCE, visible, cx);
+        if visible || self.view == View::Uncommitted {
+            self.schedule(DEBOUNCE, cx);
+        }
     }
 
     /// The files changed, staged or not: the count on the panel's icon.
@@ -132,41 +136,30 @@ impl ChangesPanel {
         self.schedule(Duration::ZERO, cx);
     }
 
-    /// Rereads the status and the current view's contents.
+    /// Rereads what the panel lists: the status, or the commits.
     fn schedule(&mut self, delay: Duration, cx: &mut Context<Self>) {
-        self.schedule_view(delay, true, cx);
-    }
-
-    /// Rereads the status, and the current view's contents if `view`.
-    fn schedule_view(&mut self, delay: Duration, view: bool, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
             self.error = Some("No agent".into());
             return;
         };
         let path = self.root.clone();
-        let view = view.then_some(self.view);
-        let log = self.log_op(0, cx);
-        self.loading = view.is_some();
+        let op = match self.view {
+            View::Uncommitted => GitOp::Status,
+            View::History => self.log_op(0, cx),
+        };
+        self.loading = true;
         self.refresh = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
             }
-            let status = client.request(Request::Git { path: path.clone(), op: GitOp::Status }).await;
-            let content = match view {
-                Some(View::History) => Some(client.request(Request::Git { path, op: log }).await),
-                _ => None,
-            };
+            let response = client.request(Request::Git { path, op }).await;
             this.update(cx, |this, cx| {
                 this.loading = false;
-                this.stale &= view.is_none();
+                this.stale = false;
                 this.error = None;
-                match status {
+                match response {
                     Ok(Response::GitStatus(status)) => this.status = status,
-                    Ok(other) => this.error = Some(format!("Unexpected response: {other:?}").into()),
-                    Err(err) => this.error = Some(format!("{err:#}").into()),
-                }
-                match content {
-                    Some(Ok(Response::Commits(commits))) => {
+                    Ok(Response::Commits(commits)) => {
                         this.more = commits.len() == PAGE;
                         // A new commit or a branch switch makes the expanded commit stale.
                         if this.commits.first().map(|c| &c.hash) != commits.first().map(|c| &c.hash) {
@@ -174,9 +167,8 @@ impl ChangesPanel {
                         }
                         this.commits = commits;
                     }
-                    Some(Ok(other)) => this.error = Some(format!("Unexpected response: {other:?}").into()),
-                    Some(Err(err)) => this.error = Some(format!("{err:#}").into()),
-                    None => {}
+                    Ok(other) => this.error = Some(format!("Unexpected response: {other:?}").into()),
+                    Err(err) => this.error = Some(format!("{err:#}").into()),
                 }
                 cx.notify();
             })
@@ -199,16 +191,8 @@ impl ChangesPanel {
         }
     }
 
-    fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
-        if self.view != view {
-            self.view = view;
-            self.schedule(Duration::ZERO, cx);
-        }
-    }
-
     /// Shows the history of only `file` (relative), or of everything.
     pub fn show_history(&mut self, file: Option<(String, bool)>, cx: &mut Context<Self>) {
-        self.view = View::History;
         if self.file != file {
             self.file = file;
             self.commits.clear();
@@ -384,34 +368,6 @@ pub fn ago(time: i64) -> String {
 }
 
 impl ChangesPanel {
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let tab = |id: &'static str, label: &'static str, view: View| {
-            let selected = self.view == view;
-            div()
-                .id(id)
-                .px_2()
-                .py_0p5()
-                .text_ui_small(cx)
-                .rounded(theme.radius)
-                .when(selected, |el| el.bg(theme.sidebar_accent).text_color(theme.sidebar_foreground))
-                .when(!selected, |el| el.text_color(theme.muted_foreground))
-                .hover(|style| style.text_color(theme.sidebar_foreground))
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_view(view, cx)))
-        };
-        v_flex()
-            .child(
-                h_flex()
-                    .px_2()
-                    .py_1()
-                    .gap_1()
-                    .child(tab("changes-uncommitted", "Uncommitted", View::Uncommitted))
-                    .child(tab("changes-history", "History", View::History)),
-            )
-
-    }
-
     fn file_menu(&self, file: &ChangedFile, cx: &mut Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let panel = cx.entity().downgrade();
         let path = file.path.clone();
@@ -704,7 +660,9 @@ impl ChangesPanel {
 
 impl Render for ChangesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_query(window, cx);
+        if self.view == View::History {
+            self.ensure_query(window, cx);
+        }
         let (rows, empty) = match self.view {
             View::Uncommitted => (
                 self.render_uncommitted(cx),
@@ -712,12 +670,11 @@ impl Render for ChangesPanel {
             ),
             View::History => (self.render_history(cx), self.commits.is_empty().then_some("No commits")),
         };
-        let header = self.render_header(cx).into_any_element();
         let theme = cx.theme();
         v_flex()
             .size_full()
+            .pt_1()
             .text_ui(cx)
-            .child(header)
             .children(self.error.clone().map(|error| {
                 div()
                     .px_3()

@@ -29,13 +29,13 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    PreviousTask, ShowShortcuts, ShowWelcome, ToggleActivityBar, ToggleTasks,
+    PreviousTask, ShowShortcuts, ShowWelcome, ToggleTasks,
     config::{self, Config, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
     shortcuts::{self, SHORTCUTS},
-    workspace::{Badge, Leading, OnActivity, TaskBadges, Workspace, WorkspacesPanel, activity_bar, activity_width},
+    workspace::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, Workspace, WorkspacesPanel, activity_bar},
 };
 
 mod about;
@@ -378,8 +378,8 @@ impl Sik {
             workspaces_panel: {
                 let sik = cx.entity().downgrade();
                 cx.new(|_| {
-                    WorkspacesPanel::new(move |leading, window, cx| {
-                        sik.update(cx, |sik, cx| sik.render_column(leading, window, cx).into_any_element())
+                    WorkspacesPanel::new(move |_, cx| {
+                        sik.update(cx, |sik, cx| sik.render_column(cx).into_any_element())
                             .unwrap_or_else(|_| div().into_any_element())
                     })
                 })
@@ -1195,13 +1195,6 @@ impl Sik {
         self.show_tasks_column(visible, cx);
     }
 
-    fn toggle_activity_bar(&mut self, _: &ToggleActivityBar, _: &mut Window, cx: &mut Context<Self>) {
-        // Hidden, it's remembered; shown again, it's the default.
-        Config::update(cx, |config| config.activity_bar = config.shows_activity_bar().then_some(false));
-        crate::app_menu::set(cx);
-        cx.refresh_windows();
-    }
-
     /// The tasks' state on the activity bar's icons: the active one's on the
     /// terminals, the most urgent of the others on the workspaces.
     fn task_badges(&self, cx: &App) -> TaskBadges {
@@ -1800,9 +1793,9 @@ impl Sik {
         self.active.as_ref().and_then(|key| self.workspaces.get(key).cloned())
     }
 
-    /// The tasks column; `leading`, the tabs of the place it is in.
-    fn render_column(&self, leading: Option<Leading>, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = self.render_tasks(leading, window, cx);
+    /// The tasks column.
+    fn render_column(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self.render_tasks(cx);
         let theme = cx.theme();
         v_flex()
             .id("task-column")
@@ -1821,18 +1814,15 @@ impl Sik {
     /// The activity bar, with only the workspaces' icon; the tasks column,
     /// where its panel's column is; and the welcome.
     fn render_without_workspace(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let config = Config::get(cx);
-        let bar = config.shows_activity_bar().then(|| {
-            let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
-            let sik = cx.entity().downgrade();
-            let click: OnActivity = Rc::new(move |_, window, cx| {
-                sik.update(cx, |this, cx| this.toggle_tasks(&ToggleTasks, window, cx)).ok();
-            });
-            activity_bar(vec![(Panel::Workspaces, visible, badge)], click, cx)
+        let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
+        let sik = cx.entity().downgrade();
+        let click: OnActivity = Rc::new(move |_, window, cx| {
+            sik.update(cx, |this, cx| this.toggle_tasks(&ToggleTasks, window, cx)).ok();
         });
-        let layout = &config.layout;
+        let bar = activity_bar(vec![(Panel::Workspaces, visible, badge)], click, cx);
+        let layout = &Config::get(cx).layout;
         let width = layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.);
-        let state = self.split.state(window.viewport_size().width - activity_width(cx), [visible, true], cx).clone();
+        let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [visible, true], cx).clone();
         let split = h_resizable("sik-split")
             .with_state(&state)
             .child(
@@ -1840,7 +1830,7 @@ impl Sik {
                     .size(config::width(width, 160., 500.))
                     .size_range(px(160.)..px(500.))
                     .visible(visible)
-                    .child(self.render_column(None, window, cx)),
+                    .child(self.render_column(cx)),
             )
             .child(resizable_panel().child(match &self.guide {
                 Some(guide) => self.render_guide(guide, cx),
@@ -1855,7 +1845,7 @@ impl Sik {
                     });
                 }
             });
-        h_flex().size_full().children(bar).child(div().flex_1().min_w_0().h_full().child(split)).into_any_element()
+        h_flex().size_full().child(bar).child(div().flex_1().min_w_0().h_full().child(split)).into_any_element()
     }
 
     fn render_host_header(&self, host: &Host, cx: &mut Context<Self>) -> AnyElement {
@@ -1939,16 +1929,18 @@ impl Sik {
             .into_any_element()
     }
 
-    fn render_tasks(&self, leading: Option<Leading>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let leading = leading.map(|leading| leading(window, cx));
+    fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
         let ordered = self.ordered(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
         for host in &self.hosts {
             sections.push(self.render_host_header(host, cx));
             let entries: Vec<(TaskKey, &TaskInfo)> =
                 ordered.iter().filter(|(key, _)| key.host == host.name).cloned().collect();
-            for group in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo) {
-                sections.push(self.render_repo(group, cx));
+            // Each repo, with its worktrees, apart from the next.
+            for (ix, group) in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo).enumerate() {
+                let line = cx.theme().sidebar_border;
+                let repo = self.render_repo(group, cx);
+                sections.push(div().py_1().when(ix > 0, |el| el.border_t_1().border_color(line)).child(repo).into_any_element());
             }
         }
         let theme = cx.theme();
@@ -1987,8 +1979,6 @@ impl Sik {
                     .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
-                    .when(leading.is_some(), |el| el.pl_1().gap_1())
-                    .children(leading)
                     .child(div().flex_1().child("WORKSPACES"))
                     .child({
                         let add_menu = header_menu.clone();
@@ -2072,12 +2062,7 @@ impl Sik {
                 .chain(new_task)
                 .collect()
         };
-        let line = cx.theme().sidebar_border;
-        v_flex()
-            .my_1()
-            .child(header)
-            .when(!collapsed, |el| el.child(v_flex().ml(px(ROW_INDENT + 7.)).border_l_1().border_color(line).children(rows)))
-            .into_any_element()
+        v_flex().child(header).children(rows).into_any_element()
     }
 
     fn toggle_fold(&mut self, fold_key: &str, cx: &mut Context<Self>) {
@@ -2120,13 +2105,18 @@ impl Sik {
         folded: &[(TaskKey, &TaskInfo)],
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let label: SharedString = folder_name(&task.path).into();
-        // The branch only when it says something: a checkout off its main
-        // branch, a worktree whose folder isn't named after it.
+        let folder: SharedString = folder_name(&task.path).into();
+        // A worktree goes by its branch, what its agent works on (its folder
+        // usually repeats the repo's name); a checkout by its folder, with
+        // its branch beside it when off the main one.
+        let label = match (&task.branch, task.main) {
+            (Some(branch), false) => SharedString::from(branch.clone()),
+            _ => folder.clone(),
+        };
         let branch = task
             .branch
             .clone()
-            .filter(|branch| *branch != *label && !(task.main && matches!(branch.as_str(), "master" | "main")));
+            .filter(|branch| task.main && *branch != *label && !matches!(branch.as_str(), "master" | "main"));
         let active = self.active.as_ref() == Some(key);
         let (mut dot, mut color) = self.status(key, task, cx);
         if let Some(Some((_, true))) = &fold {
@@ -2154,7 +2144,7 @@ impl Sik {
             .text_ui(cx)
             .when(active, |el| el.bg(theme.sidebar_accent))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
-            .when(fold.is_some(), |row| row.pl(px(ROW_INDENT)))
+            .pl(px(ROW_INDENT))
             // What it is: a folder, or a repo's worktree.
             .child(
                 svg()
@@ -2213,7 +2203,7 @@ impl Sik {
                 let key = key.clone();
                 move |this, _, window, cx| this.activate(key.clone(), window, cx)
             }))
-            .when(!known, |row| {
+            .when(!known || label != folder, |row| {
                 let path = key.path.display().to_string();
                 row.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
             })
@@ -2322,7 +2312,7 @@ fn urgency(dot: &str, color: Hsla, cx: &App) -> u8 {
 impl Render for Sik {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(workspace) = self.active_workspace() {
-            let width = window.viewport_size().width - activity_width(cx);
+            let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let (panel, visible) = (self.workspaces_panel.clone(), self.tasks_visible(cx));
             let badges = self.task_badges(cx);
@@ -2345,7 +2335,6 @@ impl Render for Sik {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
-            .on_action(cx.listener(Self::toggle_activity_bar))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_remote_folder))
             .on_action(cx.listener(Self::open_recent))
@@ -2515,6 +2504,7 @@ fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
             h_flex()
                 .h(px(26.))
                 .px_3()
+                .pl(px(ROW_INDENT))
                 .gap_2()
                 .text_ui(cx)
                 .child(svg().path("icons/git-branch.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
@@ -2531,7 +2521,7 @@ fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
                     div().flex_1().min_w_0().child(Input::new(&form.input).xsmall()).into_any_element()
                 }),
         )
-        .children(form.error.clone().map(|error| div().px_3().pb_1().child(error_text(error, cx))))
+        .children(form.error.clone().map(|error| div().px_3().pl(px(ROW_INDENT)).pb_1().child(error_text(error, cx))))
         .into_any_element()
 }
 

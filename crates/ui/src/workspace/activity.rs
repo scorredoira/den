@@ -1,18 +1,13 @@
 //! The activity bar, on the window's left edge: an icon for each panel but
 //! the code, which stays put and never closes (the others go around it). A
 //! click shows or hides the panel wherever it's placed; dragging an icon
-//! reorders the bar, or places the panel. While it shows, the places have no
-//! tabs: it does their job.
+//! reorders the bar, or places the panel. The places have no tabs: the bar
+//! does their job.
 use super::*;
 use super::layout::{PanelDrag, icon, title};
 use crate::config::Panel;
 
-const WIDTH: f32 = 40.;
-
-/// What the bar takes of the window's width: nothing, hidden.
-pub(crate) fn activity_width(cx: &App) -> Pixels {
-    px(if Config::get(cx).shows_activity_bar() { WIDTH } else { 0. })
-}
+pub(crate) const ACTIVITY_WIDTH: f32 = 40.;
 
 /// What an icon tells of its panel besides whether it shows.
 #[derive(Clone, Copy, PartialEq)]
@@ -33,7 +28,7 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
         .id("activity-bar")
         .when(cfg!(test), |el| el.debug_selector(|| "activity-bar".into()))
         .flex_none()
-        .w(px(WIDTH))
+        .w(px(ACTIVITY_WIDTH))
         .h_full()
         .py_1()
         .gap_1()
@@ -109,18 +104,13 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 }
 
 impl Workspace {
-    /// The bar, unless it was hidden.
-    pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let config = Config::get(cx);
-        if !config.shows_activity_bar() {
-            return None;
-        }
-        let icons = config.activity().into_iter().map(|panel| (panel, self.is_shown(panel, cx), self.badge(panel, cx))).collect();
+    pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let icons = Config::get(cx).activity().into_iter().map(|panel| (panel, self.is_shown(panel, cx), self.badge(panel, cx))).collect();
         let workspace = cx.entity().downgrade();
         let click: OnActivity = Rc::new(move |panel, window, cx| {
             workspace.update(cx, |this, cx| this.click_activity(panel, window, cx)).ok();
         });
-        Some(activity_bar(icons, click, cx))
+        activity_bar(icons, click, cx)
     }
 
     fn badge(&self, panel: Panel, cx: &App) -> Option<Badge> {

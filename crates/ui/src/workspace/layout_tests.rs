@@ -68,8 +68,6 @@ fn columns_in_any_order(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn dragging_the_terminals_icon_under_the_code(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    // With the activity bar there are no tabs: the icons drag the panels.
-    assert!(cx.debug_bounds("panel-tab-Terminals").is_none());
     let start = bounds(cx, "activity-Terminals").center();
     let code = bounds(cx, "stack-Code");
     let end = point(code.center().x, code.bottom() - px(10.));
@@ -136,26 +134,16 @@ fn closing_a_stack_gives_its_width_to_the_code(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_code_goes_in_tabs_like_any_panel(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    // With the activity bar it has no icon: it stays put. Without it, its tab
-    // drags it.
+fn the_code_shares_a_place_like_any_panel(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| assert!(layout.move_panel(Panel::Code, Panel::Search, Side::Tab(Some(Panel::Search)))));
+    // It has no icon: it stays where it is.
     assert!(cx.debug_bounds("activity-Code").is_none());
-    cx.update(|_, cx| Config::update(cx, |config| config.activity_bar = Some(false)));
-    cx.update(|window, _| window.refresh());
-    cx.run_until_parked();
-    let start = bounds(cx, "panel-tab-Code").center();
-    let end = bounds(cx, "panel-tab-Search").center();
-    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    cx.run_until_parked();
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Code).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::Code, Panel::Search, Panel::References]);
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::History, Panel::Code, Panel::Search, Panel::References]);
     bounds(cx, "editor-body-0");
-    // Another tab hides it; hiding that one brings it back, its stack never closes.
+    // Another panel there hides it; hiding that one brings it back, its place
+    // never closes.
     workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Files, cx));
     cx.run_until_parked();
     assert!(cx.debug_bounds("editor-body-0").is_none());
@@ -173,11 +161,7 @@ fn the_code_goes_in_tabs_like_any_panel(cx: &mut TestAppContext) {
 fn the_workspaces_are_a_panel(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     let panel = cx.update(|_, cx| {
-        cx.new(|_| {
-            WorkspacesPanel::new(|leading, window, cx| {
-                div().size_full().debug_selector(|| "workspaces".into()).children(leading.map(|leading| leading(window, cx))).into_any_element()
-            })
-        })
+        cx.new(|_| WorkspacesPanel::new(|_, _| div().size_full().debug_selector(|| "workspaces".into()).into_any_element()))
     });
     workspace.update(cx, |workspace, cx| workspace.set_workspaces(&panel, true, cx));
     cx.run_until_parked();
@@ -235,19 +219,6 @@ fn dragging_an_icon_within_the_bar_reorders_it(cx: &mut TestAppContext) {
     // The layout didn't change.
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     assert!(layout == config::Layout::default());
-}
-
-#[gpui_kit::test]
-fn without_the_activity_bar_every_panel_has_its_tab(cx: &mut TestAppContext) {
-    let (_, cx) = draw(cx, |_| {});
-    bounds(cx, "activity-bar");
-    cx.update(|_, cx| Config::update(cx, |config| config.activity_bar = Some(false)));
-    cx.update(|window, _| window.refresh());
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("activity-bar").is_none());
-    bounds(cx, "panel-tab-Terminals");
-    bounds(cx, "panel-tab-Debugger");
-    bounds(cx, "panel-tab-Code");
 }
 
 /// Run and Debug go on the lines that declare a test, and nowhere else.

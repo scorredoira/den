@@ -113,8 +113,7 @@ impl Debugger {
         rows
     }
 
-    fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let leading = self.leading.as_ref().map(|leading| leading(window, cx));
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
         let active = self.status != Status::Idle;
@@ -157,7 +156,6 @@ impl Debugger {
             .flex_none()
             .border_b_1()
             .border_color(theme.border)
-            .children(leading)
             .child(
                 h_flex()
                     .id("debug-launch")
@@ -754,7 +752,7 @@ impl Debugger {
 }
 
 impl Render for Debugger {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.console.len() != self.console_seen {
             self.console_seen = self.console.len();
             self.console_scroll.scroll_to_bottom();
@@ -784,7 +782,7 @@ impl Render for Debugger {
         let watches = self.render_watches(cx);
         let console = self.render_console(cx);
         let problem = self.render_launch_problem(cx);
-        let toolbar = self.render_toolbar(window, cx);
+        let toolbar = self.render_toolbar(cx);
         let theme = cx.theme();
         let stack_and_breakpoints = v_flex()
             .size_full()

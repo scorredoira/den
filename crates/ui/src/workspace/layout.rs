@@ -1,34 +1,29 @@
-//! Where the panels go: columns of stacks of tabs (see `config::Layout`),
-//! changed by dragging a panel's tab, and which panel each stack shows.
+//! Where the panels go: columns of stacks of panels, one showing at a time
+//! (see `config::Layout`), changed by dragging a panel's icon in the activity
+//! bar, and which panel each stack shows.
 use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::config::{Layout, Panel, Side, Stack};
 use crate::drag_drop::DropPlacement;
 
-/// Drawn first in a panel's own bar (the terminals', the debugger's): the
-/// tabs of the stack it is in.
-pub(crate) type Leading = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
-
 #[derive(Clone)]
 pub(super) struct PanelDrag(pub Panel);
 
 /// The app's workspaces column, drawn where its panel is placed.
 pub(crate) struct WorkspacesPanel {
-    /// The tabs of the place it is in, drawn first in its header.
-    pub leading: Option<Leading>,
-    render: Box<dyn Fn(Option<Leading>, &mut Window, &mut App) -> AnyElement>,
+    render: Box<dyn Fn(&mut Window, &mut App) -> AnyElement>,
 }
 
 impl WorkspacesPanel {
-    pub fn new(render: impl Fn(Option<Leading>, &mut Window, &mut App) -> AnyElement + 'static) -> Self {
-        Self { leading: None, render: Box::new(render) }
+    pub fn new(render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
+        Self { render: Box::new(render) }
     }
 }
 
 impl Render for WorkspacesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        (self.render)(self.leading.clone(), window, cx)
+        (self.render)(window, cx)
     }
 }
 
@@ -37,6 +32,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Workspaces => "icons/layers.svg",
         Panel::Files => "icons/files.svg",
         Panel::Changes => "icons/git-branch.svg",
+        Panel::History => "icons/history.svg",
         Panel::Search => "icons/text-search.svg",
         Panel::References => "icons/references.svg",
         Panel::Code => "icons/code.svg",
@@ -50,6 +46,7 @@ pub(super) fn title(panel: Panel) -> &'static str {
         Panel::Workspaces => "Workspaces",
         Panel::Files => "Files",
         Panel::Changes => "Changes",
+        Panel::History => "History",
         Panel::Search => "Search",
         Panel::References => "References",
         Panel::Code => "Code",
@@ -58,12 +55,13 @@ pub(super) fn title(panel: Panel) -> &'static str {
     }
 }
 
-/// How tall the bar with a stack's tabs is, its own or its panel's.
+/// How tall a panel's bar is: its title, or its own (the terminals' tabs).
 const BAR_HEIGHT: f32 = 34.;
 
-/// The panels with no bar of their own, which their stack's header gives them.
+/// The panels with no bar of their own, which their stack's header gives
+/// them: their title.
 fn has_header(panel: Panel) -> bool {
-    matches!(panel, Panel::Files | Panel::Changes | Panel::Search | Panel::References)
+    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Search | Panel::References)
 }
 
 /// Which panel each stack shows and the stacks closed. It's per task,
@@ -147,6 +145,7 @@ impl Workspace {
         self.panels.show(panel);
         match panel {
             Panel::Changes => self.changes.update(cx, |changes, cx| changes.shown(cx)),
+            Panel::History => self.history.update(cx, |history, cx| history.shown(cx)),
             Panel::Debugger => self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx)),
             _ => {}
         }
@@ -221,14 +220,16 @@ impl Workspace {
 
     pub(super) fn drop_panel(&mut self, drag: &PanelDrag, anchor: Panel, side: Side, cx: &mut Context<Self>) {
         self.panel_drop = None;
-        let changes = self.is_shown(Panel::Changes, cx);
+        let before = self.git_panels().map(|(panel, _)| self.is_shown(panel, cx));
         let mut moved = false;
         Config::update(cx, |config| moved = config.layout.move_panel(drag.0, anchor, side));
         if moved {
             self.show_panel(drag.0, cx);
-            // Left showing in the stack the dragged one left, it rereads too.
-            if !changes && self.is_shown(Panel::Changes, cx) {
-                self.changes.update(cx, |changes, cx| changes.shown(cx));
+            // Left showing in the stack the dragged one left, they reread too.
+            for ((panel, entity), shown) in self.git_panels().into_iter().zip(before) {
+                if !shown && self.is_shown(panel, cx) {
+                    entity.clone().update(cx, |entity, cx| entity.shown(cx));
+                }
             }
             // The other windows' tasks share the places.
             cx.refresh_windows();
@@ -239,7 +240,7 @@ impl Workspace {
     /// The columns, with the code taking the width the others leave.
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let layout = Config::get(cx).layout.clone();
-        self.place_panels(&layout, cx);
+        self.shape_debugger(&layout, cx);
         if self.terminals_maximized
             && let Some((column, stack)) = layout.find(Panel::Terminals)
         {
@@ -342,8 +343,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The panel a stack shows, under its tabs, and where a dragged panel
-    /// would go if dropped on it.
+    /// The panel a stack shows, and where a dragged panel would go if dropped
+    /// on it.
     fn render_stack(&self, stack: &Stack, cx: &mut Context<Self>) -> AnyElement {
         let active = self.panels.active(stack);
         let content = match active {
@@ -353,6 +354,7 @@ impl Workspace {
             },
             Panel::Files => self.file_tree.clone().into_any_element(),
             Panel::Changes => self.changes.clone().into_any_element(),
+            Panel::History => self.history.clone().into_any_element(),
             Panel::Search => self.search.clone().into_any_element(),
             Panel::References => self.references.clone().into_any_element(),
             Panel::Code => self.render_editor_area(cx).into_any_element(),
@@ -360,7 +362,7 @@ impl Workspace {
             Panel::Debugger => self.debugger.clone().into_any_element(),
         };
         let drop = self.panel_drop.filter(|(target, _)| *target == active && cx.has_active_drag());
-        let header = has_header(active).then(|| self.render_stack_header(stack, active, cx));
+        let header = has_header(active).then(|| self.render_stack_header(active, cx));
         let sidebar = cx.theme().sidebar;
         v_flex()
             .id(("panel-stack", active as usize))
@@ -385,20 +387,15 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_stack_header(&self, stack: &Stack, active: Panel, cx: &mut Context<Self>) -> AnyElement {
+    fn render_stack_header(&self, active: Panel, cx: &mut Context<Self>) -> AnyElement {
         let workspace = cx.entity().downgrade();
-        let tabs = has_tabs(cx).then(|| stack_tabs(&workspace, &stack.panels, active, cx));
-        // Without tabs, the title goes where they would.
-        let untabbed = tabs.is_none();
         let theme = cx.theme();
         h_flex()
             .h(px(BAR_HEIGHT))
             .flex_none()
             .px_2()
-            .gap_1()
             .border_b_1()
             .border_color(theme.sidebar_border)
-            .children(tabs)
             .child(
                 div()
                     .id("panel-stack-title")
@@ -406,9 +403,7 @@ impl Workspace {
                     .h_full()
                     .flex()
                     .items_center()
-                    .when(untabbed, |el| el.pl_1())
-                    .when(!untabbed, |el| el.justify_end())
-                    .pr_1()
+                    .px_1()
                     .text_ui_small(cx)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.muted_foreground)
@@ -422,76 +417,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Drawn first in the code's tab bar: the tabs of the stack it is in.
-    pub(super) fn code_tabs(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if !has_tabs(cx) {
-            return None;
-        }
-        let layout = &Config::get(cx).layout;
-        let (column, stack) = layout.find(Panel::Code)?;
-        let panels = &layout.columns[column].stacks[stack].panels;
-        let tabs = stack_tabs(&cx.entity().downgrade(), panels, Panel::Code, cx);
-        Some(h_flex().flex_none().h_full().px_1().border_r_1().border_color(cx.theme().border).child(tabs).into_any_element())
-    }
-
-    /// Gives the panels that draw their own bar their stack's tabs, and the
-    /// debugger its shape.
-    fn place_panels(&mut self, layout: &Layout, cx: &mut Context<Self>) {
-        let workspace = cx.entity().downgrade();
-        let code = layout.find(Panel::Code).map(|(column, _)| column);
-        for panel in [Panel::Workspaces, Panel::Terminals, Panel::Debugger] {
-            let Some((column, stack)) = layout.find(panel) else {
-                continue;
-            };
-            let panels = layout.columns[column].stacks[stack].panels.clone();
-            let workspace = workspace.clone();
-            let leading: Option<Leading> = has_tabs(cx).then(|| {
-                Rc::new(move |_: &mut Window, cx: &mut App| div().px_1().child(stack_tabs(&workspace, &panels, panel, cx)).into_any_element())
-                    as Leading
-            });
-            if panel == Panel::Workspaces {
-                if let Some(workspaces) = &self.workspaces {
-                    workspaces.update(cx, |workspaces, _| workspaces.leading = leading);
-                }
-            } else if panel == Panel::Terminals {
-                self.terminals.update(cx, |terminals, _| terminals.leading = leading);
-            } else {
-                let tall = Some(column) != code;
-                self.debugger.update(cx, |debugger, _| {
-                    debugger.leading = leading;
-                    debugger.tall = tall;
-                });
-            }
-        }
+    /// The debugger is tall in a column of its own, wide in the code's.
+    fn shape_debugger(&mut self, layout: &Layout, cx: &mut Context<Self>) {
+        let column = |panel| layout.find(panel).map(|(column, _)| column);
+        let tall = column(Panel::Debugger) != column(Panel::Code);
+        self.debugger.update(cx, |debugger, _| debugger.tall = tall);
     }
 }
 
-/// Whether the places show their panels' tabs: only without the activity
-/// bar, whose icons show and drag the panels.
-fn has_tabs(cx: &App) -> bool {
-    !Config::get(cx).shows_activity_bar()
-}
-
-/// A stack's tabs: a click shows the panel, dragging one moves it.
-fn stack_tabs(workspace: &WeakEntity<Workspace>, panels: &[Panel], active: Panel, cx: &App) -> AnyElement {
-    h_flex()
-        .flex_none()
-        .gap_1()
-        .children(panels.iter().map(|&panel| {
-            let click = workspace.clone();
-            let drop = workspace.clone();
-            mode_button(("panel-tab", panel as usize), icon(panel), panel == active, cx)
-                .when(cfg!(test), |el| el.debug_selector(move || format!("panel-tab-{panel:?}")))
-                .tooltip(move |window, cx| Tooltip::new(title(panel)).build(window, cx))
-                .on_click(move |_, _, cx| {
-                    click.update(cx, |this, cx| this.show_panel(panel, cx)).ok();
-                })
-                .on_drag(PanelDrag(panel), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
-                .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
-                .on_drop(move |drag: &PanelDrag, _, cx| {
-                    cx.stop_propagation();
-                    drop.update(cx, |this, cx| this.drop_panel(drag, panel, Side::Tab(Some(panel)), cx)).ok();
-                })
-        }))
-        .into_any_element()
-}
