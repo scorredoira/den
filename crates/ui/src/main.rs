@@ -185,13 +185,19 @@ fn main() {
 
 /// `sik <path>` in this machine's terminals, also with the window closed.
 /// Other `sik` commands run in the window (see `app::commands`): while it's
-/// closed, they're answered here.
+/// closed, they're answered here. When the agent restarts, it listens on the
+/// new one.
 fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
     enum Received {
         Open(PathBuf, Option<PathBuf>),
         Command(u64),
+        Lost,
     }
     let (tx, rx) = smol::channel::unbounded::<Received>();
+    let lost = tx.clone();
+    agent.on_disconnect(move || {
+        let _ = lost.try_send(Received::Lost);
+    });
     agent.watch(move |event| match event {
         proto::Event::Open { root, file } => {
             let _ = tx.try_send(Received::Open(root.clone(), file.clone()));
@@ -212,7 +218,24 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
                         agent.notify(proto::Request::CommandDone { command, result });
                     }
                 }
+                Received::Lost => break,
             }
+        }
+        let mut delay = std::time::Duration::from_secs(1);
+        loop {
+            cx.background_executor().timer(delay).await;
+            let connected = cx.background_executor().spawn(async { crate::agent::connect() }).await;
+            match connected {
+                Ok(agent) => {
+                    cx.update(|cx| {
+                        app::set_agent(Some(agent.clone()), cx);
+                        listen_for_open(&agent, cx);
+                    });
+                    return;
+                }
+                Err(err) => eprintln!("no agent: {err:#}"),
+            }
+            delay = (delay * 2).min(std::time::Duration::from_secs(30));
         }
     })
     .detach();
