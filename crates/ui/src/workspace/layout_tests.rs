@@ -221,6 +221,24 @@ fn dragging_an_icon_within_the_bar_reorders_it(cx: &mut TestAppContext) {
     assert!(layout == config::Layout::default());
 }
 
+/// Going to another task leaves every place showing what it showed: picking
+/// a workspace from its column, in the files' place, leaves the column there.
+#[gpui_kit::test]
+fn every_task_shows_the_same_panels(cx: &mut TestAppContext) {
+    let (first, cx) = draw(cx, |layout| assert!(layout.move_panel(Panel::Workspaces, Panel::Files, Side::Tab(None))));
+    let second = first.update_in(cx, |_, window, cx| cx.new(|cx| Workspace::new(PathBuf::from("/other"), None, true, "other".into(), window, cx)));
+    first.update(cx, |workspace, cx| workspace.show_panel(Panel::Changes, cx));
+    assert!(second.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Changes, cx)));
+    first.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
+    second.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::Workspaces, cx));
+        assert!(!workspace.is_shown(Panel::Changes, cx));
+    });
+    // Hiding the terminals in one hides them in the other.
+    second.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    assert!(!first.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Terminals, cx)));
+}
+
 /// Run and Debug go on the lines that declare a test, and nowhere else.
 #[gpui_kit::test]
 fn the_tests_get_run_and_debug(cx: &mut TestAppContext) {

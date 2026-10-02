@@ -1936,11 +1936,8 @@ impl Sik {
             sections.push(self.render_host_header(host, cx));
             let entries: Vec<(TaskKey, &TaskInfo)> =
                 ordered.iter().filter(|(key, _)| key.host == host.name).cloned().collect();
-            // Each repo, with its worktrees, apart from the next.
-            for (ix, group) in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo).enumerate() {
-                let line = cx.theme().sidebar_border;
-                let repo = self.render_repo(group, cx);
-                sections.push(div().py_1().when(ix > 0, |el| el.border_t_1().border_color(line)).child(repo).into_any_element());
+            for group in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo) {
+                sections.push(self.render_repo(group, cx));
             }
         }
         let theme = cx.theme();
@@ -2062,7 +2059,12 @@ impl Sik {
                 .chain(new_task)
                 .collect()
         };
-        v_flex().child(header).children(rows).into_any_element()
+        let line = cx.theme().sidebar_border;
+        v_flex()
+            .my_1()
+            .child(header)
+            .when(!collapsed, |el| el.child(v_flex().ml(px(ROW_INDENT + 7.)).border_l_1().border_color(line).children(rows)))
+            .into_any_element()
     }
 
     fn toggle_fold(&mut self, fold_key: &str, cx: &mut Context<Self>) {
@@ -2144,7 +2146,7 @@ impl Sik {
             .text_ui(cx)
             .when(active, |el| el.bg(theme.sidebar_accent))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
-            .pl(px(ROW_INDENT))
+            .when(fold.is_some(), |row| row.pl(px(ROW_INDENT)))
             // What it is: a folder, or a repo's worktree.
             .child(
                 svg()
@@ -2504,7 +2506,6 @@ fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
             h_flex()
                 .h(px(26.))
                 .px_3()
-                .pl(px(ROW_INDENT))
                 .gap_2()
                 .text_ui(cx)
                 .child(svg().path("icons/git-branch.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
@@ -2521,7 +2522,7 @@ fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
                     div().flex_1().min_w_0().child(Input::new(&form.input).xsmall()).into_any_element()
                 }),
         )
-        .children(form.error.clone().map(|error| div().px_3().pl(px(ROW_INDENT)).pb_1().child(error_text(error, cx))))
+        .children(form.error.clone().map(|error| div().px_3().pb_1().child(error_text(error, cx))))
         .into_any_element()
 }
 

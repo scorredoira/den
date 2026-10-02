@@ -603,10 +603,12 @@ impl TerminalArea {
                     .on_drop(cx.listener(move |this, drag: &TerminalDrag, window, cx| {
                         this.drop_on_bar(drag, Some(id), window, cx);
                     }))
+                    .group("terminal-tab")
                     .h_full()
                     .flex_none()
                     .max_w(px(220.))
-                    .px_3()
+                    .pl_3()
+                    .pr_1()
                     .gap_1()
                     .text_ui(cx)
                     .border_r_1()
@@ -617,6 +619,29 @@ impl TerminalArea {
                     .when(count > 1, |el| {
                         el.child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(format!("×{count}")))
                     })
+                    // As the editor's tabs: on the active one, or on hover.
+                    .child(
+                        div()
+                            .id(("terminal-tab-close", id))
+                            .flex_none()
+                            .size(px(20.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(theme.radius)
+                            .hover(|style| style.bg(theme.muted))
+                            .child(
+                                svg()
+                                    .path("icons/tab-close.svg")
+                                    .size(px(14.))
+                                    .text_color(theme.muted_foreground)
+                                    .when(!active, |el| el.invisible().group_hover("terminal-tab", |s| s.visible())),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(ix, window, cx);
+                            })),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
                     .context_menu({
                         let area = self.weak.clone();

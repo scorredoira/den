@@ -223,13 +223,10 @@ pub struct Workspace {
     /// Last session's tabs were already reopened (nothing is saved before that).
     restored: bool,
     focus_handle: FocusHandle,
-    /// Which panel each stack shows, and the stacks closed.
-    panels: Panels,
     /// Preview of a panel's drop: next to the stack showing that panel.
     panel_drop: Option<(Panel, crate::drag_drop::DropPlacement)>,
-    /// The app's workspaces column, and whether the app shows it.
+    /// The app's workspaces column.
     workspaces: Option<Entity<WorkspacesPanel>>,
-    workspaces_visible: Option<bool>,
     /// The app's tasks' state, on the activity bar's icons.
     badges: TaskBadges,
     file_tree: Entity<FileTree>,
@@ -299,6 +296,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Panels::init(cx);
         let file_tree = cx.new(|cx| FileTree::new(root.clone(), agent.clone(), local, cx));
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
@@ -397,10 +395,8 @@ impl Workspace {
             session_key,
             restored: false,
             focus_handle,
-            panels: Panels::new(),
             panel_drop: None,
             workspaces: None,
-            workspaces_visible: None,
             badges: TaskBadges::default(),
             file_tree,
             terminals,
@@ -1602,7 +1598,7 @@ impl Workspace {
     }
 
     fn step_result(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let references = self.panels.stamp(Panel::References) > self.panels.stamp(Panel::Search);
+        let references = Panels::get(cx).stamp(Panel::References) > Panels::get(cx).stamp(Panel::Search);
         let panel = if references { &self.references } else { &self.search };
         panel.update(cx, |panel, cx| panel.step(delta, cx));
     }

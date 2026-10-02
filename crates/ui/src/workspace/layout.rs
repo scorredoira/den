@@ -64,24 +64,41 @@ fn has_header(panel: Panel) -> bool {
     matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Search | Panel::References)
 }
 
-/// Which panel each stack shows and the stacks closed. It's per task,
-/// while the places are the same for all, so it goes by panel, not by place.
-/// The code is never closed: in its stack, a closed panel gives way to it.
+/// Which panel each stack shows and the stacks closed: the same for every
+/// task, as the places are, so going to another one only changes what the
+/// panels have in them (and picking a workspace from its column leaves the
+/// column there). It goes by panel, not by place, so it outlives moves. The
+/// code is never closed: in its stack, a closed panel gives way to it.
 pub(super) struct Panels {
     /// When each was last shown: a stack shows its most recent one.
     shown: HashMap<Panel, u64>,
     /// A stack is closed when the panel it shows is.
     closed: HashSet<Panel>,
     clock: u64,
+    /// Whether the app shows the workspaces column, as last told; unset
+    /// until it says.
+    workspaces: Option<bool>,
 }
 
 impl Panels {
-    pub fn new() -> Self {
+    pub fn get(cx: &App) -> &Self {
+        cx.global::<Self>()
+    }
+
+    /// The app's, made by the first task.
+    pub fn init(cx: &mut App) {
+        if !cx.has_global::<Self>() {
+            cx.set_global(Self::new());
+        }
+    }
+
+    fn new() -> Self {
         Self {
             shown: HashMap::from([(Panel::Files, 1), (Panel::Code, 2)]),
             // The workspaces as the app says (see `set_workspaces`).
             closed: HashSet::from([Panel::Debugger, Panel::Workspaces]),
             clock: 2,
+            workspaces: None,
         }
     }
 
@@ -131,18 +148,20 @@ fn side(placement: DropPlacement) -> Side {
     }
 }
 
+impl Global for Panels {}
+
 impl Workspace {
     pub(crate) fn is_shown(&self, panel: Panel, cx: &App) -> bool {
-        self.panels.is_shown(&Config::get(cx).layout, panel)
+        Panels::get(cx).is_shown(&Config::get(cx).layout, panel)
     }
 
     /// Shows `panel` in its stack, opening the stack; focus doesn't move.
     pub(crate) fn show_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
-        if panel == Panel::Workspaces && self.workspaces_visible != Some(true) {
-            self.workspaces_visible = Some(true);
+        if panel == Panel::Workspaces && Panels::get(cx).workspaces != Some(true) {
+            cx.global_mut::<Panels>().workspaces = Some(true);
             Config::update(cx, |config| config.tasks_column = Some(true));
         }
-        self.panels.show(panel);
+        cx.global_mut::<Panels>().show(panel);
         match panel {
             Panel::Changes => self.changes.update(cx, |changes, cx| changes.shown(cx)),
             Panel::History => self.history.update(cx, |history, cx| history.shown(cx)),
@@ -154,10 +173,11 @@ impl Workspace {
 
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         if panel == Panel::Workspaces && self.is_shown(panel, cx) {
-            self.workspaces_visible = Some(false);
+            cx.global_mut::<Panels>().workspaces = Some(false);
             Config::update(cx, |config| config.tasks_column = Some(false));
         }
-        self.panels.hide(&Config::get(cx).layout, panel);
+        let layout = Config::get(cx).layout.clone();
+        cx.global_mut::<Panels>().hide(&layout, panel);
         if panel == Panel::Terminals {
             self.terminals_maximized = false;
         }
@@ -179,17 +199,18 @@ impl Workspace {
         if self.workspaces.is_none() {
             self.workspaces = Some(view.clone());
         }
-        if self.workspaces_visible == Some(visible) {
+        let panels = cx.global_mut::<Panels>();
+        if panels.workspaces == Some(visible) {
             return;
         }
         if !visible {
-            self.panels.closed.insert(Panel::Workspaces);
-        } else if self.workspaces_visible.is_none() {
-            self.panels.closed.remove(&Panel::Workspaces);
+            panels.closed.insert(Panel::Workspaces);
+        } else if panels.workspaces.is_none() {
+            panels.closed.remove(&Panel::Workspaces);
         } else {
-            self.panels.show(Panel::Workspaces);
+            panels.show(Panel::Workspaces);
         }
-        self.workspaces_visible = Some(visible);
+        panels.workspaces = Some(visible);
         cx.notify();
     }
 
@@ -197,7 +218,7 @@ impl Workspace {
     pub(super) fn toggle_side_panel(&mut self, _: &ToggleSidePanel, _: &mut Window, cx: &mut Context<Self>) {
         let layout = &Config::get(cx).layout;
         if let Some((column, stack)) = layout.find(Panel::Files) {
-            let active = self.panels.active(&layout.columns[column].stacks[stack]);
+            let active = Panels::get(cx).active(&layout.columns[column].stacks[stack]);
             self.toggle_panel(active, cx);
         }
     }
@@ -252,7 +273,7 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, column)| {
-                let stacks = (0..column.stacks.len()).filter(|&stack| self.panels.stack_open(&column.stacks[stack])).collect();
+                let stacks = (0..column.stacks.len()).filter(|&stack| Panels::get(cx).stack_open(&column.stacks[stack])).collect();
                 (ix, stacks)
             })
             .filter(|(_, stacks): &(usize, Vec<usize>)| !stacks.is_empty())
@@ -346,7 +367,7 @@ impl Workspace {
     /// The panel a stack shows, and where a dragged panel would go if dropped
     /// on it.
     fn render_stack(&self, stack: &Stack, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.panels.active(stack);
+        let active = Panels::get(cx).active(stack);
         let content = match active {
             Panel::Workspaces => match &self.workspaces {
                 Some(workspaces) => workspaces.clone().into_any_element(),
