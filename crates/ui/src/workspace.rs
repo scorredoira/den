@@ -181,7 +181,7 @@ struct OldSide {
 }
 
 /// Narrower than this, a diff shows in one column.
-const SIDE_BY_SIDE_WIDTH: f32 = 800.;
+const SIDE_BY_SIDE_WIDTH: f32 = 1200.;
 
 /// `git blame` of a file: `lines[i]` indexes `commits`, `None` if uncommitted.
 struct Blame {
