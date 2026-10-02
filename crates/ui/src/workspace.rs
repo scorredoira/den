@@ -279,6 +279,8 @@ pub struct Workspace {
     signature_task: Task<()>,
     debugger: Entity<Debugger>,
     debug_hover: Entity<debug::hover::HoverCard>,
+    /// The terminal the tests run in, reused by the next one.
+    test_term: Option<proto::TermId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -302,6 +304,8 @@ impl Workspace {
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
+        // The tests' Run and Debug come from the launch file.
+        debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
             cx.observe(&debugger, |_, _, cx| cx.notify()),
@@ -427,6 +431,7 @@ impl Workspace {
             signature_task: Task::ready(()),
             debugger,
             debug_hover,
+            test_term: None,
             _subscriptions: subscriptions,
         }
     }
@@ -663,7 +668,10 @@ impl Workspace {
         self.changes
             .update(cx, |changes, cx| changes.set_client(client.clone(), changes_visible, cx));
         self.search.update(cx, |search, _| search.set_client(client.clone()));
-        self.debugger.update(cx, |debugger, cx| debugger.set_client(client.clone(), cx));
+        self.debugger.update(cx, |debugger, cx| {
+            debugger.set_client(client.clone(), cx);
+            debugger.refresh_launches(cx);
+        });
         self.terminals
             .update(cx, |terminals, cx| terminals.set_client(client, window, cx));
         // Reopened files that couldn't be read while offline are read now for the first time.
@@ -2937,6 +2945,7 @@ impl Workspace {
                             .child(editor)
                             .children(blame.and_then(|blame| inline_blame(&tab.editor, &blame, cx)))
                             .children(debug_inline_values(&tab.editor, &tab.path, &self.debugger, cx))
+                            .children(self.test_lenses(&tab.editor, &tab.path, cx.entity().downgrade(), cx))
                             .children(breakpoint_edit_box(&tab.editor, &tab.path, &self.debugger, cx))
                             .children(
                                 self.signature
@@ -3348,6 +3357,97 @@ impl Render for Workspace {
                     .child(finder.clone())
             }))
             .child(self.debug_hover.clone())
+    }
+}
+
+impl Workspace {
+    /// Run and Debug at the end of each test's line, as the launch file's
+    /// `tests` finds them.
+    fn test_lenses(&self, editor: &Entity<EditorState>, path: &Path, this: WeakEntity<Self>, cx: &App) -> Vec<AnyElement> {
+        let Some(tests) = self.debugger.read(cx).tests.clone() else {
+            return Vec::new();
+        };
+        let state = editor.read(cx);
+        let Some(visible) = state.visible_row_range() else {
+            return Vec::new();
+        };
+        let text = state.text();
+        let area = state.input_bounds();
+        let theme = cx.theme();
+        let mut lenses = Vec::new();
+        for row in visible.start..visible.end.min(text.lines_len()) {
+            let line = text.slice_line(row).to_string();
+            let Some(test) = tests.name_in(&line) else {
+                continue;
+            };
+            let end = text.line_start_offset(row) + line.trim_end_matches(['\n', '\r']).len();
+            let Some(bounds) = state.range_to_bounds(&(end..end)) else {
+                continue;
+            };
+            let origin = point(bounds.origin.x + px(24.), bounds.origin.y);
+            if bounds.origin.y < area.top() || bounds.bottom() > area.bottom() || area.right() - origin.x < px(120.) {
+                continue;
+            }
+            let lens = |label: &'static str, debug: bool| {
+                let test = test.clone();
+                let path = path.to_path_buf();
+                let this = this.clone();
+                div()
+                    .id(SharedString::from(format!("test-{label}-{row}")))
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("test-lens-{row}-{debug}")))
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(theme.foreground))
+                    .child(label)
+                    .on_click(move |_, window, cx| {
+                        this.update(cx, |this, cx| this.run_test(&path, &test, debug, window, cx)).ok();
+                    })
+            };
+            lenses.push(
+                anchored()
+                    .position(origin)
+                    .child(
+                        h_flex()
+                            .h(bounds.size.height)
+                            .gap_3()
+                            .occlude()
+                            .text_ui_small(cx)
+                            .text_color(theme.muted_foreground)
+                            .child(lens("▶ Run", false))
+                            .child(lens("▶ Debug", true)),
+                    )
+                    .into_any_element(),
+            );
+        }
+        lenses
+    }
+
+    /// Runs the test `test` of `path` in a terminal, or debugs it.
+    fn run_test(&mut self, path: &Path, test: &str, debug: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tests) = self.debugger.read(cx).tests.clone() else {
+            return;
+        };
+        let file = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        let command = tests.command(debug, test);
+        let line = match debug::command_line(&command, Some(&file)) {
+            Ok(line) => line,
+            Err(error) => {
+                self.message = Some(error.into());
+                cx.notify();
+                return;
+            }
+        };
+        if debug {
+            self.debugger.update(cx, |debugger, cx| debugger.launch_command(line, tests.port, window, cx));
+            return;
+        }
+        self.terminals_visible = true;
+        let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(self.test_term, line, window, cx));
+        cx.spawn(async move |this, cx| {
+            let term = run.await;
+            this.update(cx, |this, _| this.test_term = term).ok();
+        })
+        .detach();
+        cx.notify();
     }
 }
 

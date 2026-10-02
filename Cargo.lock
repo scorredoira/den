@@ -7665,6 +7665,7 @@ dependencies = [
  "lsp-types",
  "nucleo-matcher",
  "proto",
+ "regex",
  "serde",
  "serde_json",
  "smol",

@@ -75,13 +75,47 @@ fn default_port() -> u16 {
 }
 
 #[derive(Deserialize)]
-struct LaunchFile {
-    configurations: Vec<Launch>,
+pub struct LaunchFile {
+    pub configurations: Vec<Launch>,
+    /// How the project runs a test, for the Run and Debug on each one's line.
+    #[serde(default)]
+    pub tests: Option<Tests>,
 }
 
-pub fn parse_launches(text: &str) -> Result<Vec<Launch>, String> {
-    let file: LaunchFile = serde_json::from_str(text).map_err(|err| format!("{LAUNCH_FILE}: {err}"))?;
-    Ok(file.configurations)
+/// `match` finds a test's declaration on a line, its first group being the
+/// test's name; `run` and `debug` start it, with `${file}` and `${test}`.
+/// `port` is where `debug` listens: apart from a program that may be
+/// running, so a test is never attached to it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Tests {
+    #[serde(rename = "match", deserialize_with = "regex_field")]
+    pattern: regex::Regex,
+    run: String,
+    debug: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+
+impl Tests {
+    /// The test declared on `line`, if one is.
+    pub fn name_in(&self, line: &str) -> Option<String> {
+        let captures = self.pattern.captures(line)?;
+        captures.get(1).map(|name| name.as_str().to_string())
+    }
+
+    pub fn command(&self, debug: bool, test: &str) -> String {
+        let command = if debug { &self.debug } else { &self.run };
+        command.replace("${test}", test)
+    }
+}
+
+fn regex_field<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<regex::Regex, D::Error> {
+    let pattern = String::deserialize(deserializer)?;
+    regex::Regex::new(&pattern).map_err(serde::de::Error::custom)
+}
+
+pub fn parse_launch_file(text: &str) -> Result<LaunchFile, String> {
+    serde_json::from_str(text).map_err(|err| format!("{LAUNCH_FILE}: {err}"))
 }
 
 /// A configuration's `command` as it is run: `${file}` is the open file,
@@ -220,6 +254,8 @@ pub struct Debugger {
     launches: Vec<Launch>,
     launch: Option<String>,
     launch_error: Option<String>,
+    /// How the project runs a test (`tests` in the launch file).
+    pub tests: Option<Tests>,
 
     status: Status,
     conn: Option<Conn>,
@@ -324,6 +360,7 @@ impl Debugger {
             edit: None,
             visible: false,
             hover: None,
+            tests: None,
             _subscriptions: subscriptions,
         }
     }
@@ -428,13 +465,14 @@ impl Debugger {
                     return;
                 }
                 let launches = match read {
-                    Ok(Response::Bytes(bytes)) => parse_launches(&String::from_utf8_lossy(&bytes)),
+                    Ok(Response::Bytes(bytes)) => parse_launch_file(&String::from_utf8_lossy(&bytes)),
                     Ok(other) => Err(format!("unexpected response {other:?}")),
                     Err(_) => Err(format!("There is no {LAUNCH_FILE}: create it to say how to start the program.")),
                 };
                 match launches {
-                    Ok(launches) if !launches.is_empty() => {
-                        this.launches = launches;
+                    Ok(file) if !file.configurations.is_empty() => {
+                        this.launches = file.configurations;
+                        this.tests = file.tests;
                         this.launch_error = None;
                         let launch = this
                             .launch
@@ -456,6 +494,21 @@ impl Debugger {
         .detach();
     }
 
+    /// Debugs `command`, which listens on `port`: a test, from the code.
+    pub fn launch_command(&mut self, command: String, port: u16, window: &mut Window, cx: &mut Context<Self>) {
+        self.visible = true;
+        if self.status != Status::Idle {
+            self.info("A program is being debugged: stop it first (Shift-F5)".into(), cx);
+            return;
+        }
+        if self.client.is_none() {
+            self.info("No agent: can't debug".into(), cx);
+            return;
+        }
+        self.generation += 1;
+        self.begin(Launch { name: "Test".into(), command: Some(command), port }, window, cx);
+    }
+
     /// Reads the launch configurations again, for the panel's menu.
     pub fn refresh_launches(&mut self, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
@@ -466,16 +519,21 @@ impl Debugger {
             let read = client.request(Request::ReadFile { path }).await;
             this.update(cx, |this, cx| {
                 match read.ok().and_then(|response| match response {
-                    Response::Bytes(bytes) => Some(parse_launches(&String::from_utf8_lossy(&bytes))),
+                    Response::Bytes(bytes) => Some(parse_launch_file(&String::from_utf8_lossy(&bytes))),
                     _ => None,
                 }) {
-                    Some(Ok(launches)) => {
-                        this.launches = launches;
+                    Some(Ok(file)) => {
+                        this.launches = file.configurations;
+                        this.tests = file.tests;
                         this.launch_error = None;
                     }
-                    Some(Err(error)) => this.launch_error = Some(error),
+                    Some(Err(error)) => {
+                        this.tests = None;
+                        this.launch_error = Some(error);
+                    }
                     None => {
                         this.launches.clear();
+                        this.tests = None;
                         this.launch_error = Some(format!("There is no {LAUNCH_FILE}."));
                     }
                 }
@@ -1520,7 +1578,7 @@ pub fn expression_span(line: &str, offset: usize) -> Option<std::ops::Range<usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{changed_locals, child_path, command_line, expression_span, is_assignment, names_in, parse_launches, starts_function};
+    use super::{changed_locals, child_path, command_line, expression_span, is_assignment, names_in, parse_launch_file, starts_function};
     use super::protocol::{Frame, Stop, Var};
 
     #[test]
@@ -1532,8 +1590,24 @@ mod tests {
     }
 
     #[test]
+    fn tests_are_found_by_the_project_pattern() {
+        let file = parse_launch_file(
+            r#"{"configurations":[],"tests":{"match":"^export function (test\\w+)\\(","run":"sim test ${file} ${test} -x","debug":"sim -d test ${file} ${test} -x","port":4445}}"#,
+        )
+        .unwrap();
+        let tests = file.tests.unwrap();
+        assert_eq!(tests.port, 4445);
+        assert_eq!(tests.name_in("export function testRefund() {").as_deref(), Some("testRefund"));
+        assert_eq!(tests.name_in("function helper() {"), None);
+        assert_eq!(tests.name_in("    // export function testOld() {"), None);
+        assert_eq!(tests.command(false, "testRefund"), "sim test ${file} testRefund -x");
+        assert_eq!(tests.command(true, "testRefund"), "sim -d test ${file} testRefund -x");
+        assert!(parse_launch_file(r#"{"configurations":[],"tests":{"match":"(","run":"","debug":""}}"#).is_err());
+    }
+
+    #[test]
     fn launches_parse_with_a_default_port() {
-        let launches = parse_launches(r#"{"configurations":[{"name":"server","command":"sim -d server"},{"name":"attach","port":5000}]}"#).unwrap();
+        let launches = parse_launch_file(r#"{"configurations":[{"name":"server","command":"sim -d server"},{"name":"attach","port":5000}]}"#).unwrap().configurations;
         assert_eq!(launches[0].port, 4444);
         assert_eq!(launches[0].command.as_deref(), Some("sim -d server"));
         assert_eq!(launches[1].command, None);

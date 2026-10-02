@@ -20,6 +20,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 smol.workspace = true
 nucleo-matcher = "0.3"
+regex = "1"
 lsp-types = "0.97"
 tree-sitter-xml = "0.7"
 tree-sitter = "0.26"

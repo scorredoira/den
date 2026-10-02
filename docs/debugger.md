@@ -30,6 +30,23 @@ choose). If something already answers on the port, it attaches to it instead
 of starting the command again. Stop (Shift-F5) interrupts a program it
 started and leaves one it attached to running.
 
+### Tests
+
+With a `tests` section, every line that declares a test gets Run and Debug
+at its end. Run starts `run` in a terminal; Debug starts `debug` under the
+debugger. `${file}` is the open file and `${test}` the name `match` captured
+(its first group). `port` (4444 when missing) is where `debug` listens: one
+apart from the program's lets a test be debugged while it runs.
+
+```json
+"tests": {
+    "match": "^export function (test\\w*)\\(",
+    "run": "sim test ${file} ${test} -x",
+    "debug": "sim -d -dp 127.0.0.1:4445 test ${file} ${test} -x -c 1",
+    "port": 4445
+}
+```
+
 ## Keys
 
 | Key | |

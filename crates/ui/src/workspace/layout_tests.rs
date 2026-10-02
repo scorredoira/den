@@ -62,3 +62,33 @@ fn debugger_on_the_right_and_terminals_under_the_code(cx: &mut TestAppContext) {
     assert!(debugger.left() >= code.right() && debugger.left() >= terminals.right());
     assert!(debugger.top() <= code.top() && debugger.bottom() >= terminals.bottom());
 }
+
+/// Run and Debug go on the lines that declare a test, and nowhere else.
+#[gpui_kit::test]
+fn the_tests_get_run_and_debug(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/lens-test"), None, true, "lens-test".into(), window, cx);
+        workspace.side_panel_visible = false;
+        workspace.terminals_visible = false;
+        let file = crate::debug::parse_launch_file(
+            r#"{"configurations":[],"tests":{"match":"^export function (test\\w+)\\(","run":"run ${test}","debug":"debug ${test}"}}"#,
+        )
+        .unwrap();
+        workspace.debugger.update(cx, |debugger, _| debugger.tests = file.tests);
+        let mut tab = workspace.new_tab(PathBuf::from("/lens-test/a_test.ts"), false, window, cx);
+        tab.content = Content::Ready;
+        let code = "function helper() {}\n\nexport function testOne() {\n}\n";
+        tab.editor.update(cx, |state, cx| state.set_value(code, window, cx));
+        workspace.tabs.push(tab);
+        workspace.activate(0, window, cx);
+        workspace
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("test-lens-2-false").is_some(), "Run on the test");
+    assert!(cx.debug_bounds("test-lens-2-true").is_some(), "Debug on the test");
+    assert!(cx.debug_bounds("test-lens-0-false").is_none(), "nothing on a helper");
+}
