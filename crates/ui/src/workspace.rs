@@ -253,6 +253,7 @@ pub struct Workspace {
     local: bool,
     changes: Entity<ChangesPanel>,
     history: Entity<ChangesPanel>,
+    commit: Entity<changes::CommitFilesPanel>,
     search: Entity<SearchPanel>,
     /// References panel: the latest F12 (with several targets) or Shift-F12.
     references: Entity<SearchPanel>,
@@ -311,6 +312,7 @@ impl Workspace {
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
         let changes = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::Uncommitted));
         let history = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::History));
+        let commit = cx.new(|cx| changes::CommitFilesPanel::new(history.clone(), cx));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
@@ -424,6 +426,7 @@ impl Workspace {
             local,
             changes,
             history,
+            commit,
             search,
             references,
             finder: None,

@@ -34,6 +34,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Files => "icons/files.svg",
         Panel::Changes => "icons/git-branch.svg",
         Panel::History => "icons/history.svg",
+        Panel::Commit => "icons/git-commit.svg",
         Panel::Search => "icons/search.svg",
         Panel::References => "icons/references.svg",
         Panel::Code => "icons/code.svg",
@@ -49,6 +50,7 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Files => "Files",
         Panel::Changes => "Changes",
         Panel::History => "History",
+        Panel::Commit => "Commit Files",
         Panel::Search => "Search",
         Panel::References => "References",
         Panel::Code => "Code",
@@ -63,7 +65,7 @@ const BAR_HEIGHT: f32 = 34.;
 /// The panels with no bar of their own, which their stack's header gives
 /// them: their title.
 fn has_header(panel: Panel) -> bool {
-    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Search | Panel::References)
+    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References)
 }
 
 /// Which panel each stack shows and the stacks closed: the same for every
@@ -105,10 +107,18 @@ impl Panels {
     }
 
     /// The panel `stack` shows: the last shown (the first, if none was).
+    /// The commit's files, with the history, are part of it.
     pub fn active(&self, stack: &Stack) -> Panel {
         let code = stack.panels.contains(&Panel::Code);
+        let history = stack.panels.contains(&Panel::History);
         let at = |panel: &&Panel| (!(code && self.closed.contains(*panel)), self.stamp(**panel));
-        *stack.panels.iter().rev().max_by_key(at).expect("a stack has panels")
+        *stack
+            .panels
+            .iter()
+            .rev()
+            .filter(|panel| !(history && **panel == Panel::Commit))
+            .max_by_key(at)
+            .expect("a stack has panels")
     }
 
     pub fn stamp(&self, panel: Panel) -> u64 {
@@ -120,6 +130,7 @@ impl Panels {
     }
 
     pub fn is_shown(&self, layout: &Layout, panel: Panel) -> bool {
+        let panel = part_of(layout, panel);
         layout
             .find(panel)
             .is_some_and(|(column, stack)| self.active(&layout.columns[column].stacks[stack]) == panel)
@@ -134,10 +145,17 @@ impl Panels {
 
     /// Closes its stack, if it's the panel the stack shows.
     pub fn hide(&mut self, layout: &Layout, panel: Panel) {
+        let panel = part_of(layout, panel);
         if panel != Panel::Code && self.is_shown(layout, panel) {
             self.closed.insert(panel);
         }
     }
+}
+
+/// The panel that shows `panel`: the history its commit's files are part of
+/// while they share its place, or the panel itself.
+fn part_of(layout: &Layout, panel: Panel) -> Panel {
+    if panel == Panel::Commit && layout.commit_in_history() { Panel::History } else { panel }
 }
 
 fn side(placement: DropPlacement) -> Side {
@@ -169,6 +187,7 @@ impl Workspace {
             cx.global_mut::<Panels>().workspaces = Some(true);
             Config::update(cx, |config| config.tasks_column = Some(true));
         }
+        let panel = part_of(&Config::get(cx).layout, panel);
         cx.global_mut::<Panels>().show(panel);
         match panel {
             Panel::Changes => self.changes.update(cx, |changes, cx| changes.shown(cx)),
@@ -386,6 +405,7 @@ impl Workspace {
             Panel::Files => self.file_tree.clone().into_any_element(),
             Panel::Changes => self.changes.clone().into_any_element(),
             Panel::History => self.history.clone().into_any_element(),
+            Panel::Commit => self.commit.clone().into_any_element(),
             Panel::Search => self.search.clone().into_any_element(),
             Panel::References => self.references.clone().into_any_element(),
             Panel::Code => self.render_editor_area(cx).into_any_element(),

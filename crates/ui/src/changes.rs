@@ -16,12 +16,15 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenu},
-    v_flex,
+    resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, Request, Response};
 
-use crate::{config::UiText, menu};
+use crate::{
+    config::{Config, UiText},
+    menu,
+};
 
 /// Delay after a change on disk before asking git again.
 const DEBOUNCE: Duration = Duration::from_millis(400);
@@ -66,8 +69,10 @@ pub struct ChangesPanel {
     file: Option<(String, bool)>,
     /// There may be more commits than the ones read.
     more: bool,
-    /// Expanded commit, and the files of those already read.
-    expanded: Option<String>,
+    /// Selected commit, and the files of those already read.
+    commit: Option<String>,
+    /// The selected commit's files shown below the commits.
+    files_open: bool,
     commit_files: HashMap<String, Vec<ChangedFile>>,
     /// History search: hash, message or author.
     query: Option<Entity<InputState>>,
@@ -95,7 +100,8 @@ impl ChangesPanel {
             commits: Vec::new(),
             file: None,
             more: false,
-            expanded: None,
+            commit: None,
+            files_open: true,
             commit_files: HashMap::new(),
             query: None,
             selected: None,
@@ -161,9 +167,9 @@ impl ChangesPanel {
                     Ok(Response::GitStatus(status)) => this.status = status,
                     Ok(Response::Commits(commits)) => {
                         this.more = commits.len() == PAGE;
-                        // A new commit or a branch switch makes the expanded commit stale.
+                        // A new commit or a branch switch makes the selected commit stale.
                         if this.commits.first().map(|c| &c.hash) != commits.first().map(|c| &c.hash) {
-                            this.expanded = None;
+                            this.commit = None;
                         }
                         this.commits = commits;
                     }
@@ -196,7 +202,7 @@ impl ChangesPanel {
         if self.file != file {
             self.file = file;
             self.commits.clear();
-            self.expanded = None;
+            self.commit = None;
             self.more = false;
         }
         self.schedule(Duration::ZERO, cx);
@@ -207,13 +213,8 @@ impl ChangesPanel {
         self.status.branch.as_deref()
     }
 
-    fn toggle_commit(&mut self, hash: String, cx: &mut Context<Self>) {
-        if self.expanded.as_ref() == Some(&hash) {
-            self.expanded = None;
-            cx.notify();
-            return;
-        }
-        self.expanded = Some(hash.clone());
+    fn select_commit(&mut self, hash: String, cx: &mut Context<Self>) {
+        self.commit = Some(hash.clone());
         cx.notify();
         if self.commit_files.contains_key(&hash) {
             return;
@@ -272,7 +273,7 @@ impl ChangesPanel {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search hash, message or author"));
         self._subscriptions.push(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
-                this.expanded = None;
+                this.commit = None;
                 this.schedule(SEARCH_DEBOUNCE, cx);
             }
         }));
@@ -503,9 +504,11 @@ impl ChangesPanel {
         // In a file's history a commit is that file's changes, not a list of files.
         let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
         for (ix, commit) in self.commits.iter().enumerate() {
-            let expanded = self.expanded.as_ref() == Some(&commit.hash);
             let key = format!("h:{}", commit.hash);
-            let selected = file.is_some() && self.selected.as_ref() == Some(&key);
+            let selected = match file {
+                Some(_) => self.selected.as_ref() == Some(&key),
+                None => self.commit.as_ref() == Some(&commit.hash),
+            };
             let file = file.clone();
             let menu_file = file.clone();
             let refs = commit.refs.replace("HEAD -> ", "");
@@ -518,38 +521,18 @@ impl ChangesPanel {
                     .px_3()
                     .py_1()
                     .gap_0p5()
-                    .when(expanded, |el| el.bg(theme.sidebar_accent.opacity(0.5)))
                     .when(selected, |el| el.bg(theme.sidebar_accent))
-                    .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
+                    .when(!selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
                     .child(
-                        h_flex()
-                            .gap_1()
+                        div()
                             .min_w_0()
-                            .child(
-                                div()
-                                    .w(px(10.))
-                                    .flex_none()
-                                    .text_ui_small(cx)
-                                    .text_color(theme.muted_foreground)
-                                    .child(match (&file, expanded) {
-                                        (Some(_), _) => "",
-                                        (None, true) => "▾",
-                                        (None, false) => "▸",
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(commit.subject.clone()),
-                            ),
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(commit.subject.clone()),
                     )
                     .child(
                         h_flex()
-                            .pl(px(14.))
                             .gap_2()
                             .text_ui_small(cx)
                             .text_color(theme.muted_foreground)
@@ -570,12 +553,8 @@ impl ChangesPanel {
                             cx.notify();
                             return;
                         }
-                        if !pin {
-                            this.toggle_commit(hash.clone(), cx);
-                        }
-                        if pin || this.expanded.as_ref() == Some(&hash) {
-                            cx.emit(ChangesEvent::OpenCommit { commit: hash.clone(), short: short.clone(), pin });
-                        }
+                        this.select_commit(hash.clone(), cx);
+                        cx.emit(ChangesEvent::OpenCommit { commit: hash.clone(), short: short.clone(), pin });
                     }))
                     .context_menu(move |menu, _, _| {
                         let (copy_hash, copy_subject) = (copy_hash.clone(), copy_subject.clone());
@@ -609,41 +588,6 @@ impl ChangesPanel {
                     })
                     .into_any_element(),
             );
-            if !expanded {
-                continue;
-            }
-            let Some(files) = self.commit_files.get(&commit.hash) else {
-                rows.push(
-                    div()
-                        .pl(px(26.))
-                        .py_0p5()
-                        .text_ui_small(cx)
-                        .text_color(theme.muted_foreground)
-                        .child("…")
-                        .into_any_element(),
-                );
-                continue;
-            };
-            for (file_ix, file) in files.iter().enumerate() {
-                let key = format!("c:{}:{}", commit.hash, file.path);
-                let selected = self.selected.as_ref() == Some(&key);
-                let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
-                rows.push(
-                    file_row(SharedString::from(format!("commit-file-{ix}-{file_ix}")).into(), file, selected, 14., cx)
-                        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                            this.selected = Some(key.clone());
-                            cx.emit(ChangesEvent::OpenCommitDiff {
-                                commit: hash.clone(),
-                                short: short.clone(),
-                                file: path.clone(),
-                                pin: event.click_count() >= 2,
-                            });
-                            cx.notify();
-                        }))
-                        .context_menu(Self::commit_file_menu(cx.entity().downgrade(), commit, file))
-                        .into_any_element(),
-                );
-            }
         }
         if self.more {
             rows.push(
@@ -655,6 +599,72 @@ impl ChangesPanel {
             );
         }
         rows
+    }
+
+    /// The selected commit's files, under the commits while they share the
+    /// history's place; none in a file's history, where a commit is that
+    /// file's changes.
+    fn has_commit_files(&self, cx: &App) -> bool {
+        self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir) && Config::get(cx).layout.commit_in_history()
+    }
+
+    /// The bar over the selected commit's files: click to hide or show them.
+    fn render_files_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let commit = self.commit.as_ref().and_then(|hash| self.commits.iter().find(|commit| commit.hash == *hash));
+        let count = self.commit.as_ref().and_then(|hash| self.commit_files.get(hash)).map(Vec::len);
+        h_flex()
+            .id("commit-files-bar")
+            .flex_none()
+            .h(px(24.))
+            .px_3()
+            .gap_1()
+            .border_t_1()
+            .border_color(theme.sidebar_border)
+            .text_ui_small(cx)
+            .text_color(theme.muted_foreground)
+            .hover(|style| style.text_color(theme.sidebar_foreground))
+            .child(div().w(px(10.)).flex_none().child(if self.files_open { "▾" } else { "▸" }))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("FILES"))
+            .when_some(commit, |el, commit| el.child(commit.short.clone()))
+            .when_some(count, |el, count| el.child(format!("({count})")))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.files_open = !this.files_open;
+                cx.notify();
+            }))
+    }
+
+    fn render_commit_files(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let note = |text: &'static str| div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(text);
+        let Some(commit) = self.commit.as_ref().and_then(|hash| self.commits.iter().find(|commit| commit.hash == *hash)) else {
+            return note("Select a commit").into_any_element();
+        };
+        let Some(files) = self.commit_files.get(&commit.hash) else {
+            return note("…").into_any_element();
+        };
+        v_flex()
+            .id("commit-files")
+            .size_full()
+            .overflow_y_scroll()
+            .children(files.iter().enumerate().map(|(ix, file)| {
+                let key = format!("c:{}:{}", commit.hash, file.path);
+                let selected = self.selected.as_ref() == Some(&key);
+                let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
+                file_row(("commit-file", ix).into(), file, selected, 0., cx)
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        this.selected = Some(key.clone());
+                        cx.emit(ChangesEvent::OpenCommitDiff {
+                            commit: hash.clone(),
+                            short: short.clone(),
+                            file: path.clone(),
+                            pin: event.click_count() >= 2,
+                        });
+                        cx.notify();
+                    }))
+                    .context_menu(Self::commit_file_menu(cx.entity().downgrade(), commit, file))
+            }))
+            .into_any_element()
     }
 }
 
@@ -670,7 +680,36 @@ impl Render for ChangesPanel {
             ),
             View::History => (self.render_history(cx), self.commits.is_empty().then_some("No commits")),
         };
+        let files = self.has_commit_files(cx).then(|| (self.render_files_bar(cx).into_any_element(), self.render_commit_files(cx)));
         let theme = cx.theme();
+        let list = v_flex()
+            .id("changes-list")
+            .size_full()
+            .overflow_y_scroll()
+            .children(rows)
+            .when_some(empty.filter(|_| !self.loading && self.error.is_none()), |el, empty| {
+                el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
+            });
+        let body = match files {
+            None => list.into_any_element(),
+            Some((bar, files)) => {
+                // Hidden, the files keep their place in the split, for its size; their bar goes below.
+                let (inside, below) = if self.files_open { (Some(bar), None) } else { (None, Some(bar)) };
+                v_flex()
+                    .size_full()
+                    .child(
+                        div().flex_1().min_h_0().child(
+                            v_resizable("history-split").child(resizable_panel().child(list)).child(
+                                resizable_panel()
+                                    .visible(self.files_open)
+                                    .child(v_flex().size_full().children(inside).child(div().flex_1().min_h_0().child(files))),
+                            ),
+                        ),
+                    )
+                    .children(below)
+                    .into_any_element()
+            }
+        };
         v_flex()
             .size_full()
             .pt_1()
@@ -684,16 +723,27 @@ impl Render for ChangesPanel {
                     .whitespace_normal()
                     .child(error)
             }))
-            .child(
-                v_flex()
-                    .id("changes-list")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .children(rows)
-                    .when_some(empty.filter(|_| !self.loading && self.error.is_none()), |el, empty| {
-                        el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
-                    }),
-            )
+            .child(div().flex_1().min_h_0().child(body))
+    }
+}
+
+/// The Commit Files panel: the files of the commit selected in the history,
+/// when placed apart from it.
+pub struct CommitFilesPanel {
+    history: Entity<ChangesPanel>,
+    _subscription: Subscription,
+}
+
+impl CommitFilesPanel {
+    pub fn new(history: Entity<ChangesPanel>, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&history, |_, _, cx| cx.notify());
+        Self { history, _subscription: subscription }
+    }
+}
+
+impl Render for CommitFilesPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let files = self.history.update(cx, |history, cx| history.render_commit_files(cx));
+        v_flex().size_full().pt_1().text_ui(cx).child(files)
     }
 }
