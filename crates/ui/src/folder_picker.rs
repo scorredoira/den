@@ -1,7 +1,15 @@
 //! Folder browser for a server, through its agent (works the same locally
 //! and over SSH): for choosing a folder to open, or making a new one.
+//!
+//! As VS Code's: the box is the path. Below it, the folders in the part up
+//! to its last `/`, filtered by what follows it, after `..`. Enter (or Tab)
+//! goes into the one selected; Cmd-Enter or Open opens what the box says.
+//! A name that isn't there is offered as a new folder.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use client::Client;
 use gpui_kit::component::{
@@ -14,6 +22,9 @@ use proto::{Request, Response};
 
 use crate::config::UiText;
 
+/// The first row while nothing is typed after the last `/`: the folder above.
+const UP: &str = "..";
+
 pub enum FolderPickerEvent {
     Pick(PathBuf),
     Dismiss,
@@ -22,16 +33,17 @@ pub enum FolderPickerEvent {
 pub struct FolderPicker {
     client: Arc<Client>,
     title: SharedString,
-    /// Folder being shown (may start with `~`, which the agent expands).
-    dir: PathBuf,
+    /// What the box says: the path.
+    path: Entity<InputState>,
+    /// The folder whose subfolders are listed, asked or shown.
+    listed: Option<PathBuf>,
     /// Its subfolders.
     dirs: Vec<String>,
-    filter: Entity<InputState>,
     selected: usize,
     loading: bool,
     error: Option<SharedString>,
-    /// The folder changed: the filter is cleared on the next render.
-    clear_filter: bool,
+    /// The path to put in the box on the next render (it needs the window).
+    set_path: Option<String>,
     load: Option<Task<()>>,
     _subscription: Subscription,
 }
@@ -46,48 +58,99 @@ impl FolderPicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter Folders"));
-        let subscription = cx.subscribe(&filter, |this, _, event: &InputEvent, cx| match event {
+        let path = cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/folder"));
+        let subscription = cx.subscribe(&path, |this, _, event: &InputEvent, cx| match event {
             InputEvent::Change => {
                 this.selected = 0;
-                cx.notify();
+                this.sync(cx);
             }
             InputEvent::PressEnter { secondary: true, .. } => this.pick(cx),
             InputEvent::PressEnter { .. } => this.enter_selected(cx),
             _ => {}
         });
-        filter.update(cx, |filter, cx| filter.focus(window, cx));
+        path.update(cx, |path, cx| path.focus(window, cx));
         let mut picker = Self {
             client,
             title: title.into(),
-            dir: start.clone(),
+            path,
+            listed: None,
             dirs: Vec::new(),
-            filter,
             selected: 0,
-            loading: false,
+            loading: true,
             error: None,
-            clear_filter: false,
+            set_path: None,
             load: None,
             _subscription: subscription,
         };
-        picker.open(start, cx);
+        picker.start(start, cx);
         picker
     }
 
-    fn open(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+    /// The box starts at `start` as the server names it: `~` is `/home/me`,
+    /// so every folder above shows. An older agent doesn't resolve it.
+    fn start(&mut self, start: PathBuf, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        self.load = Some(cx.spawn(async move |this, cx| {
+            let start = match client.request(Request::Resolve { path: start.clone() }).await {
+                Ok(Response::Path(Some(resolved))) => resolved,
+                _ => start,
+            };
+            this.update(cx, |this, cx| this.go(&start, cx)).ok();
+        }));
+    }
+
+    /// Puts folder `dir` in the box, ready to list or filter its subfolders.
+    fn go(&mut self, dir: &Path, cx: &mut Context<Self>) {
+        let mut text = dir.to_string_lossy().into_owned();
+        if !text.ends_with(['/', '\\']) {
+            text.push(separator(&text));
+        }
+        self.set_path = Some(text);
+        cx.notify();
+    }
+
+    fn text(&self, cx: &App) -> String {
+        self.path.read(cx).value().to_string()
+    }
+
+    /// The box's folder (up to its last separator) and what follows it.
+    fn parts(&self, cx: &App) -> (Option<PathBuf>, String) {
+        let text = self.text(cx);
+        match text.rfind(['/', '\\']) {
+            Some(at) => (Some(PathBuf::from(&text[..=at])), text[at + 1..].to_string()),
+            None => (None, text),
+        }
+    }
+
+    /// Lists the box's folder if it isn't listed already.
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        let (dir, _) = self.parts(cx);
+        if dir == self.listed {
+            cx.notify();
+            return;
+        }
+        self.listed = dir.clone();
+        self.dirs.clear();
+        self.error = None;
+        let Some(dir) = dir else {
+            self.loading = false;
+            cx.notify();
+            return;
+        };
         let client = self.client.clone();
         self.loading = true;
         self.load = Some(cx.spawn(async move |this, cx| {
             let result = client.request(Request::ListDir { path: dir.clone() }).await;
             this.update(cx, |this, cx| {
+                // Typed on meanwhile: another folder is being listed.
+                if this.listed.as_ref() != Some(&dir) {
+                    return;
+                }
                 this.loading = false;
                 match result {
                     Ok(Response::Dir(entries)) => {
-                        this.dir = dir;
                         this.dirs = entries.into_iter().filter(|entry| entry.is_dir).map(|entry| entry.name).collect();
-                        this.selected = 0;
-                        this.error = None;
-                        this.clear_filter = true;
+                        this.dirs.sort_by_key(|name| name.to_lowercase());
                     }
                     Ok(other) => this.error = Some(format!("Unexpected response: {other:?}").into()),
                     Err(err) => this.error = Some(format!("{err:#}").into()),
@@ -99,63 +162,59 @@ impl FolderPicker {
         cx.notify();
     }
 
-    /// What's typed, if it's a path rather than a filter: from the root
-    /// (`/var/sim`, `C:\x`) or the home (`~/x`).
-    fn typed_path(&self, cx: &App) -> Option<PathBuf> {
-        let typed = self.filter.read(cx).value().trim().to_string();
-        let drive = typed.len() >= 3 && typed.as_bytes()[1] == b':' && matches!(typed.as_bytes()[2], b'/' | b'\\');
-        (typed.starts_with(['/', '~', '\\']) || drive).then(|| PathBuf::from(typed))
-    }
-
-    /// The subfolders that match the filter (case-insensitive); none while
-    /// a path is typed.
+    /// `..` while nothing follows the last separator (but at the root), and
+    /// the subfolders with what does in their name, those starting with it
+    /// first.
     fn visible(&self, cx: &App) -> Vec<String> {
-        if self.typed_path(cx).is_some() {
+        let (dir, typed) = self.parts(cx);
+        let Some(dir) = dir else {
             return Vec::new();
-        }
-        let filter = self.filter.read(cx).value().to_lowercase();
-        self.dirs
-            .iter()
-            .filter(|name| name.to_lowercase().contains(&filter))
-            .cloned()
-            .collect()
+        };
+        let typed = typed.to_lowercase();
+        let up = (typed.is_empty() && dir.parent().is_some()).then(|| UP.to_string());
+        let mut dirs: Vec<String> = self.dirs.iter().filter(|name| name.to_lowercase().contains(&typed)).cloned().collect();
+        dirs.sort_by_key(|name| !name.to_lowercase().starts_with(&typed));
+        up.into_iter().chain(dirs).collect()
     }
 
-    /// What's typed in the filter, if no subfolder has that name: offered as
-    /// a new folder, after those that match.
+    /// What follows the last separator, if no subfolder has that name:
+    /// offered as a new folder, after those that match.
     fn new_name(&self, cx: &App) -> Option<String> {
-        let name = self.filter.read(cx).value().trim().to_string();
-        let valid = !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != "..";
-        (valid && !self.dirs.contains(&name)).then_some(name)
+        let (dir, name) = self.parts(cx);
+        let name = name.trim().to_string();
+        let valid = dir.is_some() && !name.is_empty() && name != "." && name != "..";
+        (valid && !self.dirs.contains(&name) && !self.loading).then_some(name)
     }
 
+    /// Into the folder selected (Enter, Tab), up for `..`, or makes the new one.
     fn enter_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.typed_path(cx) {
-            self.open(path, cx);
-            return;
-        }
         let visible = self.visible(cx);
+        let Some(dir) = self.parts(cx).0 else {
+            return;
+        };
         match visible.get(self.selected) {
-            Some(name) => {
-                let dir = self.dir.join(name);
-                self.open(dir, cx);
+            Some(name) if name == UP => {
+                if let Some(parent) = dir.parent() {
+                    self.go(parent, cx);
+                }
             }
+            Some(name) => self.go(&dir.join(name), cx),
             None if self.selected == visible.len() => self.create(cx),
             None => {}
         }
     }
 
-    /// Makes the folder typed in the filter and goes into it.
+    /// Makes the folder named after the last separator and goes into it.
     fn create(&mut self, cx: &mut Context<Self>) {
-        let Some(name) = self.new_name(cx) else {
+        let (Some(dir), Some(name)) = (self.parts(cx).0, self.new_name(cx)) else {
             return;
         };
-        let (client, dir) = (self.client.clone(), self.dir.join(name));
+        let (client, dir) = (self.client.clone(), dir.join(name));
         self.loading = true;
         self.load = Some(cx.spawn(async move |this, cx| {
             let result = client.request(Request::CreateDir { path: dir.clone() }).await;
             this.update(cx, |this, cx| match result {
-                Ok(_) => this.open(dir, cx),
+                Ok(_) => this.go(&dir, cx),
                 Err(err) => {
                     this.loading = false;
                     this.error = Some(format!("{err:#}").into());
@@ -167,29 +226,23 @@ impl FolderPicker {
         cx.notify();
     }
 
-    /// Cmd-↑, like in Finder. From `~`, to the root.
-    fn up(&mut self, cx: &mut Context<Self>) {
-        let parent = match self.dir.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-            _ if self.dir != PathBuf::from("/") => PathBuf::from("/"),
-            _ => return,
-        };
-        self.open(parent, cx);
-    }
-
-    /// The folder shown, as the agent's machine names it: `~/x` would be a
+    /// What the box says, as the agent's machine names it: `~/x` would be a
     /// different workspace from `/home/me/x`, and only some requests expand it.
     fn pick(&mut self, cx: &mut Context<Self>) {
-        // A path typed opens as it is.
-        let dir = self.typed_path(cx).unwrap_or_else(|| self.dir.clone());
+        let text = self.text(cx);
+        let trimmed = text.trim_end_matches(['/', '\\']);
+        let path = PathBuf::from(if trimmed.is_empty() { text.as_str() } else { trimmed });
+        if path.as_os_str().is_empty() {
+            return;
+        }
         let client = self.client.clone();
         self.load = Some(cx.spawn(async move |this, cx| {
             // An older agent doesn't know the request: the folder goes as it is.
-            let dir = match client.request(Request::Resolve { path: dir.clone() }).await {
+            let path = match client.request(Request::Resolve { path: path.clone() }).await {
                 Ok(Response::Path(Some(resolved))) => resolved,
-                _ => dir,
+                _ => path,
             };
-            this.update(cx, |_, cx| cx.emit(FolderPickerEvent::Pick(dir))).ok();
+            this.update(cx, |_, cx| cx.emit(FolderPickerEvent::Pick(path))).ok();
         }));
     }
 
@@ -202,25 +255,27 @@ impl FolderPicker {
     }
 }
 
+/// The separator a path uses: `\` for a Windows one without `/`.
+fn separator(path: &str) -> char {
+    if path.contains('\\') && !path.contains('/') { '\\' } else { '/' }
+}
+
 impl Render for FolderPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.clear_filter) {
-            self.filter.update(cx, |filter, cx| filter.set_value("", window, cx));
+        if let Some(text) = self.set_path.take() {
+            self.path.update(cx, |path, cx| path.set_value(text, window, cx));
+            self.selected = 0;
+            self.sync(cx);
         }
         let visible = self.visible(cx);
         let new_name = self.new_name(cx);
-        let typed_path = self.typed_path(cx);
-        let no_subfolders = visible.is_empty() && !self.loading && new_name.is_none() && typed_path.is_none();
+        let nothing = visible.is_empty() && !self.loading && new_name.is_none() && self.error.is_none();
         let new_selected = self.selected == visible.len();
         let theme = cx.theme();
-        let name = self
-            .dir
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.dir.display().to_string());
         let button = |id: &'static str, label: SharedString| {
             div()
                 .id(id)
+                .flex_none()
                 .px_3()
                 .py_1()
                 .rounded(theme.radius)
@@ -228,6 +283,17 @@ impl Render for FolderPicker {
                 .border_color(theme.border)
                 .hover(|style| style.bg(theme.secondary_hover))
                 .child(label)
+        };
+        let row = |id: ElementId, selected: bool| {
+            h_flex()
+                .id(id)
+                .h(px(26.))
+                .flex_none()
+                .px_2()
+                .gap_2()
+                .rounded(theme.radius)
+                .when(selected, |el| el.bg(theme.accent))
+                .hover(|style| style.bg(theme.accent.opacity(0.6)))
         };
         v_flex()
             .id("folder-picker")
@@ -243,11 +309,10 @@ impl Render for FolderPicker {
             .text_ui(cx)
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(FolderPickerEvent::Dismiss)))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                let keystroke = &event.keystroke;
-                match keystroke.key.as_str() {
-                    "up" if keystroke.modifiers.secondary() => this.up(cx),
+                match event.keystroke.key.as_str() {
                     "up" => this.move_selection(-1, cx),
                     "down" => this.move_selection(1, cx),
+                    "tab" => this.enter_selected(cx),
                     "escape" => cx.emit(FolderPickerEvent::Dismiss),
                     _ => return,
                 }
@@ -256,30 +321,23 @@ impl Render for FolderPicker {
             .child(div().px_1().text_ui_small(cx).font_semibold().text_color(theme.muted_foreground).child(self.title.clone()))
             .child(
                 h_flex()
-                    .px_1()
                     .gap_2()
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.path)))
+                    .child(button("folder-cancel", "Cancel".into()).on_click(cx.listener(|_, _, _, cx| cx.emit(FolderPickerEvent::Dismiss))))
                     .child(
                         div()
-                            .id("folder-up")
-                            .px_1()
+                            .id("folder-pick")
+                            .flex_none()
+                            .px_3()
+                            .py_1()
                             .rounded(theme.radius)
-                            .text_color(theme.muted_foreground)
-                            .hover(|style| style.bg(theme.accent))
-                            .child("↑")
-                            .on_click(cx.listener(|this, _, _, cx| this.up(cx))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(self.dir.display().to_string()),
-                    )
-                    .when(self.loading, |el| el.child(div().text_color(theme.muted_foreground).child("…"))),
+                            .bg(theme.primary)
+                            .text_color(theme.primary_foreground)
+                            .hover(|style| style.bg(theme.primary_hover))
+                            .child("Open")
+                            .on_click(cx.listener(|this, _, _, cx| this.pick(cx))),
+                    ),
             )
-            .child(Input::new(&self.filter))
             .children(self.error.clone().map(|error| {
                 div().px_1().text_ui_small(cx).text_color(theme.danger).whitespace_normal().child(error)
             }))
@@ -290,76 +348,37 @@ impl Render for FolderPicker {
                     .min_h_0()
                     .overflow_y_scroll()
                     .children(visible.iter().enumerate().map(|(ix, name)| {
-                        let name = name.clone();
-                        h_flex()
-                            .id(("folder", ix))
-                            .h(px(26.))
-                            .px_2()
-                            .gap_2()
-                            .rounded(theme.radius)
-                            .when(ix == self.selected, |el| el.bg(theme.accent))
-                            .hover(|style| style.bg(theme.accent.opacity(0.6)))
-                            .child(svg().path("icons/tree-folder.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                        let up = name == UP;
+                        row(("folder", ix).into(), ix == self.selected)
+                            .when(!up, |el| {
+                                el.child(svg().path("icons/tree-folder.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                            })
                             .child(name.clone())
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                let dir = this.dir.join(&name);
-                                this.open(dir, cx);
+                                this.selected = ix;
+                                this.enter_selected(cx);
                             }))
                     }))
                     .children(new_name.map(|name| {
-                        h_flex()
-                            .id("folder-new")
-                            .h(px(26.))
-                            .px_2()
-                            .gap_2()
-                            .rounded(theme.radius)
-                            .when(new_selected, |el| el.bg(theme.accent))
-                            .hover(|style| style.bg(theme.accent.opacity(0.6)))
+                        row("folder-new".into(), new_selected)
                             .text_color(theme.muted_foreground)
                             .child(svg().path("icons/plus.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
                             .child(format!("New Folder “{name}”"))
                             .on_click(cx.listener(|this, _, _, cx| this.create(cx)))
                     }))
-                    .children(typed_path.map(|path| {
-                        h_flex()
-                            .id("folder-go")
-                            .h(px(26.))
-                            .px_2()
-                            .gap_2()
-                            .rounded(theme.radius)
-                            .bg(theme.accent)
-                            .child(svg().path("icons/tree-folder.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
-                            .child(format!("Go to {}", path.display()))
-                            .on_click(cx.listener(move |this, _, _, cx| this.open(path.clone(), cx)))
-                    }))
-                    .when(no_subfolders, |el| {
-                        el.child(div().px_2().py_1().text_ui_small(cx).text_color(theme.muted_foreground).child("No subfolders"))
+                    .when(self.loading, |el| {
+                        el.child(div().px_2().py_1().text_ui_small(cx).text_color(theme.muted_foreground).child("…"))
+                    })
+                    .when(nothing, |el| {
+                        el.child(div().px_2().py_1().text_ui_small(cx).text_color(theme.muted_foreground).child("No folders here"))
                     }),
             )
             .child(
-                h_flex()
-                    .pt_1()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_ui_small(cx)
-                            .text_color(theme.muted_foreground)
-                            .child("Enter to go in · Cmd-↑ to go up · Cmd-Enter to open · type a path (/ or ~) to go there, or a new name to create it"),
-                    )
-                    .child(button("folder-cancel", "Cancel".into()).on_click(cx.listener(|_, _, _, cx| cx.emit(FolderPickerEvent::Dismiss))))
-                    .child(
-                        div()
-                            .id("folder-pick")
-                            .px_3()
-                            .py_1()
-                            .rounded(theme.radius)
-                            .bg(theme.primary)
-                            .text_color(theme.primary_foreground)
-                            .hover(|style| style.bg(theme.primary_hover))
-                            .child(format!("Open “{name}”"))
-                            .on_click(cx.listener(|this, _, _, cx| this.pick(cx))),
-                    ),
+                div()
+                    .px_1()
+                    .text_ui_small(cx)
+                    .text_color(theme.muted_foreground)
+                    .child("Enter or Tab goes in · Cmd-Enter opens what the box says"),
             )
     }
 }

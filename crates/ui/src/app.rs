@@ -282,6 +282,9 @@ pub struct Sik {
     pending_last: Option<TaskKey>,
     /// The task before the active one, to go back to when it closes.
     previous: Option<TaskKey>,
+    /// The server just added, until a folder is opened on it (or not, and
+    /// it goes).
+    adding_host: Option<SharedString>,
     /// Cmd-E held: the workspaces to go through.
     switcher: Option<switcher::Switcher>,
     /// Cmd-K: jump to a task by name.
@@ -377,6 +380,7 @@ impl Sik {
             pending_last: None,
             previous: None,
             switcher: None,
+            adding_host: None,
             task_picker: None,
             command_palette: None,
             recent_picker: None,
@@ -612,6 +616,10 @@ impl Sik {
             && let Some(key) = self.pending_last.take_if(|key| key.host == name)
         {
             self.activate(key, window, cx);
+        }
+        // Just added: a folder to open on it.
+        if self.adding_host.as_ref() == Some(&name) {
+            self.open_folder_picker(name.clone(), window, cx);
         }
         self.refresh_all(cx);
         cx.notify();
@@ -1670,6 +1678,8 @@ impl Sik {
             repos: Vec::new(),
             generation: 0,
         });
+        // It stays if a folder is opened on it once it connects.
+        self.adding_host = Some(name.clone());
         self.connect(name, window, cx);
         if !self.tasks_shown(cx) {
             self.show_tasks_column(true, cx);
@@ -1730,7 +1740,10 @@ impl Sik {
         let picker = cx.new(|cx| FolderPicker::new(client.clone(), title, start, window, cx));
         let subscription = cx.subscribe_in(&picker, window, move |this, _, event: &FolderPickerEvent, window, cx| {
             this.folder_picker = None;
+            let adding = this.adding_host.take_if(|adding| *adding == host);
             match event {
+                // A server just added with no folder opened isn't kept.
+                FolderPickerEvent::Dismiss if adding.is_some() => this.remove_host(host.clone(), window, cx),
                 FolderPickerEvent::Dismiss => this.focus_active(window, cx),
                 FolderPickerEvent::Pick(path) => this.open_path(host.clone(), path.clone(), window, cx),
             }
