@@ -2,12 +2,22 @@
 //! the code, which stays put and never closes (the others go around it). A
 //! click shows or hides the panel wherever it's placed; dragging an icon
 //! reorders the bar, or places the panel. The places have no tabs: the bar
-//! does their job.
+//! does their job. Its right-click menu (and View > Activity Bar) takes
+//! icons off it.
 use super::*;
 use super::layout::{PanelDrag, icon, title};
 use crate::config::Panel;
+use gpui_kit::component::menu::PopupMenuItem;
 
-pub(crate) const ACTIVITY_WIDTH: f32 = 40.;
+pub(crate) const ACTIVITY_WIDTH: f32 = 48.;
+
+/// The icons' size: VS Code's, drawn as thin (see `thin`).
+const ICON: f32 = 24.;
+
+/// `icons/x.svg`, with thinner lines (see `Assets`).
+fn thin(path: &str) -> SharedString {
+    format!("icons/thin/{}", path.strip_prefix("icons/").unwrap_or(path)).into()
+}
 
 /// What an icon tells of its panel besides whether it shows.
 #[derive(Clone, Copy, PartialEq)]
@@ -56,7 +66,34 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
         }))
         // Past the icons, it goes last.
         .child(div().flex_1().w_full().on_drop(|drag: &PanelDrag, _, cx| reorder(drag.0, None, cx)))
+        // At the bottom, as in VS Code: a folder on a server, and Settings.
+        .child(bottom_button("activity-remote", "icons/satellite-dish.svg", "Open Folder on Server…", Box::new(crate::OpenRemoteFolder), cx))
+        .child(bottom_button("activity-settings", "icons/settings.svg", "Settings", Box::new(crate::OpenSettings), cx))
+        .context_menu(|popup, _, cx| {
+            let config = Config::get(cx);
+            let hidden = config.hidden_activity();
+            config
+                .activity()
+                .into_iter()
+                .fold(popup, |popup, panel| {
+                    popup.item(
+                        PopupMenuItem::new(title(panel))
+                            .checked(!hidden.contains(&panel))
+                            .on_click(move |_, _, cx| toggle_activity_icon(panel, cx)),
+                    )
+                })
+                .separator()
+                .item(menu::reset_layout())
+        })
         .into_any_element()
+}
+
+/// Puts `panel`'s icon on the bar, or takes it off.
+pub(crate) fn toggle_activity_icon(panel: Panel, cx: &mut App) {
+    Config::update(cx, |config| config.toggle_activity(panel));
+    // View > Activity Bar checks it.
+    crate::app_menu::set(cx);
+    cx.refresh_windows();
 }
 
 /// An icon in the foreground's color while its panel shows: unlike a tab,
@@ -65,13 +102,30 @@ fn activity_button(panel: Panel, shown: bool, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
     div()
         .id(("activity", panel as usize))
-        .size(px(32.))
+        .size(px(40.))
         .flex()
         .items_center()
         .justify_center()
         .rounded(theme.radius)
         .hover(|style| style.bg(theme.sidebar_accent))
-        .child(svg().path(icon(panel)).size(px(18.)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
+        .child(svg().path(thin(icon(panel))).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
+}
+
+/// An icon at the bottom of the bar that runs `action`.
+fn bottom_button(id: &'static str, path: &'static str, tip: &'static str, action: Box<dyn Action>, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    div()
+        .id(id)
+        .size(px(40.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(theme.radius)
+        .hover(|style| style.bg(theme.sidebar_accent))
+        .child(svg().path(thin(path)).size(px(ICON)).text_color(theme.muted_foreground))
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
 fn reorder(panel: Panel, target: Option<Panel>, cx: &mut App) {
@@ -105,7 +159,7 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 
 impl Workspace {
     pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let icons = Config::get(cx).activity().into_iter().map(|panel| (panel, self.is_shown(panel, cx), self.badge(panel, cx))).collect();
+        let icons = Config::get(cx).shown_activity().into_iter().map(|panel| (panel, self.is_shown(panel, cx), self.badge(panel, cx))).collect();
         let workspace = cx.entity().downgrade();
         let click: OnActivity = Rc::new(move |panel, window, cx| {
             workspace.update(cx, |this, cx| this.click_activity(panel, window, cx)).ok();
@@ -116,6 +170,7 @@ impl Workspace {
     fn badge(&self, panel: Panel, cx: &App) -> Option<Badge> {
         match panel {
             Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
+            Panel::Agents => self.badges.agents.map(Badge::Dot),
             Panel::Terminals => self.badges.terminals.map(Badge::Dot),
             Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
             Panel::Debugger => {
@@ -157,4 +212,6 @@ impl Workspace {
 pub struct TaskBadges {
     pub terminals: Option<Hsla>,
     pub workspaces: Option<Hsla>,
+    /// The most urgent of the agents.
+    pub agents: Option<Hsla>,
 }

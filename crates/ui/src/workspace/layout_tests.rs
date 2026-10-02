@@ -8,6 +8,8 @@ fn draw(cx: &mut TestAppContext, layout: impl FnOnce(&mut config::Layout)) -> (E
     cx.update(|cx| {
         gpui_kit::init(cx);
         let mut config = Config::default();
+        // Every icon on the bar.
+        config.hidden_activity = Some(Vec::new());
         layout(&mut config.layout);
         cx.set_global(config);
     });

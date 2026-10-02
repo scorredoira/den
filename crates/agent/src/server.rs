@@ -20,7 +20,7 @@ use alacritty_terminal::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use proto::{
-    ClientEnvelope, ClientMessage, Decoded, Event, PROTOCOL, Request, Response, ServerMessage, TermId, TermInfo,
+    AgentInfo, ClientEnvelope, ClientMessage, Decoded, Event, PROTOCOL, Request, Response, ServerMessage, TermId, TermInfo,
 };
 
 use crate::{
@@ -71,6 +71,10 @@ struct AgentTerm {
     /// and up to which output it was checked.
     blocked: bool,
     checked: Instant,
+    /// Its foreground process when last looked at, and the coding agent it
+    /// is (`claude`, `codex`…), if one.
+    foreground: Option<u32>,
+    agent: Option<String>,
 }
 
 #[derive(Default)]
@@ -95,6 +99,8 @@ struct State {
     /// connection and request).
     commands: HashMap<u64, (ConnId, ConnId, Option<u64>)>,
     next_command: u64,
+    /// The terminals running an agent, as last sent.
+    agents: Vec<AgentInfo>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -194,6 +200,52 @@ impl State {
         }
     }
 
+    /// The terminals whose foreground process changed since last looked at,
+    /// with the new one: whether it's an agent is read off the lock.
+    fn foregrounds_changed(&mut self) -> Vec<(TermId, Option<u32>)> {
+        let mut changed = Vec::new();
+        for (term, entry) in &mut self.terms {
+            let foreground = entry.pty.foreground_pid();
+            if foreground != entry.foreground {
+                entry.foreground = foreground;
+                changed.push((*term, foreground));
+            }
+        }
+        changed
+    }
+
+    /// The terminals running an agent: those whose foreground process is
+    /// one or, where that can't be read (Windows), whose title is Claude
+    /// Code's.
+    fn agent_list(&self) -> Vec<AgentInfo> {
+        let mut agents: Vec<AgentInfo> = self
+            .terms
+            .iter()
+            .filter_map(|(term, entry)| {
+                let name = entry.agent.clone().or_else(|| entry.title.as_deref().filter(|title| claude_title(title)).map(|_| "claude".to_string()))?;
+                Some(AgentInfo {
+                    term: *term,
+                    group: entry.group.clone(),
+                    name,
+                    title: entry.title.clone(),
+                    working: entry.settled && entry.last_output.elapsed() < WORKING_WINDOW,
+                    blocked: entry.blocked,
+                })
+            })
+            .collect();
+        agents.sort_by_key(|agent| agent.term);
+        agents
+    }
+
+    /// Tells every connection the agents, if they changed.
+    fn send_agents(&mut self) {
+        let agents = self.agent_list();
+        if agents != self.agents {
+            self.agents = agents.clone();
+            self.broadcast_all(|| Event::Agents { agents: agents.clone() });
+        }
+    }
+
     fn update_idle(&mut self) {
         self.idle_since = (self.terms.is_empty() && self.clients.is_empty()).then(Instant::now);
     }
@@ -208,7 +260,20 @@ pub fn run(listener: Listener) -> Result<()> {
         let state = state.clone();
         move || loop {
             std::thread::sleep(Duration::from_millis(500));
-            state.lock().unwrap().expire_activity();
+            let changed = state.lock().unwrap().foregrounds_changed();
+            // Reading a command line runs `ps`: not while holding the lock.
+            let agents: Vec<(TermId, Option<String>)> = changed
+                .into_iter()
+                .map(|(term, pid)| (term, pid.and_then(platform::process_args).and_then(|args| agent_name(&args))))
+                .collect();
+            let mut state = state.lock().unwrap();
+            for (term, agent) in agents {
+                if let Some(entry) = state.terms.get_mut(&term) {
+                    entry.agent = agent;
+                }
+            }
+            state.expire_activity();
+            state.send_agents();
         }
     });
 
@@ -496,6 +561,7 @@ fn own_separators(request: &mut Request) {
         | Request::TaskList
         | Request::Version
         | Request::BlockedList
+        | Request::AgentList
         | Request::Ports
         | Request::RelayConnect { .. }
         | Request::RelaySend { .. }
@@ -712,6 +778,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         }
         Request::RepoList => Ok(Response::Repos(tasks::repos())),
         Request::BlockedList => Ok(Response::Files(state.lock().unwrap().blocked.iter().cloned().collect())),
+        Request::AgentList => Ok(Response::Agents(state.lock().unwrap().agent_list())),
         Request::Version => Ok(Response::Text(own_build_id())),
         Request::Open { root, file } => {
             let state = state.lock().unwrap();
@@ -994,6 +1061,40 @@ fn restore_after_restart(state: &Shared) {
     }
 }
 
+/// The coding agent a command line runs, by its program or its npm package
+/// (run by node): `claude`, `codex`…
+fn agent_name(args: &str) -> Option<String> {
+    const AGENTS: [&str; 7] = ["claude", "codex", "gemini", "opencode", "aider", "amp", "cursor-agent"];
+    const PACKAGES: [(&str, &str); 4] =
+        [("@anthropic-ai/claude-code", "claude"), ("@openai/codex", "codex"), ("@google/gemini-cli", "gemini"), ("opencode-ai", "opencode")];
+    let program = |word: &str| {
+        let word = word.trim_matches('"').replace('\\', "/");
+        let name = word.rsplit('/').next().unwrap_or("").to_string();
+        let name = name.strip_suffix(".exe").or_else(|| name.strip_suffix(".cmd")).unwrap_or(&name).to_string();
+        (word, name)
+    };
+    let mut words = args.split_whitespace();
+    let (_, first) = program(words.next()?);
+    if AGENTS.contains(&first.as_str()) {
+        return Some(first);
+    }
+    // What an interpreter runs: the agent's package, or its script.
+    if !["node", "bun", "deno", "python", "python3"].contains(&first.as_str()) {
+        return None;
+    }
+    let (script, name) = program(words.next()?);
+    PACKAGES
+        .iter()
+        .find(|(package, _)| script.contains(package))
+        .map(|(_, name)| name.to_string())
+        .or_else(|| AGENTS.contains(&name.as_str()).then_some(name))
+}
+
+/// Claude Code's title: what it's doing after `✳` or a spinner (braille).
+fn claude_title(title: &str) -> bool {
+    title.chars().next().is_some_and(|ch| ch == '✳' || ('\u{2800}'..='\u{28FF}').contains(&ch))
+}
+
 /// If a command line is Claude Code's (the native `claude` binary or the npm
 /// package run by node), the command that resumes it: the same options plus
 /// `--continue`, unless it already resumes a given session.
@@ -1053,6 +1154,8 @@ fn create(
                 settled: false,
                 blocked: false,
                 checked: Instant::now(),
+                foreground: None,
+                agent: None,
             },
         );
         state.update_idle();
@@ -1156,7 +1259,21 @@ mod blocked_tests {
 
 #[cfg(test)]
 mod restart_tests {
-    use super::resume_command;
+    use super::{agent_name, claude_title, resume_command};
+
+    #[test]
+    fn tells_the_agents_apart() {
+        assert_eq!(agent_name("claude --model opus").as_deref(), Some("claude"));
+        assert_eq!(agent_name("/opt/homebrew/bin/codex").as_deref(), Some("codex"));
+        assert_eq!(agent_name("node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js").as_deref(), Some("claude"));
+        assert_eq!(agent_name(r"C:\tools\claude.exe").as_deref(), Some("claude"));
+        // A shell, or something that only mentions an agent further on.
+        assert_eq!(agent_name("-zsh"), None);
+        assert_eq!(agent_name("vim notes/claude"), None);
+        assert!(claude_title("✳ Fix the login"));
+        assert!(claude_title("⠂ Fix the login"));
+        assert!(!claude_title("zsh"));
+    }
 
     #[test]
     fn resumes_claude_code_with_its_options() {

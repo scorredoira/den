@@ -183,6 +183,9 @@ pub enum Request {
     /// `text` its editor's text), the one of that file, started if needed.
     /// Responds `Symbols`.
     LspWorkspaceSymbols { root: PathBuf, path: Option<PathBuf>, text: String, query: String },
+    /// The terminals running a coding agent right now. Responds `Agents`;
+    /// `Event::Agents` says when they change.
+    AgentList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -373,6 +376,7 @@ pub enum Response {
     /// Of a file, in its order. `server` as in `Lsp`; of a task, the servers
     /// that answered, separated by commas.
     Symbols { server: Option<String>, symbols: Vec<LspSymbol> },
+    Agents(Vec<AgentInfo>),
 }
 
 /// A port a process started from a terminal listens on (at loopback or on
@@ -430,6 +434,22 @@ pub struct TaskInfo {
     pub working: bool,
 }
 
+/// A terminal running a coding agent (Claude Code, Codex…).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentInfo {
+    pub term: TermId,
+    /// The task (worktree) of its terminal.
+    pub group: String,
+    /// Which agent: `claude`, `codex`…
+    pub name: String,
+    /// The terminal's title: Claude Code puts what it's working on there.
+    pub title: Option<String>,
+    /// Producing output now.
+    pub working: bool,
+    /// Waiting for an answer.
+    pub blocked: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TermInfo {
     pub term: TermId,
@@ -462,6 +482,9 @@ pub enum Event {
     /// terminal `term` of workspace `group` if it ran in one. Answered with
     /// `Request::CommandDone`.
     Command { command: u64, args: Vec<String>, cwd: PathBuf, term: Option<TermId>, group: Option<String> },
+    /// The terminals running an agent, again whenever one starts, stops,
+    /// changes state or title. Sent to every connection.
+    Agents { agents: Vec<AgentInfo> },
 }
 
 /// Fingerprint of a binary (64-bit FNV-1a): tells agent versions apart.

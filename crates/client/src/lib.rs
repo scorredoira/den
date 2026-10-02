@@ -206,7 +206,7 @@ impl Client {
                             callback(result.map_err(|err| anyhow!(err)));
                         }
                     }
-                    ServerMessage::Event(event @ (Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. } | Event::Open { .. } | Event::Command { .. })) => {
+                    ServerMessage::Event(event @ (Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. } | Event::Open { .. } | Event::Command { .. } | Event::Agents { .. })) => {
                         for watcher in watchers.lock().unwrap().iter() {
                             watcher(&event);
                         }
@@ -241,6 +241,7 @@ impl Client {
                             | Event::FsChanged { .. }
                             | Event::Open { .. }
                             | Event::Command { .. }
+                            | Event::Agents { .. }
                             | Event::RelayLine { .. }
                             | Event::RelayClosed { .. } => unreachable!(),
                         };

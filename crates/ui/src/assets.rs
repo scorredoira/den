@@ -7,7 +7,8 @@ const ICONS: &[(&str, &[u8])] = &[
     ("icons/files.svg", include_bytes!("../assets/icons/files.svg")),
     ("icons/git-branch.svg", include_bytes!("../assets/icons/git-branch.svg")),
     ("icons/text-search.svg", include_bytes!("../assets/icons/text-search.svg")),
-    ("icons/references.svg", include_bytes!("../assets/icons/search.svg")),
+    ("icons/references.svg", include_bytes!("../assets/icons/references.svg")),
+    ("icons/search.svg", include_bytes!("../assets/icons/search.svg")),
     ("icons/tree-chevron-right.svg", include_bytes!("../assets/icons/chevron-right.svg")),
     ("icons/tree-chevron-down.svg", include_bytes!("../assets/icons/chevron-down.svg")),
     ("icons/tree-file.svg", include_bytes!("../assets/icons/file.svg")),
@@ -33,6 +34,9 @@ const ICONS: &[(&str, &[u8])] = &[
     ("icons/bug.svg", include_bytes!("../assets/icons/bug.svg")),
     ("icons/terminal.svg", include_bytes!("../assets/icons/square-terminal.svg")),
     ("icons/layers.svg", include_bytes!("../assets/icons/layers.svg")),
+    ("icons/loader.svg", include_bytes!("../assets/icons/loader-circle.svg")),
+    ("icons/bot.svg", include_bytes!("../assets/icons/bot.svg")),
+    ("icons/satellite-dish.svg", include_bytes!("../assets/icons/satellite-dish.svg")),
     ("icons/history.svg", include_bytes!("../assets/icons/history.svg")),
     ("icons/code.svg", include_bytes!("../assets/icons/code.svg")),
     ("icons/symbol-function.svg", include_bytes!("../assets/icons/box.svg")),
@@ -52,6 +56,14 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        // Any icon drawn thinner (`icons/thin/x.svg`), as VS Code's: the
+        // activity bar's, which are larger and would otherwise look heavy.
+        if let Some(name) = path.strip_prefix("icons/thin/") {
+            let thin = |bytes: Cow<'static, [u8]>| {
+                Cow::Owned(String::from_utf8_lossy(&bytes).replace("stroke-width=\"2\"", "stroke-width=\"1.5\"").into_bytes())
+            };
+            return Ok(self.load(&format!("icons/{name}"))?.map(thin));
+        }
         if let Some((_, bytes)) = ICONS.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }

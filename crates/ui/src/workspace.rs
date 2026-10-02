@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::HashSet,
     path::{Path, PathBuf},
     rc::Rc,
@@ -56,8 +57,8 @@ mod autosave_tests;
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::WorkspacesPanel;
-pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar};
+pub(crate) use layout::{WorkspacesPanel, reset_panels, title as panel_title};
+pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar, toggle_activity_icon};
 
 enum Content {
     Loading,
@@ -171,8 +172,16 @@ struct FileTab {
 struct OldSide {
     editor: Entity<EditorState>,
     marks: Option<(RangeDecorationCollection, RangeDecorationCollection)>,
+    /// Both sides in one column, shown instead when there's no room for two.
+    inline: Entity<EditorState>,
+    inline_marks: Option<RangeDecorationCollection>,
+    /// The width the diff had when last drawn.
+    width: Rc<Cell<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Narrower than this, a diff shows in one column.
+const SIDE_BY_SIDE_WIDTH: f32 = 800.;
 
 /// `git blame` of a file: `lines[i]` indexes `commits`, `None` if uncommitted.
 struct Blame {
@@ -227,6 +236,8 @@ pub struct Workspace {
     panel_drop: Option<(Panel, crate::drag_drop::DropPlacement)>,
     /// The app's workspaces column.
     workspaces: Option<Entity<WorkspacesPanel>>,
+    /// The app's agents panel (see `set_agents`).
+    agents: Option<Entity<WorkspacesPanel>>,
     /// The app's tasks' state, on the activity bar's icons.
     badges: TaskBadges,
     file_tree: Entity<FileTree>,
@@ -308,6 +319,12 @@ impl Workspace {
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
+        // A git panel that shows from the start reads now, not when shown.
+        for (panel, entity) in [(Panel::Changes, &changes), (Panel::History, &history)] {
+            if has_agent && Panels::get(cx).is_shown(&Config::get(cx).layout, panel) {
+                entity.update(cx, |entity, cx| entity.shown(cx));
+            }
+        }
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
             cx.observe(&debugger, |_, _, cx| cx.notify()),
@@ -397,6 +414,7 @@ impl Workspace {
             focus_handle,
             panel_drop: None,
             workspaces: None,
+            agents: None,
             badges: TaskBadges::default(),
             file_tree,
             terminals,
@@ -1027,7 +1045,15 @@ impl Workspace {
                     move |_, new, cx| follow_scroll(&new, &old, cx)
                 }),
             ];
-            self.tabs[ix].old = Some(OldSide { editor, marks: None, _subscriptions: subscriptions });
+            let inline = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).soft_wrap(false));
+            self.tabs[ix].old = Some(OldSide {
+                editor,
+                marks: None,
+                inline,
+                inline_marks: None,
+                width: Rc::new(Cell::new(px(f32::MAX))),
+                _subscriptions: subscriptions,
+            });
         }
         let theme = cx.theme();
         let removed = (theme.danger.opacity(0.14), theme.danger.opacity(0.3));
@@ -1068,10 +1094,42 @@ impl Workspace {
                 old.marks = Some((old_collection, new_collection));
             }
         }
-        if first && let Some(&row) = sides.changes.first() {
-            let at = Position::new(row as u32, 0);
-            new.update(cx, |state, cx| state.set_cursor_position(at, window, cx));
-            reveal_centered(&new, row as u32, true, 10, window, cx);
+        let inline = diff::inline(&sides);
+        let inline_marks: Vec<_> = inline
+            .lines
+            .iter()
+            .filter_map(|line| {
+                let range = line.changed.clone().filter(|range| !range.is_empty())?;
+                let color = if line.new.is_some() { added.1 } else { removed.1 };
+                Some(RangeDecoration::new(range).with_style(RangeDecorationStyle::Fill).with_color(color))
+            })
+            .collect();
+        old.inline.update(cx, |state, cx| {
+            if state.language_name() != language {
+                state.set_highlighter(language, cx);
+            }
+            state.set_soft_wrap(false, window, cx);
+            state.set_value(inline.text.clone(), window, cx);
+            state.set_line_styles(inline_line_styles(&inline, removed.0, added.0), cx);
+        });
+        match &old.inline_marks {
+            Some(collection) => collection.set(inline_marks, cx),
+            None => {
+                let collection = old.inline.update(cx, |state, cx| state.create_range_decorations_collection(inline_marks, cx));
+                old.inline_marks = Some(collection);
+            }
+        }
+        if first {
+            if let Some(&row) = sides.changes.first() {
+                let at = Position::new(row as u32, 0);
+                new.update(cx, |state, cx| state.set_cursor_position(at, window, cx));
+                reveal_centered(&new, row as u32, true, 10, window, cx);
+            }
+            if let Some(&row) = inline.changes.first() {
+                let editor = old.inline.clone();
+                editor.update(cx, |state, cx| state.set_cursor_position(Position::new(row as u32, 0), window, cx));
+                reveal_centered(&editor, row as u32, true, 10, window, cx);
+            }
         }
         if let Some(focused) = focused {
             focused.focus(window, cx);
@@ -3092,8 +3150,17 @@ impl Workspace {
                                     .and_then(|hint| signature::render(hint, cx)),
                             );
                         match &tab.old {
+                            // No room for two sides: one column, VS Code's inline diff.
+                            Some(old) if old.width.get() < px(SIDE_BY_SIDE_WIDTH) => div()
+                                .size_full()
+                                .relative()
+                                .child(measure_width(&old.width))
+                                .child(Editor::new(&old.inline).bordered(false).readonly(true).h_full())
+                                .into_any_element(),
                             Some(old) => h_flex()
                                 .size_full()
+                                .relative()
+                                .child(measure_width(&old.width))
                                 .child(
                                     div()
                                         .flex_1()
@@ -3148,7 +3215,7 @@ impl Workspace {
     }
 
     /// The code area: one group, or two split side by side or one above the
-    /// other; the status bar under them.
+    /// other.
     fn render_editor_area(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let groups = match self.editor_split {
             None => self.render_group(0, cx),
@@ -3164,11 +3231,7 @@ impl Workspace {
                     .into_any_element()
             }
         };
-        v_flex()
-            .size_full()
-            .bg(cx.theme().background)
-            .child(div().flex_1().min_h_0().child(groups))
-            .child(self.render_status_bar(cx))
+        v_flex().size_full().bg(cx.theme().background).child(div().flex_1().min_h_0().child(groups))
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3292,7 +3355,7 @@ impl Render for Workspace {
             self.editor_drop = None;
             self.panel_drop = None;
         }
-        h_flex()
+        v_flex()
             .id("workspace")
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
@@ -3367,8 +3430,16 @@ impl Render for Workspace {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .text_color(cx.theme().foreground)
-            .child(self.render_activity_bar(cx))
-            .child(div().flex_1().min_w_0().h_full().child(self.render_layout(window, cx)))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.render_activity_bar(cx))
+                    .child(div().flex_1().min_w_0().h_full().child(self.render_layout(window, cx))),
+            )
+            // Across the whole window, as VS Code's.
+            .child(self.render_status_bar(cx))
             .children(
                 self.finder
                     .as_ref()
@@ -3654,6 +3725,42 @@ fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut 
     if offset.y != y {
         to.update(cx, |state, cx| state.set_scroll_offset(point(offset.x, y), cx));
     }
+}
+
+/// Keeps in `width` how wide the diff is, and redraws when that changes
+/// whether its sides fit.
+fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
+    let width = width.clone();
+    canvas(
+        move |bounds, window, _| {
+            let fits = |width: Pixels| width >= px(SIDE_BY_SIDE_WIDTH);
+            if fits(width.replace(bounds.size.width)) != fits(bounds.size.width) {
+                window.refresh();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
+}
+
+/// How a diff in one column shows each line: both numbers, removed lines in
+/// `removed` and with `−`, added ones in `added` and with `+`.
+fn inline_line_styles(inline: &diff::Inline, removed: Hsla, added: Hsla) -> Vec<LineStyle> {
+    let digits = inline.lines.iter().filter_map(|line| line.old.max(line.new)).max().unwrap_or(1).to_string().len();
+    let number = |number: Option<u32>| number.map_or_else(|| " ".repeat(digits), |number| format!("{number:>digits$}"));
+    inline
+        .lines
+        .iter()
+        .map(|line| {
+            let (background, marker) = match (line.old, line.new) {
+                (Some(_), None) => (Some(removed), '−'),
+                (None, Some(_)) => (Some(added), '+'),
+                _ => (None, ' '),
+            };
+            LineStyle { background, hatched: false, number: Some(format!("{} {}{marker}", number(line.old), number(line.new)).into()) }
+        })
+        .collect()
 }
 
 /// How a side of a diff shows each line: changed ones in `color` and with

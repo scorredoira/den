@@ -1,6 +1,6 @@
 //! Side-by-side diffs: a unified diff with the whole file as context, split
 //! into its two sides and aligned line by line, with a gap on one side where
-//! only the other has lines.
+//! only the other has lines. Too narrow for two sides, one: `inline`.
 
 use std::ops::Range;
 
@@ -94,6 +94,82 @@ pub fn split(diff: &str) -> Option<SideBySide> {
     hunks.then_some(result)
 }
 
+/// A diff in one column, as when there's no room for two: each block of
+/// changes, its removed lines and then its added ones.
+#[derive(Debug, Default)]
+pub struct Inline {
+    pub text: String,
+    pub lines: Vec<InlineLine>,
+    /// Row where each block of changes starts.
+    pub changes: Vec<usize>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct InlineLine {
+    /// Its number on each side: only the old for a removed line, only the
+    /// new for an added one.
+    pub old: Option<u32>,
+    pub new: Option<u32>,
+    /// Bytes of `Inline::text` that changed within the line.
+    pub changed: Option<Range<usize>>,
+}
+
+impl Inline {
+    fn push(&mut self, old: Option<u32>, new: Option<u32>, text: &str, changed: Option<Range<usize>>) {
+        if !self.lines.is_empty() {
+            self.text.push('\n');
+        }
+        let start = self.text.len();
+        self.text.push_str(text);
+        let changed = changed.map(|range| start + range.start..start + range.end);
+        self.lines.push(InlineLine { old, new, changed });
+    }
+}
+
+/// `sides` in one column.
+pub fn inline(sides: &SideBySide) -> Inline {
+    // Each line's text, and what changed in it from its start.
+    let rows = |side: &Side| -> Vec<(String, Option<Range<usize>>)> {
+        let mut start = 0;
+        side.text
+            .split('\n')
+            .zip(&side.lines)
+            .map(|(text, line)| {
+                let changed = line.changed.clone().map(|range| range.start - start..range.end - start);
+                start += text.len() + 1;
+                (text.to_string(), changed)
+            })
+            .collect()
+    };
+    let (old_rows, new_rows) = (rows(&sides.old), rows(&sides.new));
+    let mut result = Inline::default();
+    let mut row = 0;
+    while row < sides.old.lines.len() {
+        let (old, new) = (&sides.old.lines[row], &sides.new.lines[row]);
+        if old.kind == Kind::Same {
+            result.push(old.number, new.number, &new_rows[row].0, None);
+            row += 1;
+            continue;
+        }
+        let end = (row..sides.old.lines.len()).find(|&end| sides.old.lines[end].kind == Kind::Same).unwrap_or(sides.old.lines.len());
+        result.changes.push(result.lines.len());
+        for ix in row..end {
+            let line = &sides.old.lines[ix];
+            if line.kind == Kind::Changed {
+                result.push(line.number, None, &old_rows[ix].0, old_rows[ix].1.clone());
+            }
+        }
+        for ix in row..end {
+            let line = &sides.new.lines[ix];
+            if line.kind == Kind::Changed {
+                result.push(None, line.number, &new_rows[ix].0, new_rows[ix].1.clone());
+            }
+        }
+        row = end;
+    }
+    result
+}
+
 /// `@@ -a,b +c,d @@`: the first line and the line count of each side.
 fn hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
     let mut parts = line.strip_prefix("@@ ")?.split(' ');
@@ -181,6 +257,22 @@ mod tests {
         assert_eq!(sides.changes, [1, 4]);
         assert_eq!(sides.old.lines[1].changed, Some(2..3));
         assert_eq!(sides.new.lines[2].changed, None);
+    }
+
+    #[test]
+    fn in_one_column() {
+        let inline = inline(&split(DIFF).unwrap());
+        assert_eq!(inline.text, "a\nb\nB\nc2\nd\ne\nE");
+        let numbers = inline.lines.iter().map(|line| (line.old, line.new)).collect::<Vec<_>>();
+        assert_eq!(
+            numbers,
+            [(Some(1), Some(1)), (Some(2), None), (None, Some(2)), (None, Some(3)), (Some(3), Some(4)), (Some(4), None), (None, Some(5))]
+        );
+        assert_eq!(inline.changes, [1, 5]);
+        // "b" → "B": the letter, in each.
+        assert_eq!(inline.lines[1].changed, Some(2..3));
+        assert_eq!(inline.lines[2].changed, Some(4..5));
+        assert_eq!(inline.lines[3].changed, None);
     }
 
     #[test]

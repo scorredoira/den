@@ -18,7 +18,12 @@ use crate::{
 
 /// Sets the menus; again after something they show changes (Word Wrap's check).
 pub fn set(cx: &mut App) {
-    let wrap = Config::get(cx).word_wrap;
+    let config = Config::get(cx);
+    let wrap = config.word_wrap;
+    // An item for each icon of the activity bar, checked while it's on it.
+    let activity = Menu::new("Activity Bar").items(config.activity().into_iter().map(|panel| {
+        MenuItem::action(crate::workspace::panel_title(panel), ToggleActivityIcon(panel)).checked(!config.hidden_activity().contains(&panel))
+    }));
     let mac = cfg!(target_os = "macos");
     let mut menus = Vec::new();
     if mac {
@@ -95,6 +100,9 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Toggle Terminals", ToggleTerminals),
             MenuItem::action("Maximize Terminals", MaximizeTerminals),
             MenuItem::separator(),
+            MenuItem::submenu(activity),
+            MenuItem::action("Reset Layout", ResetLayout),
+            MenuItem::separator(),
             MenuItem::action("Split Editor Right", SplitEditorRight),
             MenuItem::action("Split Editor Down", SplitEditorDown),
             MenuItem::separator(),
@@ -117,7 +125,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Previous Result", PrevResult),
             MenuItem::separator(),
             MenuItem::action("Find Workspace…", OpenTaskPicker),
-            MenuItem::action("Previous Workspace", PreviousTask),
+            MenuItem::action("Switch Workspace", PreviousTask),
         ]),
         Menu::new("Debug").items([
             MenuItem::action("Start or Continue", DebugContinue),

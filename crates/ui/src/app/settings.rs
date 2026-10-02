@@ -9,7 +9,7 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 4] = ["Appearance", "Editor", "Updates", "Keyboard Shortcuts"];
+const SECTIONS: [&str; 5] = ["Appearance", "Editor", "Workspaces", "Updates", "Keyboard Shortcuts"];
 
 pub(super) struct Settings {
     focus: FocusHandle,
@@ -173,6 +173,7 @@ impl Sik {
         let sections: Vec<(AnyElement, bool)> = vec![
             self.render_appearance(&matches, cx),
             self.render_editor(settings, &matches, cx),
+            self.render_workspaces(&matches, cx),
             self.render_updates(&matches, cx),
             self.render_shortcuts(settings, &matches, cx),
         ];
@@ -375,8 +376,41 @@ impl Sik {
         Self::section(SECTIONS[1], rows, visible, cx)
     }
 
+    fn render_workspaces(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let visible = [SECTIONS[2], "Only My Worktrees", "worktree", "agent", "Claude's State", "dots"].iter().any(|text| matches(text));
+        let states = Switch::new("workspace-states")
+            .accessibility_label("Claude's State on Workspaces")
+            .checked(Config::get(cx).shows_workspace_states())
+            .on_click(cx.listener(|_, checked: &bool, _, cx| {
+                Config::update(cx, |config| config.workspace_states = (!*checked).then_some(false));
+                cx.refresh_windows();
+            }));
+        let only = Switch::new("only-own-worktrees")
+            .accessibility_label("Only My Worktrees")
+            .checked(Config::get(cx).only_own_worktrees)
+            .on_click(cx.listener(|_, checked, _, cx| {
+                Config::update(cx, |config| config.only_own_worktrees = *checked);
+                cx.notify();
+            }));
+        let rows = vec![
+            setting(
+                "Only My Worktrees",
+                "The workspaces column shows only the worktrees made with New Worktree, not those the agents make on their own. The one in front always shows.",
+                only,
+                cx,
+            ),
+            setting(
+                "Claude's State on Workspaces",
+                "A dot beside each workspace while Claude works in it, waits for an answer or has finished. The Agents panel shows the same for each terminal.",
+                states,
+                cx,
+            ),
+        ];
+        Self::section(SECTIONS[2], rows, visible, cx)
+    }
+
     fn render_updates(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[2], "Check for Updates", "automatically", "release", "version"].iter().any(|text| matches(text));
+        let visible = [SECTIONS[3], "Check for Updates", "automatically", "release", "version"].iter().any(|text| matches(text));
         let check = Switch::new("check-for-updates")
             .accessibility_label("Check for Updates Automatically")
             .checked(Config::get(cx).checks_for_updates())
@@ -393,11 +427,11 @@ impl Sik {
             check,
             cx,
         )];
-        Self::section(SECTIONS[2], rows, visible, cx)
+        Self::section(SECTIONS[3], rows, visible, cx)
     }
 
     fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[3]) || matches("keybindings");
+        let title_matches = matches(SECTIONS[4]) || matches("keybindings");
         let recording = settings.recording.as_ref().map(|(id, _)| *id);
         let mut rows = Vec::new();
         for shortcut in SHORTCUTS {
@@ -409,7 +443,7 @@ impl Sik {
             rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
         }
         let visible = title_matches || !rows.is_empty();
-        Self::section(SECTIONS[3], rows, visible, cx)
+        Self::section(SECTIONS[4], rows, visible, cx)
     }
 
     fn shortcut_row(

@@ -13,7 +13,7 @@ The shortcuts below are the current ones: change them in Settings → Keyboard S
 | {{OpenCommandPalette}} or {{ShowShortcuts}} | Command palette: run any command by name |
 | {{OpenFileFinder}} | Go to a file by name |
 | {{OpenTaskPicker}} | Go to a workspace, on any server |
-| {{PreviousTask}} | Back to the previous workspace (again: the one before) |
+| {{PreviousTask}} | Switch workspace, as Cmd-Tab: holding Cmd, E again goes further back, Shift-E forward; let go to enter |
 | {{OpenFolder}} | Open a folder |
 | {{OpenRemoteFolder}} | Open a folder on a server |
 | {{OpenRecent}} | Open a recent folder |
@@ -114,7 +114,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{ShowHistory}} | History: the commits, searchable by hash, message or author |
 | {{ShowReferences}} | References |
 
-Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there.
+Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there. Right-click the bar, or go to View > Activity Bar, to take an icon off it; View > Reset Layout puts every panel back where it starts.
 
 ## Terminals
 

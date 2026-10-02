@@ -30,10 +30,11 @@ impl Render for WorkspacesPanel {
 pub(super) fn icon(panel: Panel) -> &'static str {
     match panel {
         Panel::Workspaces => "icons/layers.svg",
+        Panel::Agents => "icons/bot.svg",
         Panel::Files => "icons/files.svg",
         Panel::Changes => "icons/git-branch.svg",
         Panel::History => "icons/history.svg",
-        Panel::Search => "icons/text-search.svg",
+        Panel::Search => "icons/search.svg",
         Panel::References => "icons/references.svg",
         Panel::Code => "icons/code.svg",
         Panel::Terminals => "icons/terminal.svg",
@@ -41,9 +42,10 @@ pub(super) fn icon(panel: Panel) -> &'static str {
     }
 }
 
-pub(super) fn title(panel: Panel) -> &'static str {
+pub(crate) fn title(panel: Panel) -> &'static str {
     match panel {
         Panel::Workspaces => "Workspaces",
+        Panel::Agents => "Agents",
         Panel::Files => "Files",
         Panel::Changes => "Changes",
         Panel::History => "History",
@@ -61,7 +63,7 @@ const BAR_HEIGHT: f32 = 34.;
 /// The panels with no bar of their own, which their stack's header gives
 /// them: their title.
 fn has_header(panel: Panel) -> bool {
-    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Search | Panel::References)
+    matches!(panel, Panel::Agents | Panel::Files | Panel::Changes | Panel::History | Panel::Search | Panel::References)
 }
 
 /// Which panel each stack shows and the stacks closed: the same for every
@@ -150,6 +152,12 @@ fn side(placement: DropPlacement) -> Side {
 
 impl Global for Panels {}
 
+/// What shows goes back to how it starts: the files, the code and the
+/// terminals (Reset Layout).
+pub(crate) fn reset_panels(cx: &mut App) {
+    cx.set_global(Panels::new());
+}
+
 impl Workspace {
     pub(crate) fn is_shown(&self, panel: Panel, cx: &App) -> bool {
         Panels::get(cx).is_shown(&Config::get(cx).layout, panel)
@@ -190,6 +198,13 @@ impl Workspace {
             self.hide_panel(panel, cx);
         } else {
             self.show_panel(panel, cx);
+        }
+    }
+
+    /// The app's agents panel, the same for every task.
+    pub fn set_agents(&mut self, view: &Entity<WorkspacesPanel>) {
+        if self.agents.is_none() {
+            self.agents = Some(view.clone());
         }
     }
 
@@ -371,6 +386,10 @@ impl Workspace {
         let content = match active {
             Panel::Workspaces => match &self.workspaces {
                 Some(workspaces) => workspaces.clone().into_any_element(),
+                None => div().into_any_element(),
+            },
+            Panel::Agents => match &self.agents {
+                Some(agents) => agents.clone().into_any_element(),
                 None => div().into_any_element(),
             },
             Panel::Files => self.file_tree.clone().into_any_element(),

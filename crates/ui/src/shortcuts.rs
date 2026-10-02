@@ -74,7 +74,7 @@ shortcuts![
     (MaximizeTerminals, "Maximize Terminals", "secondary-shift-j"),
     (NewTask, "New Worktree", "secondary-n"),
     (OpenTaskPicker, "Find Workspace", "secondary-k"),
-    (PreviousTask, "Previous Workspace", "secondary-e"),
+    (PreviousTask, "Switch Workspace", "secondary-e"),
     (ToggleTasks, "Toggle Workspaces Column", "secondary-shift-b"),
     (OpenFolder, "Open Folder", "secondary-o"),
     (OpenRemoteFolder, "Open Folder on Server", "secondary-alt-o"),

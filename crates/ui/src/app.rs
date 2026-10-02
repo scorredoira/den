@@ -29,7 +29,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    PreviousTask, ShowShortcuts, ShowWelcome, ToggleTasks,
+    PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleActivityIcon, ToggleTasks,
     config::{self, Config, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -39,9 +39,11 @@ use crate::{
 };
 
 mod about;
+mod agents;
 mod commands;
 mod confirm;
 mod settings;
+mod switcher;
 mod theme;
 mod welcome;
 
@@ -256,6 +258,12 @@ pub struct Sik {
     attention: HashSet<TaskKey>,
     /// Tasks waiting for an answer (Claude is asking something): in red.
     blocked: HashSet<TaskKey>,
+    /// The terminals running a coding agent on each server.
+    agents: HashMap<SharedString, Vec<proto::AgentInfo>>,
+    /// Agents that finished while their workspace wasn't in front.
+    agents_attention: HashSet<(SharedString, proto::TermId)>,
+    /// The agents panel, drawn by the workspace where it's placed.
+    agents_panel: Entity<WorkspacesPanel>,
     new_task: Option<NewTaskInput>,
     /// Worktree whose deletion is being confirmed, in a dialog.
     confirm_remove: Option<(TaskKey, FocusHandle)>,
@@ -271,8 +279,10 @@ pub struct Sik {
     /// Last task from the previous session, on a server not yet connected:
     /// it's entered on connecting (unless another was opened first).
     pending_last: Option<TaskKey>,
-    /// The task before the active one, for Cmd-E.
+    /// The task before the active one, to go back to when it closes.
     previous: Option<TaskKey>,
+    /// Cmd-E held: the workspaces to go through.
+    switcher: Option<switcher::Switcher>,
     /// Cmd-K: jump to a task by name.
     task_picker: Option<(Entity<Picker>, Subscription)>,
     /// Cmd-Shift-P and F1: run any command, with its shortcut beside it.
@@ -355,6 +365,17 @@ impl Sik {
             active: None,
             workspaces: HashMap::new(),
             attention: HashSet::new(),
+            agents: HashMap::new(),
+            agents_attention: HashSet::new(),
+            agents_panel: {
+                let sik = cx.entity().downgrade();
+                cx.new(|_| {
+                    WorkspacesPanel::new(move |_, cx| {
+                        sik.update(cx, |sik, cx| sik.render_agents(cx).into_any_element())
+                            .unwrap_or_else(|_| div().into_any_element())
+                    })
+                })
+            },
             blocked: HashSet::new(),
             new_task: None,
             confirm_remove: None,
@@ -365,6 +386,7 @@ impl Sik {
             open_file,
             pending_last: None,
             previous: None,
+            switcher: None,
             task_picker: None,
             command_palette: None,
             recent_picker: None,
@@ -387,7 +409,16 @@ impl Sik {
             settings: None,
             focus_handle: cx.focus_handle(),
             _tasks: Vec::new(),
-            _subscriptions: vec![appearance, bounds],
+            _subscriptions: vec![appearance, bounds, {
+                // The switcher's keys come before any shortcut (Cmd-Shift-E
+                // is the files' too), wherever the focus is.
+                let sik = cx.entity().downgrade();
+                cx.intercept_keystrokes(move |event, _, cx| {
+                    if sik.update(cx, |this, cx| this.switcher_key(&event.keystroke, cx)).unwrap_or(false) {
+                        cx.stop_propagation();
+                    }
+                })
+            }],
         };
         Self::install_theme(cx);
         this.apply_theme(window, cx);
@@ -649,6 +680,7 @@ impl Sik {
                     blocked: *blocked,
                 },
                 Event::OpenTask { path } => Event::OpenTask { path: path.clone() },
+                Event::Agents { agents } => Event::Agents { agents: agents.clone() },
                 Event::Command { command, args, cwd, term, group } => Event::Command {
                     command: *command,
                     args: args.clone(),
@@ -678,8 +710,13 @@ impl Sik {
                 })
                 .ok();
             }
+            // The agents running there (an outdated agent doesn't know).
+            if let Ok(Response::Agents(agents)) = client.request(Request::AgentList).await {
+                this.update(cx, |this, cx| this.set_agents(name.clone(), agents, cx)).ok();
+            }
             while let Ok(event) = rx.recv().await {
                 let alive = match event {
+                    Event::Agents { agents } => this.update(cx, |this, cx| this.set_agents(name.clone(), agents, cx)).is_ok(),
                     Event::Blocked { group, blocked } => this
                         .update(cx, |this, cx| {
                             let key = TaskKey { host: name.clone(), path: PathBuf::from(group) };
@@ -818,7 +855,14 @@ impl Sik {
                     host: host.name.clone(),
                     path: task.path.clone(),
                 };
-                entries.push((ix, key, task));
+                // An agent's worktree, unless it's the one in front.
+                let hidden = config.only_own_worktrees
+                    && !task.main
+                    && self.active.as_ref() != Some(&key)
+                    && !config.own_worktrees.contains(&key.config());
+                if !hidden {
+                    entries.push((ix, key, task));
+                }
             }
         }
         let position = |key: &TaskKey| {
@@ -898,6 +942,7 @@ impl Sik {
             self.add_folder(key.host.clone(), key.path.clone(), window, cx);
         }
         self.attention.remove(&key);
+        self.agents_seen(&key);
         let workspace = match self.workspaces.get(&key) {
             Some(workspace) => workspace.clone(),
             None => {
@@ -1100,18 +1145,22 @@ impl Sik {
     }
 
     /// Cmd-E: goes back to the previous task; again, to the one before (like Alt-Tab).
-    fn previous_task(&mut self, _: &PreviousTask, window: &mut Window, cx: &mut Context<Self>) {
-        // Skipped if it no longer exists (deleted, or its server was removed).
-        if let Some(key) = self.previous.clone().filter(|key| self.task(key).is_some()) {
-            self.activate(key, window, cx);
-        }
-    }
-
     fn open_task_picker(&mut self, _: &OpenTaskPicker, window: &mut Window, cx: &mut Context<Self>) {
         if self.task_picker.is_some() {
             return;
         }
-        let labels: Vec<String> = self.ordered(cx).into_iter().map(|(key, _)| self.label(&key)).collect();
+        // The most recently used first, so Enter goes back to the previous
+        // one; those never visited in the column's order; the one in front, last.
+        let mut keys: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
+        let recent = &Config::get(cx).recent;
+        keys.sort_by_key(|key| {
+            if self.active.as_ref() == Some(key) {
+                usize::MAX
+            } else {
+                recent.iter().position(|task| task.host == key.host.to_string() && task.path == key.path).unwrap_or(RECENT)
+            }
+        });
+        let labels: Vec<String> = keys.iter().map(|key| self.label(key)).collect();
         let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Go to workspace…", false, window, cx));
         let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
             this.task_picker = None;
@@ -1206,7 +1255,9 @@ impl Sik {
             .filter(|(key, _)| self.active.as_ref() != Some(key))
             .map(|(key, task)| self.status(&key, task, cx))
             .max_by_key(|(dot, color)| urgency(dot, *color, cx));
-        TaskBadges { terminals: active.and_then(dot), workspaces: others.and_then(dot) }
+        // Unless they're hidden in the column, as its dots.
+        let workspaces = others.and_then(dot).filter(|_| Config::get(cx).shows_workspace_states());
+        TaskBadges { terminals: active.and_then(dot), workspaces, agents: self.agents_badge(cx) }
     }
 
     /// Opens `path` on `host`: the task it is, or the folder on its own.
@@ -1485,7 +1536,9 @@ impl Sik {
                 match result {
                     Ok(Response::Task(task)) => {
                         this.new_task = None;
-                        this.activate(TaskKey { host, path: task.path }, window, cx);
+                        let key = TaskKey { host, path: task.path };
+                        Config::update(cx, |config| config.own_worktrees.push(key.config()));
+                        this.activate(key, window, cx);
                     }
                     Ok(other) => this.new_task_error(format!("Unexpected response: {other:?}"), window, cx),
                     Err(err) => this.new_task_error(format!("{err:#}"), window, cx),
@@ -1539,6 +1592,7 @@ impl Sik {
                         let config = key.config();
                         Config::update(cx, |c| {
                             c.order.retain(|other| other != &config);
+                            c.own_worktrees.retain(|other| other != &config);
                             c.sessions.remove(&config);
                         });
                         if this.active.as_ref() == Some(&key) {
@@ -1819,7 +1873,8 @@ impl Sik {
         let click: OnActivity = Rc::new(move |_, window, cx| {
             sik.update(cx, |this, cx| this.toggle_tasks(&ToggleTasks, window, cx)).ok();
         });
-        let bar = activity_bar(vec![(Panel::Workspaces, visible, badge)], click, cx);
+        let icons = Config::get(cx).shown_activity().contains(&Panel::Workspaces).then_some((Panel::Workspaces, visible, badge));
+        let bar = activity_bar(icons.into_iter().collect(), click, cx);
         let layout = &Config::get(cx).layout;
         let width = layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.);
         let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [visible, true], cx).clone();
@@ -1932,8 +1987,9 @@ impl Sik {
     fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
         let ordered = self.ordered(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
-        for host in &self.hosts {
-            sections.push(self.render_host_header(host, cx));
+        for (ix, host) in self.hosts.iter().enumerate() {
+            // Each server well apart from the one above.
+            sections.push(div().when(ix > 0, |el| el.mt_3()).child(self.render_host_header(host, cx)).into_any_element());
             let entries: Vec<(TaskKey, &TaskInfo)> =
                 ordered.iter().filter(|(key, _)| key.host == host.name).cloned().collect();
             for group in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo) {
@@ -2140,6 +2196,8 @@ impl Sik {
 
         let row = h_flex()
             .id(SharedString::from(format!("task-{}", key.config())))
+            // On its way out.
+            .when(self.removing.contains(key), |row| row.opacity(0.5))
             .h(px(26.))
             .px_3()
             .gap_2()
@@ -2165,7 +2223,10 @@ impl Sik {
             )
             // Claude's state, only when there's one: working, waiting for an
             // answer or finished unseen.
-            .when(dot != "○", |row| row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)))
+            .when(dot == "…", |row| row.child(spinner(color)))
+            .when(dot != "○" && dot != "…" && Config::get(cx).shows_workspace_states(), |row| {
+                row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot))
+            })
             .child(div().flex_1())
             .children(branch.map(|branch| {
                 div()
@@ -2302,6 +2363,18 @@ impl Sik {
 
 /// How much a task's dot (see `Sik::status`) asks to be looked at: waiting
 /// for an answer, working, finished unseen, or nothing.
+/// Turning while something takes a while: a worktree made or deleted.
+fn spinner(color: Hsla) -> impl IntoElement {
+    svg()
+        .path("icons/loader.svg")
+        .size(px(12.))
+        .flex_none()
+        .text_color(color)
+        .with_animation("spinner", Animation::new(Duration::from_millis(900)).repeat(), |svg, delta| {
+            svg.with_transformation(Transformation::rotate(percentage(delta)))
+        })
+}
+
 fn urgency(dot: &str, color: Hsla, cx: &App) -> u8 {
     match dot {
         "●" if color == cx.theme().danger => 3,
@@ -2317,11 +2390,13 @@ impl Render for Sik {
             let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let (panel, visible) = (self.workspaces_panel.clone(), self.tasks_visible(cx));
+            let agents = self.agents_panel.clone();
             let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
                 workspace.set_workspaces(&panel, visible, cx);
+                workspace.set_agents(&agents);
                 workspace.set_badges(badges, cx);
             });
         }
@@ -2337,6 +2412,8 @@ impl Render for Sik {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
+            .on_action(|action: &ToggleActivityIcon, _, cx| crate::workspace::toggle_activity_icon(action.0, cx))
+            .on_action(|_: &ResetLayout, _, cx| menu::reset_layout_now(cx))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_remote_folder))
             .on_action(cx.listener(Self::open_recent))
@@ -2345,6 +2422,10 @@ impl Render for Sik {
             .on_action(cx.listener(|this, _: &OpenCommandPalette, window, cx| this.open_command_palette(window, cx)))
             .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| this.open_command_palette(window, cx)))
             .on_action(cx.listener(Self::previous_task))
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, window, cx| {
+                this.switcher_modifiers(&event.modifiers, window, cx)
+            }))
+
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
             .on_action(cx.listener(|this, _: &About, window, cx| this.open_about(window, cx)))
             .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| this.check_for_updates(window, cx)))
@@ -2403,6 +2484,7 @@ impl Render for Sik {
                     .child(picker.clone())
             }))
             .children(self.settings.as_ref().map(|settings| self.render_settings(settings, cx)))
+            .children(self.render_switcher(cx))
             .children(
                 self.host_picker
                     .as_ref()
@@ -2516,7 +2598,7 @@ fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
                         .gap_2()
                         .text_color(theme.muted_foreground)
                         .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
-                        .child(div().flex_none().text_ui_small(cx).child("…"))
+                        .child(spinner(theme.muted_foreground))
                         .into_any_element()
                 } else {
                     div().flex_1().min_w_0().child(Input::new(&form.input).xsmall()).into_any_element()
