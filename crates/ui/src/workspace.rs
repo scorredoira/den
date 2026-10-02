@@ -2141,6 +2141,25 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Typing in a file's rendered Markdown switches it to the source, to
+    /// edit it. What was typed isn't inserted: there's no cursor in the
+    /// preview to say where.
+    fn type_in_preview(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
+            return;
+        };
+        let Some(markdown) = tab.rendered() else {
+            return;
+        };
+        let focused = self.focus_handle.is_focused(window) || markdown.read(cx).focus_handle().is_focused(window);
+        let modifiers = &event.keystroke.modifiers;
+        let typed = event.keystroke.key_char.as_ref().is_some_and(|text| !text.trim().is_empty());
+        if focused && typed && tab.diff.is_none() && !tab.doc && !modifiers.platform && !modifiers.control && !modifiers.function {
+            cx.stop_propagation();
+            self.toggle_markdown_source(&ToggleMarkdownSource, window, cx);
+        }
+    }
+
     /// Tabs of renamed items follow the file.
     fn renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
         for tab in &mut self.tabs {
@@ -2888,7 +2907,12 @@ impl Workspace {
                 Content::Ready if let Some(commit) = &tab.commit => div().size_full().child(commit.clone()).into_any_element(),
                 Content::Ready => match tab.rendered() {
                     Some(markdown) => div()
+                        .id("markdown-preview")
                         .size_full()
+                        .context_menu({
+                            let readonly = tab.diff.is_some() || tab.doc;
+                            move |menu, _, _| menu.menu_with_disabled("Edit", Box::new(ToggleMarkdownSource), readonly)
+                        })
                         .text_size(px(Config::get(cx).font_size(TextArea::Preview)))
                         .child(
                             TextView::new(markdown)
@@ -2913,6 +2937,7 @@ impl Workspace {
                         .into_any_element(),
                     None => {
                         let readonly = tab.diff.is_some() || tab.doc;
+                        let markdown = tab.markdown.is_some() && !readonly;
                         let file = self.tabs.iter().find(|file| file.path == tab.path && file.is_file());
                         // Stopped here, the ends of the lines show the debugger's values.
                         let stopped_here = self.debugger.read(cx).execution().is_some_and(|(at, _, _)| at == tab.path);
@@ -2928,6 +2953,11 @@ impl Workspace {
                             // read (GPUI aborts), so Cut and Copy are always
                             // enabled and do nothing without a selection.
                             .context_menu(move |menu, _, _| {
+                                let menu = if markdown {
+                                    menu.menu("Show Preview", Box::new(ToggleMarkdownSource)).separator()
+                                } else {
+                                    menu
+                                };
                                 menu.menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition))
                                     .menu_with_disabled("Find References", readonly, Box::new(FindReferences))
                                     .menu_with_disabled("Format Document", readonly, Box::new(FormatDocument))
@@ -3197,6 +3227,7 @@ impl Render for Workspace {
                     cx.notify();
                 }
             }))
+            .on_key_down(cx.listener(Self::type_in_preview))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| this.close_others(None, window, cx)))
