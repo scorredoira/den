@@ -87,7 +87,7 @@ Drag a terminal tab to the left, right, top or bottom edge of another terminal t
 
 ## Layout
 
-Files, Changes, Search, References, the terminals and the debugger each have a tab (an icon at the start of their bar). Drag one onto another tab to put them together, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code stays where it is and takes the space the others leave, but anything can go around it. Cmd-B shows or hides the place with the files. Right-click the title next to the tabs to hide that place; Reset Layout, in that menu and in the terminals' and the debugger's, puts everything back. The places are the same for every workspace.
+The workspaces column, Files, Changes, Search, References, the code, the terminals and the debugger each have a tab (an icon at the start of their bar). Drag one onto another tab to put them together, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code takes the space the others leave; its place never closes (hiding a panel that shares it shows the code), and opening a file brings it to the front. Cmd-B shows or hides the place with the files. Right-click the title next to the tabs to hide that place; Reset Layout, in that menu and in the workspaces column's, the terminals' and the debugger's, puts everything back. The places are the same for every workspace.
 
 ## Debugging
 

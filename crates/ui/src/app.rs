@@ -30,12 +30,12 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
     PreviousTask, ShowShortcuts, ShowWelcome, ToggleTasks,
-    config::{self, Config, HostConfig, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
+    config::{self, Config, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
     shortcuts::{self, SHORTCUTS},
-    workspace::Workspace,
+    workspace::{Leading, Workspace, WorkspacesPanel},
 };
 
 mod about;
@@ -295,8 +295,10 @@ pub struct Sik {
     /// The shortcuts guide, shown in place of the welcome screen while no
     /// workspace is open (with one, it's a tab of its own).
     guide: Option<Entity<gpui_kit::component::text::TextViewState>>,
-    /// Tasks column and workspace.
+    /// Tasks column and welcome, while no workspace is open.
     split: config::Split,
+    /// The tasks column, drawn by the workspace where its panel is placed.
+    workspaces_panel: Entity<WorkspacesPanel>,
     /// Settings, if open.
     settings: Option<settings::Settings>,
     focus_handle: FocusHandle,
@@ -376,6 +378,15 @@ impl Sik {
             about: None,
             guide: None,
             split: config::Split::new(cx),
+            workspaces_panel: {
+                let sik = cx.entity().downgrade();
+                cx.new(|_| {
+                    WorkspacesPanel::new(move |leading, window, cx| {
+                        sik.update(cx, |sik, cx| sik.render_column(leading, window, cx).into_any_element())
+                            .unwrap_or_else(|_| div().into_any_element())
+                    })
+                })
+            },
             settings: None,
             focus_handle: cx.focus_handle(),
             _tasks: Vec::new(),
@@ -851,8 +862,23 @@ impl Sik {
             .unwrap_or_else(|| self.hosts.len() > 1 || self.hosts.iter().any(|host| host.tasks.iter().any(|task| !task.main)))
     }
 
+    /// The tasks column shows: with a workspace, also in front of the panels
+    /// it shares a place with.
+    fn tasks_shown(&self, cx: &App) -> bool {
+        match self.active_workspace() {
+            Some(workspace) => workspace.read(cx).is_shown(Panel::Workspaces, cx),
+            None => self.tasks_visible(cx),
+        }
+    }
+
     fn show_tasks_column(&mut self, visible: bool, cx: &mut Context<Self>) {
-        Config::update(cx, |config| config.tasks_column = Some(visible));
+        match self.active_workspace() {
+            Some(workspace) => workspace.update(cx, |workspace, cx| match visible {
+                true => workspace.show_panel(Panel::Workspaces, cx),
+                false => workspace.hide_panel(Panel::Workspaces, cx),
+            }),
+            None => Config::update(cx, |config| config.tasks_column = Some(visible)),
+        }
         cx.notify();
     }
 
@@ -1168,7 +1194,7 @@ impl Sik {
     }
 
     fn toggle_tasks(&mut self, _: &ToggleTasks, _: &mut Window, cx: &mut Context<Self>) {
-        let visible = !self.tasks_visible(cx);
+        let visible = !self.tasks_shown(cx);
         self.show_tasks_column(visible, cx);
     }
 
@@ -1391,7 +1417,7 @@ impl Sik {
         if self.client(&host).is_none() {
             return;
         }
-        if !self.tasks_visible(cx) {
+        if !self.tasks_shown(cx) {
             self.show_tasks_column(true, cx);
         }
         // The new row goes under the repo's checkout, with its worktrees.
@@ -1646,7 +1672,7 @@ impl Sik {
             generation: 0,
         });
         self.connect(name, window, cx);
-        if !self.tasks_visible(cx) {
+        if !self.tasks_shown(cx) {
             self.show_tasks_column(true, cx);
         }
         true
@@ -1756,15 +1782,14 @@ impl Sik {
         self.active.as_ref().and_then(|key| self.workspaces.get(key).cloned())
     }
 
-    fn render_column(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = self.render_tasks(cx);
+    /// The tasks column; `leading`, the tabs of the place it is in.
+    fn render_column(&self, leading: Option<Leading>, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self.render_tasks(leading, window, cx);
         let theme = cx.theme();
         v_flex()
             .id("task-column")
             .size_full()
             .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
             .text_color(theme.sidebar_foreground)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
@@ -1773,6 +1798,36 @@ impl Sik {
                 }
             }))
             .child(body)
+    }
+
+    /// The tasks column, where its panel's column is, and the welcome.
+    fn render_without_workspace(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let layout = &Config::get(cx).layout;
+        let width = layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.);
+        let state = self.split.state(window.viewport_size().width, [visible, true], cx).clone();
+        h_resizable("sik-split")
+            .with_state(&state)
+            .child(
+                resizable_panel()
+                    .size(config::width(width, 160., 500.))
+                    .size_range(px(160.)..px(500.))
+                    .visible(visible)
+                    .child(self.render_column(None, window, cx)),
+            )
+            .child(resizable_panel().child(match &self.guide {
+                Some(guide) => self.render_guide(guide, cx),
+                None => self.render_welcome(cx),
+            }))
+            .on_resize(move |state, _, cx| {
+                if visible && let Some(width) = state.read(cx).sizes().first().copied() {
+                    Config::update_quietly(cx, |config| {
+                        if let Some((column, _)) = config.layout.find(Panel::Workspaces) {
+                            config.layout.columns[column].width = Some(f32::from(width));
+                        }
+                    });
+                }
+            })
+            .into_any_element()
     }
 
     fn render_host_header(&self, host: &Host, cx: &mut Context<Self>) -> AnyElement {
@@ -1856,7 +1911,8 @@ impl Sik {
             .into_any_element()
     }
 
-    fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_tasks(&self, leading: Option<Leading>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let leading = leading.map(|leading| leading(window, cx));
         let ordered = self.ordered(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
         for host in &self.hosts {
@@ -1901,6 +1957,8 @@ impl Sik {
                     .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
+                    .when(leading.is_some(), |el| el.pl_1().gap_1())
+                    .children(leading)
                     .child(div().flex_1().child("WORKSPACES"))
                     .child({
                         let add_menu = header_menu.clone();
@@ -2228,21 +2286,17 @@ impl Sik {
 
 impl Render for Sik {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // While the tasks column's edge is being dragged, its width is already
-        // in the state before painting.
-        let tasks_visible = self.tasks_visible(cx);
-        let tasks = match self.split.state(window.viewport_size().width, [tasks_visible, true], cx).read(cx).sizes().first() {
-            Some(width) if tasks_visible => *width,
-            _ => px(0.),
-        };
         if let Some(workspace) = self.active_workspace() {
-            let width = window.viewport_size().width - tasks;
+            let width = window.viewport_size().width;
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
+            let (panel, visible) = (self.workspaces_panel.clone(), self.tasks_visible(cx));
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
+                workspace.set_workspaces(&panel, visible, cx);
             });
         }
+        let tasks_visible = self.tasks_shown(cx);
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| "sik".into());
         let terminals_visible = self.active_workspace().map(|workspace| workspace.read(cx).terminals_visible(cx));
         v_flex()
@@ -2347,31 +2401,10 @@ impl Render for Sik {
                             }))
                     })),
             )
-            .child({
-                let visible = tasks_visible;
-                div().flex_1().min_h_0().w_full().child(h_resizable("sik-split")
-                    .with_state(self.split.state(window.viewport_size().width, [visible, true], cx))
-                    .child(
-                        resizable_panel()
-                            .size(config::width(Config::get(cx).layout.tasks, 160., 500.))
-                            .size_range(px(160.)..px(500.))
-                            .visible(visible)
-                            .child(self.render_column(cx)),
-                    )
-                    .child(resizable_panel().child(match self.active_workspace() {
-                        Some(workspace) => div().size_full().child(workspace).into_any_element(),
-                        None => match &self.guide {
-                            Some(guide) => self.render_guide(guide, cx),
-                            None => self.render_welcome(cx),
-                        },
-                    }))
-                    .on_resize(move |state, _, cx| {
-                        if visible && let Some(width) = state.read(cx).sizes().first() {
-                            let width = f32::from(*width);
-                            Config::update_quietly(cx, |config| config.layout.tasks = width);
-                        }
-                    }))
-            })
+            .child(div().flex_1().min_h_0().w_full().child(match self.active_workspace() {
+                Some(workspace) => workspace.into_any_element(),
+                None => self.render_without_workspace(tasks_visible, window, cx),
+            }))
             .children(self.task_picker.as_ref().or(self.command_palette.as_ref()).or(self.recent_picker.as_ref()).map(|(picker, _)| {
                 div()
                     .absolute()
@@ -2442,6 +2475,7 @@ fn column_menu(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
     add_menu_items(menu, sik)
         .separator()
         .item(menu::item("Hide Workspaces Column", sik, |this, _, cx| this.show_tasks_column(false, cx)))
+        .item(menu::reset_layout())
 }
 
 /// Right-click on a server's name in the tasks column.

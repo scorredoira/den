@@ -54,7 +54,7 @@ mod autosave_tests;
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::Leading;
+pub(crate) use layout::{Leading, WorkspacesPanel};
 
 enum Content {
     Loading,
@@ -210,6 +210,9 @@ pub struct Workspace {
     panels: Panels,
     /// Preview of a panel's drop: next to the stack showing that panel.
     panel_drop: Option<(Panel, crate::drag_drop::DropPlacement)>,
+    /// The app's workspaces column, and whether the app shows it.
+    workspaces: Option<Entity<WorkspacesPanel>>,
+    workspaces_visible: Option<bool>,
     file_tree: Entity<FileTree>,
     terminals: Entity<TerminalArea>,
     terminals_maximized: bool,
@@ -378,6 +381,8 @@ impl Workspace {
             focus_handle,
             panels: Panels::new(),
             panel_drop: None,
+            workspaces: None,
+            workspaces_visible: None,
             file_tree,
             terminals,
             terminals_maximized: false,
@@ -1520,8 +1525,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Width left over by the tasks column. When it changes, the side panel and
-    /// terminals keep their width and the code takes the difference.
+    /// The window's width. When it changes, the other columns keep their
+    /// width and the code's takes the difference.
     pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
         if self.width != width {
             self.width = width;
@@ -2070,6 +2075,9 @@ impl Workspace {
     }
 
     fn activate_with(&mut self, ix: usize, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_shown(Panel::Code, cx) {
+            self.show_panel(Panel::Code, cx);
+        }
         self.active = Some(ix);
         self.group = self.tabs[ix].group;
         self.mark_shown(ix);
@@ -2564,6 +2572,7 @@ impl Workspace {
             .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
                 this.drop_tab(drag, group, Some(this.tabs.len()), EditorDrop::Center, window, cx);
             }))
+            .when(group == 0, |el| el.children(self.code_tabs(cx)))
             .children(self.tabs.iter().enumerate().filter(|(_, tab)| tab.group == group).map(|(ix, tab)| {
                 let active = shown == Some(ix);
                 let name = tab

@@ -126,6 +126,64 @@ fn closing_a_stack_gives_its_width_to_the_code(cx: &mut TestAppContext) {
     bounds(cx, "stack-Search");
 }
 
+#[gpui_kit::test]
+fn the_code_goes_in_tabs_like_any_panel(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let start = bounds(cx, "panel-tab-Code").center();
+    let end = bounds(cx, "panel-tab-Search").center();
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
+    let (column, stack) = layout.find(Panel::Code).unwrap();
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::Code, Panel::Search, Panel::References]);
+    bounds(cx, "editor-body-0");
+    // Another tab hides it; hiding that one brings it back, its stack never closes.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Files, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("editor-body-0").is_none());
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Files, cx));
+    cx.run_until_parked();
+    bounds(cx, "editor-body-0");
+    // Opening a file shows it too.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));
+    workspace.update_in(cx, |workspace, window, cx| workspace.activate(0, window, cx));
+    cx.run_until_parked();
+    bounds(cx, "editor-body-0");
+}
+
+#[gpui_kit::test]
+fn the_workspaces_are_a_panel(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let panel = cx.update(|_, cx| {
+        cx.new(|_| {
+            WorkspacesPanel::new(|leading, window, cx| {
+                div().size_full().debug_selector(|| "workspaces".into()).children(leading.map(|leading| leading(window, cx))).into_any_element()
+            })
+        })
+    });
+    workspace.update(cx, |workspace, cx| workspace.set_workspaces(&panel, true, cx));
+    cx.run_until_parked();
+    let workspaces = bounds(cx, "workspaces");
+    assert!(workspaces.right() <= bounds(cx, "stack-Files").left(), "on the left by default");
+    bounds(cx, "panel-tab-Workspaces");
+    // Hidden from the workspace, the app's choice changes for every task.
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Workspaces, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("workspaces").is_none());
+    assert_eq!(cx.update(|_, cx| Config::get(cx).tasks_column), Some(false));
+    // Shown again by the app, it's in front of its stack.
+    workspace.update(cx, |workspace, cx| {
+        Config::update(cx, |config| assert!(config.layout.move_panel(Panel::Workspaces, Panel::Files, Side::Tab(None))));
+        workspace.show_panel(Panel::Files, cx);
+        workspace.set_workspaces(&panel, true, cx);
+    });
+    cx.run_until_parked();
+    bounds(cx, "workspaces");
+}
+
 /// Run and Debug go on the lines that declare a test, and nowhere else.
 #[gpui_kit::test]
 fn the_tests_get_run_and_debug(cx: &mut TestAppContext) {

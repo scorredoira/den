@@ -24,12 +24,13 @@ pub enum ThemeChoice {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
-    pub tasks: f32,
-    /// Left to right, after the tasks column. Missing (a config from before
-    /// the columns), it's made from the old fields below.
+    /// Left to right. Missing (a config from before the columns), it's made
+    /// from the old fields below.
     #[serde(default)]
     pub columns: Vec<Column>,
     // Read to carry an older layout over; never written.
+    #[serde(skip_serializing)]
+    tasks: Option<f32>,
     #[serde(skip_serializing)]
     side: Option<f32>,
     #[serde(skip_serializing)]
@@ -57,6 +58,7 @@ enum PanelAt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Panel {
+    Workspaces,
     Files,
     Changes,
     Search,
@@ -67,7 +69,8 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 7] = [
+    pub const ALL: [Panel; 8] = [
+        Panel::Workspaces,
         Panel::Files,
         Panel::Changes,
         Panel::Search,
@@ -88,8 +91,8 @@ pub struct Column {
     pub stacks: Vec<Stack>,
 }
 
-/// Panels in the same place, as tabs; one shows at a time. The code is
-/// alone in its stack, which takes the height left by the others.
+/// Panels in the same place, as tabs; one shows at a time. The one with the
+/// code takes the height left by the others.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stack {
     /// Unset, half of the column.
@@ -124,8 +127,8 @@ pub enum Side {
 impl Default for Layout {
     fn default() -> Self {
         let mut layout = Self {
-            tasks: 240.,
             columns: Vec::new(),
+            tasks: None,
             side: None,
             terminals: None,
             debug: None,
@@ -167,37 +170,32 @@ impl Layout {
         self.repair();
     }
 
-    /// Mends a layout edited by hand: each panel once, the code alone in
-    /// its stack, nothing empty.
+    /// Mends a layout edited by hand: each panel once, nothing empty. The
+    /// workspaces, missing (a config from before they were a panel), are a
+    /// column on the left.
     fn repair(&mut self) {
         let mut seen = Vec::new();
-        for column in &mut self.columns {
-            let mut stacks = Vec::new();
-            for mut stack in column.stacks.drain(..) {
-                stack.panels.retain(|panel| {
-                    let new = !seen.contains(panel);
-                    seen.push(*panel);
-                    new
-                });
-                if stack.panels.len() > 1 && stack.panels.contains(&Panel::Code) {
-                    stack.panels.retain(|panel| *panel != Panel::Code);
-                    stacks.push(Stack::of(&[Panel::Code]));
-                }
-                stacks.push(stack);
-            }
-            column.stacks = stacks;
+        for stack in self.columns.iter_mut().flat_map(|column| &mut column.stacks) {
+            stack.panels.retain(|panel| {
+                let new = !seen.contains(panel);
+                seen.push(*panel);
+                new
+            });
         }
         self.prune();
         if !seen.contains(&Panel::Code) {
             self.columns = Self::default().columns;
             return;
         }
-        for panel in Panel::ALL.into_iter().filter(|panel| !seen.contains(panel)) {
-            let stack = self.columns.iter_mut().flat_map(|column| &mut column.stacks).find(|stack| stack.panels[0] != Panel::Code);
+        for panel in Panel::ALL.into_iter().filter(|panel| !seen.contains(panel) && *panel != Panel::Workspaces) {
+            let stack = self.columns.iter_mut().flat_map(|column| &mut column.stacks).find(|stack| !stack.panels.contains(&Panel::Code));
             match stack {
                 Some(stack) => stack.panels.push(panel),
                 None => self.columns.push(Column::of(None, vec![Stack::of(&[panel])])),
             }
+        }
+        if !seen.contains(&Panel::Workspaces) {
+            self.columns.insert(0, Column::of(Some(self.tasks.unwrap_or(240.)), vec![Stack::of(&[Panel::Workspaces])]));
         }
     }
 
@@ -218,7 +216,7 @@ impl Layout {
     /// Moves `panel` to `side` of the stack with `anchor` (which can be
     /// `panel`'s own); false if that is where it already was or can't go.
     pub fn move_panel(&mut self, panel: Panel, anchor: Panel, side: Side) -> bool {
-        let Some((column, stack)) = self.find(anchor).filter(|_| panel != Panel::Code && side != Side::Tab(Some(panel))) else {
+        let Some((column, stack)) = self.find(anchor).filter(|_| side != Side::Tab(Some(panel))) else {
             return false;
         };
         // Something that stays where the panel goes, to find the place again
@@ -230,9 +228,6 @@ impl Layout {
         let Some(stays) = stays else {
             return false;
         };
-        if matches!(side, Side::Tab(_)) && stays == Panel::Code {
-            return false;
-        }
         let before = self.clone();
         let (from_column, from_stack) = self.find(panel).expect("every panel is placed");
         self.columns[from_column].stacks[from_stack].panels.retain(|p| *p != panel);
@@ -691,10 +686,14 @@ mod layout_tests {
         let old = r#"{"tasks": 200, "side": 300, "terminals": 500, "debug_at": "right", "debug_width": 380, "terminals_at": "bottom", "terminals_height": 220}"#;
         let mut layout: Layout = serde_json::from_str(old).unwrap();
         layout.carry_over();
-        assert_eq!(places(&layout), [vec![vec![Files, Changes, Search, References]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]]]);
-        assert_eq!(layout.columns[0].width, Some(300.));
-        assert_eq!(layout.columns[1].stacks[1].height, Some(220.));
-        assert_eq!(layout.columns[2].width, Some(380.));
+        assert_eq!(
+            places(&layout),
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, Search, References]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]]]
+        );
+        assert_eq!(layout.columns[0].width, Some(200.));
+        assert_eq!(layout.columns[1].width, Some(300.));
+        assert_eq!(layout.columns[2].stacks[1].height, Some(220.));
+        assert_eq!(layout.columns[3].width, Some(380.));
         // Written again, only the columns are.
         let written = serde_json::to_string(&layout).unwrap();
         assert!(!written.contains("terminals_at"), "{written}");
@@ -705,10 +704,15 @@ mod layout_tests {
 
     #[test]
     fn a_layout_edited_by_hand_is_mended() {
-        let edited = r#"{"columns": [{"stacks": [{"panels": ["files", "code", "files"]}]}, {"stacks": []}]}"#;
+        let edited = r#"{"columns": [{"stacks": [{"panels": ["files", "code", "files"]}, {"panels": ["search"]}]}, {"stacks": []}]}"#;
         let mut layout: Layout = serde_json::from_str(edited).unwrap();
         layout.carry_over();
-        assert_eq!(places(&layout), [vec![vec![Code], vec![Files, Changes, Search, References, Terminals, Debugger]]]);
+        // The missing ones go with a panel other than the code; the
+        // workspaces, a column of their own.
+        assert_eq!(
+            places(&layout),
+            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Search, Changes, References, Terminals, Debugger]]]
+        );
         let mut layout: Layout = serde_json::from_str(r#"{"columns": [{"stacks": [{"panels": ["files"]}]}]}"#).unwrap();
         layout.carry_over();
         assert!(layout == Layout::default(), "without the code, it starts again");
@@ -717,30 +721,36 @@ mod layout_tests {
     #[test]
     fn moving_panels() {
         let mut layout = Layout::default();
-        assert_eq!(places(&layout), [vec![vec![Files, Changes, Search, References]], vec![vec![Code], vec![Debugger]], vec![vec![Terminals]]]);
+        assert_eq!(
+            places(&layout),
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, Search, References]], vec![vec![Code], vec![Debugger]], vec![vec![Terminals]]]
+        );
         // The changes, a column of their own after the files.
         assert!(layout.move_panel(Changes, Files, Side::Right));
-        assert_eq!(places(&layout)[1], [vec![Changes]]);
+        assert_eq!(places(&layout)[2], [vec![Changes]]);
         // Back as a tab, before the search.
         assert!(layout.move_panel(Changes, Search, Side::Tab(Some(Search))));
-        assert_eq!(places(&layout)[0], [vec![Files, Changes, Search, References]]);
-        assert_eq!(layout.columns.len(), 3, "the empty column goes");
+        assert_eq!(places(&layout)[1], [vec![Files, Changes, Search, References]]);
+        assert_eq!(layout.columns.len(), 4, "the empty column goes");
         // Under the files, in their column.
         assert!(layout.move_panel(References, Files, Side::Bottom));
-        assert_eq!(places(&layout)[0], [vec![Files, Changes, Search], vec![References]]);
-        // The terminals left of everything: the debugger keeps its place.
+        assert_eq!(places(&layout)[1], [vec![Files, Changes, Search], vec![References]]);
+        // The terminals left of the files: the debugger keeps its place.
         assert!(layout.move_panel(Terminals, Files, Side::Left));
-        assert_eq!(places(&layout)[0], [vec![Terminals]]);
-        assert_eq!(places(&layout)[2], [vec![Code], vec![Debugger]]);
+        assert_eq!(places(&layout)[1], [vec![Terminals]]);
+        assert_eq!(places(&layout)[3], [vec![Code], vec![Debugger]]);
+        // The code and the workspaces go anywhere too: tabs with the files,
+        // and the workspaces under the terminals.
+        assert!(layout.move_panel(Code, Files, Side::Tab(None)));
+        assert!(layout.move_panel(Workspaces, Terminals, Side::Bottom));
+        assert_eq!(places(&layout)[0], [vec![Terminals], vec![Workspaces]]);
+        assert_eq!(places(&layout)[1], [vec![Files, Changes, Search, Code], vec![References]]);
     }
 
     #[test]
     fn moves_that_change_nothing() {
         let mut layout = Layout::default();
         let before = places(&layout);
-        // The code doesn't move, and takes no tabs.
-        assert!(!layout.move_panel(Code, Terminals, Side::Left));
-        assert!(!layout.move_panel(Terminals, Code, Side::Tab(None)));
         // Alone in its column, beside itself or on itself.
         assert!(!layout.move_panel(Terminals, Terminals, Side::Left));
         assert!(!layout.move_panel(Terminals, Terminals, Side::Top));
@@ -751,6 +761,6 @@ mod layout_tests {
         assert_eq!(places(&layout), before);
         // Next to its own stack, with others in it, it does move.
         assert!(layout.move_panel(Changes, Changes, Side::Bottom));
-        assert_eq!(places(&layout)[0], [vec![Files, Search, References], vec![Changes]]);
+        assert_eq!(places(&layout)[1], [vec![Files, Search, References], vec![Changes]]);
     }
 }
