@@ -37,3 +37,7 @@ ditto "$app" /Applications/Sik.app.new
 rm -rf /Applications/Sik.app
 mv /Applications/Sik.app.new /Applications/Sik.app
 echo "installed: /Applications/Sik.app ($version, $build)"
+
+# The staging copy is not left behind: Spotlight would list it beside the
+# installed one.
+rm -rf "$app"
