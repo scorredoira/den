@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, h_flex, h_resizable,
+    ActiveTheme as _, Sizable as _, h_flex, h_resizable, v_resizable,
     input::Input,
     menu::ContextMenuExt as _,
     resizable_panel,
@@ -14,7 +14,10 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use super::{ConsoleLine, Debugger, EditKind, Status, Var, child_path};
-use crate::{config::UiText, menu};
+use crate::{
+    config::{Config, PanelAt, UiText},
+    menu,
+};
 
 const ROW: f32 = 22.;
 const INDENT: f32 = 14.;
@@ -165,6 +168,7 @@ impl Debugger {
                     .child(launch_name)
                     .child(svg().path("icons/tree-chevron-down.svg").size(px(12.)).text_color(theme.muted_foreground))
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.refresh_launches(cx)))
+                    .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| this.refresh_launches(cx)))
                     .tooltip(|window, cx| Tooltip::new("Launch configuration (.sik/debug.json): right-click to choose").build(window, cx))
                     .context_menu(move |menu, _, _| {
                         let mut menu = menu;
@@ -213,15 +217,20 @@ impl Debugger {
             )
             .child(
                 div()
+                    .id("debug-status")
                     .ml_2()
                     .flex_1()
                     .min_w_0()
+                    .h_full()
+                    .flex()
+                    .items_center()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .text_ui_small(cx)
                     .text_color(if stopped { theme.warning } else { theme.muted_foreground })
-                    .child(status),
+                    .child(status)
+                    .context_menu(|menu, _, cx| menu.item(menu::move_debugger(cx))),
             )
             .child(
                 div()
@@ -560,6 +569,58 @@ impl Debugger {
         list.into_any_element()
     }
 
+    /// The card of a hovered value, under its name. It goes away when the
+    /// pointer leaves both, or the code under it scrolls.
+    pub fn render_hover(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let hover = self.hover.as_ref()?;
+        let anchor = hover.anchor;
+        let mut rows = Vec::new();
+        self.tree(&mut rows, "h".into(), 0, &hover.var, Some(paren(&hover.var.name)));
+        let list = self.render_rows("hover", rows, None, cx);
+        let theme = cx.theme();
+        let entity = cx.entity().downgrade();
+        let watcher = canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let keep = bounds.union(&anchor);
+                let moved = entity.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase.bubble() && !keep.contains(&event.position) {
+                        moved.update(cx, |this, cx| this.clear_hover(cx)).ok();
+                    }
+                });
+                let scrolled = entity.clone();
+                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                    if phase.bubble() && !bounds.contains(&event.position) {
+                        scrolled.update(cx, |this, cx| this.clear_hover(cx)).ok();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full();
+        Some(
+            deferred(
+                anchored().position(point(anchor.left(), anchor.bottom())).snap_to_window_with_margin(px(8.)).child(
+                    div()
+                        .relative()
+                        .occlude()
+                        .min_w(px(260.))
+                        .max_w(px(640.))
+                        .bg(theme.popover)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(theme.radius)
+                        .shadow_md()
+                        .text_ui_small(cx)
+                        .child(div().id("debug-hover").max_h(px(360.)).overflow_y_scroll().py_1().child(list))
+                        .child(watcher),
+                ),
+            )
+            .into_any_element(),
+        )
+    }
+
     fn render_variables(&self, cx: &mut Context<Self>) -> AnyElement {
         if !self.is_stopped() {
             return placeholder(String::new(), cx);
@@ -726,60 +787,66 @@ impl Render for Debugger {
         let problem = self.render_launch_problem(cx);
         let toolbar = self.render_toolbar(cx);
         let theme = cx.theme();
+        let stack_and_breakpoints = v_flex()
+            .size_full()
+            .child(div().flex_1().min_h_0().child(section("CALL STACK", "debug-stack", stack, cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(section("BREAKPOINTS", "debug-breakpoints", breakpoints, cx)),
+            );
+        let variables = section("VARIABLES", "debug-variables", variables, cx);
+        let watch_and_console = v_flex()
+            .size_full()
+            .child(div().flex_1().min_h_0().child(section("WATCH", "debug-watch", watches, cx)))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .h(px(22.))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .flex_none()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.muted_foreground)
+                            .child("CONSOLE"),
+                    )
+                    .child(div().flex_1().min_h_0().child(console)),
+            );
+        // Under the code its parts are columns; as a column, they are rows.
+        let column = Config::get(cx).layout.debug_at == PanelAt::Right;
+        let parts = if column {
+            v_resizable("debug-rows")
+                .child(resizable_panel().size(px(240.)).child(stack_and_breakpoints))
+                .child(resizable_panel().child(variables))
+                .child(resizable_panel().size(px(320.)).child(watch_and_console))
+                .into_any_element()
+        } else {
+            h_resizable("debug-columns")
+                .child(resizable_panel().size(px(360.)).child(stack_and_breakpoints))
+                .child(resizable_panel().child(variables))
+                .child(resizable_panel().size(px(560.)).child(watch_and_console))
+                .into_any_element()
+        };
         v_flex()
             .size_full()
+            .when(cfg!(test), |el| el.debug_selector(|| "debugger".into()))
             .bg(theme.background)
-            .border_t_1()
+            .map(|el| if column { el.border_l_1() } else { el.border_t_1() })
             .border_color(theme.border)
             .text_ui(cx)
             .child(toolbar)
             .children(problem)
-            .child(
-                h_resizable("debug-columns")
-                    .child(
-                        resizable_panel().size(px(360.)).child(
-                            v_flex()
-                                .size_full()
-                                .child(div().flex_1().min_h_0().child(section("CALL STACK", "debug-stack", stack, cx)))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_h_0()
-                                        .border_t_1()
-                                        .border_color(theme.border)
-                                        .child(section("BREAKPOINTS", "debug-breakpoints", breakpoints, cx)),
-                                ),
-                        ),
-                    )
-                    .child(resizable_panel().child(section("VARIABLES", "debug-variables", variables, cx)))
-                    .child(
-                        resizable_panel().size(px(560.)).child(
-                            v_flex()
-                                .size_full()
-                                .child(div().flex_1().min_h_0().child(section("WATCH", "debug-watch", watches, cx)))
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .min_h_0()
-                                        .border_t_1()
-                                        .border_color(theme.border)
-                                        .child(
-                                            div()
-                                                .h(px(22.))
-                                                .px_2()
-                                                .flex()
-                                                .items_center()
-                                                .flex_none()
-                                                .text_size(px(11.))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(theme.muted_foreground)
-                                                .child("CONSOLE"),
-                                        )
-                                        .child(div().flex_1().min_h_0().child(console)),
-                                ),
-                        ),
-                    ),
-            )
+            .child(div().flex_1().min_h_0().child(parts))
     }
 }
 

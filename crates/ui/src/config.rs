@@ -27,6 +27,21 @@ pub struct Layout {
     /// Height of the debugger panel under the code.
     #[serde(default = "default_debug_height")]
     pub debug: f32,
+    /// Where the debugger goes: under everything or a column on the right.
+    pub debug_at: PanelAt,
+    /// Width of the debugger as a column.
+    pub debug_width: f32,
+    /// Where the terminals go: a column on the right or a row under the code.
+    pub terminals_at: PanelAt,
+    /// Height of the terminals as a row.
+    pub terminals_height: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelAt {
+    Bottom,
+    Right,
 }
 
 fn default_debug_height() -> f32 {
@@ -40,6 +55,10 @@ impl Default for Layout {
             side: 260.,
             terminals: None,
             debug: default_debug_height(),
+            debug_at: PanelAt::Bottom,
+            debug_width: 420.,
+            terminals_at: PanelAt::Right,
+            terminals_height: 280.,
         }
     }
 }

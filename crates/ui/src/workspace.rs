@@ -30,7 +30,7 @@ use crate::{
     commit_view::{CommitView, CommitViewEvent},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
-    config::{self, Config, SavedTab, Session, TextArea, UiText},
+    config::{self, Config, PanelAt, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, Debugger, EditKind},
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
     ToggleBreakpoint, ToggleDebugPanel,
@@ -48,6 +48,8 @@ mod tab_drag;
 mod markdown_images;
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -276,6 +278,7 @@ pub struct Workspace {
     signature_at: Option<Position>,
     signature_task: Task<()>,
     debugger: Entity<Debugger>,
+    debug_hover: Entity<debug::hover::HoverCard>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -298,6 +301,7 @@ impl Workspace {
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
+        let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
             cx.observe(&debugger, |_, _, cx| cx.notify()),
@@ -422,6 +426,7 @@ impl Workspace {
             signature_at: None,
             signature_task: Task::ready(()),
             debugger,
+            debug_hover,
             _subscriptions: subscriptions,
         }
     }
@@ -1591,8 +1596,19 @@ impl Workspace {
             }
             DebugEvent::Marks => self.refresh_debug_marks(cx),
             DebugEvent::Run { term, line } => {
+                let file = self.active_file().map(|ix| {
+                    let path = &self.tabs[ix].path;
+                    path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+                });
+                let line = match debug::command_line(line, file.as_deref()) {
+                    Ok(line) => line,
+                    Err(error) => {
+                        debugger.update(cx, |debugger, cx| debugger.fail(error, cx));
+                        return;
+                    }
+                };
                 self.terminals_visible = true;
-                let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line.clone(), window, cx));
+                let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line, window, cx));
                 let debugger = debugger.downgrade();
                 cx.spawn(async move |_, cx| {
                     let term = run.await;
@@ -1742,7 +1758,7 @@ impl Workspace {
             let lsp = editor.lsp_mut();
             lsp.completion_provider = Some(Rc::new(Completions::new(workspace.clone(), cx.entity().downgrade())));
             lsp.completion_menu.max_width = px(480.);
-            lsp.hover_provider = Some(Rc::new(debug::hover::DebugHover { debugger: debugger.clone() }));
+            lsp.hover_provider = Some(Rc::new(debug::hover::DebugHover { debugger: debugger.clone(), editor: cx.entity().downgrade() }));
             editor.set_gutter_column(true, cx);
             let this_editor = cx.entity().downgrade();
             editor.on_gutter_click(Some(Rc::new(move |line, event: &MouseDownEvent, window, cx| {
@@ -1923,6 +1939,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The launch configurations changed: the debugger's menu shows them.
+        let sik = self.root.join(".sik");
+        if paths.iter().any(|path| path.starts_with(&sik)) {
+            self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
+        }
         // `root/.git`: a commit, checkout or reset (HEAD moved): the blame of
         // every open file may have changed.
         if paths.contains(&self.root.join(".git")) {
@@ -3221,14 +3242,44 @@ impl Render for Workspace {
                 let side_visible = self.side_panel_visible && !self.terminals_maximized;
                 let editor_visible = !self.terminals_maximized;
                 let terminals_visible = self.terminals_visible;
+                let terminals_right = layout.terminals_at == PanelAt::Right;
+                let debug_visible = self.debugger.read(cx).visible;
+                let debug_right = debug_visible && layout.debug_at == PanelAt::Right;
                 // With no saved size, the terminals take half the space left
                 // by the tasks column and the side panel.
                 let terminals = layout.terminals.unwrap_or_else(|| {
                     let free = f32::from(window.bounds().size.width) - layout.tasks - layout.side;
                     (free / 2.).max(400.)
                 });
+                // The code, with the terminals under it when they are a row.
+                let center = if terminals_right {
+                    self.render_editor_area(cx).into_any_element()
+                } else if !editor_visible {
+                    self.terminals.clone().into_any_element()
+                } else if terminals_visible {
+                    v_resizable("code-terminals")
+                        .child(resizable_panel().child(self.render_editor_area(cx)))
+                        .child(
+                            resizable_panel()
+                                .size(px(layout.terminals_height.clamp(120., 2000.)))
+                                .size_range(px(120.)..px(2000.))
+                                .child(self.terminals.clone()),
+                        )
+                        .on_resize(|state, _, cx| {
+                            if let Some(height) = state.read(cx).sizes().get(1) {
+                                let height = f32::from(*height);
+                                Config::update_quietly(cx, |config| config.layout.terminals_height = height);
+                            }
+                        })
+                        .into_any_element()
+                } else {
+                    self.render_editor_area(cx).into_any_element()
+                };
+                let center_visible = editor_visible || !terminals_right;
+                let terminals_column = terminals_right && terminals_visible;
+                let visible = [side_visible, center_visible, terminals_column, debug_right];
                 let split = h_resizable("workspace-split")
-                    .with_state(self.split.state(self.width, &[side_visible, editor_visible, terminals_visible], cx))
+                    .with_state(self.split.state(self.width, &visible, cx))
                     .child(
                         resizable_panel()
                             .size(config::width(layout.side, 160., 600.))
@@ -3236,17 +3287,20 @@ impl Render for Workspace {
                             .visible(side_visible)
                             .child(self.render_side_panel(cx)),
                     )
-                    .child(
-                        resizable_panel()
-                            .visible(editor_visible)
-                            .child(self.render_editor_area(cx)),
-                    )
+                    .child(resizable_panel().visible(center_visible).child(center))
                     .child(
                         resizable_panel()
                             .size(config::width(terminals, 240., 4000.))
                             .size_range(px(240.)..px(4000.))
-                            .visible(terminals_visible)
-                            .child(self.terminals.clone()),
+                            .visible(terminals_column)
+                            .when(terminals_column, |panel| panel.child(self.terminals.clone())),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size(config::width(layout.debug_width, 240., 2000.))
+                            .size_range(px(240.)..px(2000.))
+                            .visible(debug_right)
+                            .when(debug_right, |panel| panel.child(self.debugger.clone())),
                     )
                     .on_resize(move |state, _, cx| {
                         let sizes = state.read(cx).sizes().clone();
@@ -3254,13 +3308,16 @@ impl Render for Workspace {
                             if side_visible && let Some(side) = sizes.first() {
                                 config.layout.side = f32::from(*side);
                             }
-                            if editor_visible && terminals_visible && let Some(terminals) = sizes.get(2) {
+                            if center_visible && terminals_column && let Some(terminals) = sizes.get(2) {
                                 config.layout.terminals = Some(f32::from(*terminals));
+                            }
+                            if debug_right && let Some(debug) = sizes.get(3) {
+                                config.layout.debug_width = f32::from(*debug);
                             }
                         });
                     });
-                // The debugger goes under everything, as wide as the window.
-                if self.debugger.read(cx).visible {
+                // Under everything, the debugger is as wide as the window.
+                if debug_visible && !debug_right {
                     v_resizable("workspace-debug")
                         .child(resizable_panel().child(split))
                         .child(
@@ -3290,6 +3347,7 @@ impl Render for Workspace {
                     .justify_center()
                     .child(finder.clone())
             }))
+            .child(self.debug_hover.clone())
     }
 }
 

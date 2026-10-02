@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for};
 
 use crate::{
-    config::UiText,
+    config::{Config, PanelAt, UiText},
     CloseTab, NewTerminal, SplitDown, SplitRight, agent, menu,
     splits::{Axis, Direction, Tree},
 };
@@ -579,7 +579,7 @@ impl TerminalArea {
                     .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
                     .context_menu({
                         let area = self.weak.clone();
-                        move |menu, _, _| {
+                        move |menu, _, cx| {
                             menu.item(
                                 menu::item("New Terminal", &area, |this, window, cx| this.new_terminal(window, cx))
                                     .action(Box::new(NewTerminal)),
@@ -602,6 +602,8 @@ impl TerminalArea {
                                 .item(menu::item("Close Tab", &area, move |this, window, cx| {
                                     this.close_tab(ix, window, cx)
                                 }))
+                                .separator()
+                                .item(menu::move_terminals(cx))
                         }
                     })
             }))
@@ -624,7 +626,8 @@ impl TerminalArea {
                     .flex_1()
                     .min_w(px(24.))
                     .when(cfg!(test), |el| el.debug_selector(|| "terminal-tab-end".into()))
-                    .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary)),
+                    .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
+                    .context_menu(|menu, _, cx| menu.item(menu::move_terminals(cx))),
             )
     }
 
@@ -738,8 +741,12 @@ impl Render for TerminalArea {
                 }
             }))
             .size_full()
+            .when(cfg!(test), |el| el.debug_selector(|| "terminals".into()))
             .bg(theme.background)
-            .border_l_1()
+            .map(|el| match Config::get(cx).layout.terminals_at {
+                PanelAt::Right => el.border_l_1(),
+                PanelAt::Bottom => el.border_t_1(),
+            })
             .border_color(theme.border)
             .child(self.render_tab_bar(cx))
             .child(

@@ -11,14 +11,17 @@ the agent, so a program on a server is debugged like a local one.
 ```json
 {
     "configurations": [
-        { "name": "Server", "command": "sim -d server", "port": 4444 },
+        { "name": "Debug", "command": "sim -d ${file}", "port": 4444 },
         { "name": "Attach", "port": 4444 }
     ]
 }
 ```
 
 - `command`: a shell line run in a terminal of the workspace (its output stays
-  there). Without it, the configuration attaches to a program already running.
+  there). `${file}` is the open file, relative to the workspace: one
+  configuration debugs whatever is open, and the program decides what that
+  means. Without `command`, the configuration attaches to a program already
+  running.
 - `port`: where the program listens, on the loopback of the agent's machine.
   4444 when missing.
 
@@ -44,8 +47,13 @@ started and leaves one it attached to running.
 
 All of them can be changed in Settings.
 
+The panel goes under everything or in a column on the right, and the
+terminals in a column on the right or in a row under the code: right-click
+the debugger's toolbar or a terminal tab to move them.
+
 When a VM stops, its line is marked, the values of the variables are written
-at the end of the lines of its function, and hovering a name shows its value.
+at the end of the lines of its function, and hovering a name shows its value
+in a card that opens like the variables view.
 Values that the last step changed are shown in another color. In the
 variables view a double click edits a value; the console evaluates
 expressions and assignments (`total = 5`) with the history on ↑ and ↓.

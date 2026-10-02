@@ -36,8 +36,8 @@ pub const LAUNCH_FILE: &str = ".sik/debug.json";
 const LAUNCH_TEMPLATE: &str = r#"{
     "configurations": [
         {
-            "name": "Launch",
-            "command": "sim -d main.ts",
+            "name": "Debug",
+            "command": "sim -d ${file}",
             "port": 4444
         },
         {
@@ -82,6 +82,28 @@ struct LaunchFile {
 pub fn parse_launches(text: &str) -> Result<Vec<Launch>, String> {
     let file: LaunchFile = serde_json::from_str(text).map_err(|err| format!("{LAUNCH_FILE}: {err}"))?;
     Ok(file.configurations)
+}
+
+/// A configuration's `command` as it is run: `${file}` is the open file,
+/// relative to the workspace, quoted for the shell when it needs it.
+pub fn command_line(command: &str, file: Option<&str>) -> Result<String, String> {
+    if !command.contains("${file}") {
+        return Ok(command.to_string());
+    }
+    let file = file.ok_or("The command uses ${file}: open the file to debug.")?;
+    let quoted = if file.chars().all(|c| c.is_alphanumeric() || "/._-+".contains(c)) {
+        file.to_string()
+    } else {
+        format!("'{}'", file.replace('\'', r"'\''"))
+    };
+    Ok(command.replace("${file}", &quoted))
+}
+
+/// A value shown by hovering its name, opened like a variable.
+pub struct HoverValue {
+    pub var: Var,
+    /// Where the name is, in window coordinates.
+    pub anchor: Bounds<Pixels>,
 }
 
 pub enum DebugEvent {
@@ -232,6 +254,8 @@ pub struct Debugger {
     pub edit: Option<BreakpointEdit>,
     /// The panel is shown.
     pub visible: bool,
+    /// The value shown by hovering its name in the code.
+    pub hover: Option<HoverValue>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -299,6 +323,7 @@ impl Debugger {
             value_edit: None,
             edit: None,
             visible: false,
+            hover: None,
             _subscriptions: subscriptions,
         }
     }
@@ -655,6 +680,7 @@ impl Debugger {
         self.focus = None;
         self.locals.clear();
         self.children.clear();
+        self.hover = None;
         self.loading.clear();
         self.running = 0;
         for watch in &mut self.watches {
@@ -667,7 +693,7 @@ impl Debugger {
         cx.notify();
     }
 
-    fn fail(&mut self, error: String, cx: &mut Context<Self>) {
+    pub fn fail(&mut self, error: String, cx: &mut Context<Self>) {
         self.end("", cx);
         self.console.push(ConsoleLine::Error(error));
         cx.notify();
@@ -731,6 +757,7 @@ impl Debugger {
         self.focus = Some(vm);
         self.frame = 0;
         self.children.clear();
+        self.hover = None;
         self.loading.clear();
         self.value_edit = None;
         self.visible = true;
@@ -749,6 +776,9 @@ impl Debugger {
         };
         stop.resumed = true;
         let serial = stop.serial;
+        if self.focus == Some(vm) {
+            self.hover = None;
+        }
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(RESUME_GRACE).await;
@@ -773,6 +803,7 @@ impl Debugger {
         self.focus = self.stops.iter().find(|(_, stop)| !stop.resumed).map(|(vm, _)| *vm);
         self.frame = 0;
         self.children.clear();
+        self.hover = None;
         self.loading.clear();
         match self.focus.and_then(|vm| self.stops.get(&vm)) {
             Some(stop) => {
@@ -872,6 +903,7 @@ impl Debugger {
         let show = stop.stop.frames.first().map(|frame| (self.local_path(&frame.file), frame.line.saturating_sub(1)));
         self.frame = 0;
         self.children.clear();
+        self.hover = None;
         self.loading.clear();
         self.refetch();
         self.evaluate_watches(cx);
@@ -915,6 +947,29 @@ impl Debugger {
     }
 
     // ---- values ----
+
+    /// Shows the value of `expr` by `anchor`; an expression without a value
+    /// (a function's name, a type) shows nothing.
+    pub fn show_hover(&mut self, expr: String, anchor: Bounds<Pixels>) {
+        if self.hover.as_ref().is_some_and(|hover| hover.var.name == expr && hover.anchor == anchor) {
+            return;
+        }
+        let serial = self.serial;
+        self.evaluate(expr.clone(), move |this, result, cx| {
+            if this.serial != serial {
+                return;
+            }
+            this.expanded.retain(|key| key != "h" && !key.starts_with("h/"));
+            this.hover = result.ok().map(|var| HoverValue { var: Var { name: expr, ..var }, anchor });
+            cx.notify();
+        });
+    }
+
+    pub fn clear_hover(&mut self, cx: &mut Context<Self>) {
+        if self.hover.take().is_some() {
+            cx.notify();
+        }
+    }
 
     pub fn toggle_expanded(&mut self, key: String, reference: u64, cx: &mut Context<Self>) {
         if !self.expanded.remove(&key) {
@@ -1432,38 +1487,49 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 
-/// The identifier or member chain at `offset` of `line` (`a.b.c` up to the
-/// word under the mouse), for hovering.
-pub fn expression_at(line: &str, offset: usize) -> Option<String> {
-    let chars: Vec<char> = line.chars().collect();
+/// Where the identifier or member chain at `offset` of `line` is (`a.b.c`
+/// up to the word under the mouse), in bytes, for hovering.
+pub fn expression_span(line: &str, offset: usize) -> Option<std::ops::Range<usize>> {
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
     let at = line[..offset.min(line.len())].chars().count();
-    if at >= chars.len() || !is_word(chars[at]) {
+    if at >= chars.len() || !is_word(chars[at].1) {
         return None;
     }
     let mut end = at;
-    while end < chars.len() && is_word(chars[end]) {
+    while end < chars.len() && is_word(chars[end].1) {
         end += 1;
     }
     let mut start = at;
     loop {
-        while start > 0 && is_word(chars[start - 1]) {
+        while start > 0 && is_word(chars[start - 1].1) {
             start -= 1;
         }
-        if start > 1 && chars[start - 1] == '.' && is_word(chars[start - 2]) {
+        if start > 1 && chars[start - 1].1 == '.' && is_word(chars[start - 2].1) {
             start -= 1;
             continue;
         }
         break;
     }
-    let expr: String = chars[start..end].iter().collect();
-    let first = expr.chars().next()?;
-    (first.is_alphabetic() || first == '_' || first == '$').then_some(expr)
+    let first = chars[start].1;
+    if !(first.is_alphabetic() || first == '_' || first == '$') {
+        return None;
+    }
+    let end = chars.get(end).map_or(line.len(), |(byte, _)| *byte);
+    Some(chars[start].0..end)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{changed_locals, child_path, expression_at, is_assignment, names_in, parse_launches, starts_function};
+    use super::{changed_locals, child_path, command_line, expression_span, is_assignment, names_in, parse_launches, starts_function};
     use super::protocol::{Frame, Stop, Var};
+
+    #[test]
+    fn a_command_gets_the_open_file() {
+        assert_eq!(command_line("sim -d ${file}", Some("cmd/tool.ts")).unwrap(), "sim -d cmd/tool.ts");
+        assert_eq!(command_line("sim -d ${file}", Some("my dir/it's.ts")).unwrap(), r"sim -d 'my dir/it'\''s.ts'");
+        assert_eq!(command_line("sim -d server", None).unwrap(), "sim -d server");
+        assert!(command_line("sim -d ${file}", None).is_err());
+    }
 
     #[test]
     fn launches_parse_with_a_default_port() {
@@ -1525,9 +1591,13 @@ mod tests {
     fn hover_takes_the_member_chain_up_to_the_word() {
         let line = "    return order.customer.name + x";
         let at = line.find("customer").unwrap() + 2;
-        assert_eq!(expression_at(line, at).as_deref(), Some("order.customer"));
+        let expression_at = |line: &'static str, at: usize| expression_span(line, at).map(|span| &line[span]);
+        assert_eq!(expression_at(line, at), Some("order.customer"));
         let at = line.find("name").unwrap();
-        assert_eq!(expression_at(line, at).as_deref(), Some("order.customer.name"));
+        assert_eq!(expression_at(line, at), Some("order.customer.name"));
         assert_eq!(expression_at(line, line.find('+').unwrap()), None);
+        let line = "  ñ = café.total";
+        let at = line.find("total").unwrap();
+        assert_eq!(&line[expression_span(line, at).unwrap()], "café.total");
     }
 }
