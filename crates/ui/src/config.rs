@@ -67,19 +67,19 @@ pub enum Panel {
     Code,
     Terminals,
     Debugger,
-    /// The terminals running a coding agent, in every workspace.
+    /// Configs from when the agents had a panel of their own (they're in
+    /// the workspaces column now) name it: it's dropped on reading.
     Agents,
 }
 
 impl Panel {
     /// In the activity bar's order, unless it's dragged.
-    pub const ALL: [Panel; 10] = [
+    pub const ALL: [Panel; 9] = [
         Panel::Workspaces,
         Panel::Files,
         Panel::Search,
         Panel::Changes,
         Panel::History,
-        Panel::Agents,
         Panel::References,
         Panel::Code,
         Panel::Terminals,
@@ -99,9 +99,9 @@ impl Panel {
 }
 
 /// Off the activity bar until shown: what is always in sight or opens by
-/// itself (the agents and the terminals show anyway, the references on Find
-/// References, the debugger on debugging).
-const HIDDEN_ACTIVITY: [Panel; 4] = [Panel::Agents, Panel::Terminals, Panel::References, Panel::Debugger];
+/// itself (the terminals show anyway, the references on Find References,
+/// the debugger on debugging).
+const HIDDEN_ACTIVITY: [Panel; 3] = [Panel::Terminals, Panel::References, Panel::Debugger];
 
 /// Panels one above the other. The one with the code takes the width left
 /// by the others.
@@ -172,8 +172,7 @@ impl Layout {
             let mut code = vec![Stack::of(&[Panel::Code])];
             let mut columns = vec![Column::of(
                 Some(self.side.unwrap_or(260.)),
-                // The agents always in sight, under the files.
-                vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::History, Panel::Search, Panel::References]), Stack::of(&[Panel::Agents])],
+                vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::History, Panel::Search, Panel::References])],
             )];
             if self.terminals_at == Some(PanelAt::Bottom) {
                 code.push(Stack { height: Some(self.terminals_height.unwrap_or(280.)), panels: vec![Panel::Terminals] });
@@ -195,12 +194,12 @@ impl Layout {
 
     /// Mends a layout edited by hand: each panel once, nothing empty. The
     /// workspaces, missing (a config from before they were a panel), are a
-    /// column on the left; the agents, under the files.
+    /// column on the left. The agents' old panel goes.
     fn repair(&mut self) {
         let mut seen = Vec::new();
         for stack in self.columns.iter_mut().flat_map(|column| &mut column.stacks) {
             stack.panels.retain(|panel| {
-                let new = !seen.contains(panel);
+                let new = !seen.contains(panel) && *panel != Panel::Agents;
                 seen.push(*panel);
                 new
             });
@@ -219,10 +218,6 @@ impl Layout {
         }
         if !seen.contains(&Panel::Workspaces) {
             self.columns.insert(0, Column::of(Some(self.tasks.unwrap_or(240.)), vec![Stack::of(&[Panel::Workspaces])]));
-        }
-        if !seen.contains(&Panel::Agents) {
-            let (column, stack) = self.find(Panel::Files).expect("every panel but the agents is placed");
-            self.columns[column].stacks.insert(stack + 1, Stack::of(&[Panel::Agents]));
         }
     }
 
@@ -457,10 +452,6 @@ pub struct Config {
     /// The worktrees made from the workspaces column (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub own_worktrees: Vec<String>,
-    /// The workspaces column shows Claude's state in each (working, waiting,
-    /// finished); unset, it does.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_states: Option<bool>,
 }
 
 /// Text sizes chosen in Settings; unset, the default.
@@ -521,7 +512,7 @@ impl Config {
     pub fn activity(&self) -> Vec<Panel> {
         let mut order: Vec<Panel> = Vec::new();
         for panel in self.activity.iter().chain(&Panel::ALL) {
-            if *panel != Panel::Code && !order.contains(panel) {
+            if !matches!(panel, Panel::Code | Panel::Agents) && !order.contains(panel) {
                 order.push(*panel);
             }
         }
@@ -560,11 +551,6 @@ impl Config {
         order.remove(from);
         order.insert(to, panel);
         self.activity = order;
-    }
-
-    /// Whether the workspaces column shows Claude's state in each.
-    pub fn shows_workspace_states(&self) -> bool {
-        self.workspace_states.unwrap_or(true)
     }
 
     /// Whether it looks for new releases by itself.
@@ -790,7 +776,7 @@ mod layout_tests {
         layout.carry_over();
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Search, References], vec![Agents]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Search, References]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]]]
         );
         assert_eq!(layout.columns[0].width, Some(200.));
         assert_eq!(layout.columns[1].width, Some(300.));
@@ -813,11 +799,16 @@ mod layout_tests {
         // workspaces, a column of their own.
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Agents], vec![Search, Changes, History, References, Terminals, Debugger]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Search, Changes, History, References, Terminals, Debugger]]]
         );
         let mut layout: Layout = serde_json::from_str(r#"{"columns": [{"stacks": [{"panels": ["files"]}]}]}"#).unwrap();
         layout.carry_over();
         assert!(layout == Layout::default(), "without the code, it starts again");
+        // The agents' old panel goes, and its place if it's left empty.
+        let old = r#"{"columns": [{"stacks": [{"panels": ["files"]}, {"panels": ["agents"]}]}, {"stacks": [{"panels": ["code", "terminals"]}]}]}"#;
+        let mut layout: Layout = serde_json::from_str(old).unwrap();
+        layout.carry_over();
+        assert_eq!(places(&layout)[1], [vec![Files, Search, Changes, History, References, Debugger]]);
     }
 
     #[test]
@@ -825,7 +816,7 @@ mod layout_tests {
         let mut layout = Layout::default();
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Search, References], vec![Agents]], vec![vec![Code], vec![Debugger]], vec![vec![Terminals]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Search, References]], vec![vec![Code], vec![Debugger]], vec![vec![Terminals]]]
         );
         // The changes, a column of their own after the files.
         assert!(layout.move_panel(Changes, Files, Side::Right));
@@ -833,11 +824,11 @@ mod layout_tests {
         assert_eq!(layout.columns[2].width, Some(260.), "a list's own width, not half the window");
         // Back as a tab, before the search.
         assert!(layout.move_panel(Changes, Search, Side::Tab(Some(Search))));
-        assert_eq!(places(&layout)[1], [vec![Files, History, Changes, Search, References], vec![Agents]]);
+        assert_eq!(places(&layout)[1], [vec![Files, History, Changes, Search, References]]);
         assert_eq!(layout.columns.len(), 4, "the empty column goes");
         // Under the files, in their column.
         assert!(layout.move_panel(References, Files, Side::Bottom));
-        assert_eq!(places(&layout)[1], [vec![Files, History, Changes, Search], vec![References], vec![Agents]]);
+        assert_eq!(places(&layout)[1], [vec![Files, History, Changes, Search], vec![References]]);
         // The terminals left of the files: the debugger keeps its place.
         assert!(layout.move_panel(Terminals, Files, Side::Left));
         assert_eq!(places(&layout)[1], [vec![Terminals]]);
@@ -848,7 +839,7 @@ mod layout_tests {
         assert!(layout.move_panel(Code, Files, Side::Tab(None)));
         assert!(layout.move_panel(Workspaces, Terminals, Side::Bottom));
         assert_eq!(places(&layout)[0], [vec![Terminals], vec![Workspaces]]);
-        assert_eq!(places(&layout)[1], [vec![Files, History, Changes, Search, Code], vec![References], vec![Agents]]);
+        assert_eq!(places(&layout)[1], [vec![Files, History, Changes, Search, Code], vec![References]]);
     }
 
     #[test]
@@ -865,7 +856,7 @@ mod layout_tests {
         assert_eq!(places(&layout), before);
         // Next to its own stack, with others in it, it does move.
         assert!(layout.move_panel(Changes, Changes, Side::Bottom));
-        assert_eq!(places(&layout)[1], [vec![Files, History, Search, References], vec![Changes], vec![Agents]]);
+        assert_eq!(places(&layout)[1], [vec![Files, History, Search, References], vec![Changes]]);
     }
 
     #[test]
@@ -884,7 +875,7 @@ mod layout_tests {
         assert_eq!(config.activity().last(), Some(&Debugger));
         // A hand-edited one: the code, repeated and missing ones mended.
         config.activity = vec![Code, Terminals, Terminals];
-        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Search, Changes, History, Agents, References, Debugger]);
+        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Search, Changes, History, References, Debugger]);
         // A hidden icon keeps its place for when it's shown again.
         config.toggle_activity(Workspaces);
         assert_eq!(config.shown_activity()[..2], [Files, Search]);

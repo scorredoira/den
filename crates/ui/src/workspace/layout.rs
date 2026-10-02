@@ -63,7 +63,7 @@ const BAR_HEIGHT: f32 = 34.;
 /// The panels with no bar of their own, which their stack's header gives
 /// them: their title.
 fn has_header(panel: Panel) -> bool {
-    matches!(panel, Panel::Agents | Panel::Files | Panel::Changes | Panel::History | Panel::Search | Panel::References)
+    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Search | Panel::References)
 }
 
 /// Which panel each stack shows and the stacks closed: the same for every
@@ -198,13 +198,6 @@ impl Workspace {
             self.hide_panel(panel, cx);
         } else {
             self.show_panel(panel, cx);
-        }
-    }
-
-    /// The app's agents panel, the same for every task.
-    pub fn set_agents(&mut self, view: &Entity<WorkspacesPanel>) {
-        if self.agents.is_none() {
-            self.agents = Some(view.clone());
         }
     }
 
@@ -388,10 +381,8 @@ impl Workspace {
                 Some(workspaces) => workspaces.clone().into_any_element(),
                 None => div().into_any_element(),
             },
-            Panel::Agents => match &self.agents {
-                Some(agents) => agents.clone().into_any_element(),
-                None => div().into_any_element(),
-            },
+            // Never placed: dropped from the config on reading.
+            Panel::Agents => div().into_any_element(),
             Panel::Files => self.file_tree.clone().into_any_element(),
             Panel::Changes => self.changes.clone().into_any_element(),
             Panel::History => self.history.clone().into_any_element(),

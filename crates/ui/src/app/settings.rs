@@ -377,14 +377,7 @@ impl Sik {
     }
 
     fn render_workspaces(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[2], "Only My Worktrees", "worktree", "agent", "Claude's State", "dots"].iter().any(|text| matches(text));
-        let states = Switch::new("workspace-states")
-            .accessibility_label("Claude's State on Workspaces")
-            .checked(Config::get(cx).shows_workspace_states())
-            .on_click(cx.listener(|_, checked: &bool, _, cx| {
-                Config::update(cx, |config| config.workspace_states = (!*checked).then_some(false));
-                cx.refresh_windows();
-            }));
+        let visible = [SECTIONS[2], "Only My Worktrees", "worktree", "agent"].iter().any(|text| matches(text));
         let only = Switch::new("only-own-worktrees")
             .accessibility_label("Only My Worktrees")
             .checked(Config::get(cx).only_own_worktrees)
@@ -395,14 +388,8 @@ impl Sik {
         let rows = vec![
             setting(
                 "Only My Worktrees",
-                "The workspaces column shows only the worktrees made with New Worktree, not those the agents make on their own. The one in front always shows.",
+                "The workspaces column shows only the worktrees made with New Worktree, not those the agents make on their own. One in front, or with an agent running in it, always shows.",
                 only,
-                cx,
-            ),
-            setting(
-                "Claude's State on Workspaces",
-                "A dot beside each workspace while Claude works in it, waits for an answer or has finished. The Agents panel shows the same for each terminal.",
-                states,
                 cx,
             ),
         ];

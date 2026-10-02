@@ -236,8 +236,6 @@ pub struct Workspace {
     panel_drop: Option<(Panel, crate::drag_drop::DropPlacement)>,
     /// The app's workspaces column.
     workspaces: Option<Entity<WorkspacesPanel>>,
-    /// The app's agents panel (see `set_agents`).
-    agents: Option<Entity<WorkspacesPanel>>,
     /// The app's tasks' state, on the activity bar's icons.
     badges: TaskBadges,
     file_tree: Entity<FileTree>,
@@ -414,7 +412,6 @@ impl Workspace {
             focus_handle,
             panel_drop: None,
             workspaces: None,
-            agents: None,
             badges: TaskBadges::default(),
             file_tree,
             terminals,

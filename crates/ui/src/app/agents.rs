@@ -1,14 +1,16 @@
-//! The Agents panel: every terminal running a coding agent (Claude Code,
-//! Codex…), on every server, under its workspace, with its state. A click
-//! goes to that workspace with that terminal in front.
+//! The coding agents (Claude Code, Codex…) running in the terminals of every
+//! server, as the agent reports them (see `Event::Agents`). They're the one
+//! source of what each workspace is doing: in the workspaces column, each
+//! has a row under its workspace with its state, and a workspace's dot is
+//! the most urgent of its agents'. A click on one goes to its terminal.
 
 use proto::{AgentInfo, TermId};
 
 use super::*;
 
 impl Sik {
-    /// The agents running on `host` now (see `Event::Agents`). One that
-    /// stops working while its workspace isn't in front is marked finished.
+    /// The agents running on `host` now. One that stops working while its
+    /// workspace isn't in front is marked done.
     pub(super) fn set_agents(&mut self, host: SharedString, agents: Vec<AgentInfo>, cx: &mut Context<Self>) {
         let before = self.agents.remove(&host).unwrap_or_default();
         for old in before.iter().filter(|old| old.working) {
@@ -24,17 +26,22 @@ impl Sik {
         cx.notify();
     }
 
+    /// The agents running in workspace `key`.
+    pub(super) fn workspace_agents(&self, key: &TaskKey) -> Vec<&AgentInfo> {
+        self.agents
+            .get(&key.host)
+            .map(|agents| agents.iter().filter(|agent| Path::new(&agent.group) == key.path).collect())
+            .unwrap_or_default()
+    }
+
     /// The agents of workspace `key` have been looked at.
     pub(super) fn agents_seen(&mut self, key: &TaskKey) {
-        let Some(agents) = self.agents.get(&key.host) else {
-            return;
-        };
-        let terms: Vec<TermId> = agents.iter().filter(|agent| Path::new(&agent.group) == key.path).map(|agent| agent.term).collect();
+        let terms: Vec<TermId> = self.workspace_agents(key).iter().map(|agent| agent.term).collect();
         self.agents_attention.retain(|(host, term)| *host != key.host || !terms.contains(term));
     }
 
-    /// Its dot as the workspaces': waiting for an answer, working, finished
-    /// without being looked at, or idle; and the word for it.
+    /// An agent's dot: waiting for an answer, working, done without being
+    /// looked at, or idle; and the word for it.
     fn agent_status(&self, host: &SharedString, agent: &AgentInfo, cx: &App) -> (&'static str, Hsla, &'static str) {
         let theme = cx.theme();
         if agent.blocked {
@@ -44,20 +51,17 @@ impl Sik {
         } else if self.agents_attention.contains(&(host.clone(), agent.term)) {
             ("●", theme.success, "done")
         } else {
-            ("○", theme.muted_foreground, "")
+            ("○", theme.muted_foreground, "idle")
         }
     }
 
-    /// The most urgent of the agents, for the panel's icon.
-    pub(super) fn agents_badge(&self, cx: &App) -> Option<Hsla> {
-        self.agents
-            .iter()
-            .flat_map(|(host, agents)| agents.iter().map(move |agent| (host, agent)))
-            .map(|(host, agent)| self.agent_status(host, agent, cx))
-            .map(|(dot, color, _)| (dot, color))
-            .filter(|(dot, color)| urgency(dot, *color, cx) > 0)
-            .max_by_key(|(dot, color)| urgency(dot, *color, cx))
-            .map(|(_, color)| color)
+    /// The most urgent state of workspace `key`'s agents, idle without any.
+    pub(super) fn workspace_state(&self, key: &TaskKey, cx: &App) -> (&'static str, Hsla, &'static str) {
+        self.workspace_agents(key)
+            .into_iter()
+            .map(|agent| self.agent_status(&key.host, agent, cx))
+            .max_by_key(|(dot, color, _)| urgency(dot, *color, cx))
+            .unwrap_or(("○", cx.theme().muted_foreground, "idle"))
     }
 
     /// Goes to the agent's workspace, its terminal in front and with the keyboard.
@@ -78,94 +82,34 @@ impl Sik {
         .detach();
     }
 
-    pub(super) fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let mut rows: Vec<AnyElement> = Vec::new();
-        let several = self.agents.values().filter(|agents| !agents.is_empty()).count() > 1;
-        let ordered: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
-        for host in &self.hosts {
-            let Some(agents) = self.agents.get(&host.name).filter(|agents| !agents.is_empty()) else {
-                continue;
-            };
-            if several {
-                rows.push(
-                    div()
-                        .px_3()
-                        .pt_2()
-                        .text_ui_small(cx)
-                        .text_color(theme.muted_foreground)
-                        .child(host.name.clone())
-                        .into_any_element(),
-                );
-            }
-            // By workspace, in the column's order; those it doesn't list, last.
-            let mut groups: Vec<&str> = agents.iter().map(|agent| agent.group.as_str()).collect();
-            groups.dedup();
-            groups.sort_by_key(|group| {
-                ordered
-                    .iter()
-                    .position(|key| key.host == host.name && key.path == Path::new(group))
-                    .unwrap_or(usize::MAX)
-            });
-            groups.dedup();
-            for group in groups {
-                let key = TaskKey { host: host.name.clone(), path: PathBuf::from(group) };
-                let label = self.task(&key).map(task_label).unwrap_or_else(|| folder_name(Path::new(group)));
-                let active = self.active.as_ref() == Some(&key);
-                rows.push(
-                    h_flex()
-                        .h(px(24.))
-                        .px_3()
-                        .gap_2()
-                        .text_ui_small(cx)
-                        .text_color(if active { theme.sidebar_foreground } else { theme.muted_foreground })
-                        .child(svg().path(if self.task(&key).is_some_and(|task| !task.main) { "icons/git-branch.svg" } else { "icons/folder.svg" }).size(px(12.)).flex_none().text_color(theme.muted_foreground))
-                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
-                        .into_any_element(),
-                );
-                for agent in agents.iter().filter(|agent| agent.group == group) {
-                    rows.push(self.render_agent(&host.name, agent, cx));
-                }
-            }
-        }
-        let empty = rows.is_empty().then(|| {
-            div()
-                .px_3()
-                .py_2()
-                .text_ui_small(cx)
-                .text_color(theme.muted_foreground)
-                .child("No agents running. Claude Code, Codex and the like show here while they run in a terminal.")
-        });
-        v_flex()
-            .id("agents")
-            .size_full()
-            .py_1()
-            .overflow_y_scroll()
-            .bg(theme.sidebar)
-            .text_color(theme.sidebar_foreground)
-            .children(rows)
-            .children(empty)
+    /// The rows of workspace `key`'s agents, `indent` from the left: what
+    /// each is on and its state.
+    pub(super) fn render_agents_of(&self, key: &TaskKey, indent: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let agents: Vec<AgentInfo> = self.workspace_agents(key).into_iter().cloned().collect();
+        agents.iter().map(|agent| self.render_agent(&key.host, agent, indent, cx)).collect()
     }
 
-    fn render_agent(&self, host: &SharedString, agent: &AgentInfo, cx: &mut Context<Self>) -> AnyElement {
-        let (dot, color, state) = self.agent_status(host, agent, cx);
+    fn render_agent(&self, host: &SharedString, agent: &AgentInfo, indent: f32, cx: &mut Context<Self>) -> AnyElement {
+        // The dot's color says it all; the word is for `sik workspaces`.
+        let (dot, color, _) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);
         let (host, group, term) = (host.clone(), agent.group.clone(), agent.term);
         h_flex()
             .id(SharedString::from(format!("agent-{host}-{term}")))
-            .h(px(26.))
-            .pl(px(ROW_INDENT))
+            .h(px(24.))
+            .pl(px(indent))
             .pr_3()
             .gap_2()
-            .text_ui(cx)
+            .text_ui_small(cx)
+            .text_color(theme.muted_foreground)
             .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
-            .child(div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot))
-            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title.clone()))
-            .child(div().flex_1())
-            .child(div().flex_none().text_ui_small(cx).text_color(color).child(state))
-            .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
-            .on_click(cx.listener(move |this, _, window, cx| this.open_agent(host.clone(), group.clone(), term, window, cx)))
+            .child(div().flex_none().w(px(12.)).text_color(color).child(dot))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_agent(host.clone(), group.clone(), term, window, cx)
+            }))
             .into_any_element()
     }
 }

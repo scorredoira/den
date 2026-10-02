@@ -150,14 +150,9 @@ impl Sik {
     fn workspace_list(&self, cx: &App) -> String {
         let mut out = String::new();
         for (key, task) in self.ordered(cx) {
-            let state = if self.blocked.contains(&key) {
-                "waiting"
-            } else if task.working {
-                "working"
-            } else if self.attention.contains(&key) {
-                "finished"
-            } else {
-                "idle"
+            let state = match self.workspace_state(&key, cx).2 {
+                "done" => "finished",
+                state => state,
             };
             let mark = if self.active.as_ref() == Some(&key) { "*" } else { " " };
             let branch = task.branch.as_deref().unwrap_or("-");

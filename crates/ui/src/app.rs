@@ -58,6 +58,10 @@ const FOLD_WIDTH: f32 = 12.;
 
 /// How far a server's workspaces sit in from its name.
 const ROW_INDENT: f32 = 24.;
+/// Where an agent's row starts, under a workspace of the column's own and
+/// under a repo's worktree: past its workspace's icon.
+const AGENT_INDENT: f32 = ROW_INDENT + 20.;
+const WORKTREE_AGENT_INDENT: f32 = 12. + 20.;
 
 /// What a server shows while connecting, unless it's doing something longer.
 const CONNECTING: &str = "connecting…";
@@ -254,16 +258,11 @@ pub struct Sik {
     hosts: Vec<Host>,
     active: Option<TaskKey>,
     workspaces: HashMap<TaskKey, Entity<Workspace>>,
-    /// Tasks that finished working without being looked at.
-    attention: HashSet<TaskKey>,
-    /// Tasks waiting for an answer (Claude is asking something): in red.
-    blocked: HashSet<TaskKey>,
-    /// The terminals running a coding agent on each server.
+    /// The terminals running a coding agent on each server: what each
+    /// workspace is doing.
     agents: HashMap<SharedString, Vec<proto::AgentInfo>>,
     /// Agents that finished while their workspace wasn't in front.
     agents_attention: HashSet<(SharedString, proto::TermId)>,
-    /// The agents panel, drawn by the workspace where it's placed.
-    agents_panel: Entity<WorkspacesPanel>,
     new_task: Option<NewTaskInput>,
     /// Worktree whose deletion is being confirmed, in a dialog.
     confirm_remove: Option<(TaskKey, FocusHandle)>,
@@ -364,19 +363,8 @@ impl Sik {
             hosts: std::iter::once(local).chain(remotes).collect(),
             active: None,
             workspaces: HashMap::new(),
-            attention: HashSet::new(),
             agents: HashMap::new(),
             agents_attention: HashSet::new(),
-            agents_panel: {
-                let sik = cx.entity().downgrade();
-                cx.new(|_| {
-                    WorkspacesPanel::new(move |_, cx| {
-                        sik.update(cx, |sik, cx| sik.render_agents(cx).into_any_element())
-                            .unwrap_or_else(|_| div().into_any_element())
-                    })
-                })
-            },
-            blocked: HashSet::new(),
             new_task: None,
             confirm_remove: None,
             confirm_restart: None,
@@ -662,7 +650,7 @@ impl Sik {
         self.connect(name, window, cx);
     }
 
-    /// Receives activity from the server's tasks and the tasks created with
+    /// Receives the agents running on the server and the tasks created with
     /// `sik task` on it.
     fn watch_host(&mut self, name: SharedString, client: Arc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         // The `sik` commands run in its terminals come here.
@@ -671,14 +659,6 @@ impl Sik {
         let name_for_watch = name.clone();
         client.watch(move |event| {
             let event = match event {
-                Event::Activity { group, working } => Event::Activity {
-                    group: group.clone(),
-                    working: *working,
-                },
-                Event::Blocked { group, blocked } => Event::Blocked {
-                    group: group.clone(),
-                    blocked: *blocked,
-                },
                 Event::OpenTask { path } => Event::OpenTask { path: path.clone() },
                 Event::Agents { agents } => Event::Agents { agents: agents.clone() },
                 Event::Command { command, args, cwd, term, group } => Event::Command {
@@ -698,18 +678,6 @@ impl Sik {
             let _ = tx.try_send(event);
         });
         cx.spawn_in(window, async move |this, cx| {
-            // Those already waiting for an answer on connecting (an outdated
-            // agent doesn't know: they stay as they were).
-            if let Ok(Response::Files(groups)) = client.request(Request::BlockedList).await {
-                this.update(cx, |this, cx| {
-                    this.blocked.retain(|key| key.host != name);
-                    for group in groups {
-                        this.blocked.insert(TaskKey { host: name.clone(), path: PathBuf::from(group) });
-                    }
-                    cx.notify();
-                })
-                .ok();
-            }
             // The agents running there (an outdated agent doesn't know).
             if let Ok(Response::Agents(agents)) = client.request(Request::AgentList).await {
                 this.update(cx, |this, cx| this.set_agents(name.clone(), agents, cx)).ok();
@@ -717,26 +685,6 @@ impl Sik {
             while let Ok(event) = rx.recv().await {
                 let alive = match event {
                     Event::Agents { agents } => this.update(cx, |this, cx| this.set_agents(name.clone(), agents, cx)).is_ok(),
-                    Event::Blocked { group, blocked } => this
-                        .update(cx, |this, cx| {
-                            let key = TaskKey { host: name.clone(), path: PathBuf::from(group) };
-                            if blocked {
-                                this.blocked.insert(key);
-                            } else {
-                                this.blocked.remove(&key);
-                            }
-                            cx.notify();
-                        })
-                        .is_ok(),
-                    Event::Activity { group, working } => this
-                        .update(cx, |this, cx| {
-                            let key = TaskKey {
-                                host: name.clone(),
-                                path: PathBuf::from(group),
-                            };
-                            this.set_working(&key, working, cx)
-                        })
-                        .is_ok(),
                     Event::Open { root, file } => {
                         let host = name.clone();
                         this.update(cx, |_, cx| cx.defer(move |cx| handle_open(host, root, file, cx))).is_ok()
@@ -823,24 +771,6 @@ impl Sik {
         cx.notify();
     }
 
-    fn set_working(&mut self, key: &TaskKey, working: bool, cx: &mut Context<Self>) {
-        let active = self.active.as_ref() == Some(key);
-        let Some(task) = self
-            .hosts
-            .iter_mut()
-            .find(|host| host.name == key.host)
-            .and_then(|host| host.tasks.iter_mut().find(|task| task.path == key.path))
-        else {
-            return;
-        };
-        let finished = task.working && !working;
-        task.working = working;
-        if finished && !active {
-            self.attention.insert(key.clone());
-        }
-        cx.notify();
-    }
-
     /// Workspaces in list order (the one for Cmd-1…9): by server;
     /// within each, a repo's checkout followed by its worktrees, the repos
     /// and the worktrees within them in the dragged order.
@@ -855,11 +785,13 @@ impl Sik {
                     host: host.name.clone(),
                     path: task.path.clone(),
                 };
-                // An agent's worktree, unless it's the one in front.
+                // An agent's worktree, unless it's the one in front or has an
+                // agent running: then it's where to find it.
                 let hidden = config.only_own_worktrees
                     && !task.main
                     && self.active.as_ref() != Some(&key)
-                    && !config.own_worktrees.contains(&key.config());
+                    && !config.own_worktrees.contains(&key.config())
+                    && self.workspace_agents(&key).is_empty();
                 if !hidden {
                     entries.push((ix, key, task));
                 }
@@ -941,7 +873,6 @@ impl Sik {
             host.loose.push(loose_task(&key.path));
             self.add_folder(key.host.clone(), key.path.clone(), window, cx);
         }
-        self.attention.remove(&key);
         self.agents_seen(&key);
         let workspace = match self.workspaces.get(&key) {
             Some(workspace) => workspace.clone(),
@@ -1255,9 +1186,7 @@ impl Sik {
             .filter(|(key, _)| self.active.as_ref() != Some(key))
             .map(|(key, task)| self.status(&key, task, cx))
             .max_by_key(|(dot, color)| urgency(dot, *color, cx));
-        // Unless they're hidden in the column, as its dots.
-        let workspaces = others.and_then(dot).filter(|_| Config::get(cx).shows_workspace_states());
-        TaskBadges { terminals: active.and_then(dot), workspaces, agents: self.agents_badge(cx) }
+        TaskBadges { terminals: active.and_then(dot), workspaces: others.and_then(dot) }
     }
 
     /// Opens `path` on `host`: the task it is, or the folder on its own.
@@ -2080,14 +2009,19 @@ impl Sik {
             .filter(|form| form.host == first.host && form.repo == first_task.repo)
             .map(|form| render_new_task(form, cx));
         if worktrees.is_empty() && new_task.is_none() {
-            return self.render_task(first, first_task, Some(None), &[], cx);
+            return self.render_task_and_agents(first, first_task, Some(None), AGENT_INDENT, cx);
         }
         let fold_key = TaskKey { host: first.host.clone(), path: first_task.repo.clone() }.config();
         let collapsed = Config::get(cx).collapsed.contains(&fold_key);
         let header = match head {
             // Only its new worktree under it: nothing to fold yet.
-            Some((key, task)) if worktrees.is_empty() => self.render_task(key, task, Some(None), &[], cx),
-            Some((key, task)) => self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx),
+            Some((key, task)) if worktrees.is_empty() => self.render_task_and_agents(key, task, Some(None), AGENT_INDENT, cx),
+            // Folded, its agents too: its dot sums them up.
+            Some((key, task)) if collapsed => self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx),
+            Some((key, task)) => {
+                let row = self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx);
+                v_flex().child(row).children(self.render_agents_of(key, AGENT_INDENT, cx)).into_any_element()
+            }
             // Its checkout isn't among them: the repo's name, which only folds.
             None => {
                 let theme = cx.theme();
@@ -2111,7 +2045,7 @@ impl Sik {
         } else {
             worktrees
                 .iter()
-                .map(|(key, task)| self.render_task(key, task, None, &[], cx))
+                .map(|(key, task)| self.render_task_and_agents(key, task, None, WORKTREE_AGENT_INDENT, cx))
                 .chain(new_task)
                 .collect()
         };
@@ -2121,6 +2055,23 @@ impl Sik {
             .child(header)
             .when(!collapsed, |el| el.child(v_flex().ml(px(ROW_INDENT + 7.)).border_l_1().border_color(line).children(rows)))
             .into_any_element()
+    }
+
+    /// A workspace's row with its agents' under it, `indent` from the left.
+    fn render_task_and_agents(
+        &self,
+        key: &TaskKey,
+        task: &TaskInfo,
+        fold: Option<Option<(String, bool)>>,
+        indent: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row = self.render_task(key, task, fold, &[], cx);
+        let agents = self.render_agents_of(key, indent, cx);
+        if agents.is_empty() {
+            return row;
+        }
+        v_flex().child(row).children(agents).into_any_element()
     }
 
     fn toggle_fold(&mut self, fold_key: &str, cx: &mut Context<Self>) {
@@ -2134,21 +2085,14 @@ impl Sik {
         cx.notify();
     }
 
-    /// The dot before a workspace: deleting, waiting for an answer, working,
-    /// finished without being looked at, or nothing.
-    fn status(&self, key: &TaskKey, task: &TaskInfo, cx: &App) -> (&'static str, Hsla) {
-        let theme = cx.theme();
+    /// A workspace's state: being deleted, or the most urgent of its
+    /// agents' (waiting for an answer, working, done unseen, idle).
+    fn status(&self, key: &TaskKey, _: &TaskInfo, cx: &App) -> (&'static str, Hsla) {
         if self.removing.contains(key) {
-            ("…", theme.muted_foreground)
-        } else if self.blocked.contains(key) {
-            ("●", theme.danger)
-        } else if task.working {
-            ("◐", theme.warning)
-        } else if self.attention.contains(key) {
-            ("●", theme.success)
-        } else {
-            ("○", theme.muted_foreground)
+            return ("…", cx.theme().muted_foreground);
         }
+        let (dot, color, _) = self.workspace_state(key, cx);
+        (dot, color)
     }
 
     /// A workspace's row. `fold` is set on the column's own rows (not a
@@ -2224,7 +2168,9 @@ impl Sik {
             // Claude's state, only when there's one: working, waiting for an
             // answer or finished unseen.
             .when(dot == "…", |row| row.child(spinner(color)))
-            .when(dot != "○" && dot != "…" && Config::get(cx).shows_workspace_states(), |row| {
+            // Its agents' state shows on their rows; folded, they don't, and
+            // its dot sums them up.
+            .when(dot != "○" && dot != "…" && matches!(fold, Some(Some((_, true)))), |row| {
                 row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot))
             })
             .child(div().flex_1())
@@ -2390,13 +2336,11 @@ impl Render for Sik {
             let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let (panel, visible) = (self.workspaces_panel.clone(), self.tasks_visible(cx));
-            let agents = self.agents_panel.clone();
             let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
                 workspace.set_workspaces(&panel, visible, cx);
-                workspace.set_agents(&agents);
                 workspace.set_badges(badges, cx);
             });
         }
