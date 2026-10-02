@@ -18,8 +18,9 @@ A single native program that combines what herdr and an editor do today: tabbed 
 - Click on a `file:line` path inside a terminal: it opens in the viewer.
 - Hosts: local and any SSH server that has been added, transparently.
 - Platforms: macOS and Linux now; Windows later. The architecture is portable from the start, but for now it is only tested on the Mac (see Platforms).
+- A debugger for programs that speak Sik's own line protocol (`docs/debugger.md`), reached through the agent like everything else.
 
-**Out:** serious editing (refactors, advanced multi-cursor), debugger, AI, extensions, collaboration, remote Windows servers (the remote agent only runs on Linux and macOS).
+**Out:** serious editing (refactors, advanced multi-cursor), AI, extensions, collaboration, remote Windows servers (the remote agent only runs on Linux and macOS).
 
 ## Decisions
 

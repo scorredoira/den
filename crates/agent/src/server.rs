@@ -86,6 +86,9 @@ struct State {
     blocked: HashSet<String>,
     /// Folders each connection is watching.
     watchers: HashMap<ConnId, HashMap<PathBuf, notify::RecommendedWatcher>>,
+    /// The relays each connection opened.
+    relays: HashMap<ConnId, HashMap<u64, crate::relay::Relay>>,
+    next_relay: u64,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -283,6 +286,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     let mut state = state.lock().unwrap();
     state.clients.remove(&conn);
     state.watchers.remove(&conn);
+    state.relays.remove(&conn);
     for entry in state.terms.values_mut() {
         entry.subscribers.remove(&conn);
     }
@@ -595,6 +599,48 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                 .entry(conn)
                 .or_default()
                 .insert(path, watcher);
+            Ok(Response::Ok)
+        }
+        Request::RelayConnect { port } => {
+            let sender = state
+                .lock()
+                .unwrap()
+                .clients
+                .get(&conn)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("connection closed"))?;
+            let relay = {
+                let mut state = state.lock().unwrap();
+                state.next_relay += 1;
+                state.next_relay
+            };
+            let closed = sender.clone();
+            let connection = crate::relay::Relay::connect(
+                port,
+                move |line| {
+                    let _ = sender.send(ServerMessage::Event(Event::RelayLine { relay, line }));
+                },
+                move || {
+                    let _ = closed.send(ServerMessage::Event(Event::RelayClosed { relay }));
+                },
+            )?;
+            state.lock().unwrap().relays.entry(conn).or_default().insert(relay, connection);
+            Ok(Response::Relay(relay))
+        }
+        Request::RelaySend { relay, line } => {
+            let mut state = state.lock().unwrap();
+            let connection = state
+                .relays
+                .get_mut(&conn)
+                .and_then(|relays| relays.get_mut(&relay))
+                .ok_or_else(|| anyhow::anyhow!("the relay is closed"))?;
+            connection.send(&line)?;
+            Ok(Response::Ok)
+        }
+        Request::RelayClose { relay } => {
+            if let Some(relays) = state.lock().unwrap().relays.get_mut(&conn) {
+                relays.remove(&relay);
+            }
             Ok(Response::Ok)
         }
         Request::Unwatch { path } => {

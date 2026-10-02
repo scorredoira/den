@@ -232,8 +232,22 @@ impl TerminalArea {
 
     /// Creates a terminal in the agent and places it; once it arrives, it gets focus.
     fn open(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_running(place, None, true, window, cx).detach();
+    }
+
+    /// Like `open`, typing `line` and Enter into its shell once it exists.
+    /// Resolves to the new terminal.
+    fn open_running(
+        &mut self,
+        place: Place,
+        line: Option<String>,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<TermId>> {
         let Some(client) = self.client.clone() else {
-            return self.error("No agent: can't open terminals".into(), cx);
+            self.error("No agent: can't open terminals".into(), cx);
+            return Task::ready(None);
         };
         let place = if self.tabs.is_empty() { Place::NewTab } else { place };
         let group = self.group.clone();
@@ -252,8 +266,14 @@ impl TerminalArea {
             this.update_in(cx, |this, window, cx| {
                 let (term, terminal) = match result {
                     Ok(created) => created,
-                    Err(err) => return this.error(format!("Couldn't open terminal: {err:#}"), cx),
+                    Err(err) => {
+                        this.error(format!("Couldn't open terminal: {err:#}"), cx);
+                        return None;
+                    }
                 };
+                if let Some(line) = line {
+                    terminal.update(cx, |terminal, cx| terminal.input(format!("{line}\r").into_bytes(), cx));
+                }
                 let view = this.add_view(term, terminal, window, cx);
                 match place {
                     Place::Split(axis) if !this.tabs.is_empty() => {
@@ -271,13 +291,46 @@ impl TerminalArea {
                         this.active = this.tabs.len() - 1;
                     }
                 }
-                view.read(cx).focus_handle(cx).focus(window, cx);
+                if focus {
+                    view.read(cx).focus_handle(cx).focus(window, cx);
+                }
                 this.save();
                 cx.notify();
+                Some(term)
             })
-            .ok();
+            .ok()
+            .flatten()
         })
-        .detach();
+    }
+
+    /// Runs `line` in the shell of terminal `term` when it's still open, or
+    /// of a new tab, and shows it without taking the focus. Resolves to the
+    /// terminal it runs in.
+    pub fn run_line(
+        &mut self,
+        term: Option<TermId>,
+        line: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<TermId>> {
+        if let Some(term) = term
+            && let Some(view) = self.views.get(&term).cloned()
+            && !view.read(cx).terminal().read(cx).exited()
+        {
+            let terminal = view.read(cx).terminal().clone();
+            terminal.update(cx, |terminal, cx| terminal.input(format!("{line}\r").into_bytes(), cx));
+            self.select(term, cx);
+            return Task::ready(Some(term));
+        }
+        self.open_running(Place::NewTab, Some(line), false, window, cx)
+    }
+
+    /// Sends Ctrl-C to terminal `term`, which stops what runs in its shell.
+    pub fn interrupt(&mut self, term: TermId, cx: &mut Context<Self>) {
+        if let Some(view) = self.views.get(&term).cloned() {
+            let terminal = view.read(cx).terminal().clone();
+            terminal.update(cx, |terminal, cx| terminal.input(vec![0x03], cx));
+        }
     }
 
     /// Opens a terminal in a new tab and focuses it.

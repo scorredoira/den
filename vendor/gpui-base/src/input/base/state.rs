@@ -354,6 +354,28 @@ pub struct LineStyle {
     pub number: Option<SharedString>,
 }
 
+/// A debugger's mark in the gutter column before the line numbers (see
+/// [`InputBaseState::set_gutter_column`]): a breakpoint's dot, filled, or a
+/// ring when `hollow`. (sik)
+#[derive(Clone, Debug, PartialEq)]
+pub struct GutterMark {
+    pub line: usize,
+    pub color: Hsla,
+    pub hollow: bool,
+}
+
+/// The line a debugger is stopped at: painted with `background` across the
+/// whole line and an arrow of `arrow` color in the gutter column. (sik)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExecutionLine {
+    pub line: usize,
+    pub background: Hsla,
+    pub arrow: Hsla,
+}
+
+/// Called with the buffer line clicked in the gutter. (sik)
+pub type GutterClick = Rc<dyn Fn(usize, &MouseDownEvent, &mut Window, &mut App)>;
+
 pub struct InputBaseState<M: InputModeKind> {
     /// State only this mode needs. See [`InputModeKind::Extras`].
     pub(crate) extras: M::Extras,
@@ -427,6 +449,12 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
     /// (sik) How each line looks, by buffer line; see [`LineStyle`].
     pub(crate) line_styles: Vec<LineStyle>,
+    /// (sik) A column for debugger marks before the line numbers, its
+    /// marks, the line stopped at and what a click in the gutter does.
+    pub(crate) gutter_column: bool,
+    pub(crate) gutter_marks: Vec<GutterMark>,
+    pub(crate) execution_line: Option<ExecutionLine>,
+    pub(crate) gutter_click: Option<GutterClick>,
     /// (sik) The scroll offset of the last paint, to notify when something
     /// else (the scrollbar) moved it.
     pub(crate) painted_scroll_offset: Option<Point<Pixels>>,
@@ -769,6 +797,10 @@ impl<M: InputModeKind> InputBaseState<M> {
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
             line_styles: Vec::new(),
+            gutter_column: false,
+            gutter_marks: Vec::new(),
+            execution_line: None,
+            gutter_click: None,
             painted_scroll_offset: None,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
@@ -3079,6 +3111,37 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.line_styles = styles;
             cx.notify();
         }
+    }
+
+    /// Reserves a column before the line numbers for debugger marks, so they
+    /// don't move the text when they come and go. (sik)
+    pub fn set_gutter_column(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.gutter_column != on {
+            self.gutter_column = on;
+            cx.notify();
+        }
+    }
+
+    /// The marks of the gutter column, by buffer line. (sik)
+    pub fn set_gutter_marks(&mut self, marks: Vec<GutterMark>, cx: &mut Context<Self>) {
+        if self.gutter_marks != marks {
+            self.gutter_marks = marks;
+            cx.notify();
+        }
+    }
+
+    /// The line a debugger is stopped at, if any. (sik)
+    pub fn set_execution_line(&mut self, line: Option<ExecutionLine>, cx: &mut Context<Self>) {
+        if self.execution_line != line {
+            self.execution_line = line;
+            cx.notify();
+        }
+    }
+
+    /// What a mouse down on the gutter (column and line numbers) does,
+    /// instead of moving the cursor. (sik)
+    pub fn on_gutter_click(&mut self, click: Option<GutterClick>) {
+        self.gutter_click = click;
     }
 
     /// The scroll offset, counting one set but not applied yet. (sik)

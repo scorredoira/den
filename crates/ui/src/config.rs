@@ -24,6 +24,13 @@ pub struct Layout {
     pub side: f32,
     /// When unsaved, the terminals take half of the code area.
     pub terminals: Option<f32>,
+    /// Height of the debugger panel under the code.
+    #[serde(default = "default_debug_height")]
+    pub debug: f32,
+}
+
+fn default_debug_height() -> f32 {
+    260.
 }
 
 impl Default for Layout {
@@ -32,6 +39,7 @@ impl Default for Layout {
             tasks: 240.,
             side: 260.,
             terminals: None,
+            debug: default_debug_height(),
         }
     }
 }
@@ -108,6 +116,52 @@ pub struct Session {
     pub split: Option<crate::splits::Axis>,
 }
 
+/// The debugger's state of a task: what survives closing the app.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugSaved {
+    pub breakpoints: Vec<SavedBreakpoint>,
+    pub watches: Vec<String>,
+    /// Stop at exceptions nothing catches, and at every exception.
+    pub uncaught: bool,
+    pub all: bool,
+    /// The launch configuration last started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch: Option<String>,
+    /// The terminal the launch command ran in: the next launch reuses it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<u64>,
+}
+
+impl Default for DebugSaved {
+    fn default() -> Self {
+        Self { breakpoints: Vec::new(), watches: Vec::new(), uncaught: true, all: false, launch: None, terminal: None }
+    }
+}
+
+/// A breakpoint: `path` relative to the task, `line` 0-based.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedBreakpoint {
+    pub path: PathBuf,
+    pub line: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub condition: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hit: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub log: String,
+    #[serde(default = "enabled", skip_serializing_if = "is_enabled")]
+    pub enabled: bool,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+fn is_enabled(enabled: &bool) -> bool {
+    *enabled
+}
+
 /// A task on a server (`local` is this machine).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedTask {
@@ -130,6 +184,8 @@ pub struct Config {
     pub window: Option<SavedWindow>,
     /// What's open in each task (same keys as `order`).
     pub sessions: HashMap<String, Session>,
+    /// Breakpoints and watches of each task (same keys as `order`).
+    pub debug: HashMap<String, DebugSaved>,
     /// The last task visited, to return to on launch.
     pub last: Option<SavedTask>,
     /// Folders and tasks opened, the most recent first (Open Recent).

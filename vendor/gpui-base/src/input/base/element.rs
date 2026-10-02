@@ -49,6 +49,8 @@ fn diagnostic_highlight_style(
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(6.);
+/// (sik) Width of the debugger's column before the line numbers.
+const GUTTER_COLUMN_WIDTH: Pixels = px(16.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
@@ -781,6 +783,36 @@ impl<M: InputModeKind> TextElement<M> {
         (!corners.is_empty()).then_some(corners)
     }
 
+    /// (sik) Paints the background of the line a debugger is stopped at,
+    /// from the gutter's edge to the right.
+    fn paint_execution_line(
+        &self,
+        prepaint: &PrepaintState,
+        input_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        let Some(execution) = self.state.read(cx).execution_line else {
+            return;
+        };
+        let line_height = window.line_height();
+        let layout = &prepaint.last_layout;
+        let left = prepaint.bounds.origin.x + layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN / 2.;
+        let right = input_bounds.right();
+        let mut y = prepaint.bounds.origin.y + layout.visible_top;
+        for (line, &buffer_line) in layout.lines.iter().zip(layout.visible_buffer_lines.iter()) {
+            let height = line.size(line_height).height;
+            if buffer_line == execution.line && right > left {
+                window.paint_quad(fill(Bounds::new(point(left, y), size(right - left, height)), execution.background));
+                return;
+            }
+            y += height;
+            if Some(buffer_line) == prepaint.current_row {
+                y += prepaint.ghost_lines_height;
+            }
+        }
+    }
+
     /// (sik) Paints each styled line's background and hatching, from the
     /// gutter's edge to the right, under everything else.
     fn paint_line_styles(
@@ -1167,6 +1199,11 @@ impl<M: InputModeKind> TextElement<M> {
         if state.mode.is_folding() {
             // Add extra space for fold icons
             line_number_width += FOLD_ICON_HITBOX_WIDTH
+        }
+
+        // (sik)
+        if state.gutter_column && state.mode.line_number() {
+            line_number_width += GUTTER_COLUMN_WIDTH
         }
 
         (line_number_width, line_number_len)
@@ -3025,6 +3062,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
             self.paint_line_styles(prepaint, input_bounds, window, cx);
         }
 
+        // (sik) The line a debugger is stopped at.
+        self.paint_execution_line(prepaint, input_bounds, window, cx);
+
         // Keep scrollbar offset always be positive，Start from the left position
         let scroll_offset = if text_align == TextAlign::Right {
             (prepaint.scroll_size.width - prepaint.bounds.size.width).max(px(0.))
@@ -3211,12 +3251,29 @@ impl<M: InputModeKind> Element for TextElement<M> {
             );
             window.paint_quad(fill(gutter_bounds, gutter_bg));
 
+            // (sik) The debugger's column comes before the numbers.
+            let (gutter_column, gutter_marks, execution_line, gutter_click) = {
+                let state = self.state.read(cx);
+                (
+                    state.gutter_column,
+                    state.gutter_marks.clone(),
+                    state.execution_line,
+                    state.gutter_click.clone(),
+                )
+            };
+            let numbers_x = if gutter_column {
+                input_bounds.origin.x + GUTTER_COLUMN_WIDTH
+            } else {
+                input_bounds.origin.x
+            };
+            let mut rows: Vec<(Pixels, Pixels, usize)> = Vec::new();
+
             // Each item is the normal lines.
             for (lines, &buffer_line) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
             {
-                let p = point(input_bounds.origin.x, origin.y + offset_y);
+                let p = point(numbers_x, origin.y + offset_y);
                 let is_active = prepaint.current_row == Some(buffer_line);
 
                 let height = line_height * lines.len() as f32;
@@ -3238,10 +3295,38 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     offset_y += line_height;
                 }
 
+                // (sik)
+                if gutter_column {
+                    let column = point(input_bounds.origin.x, p.y);
+                    if let Some(mark) = gutter_marks.iter().find(|mark| mark.line == buffer_line) {
+                        paint_gutter_mark(column, line_height, mark.color, mark.hollow, window);
+                    }
+                    if let Some(execution) = execution_line.filter(|execution| execution.line == buffer_line) {
+                        paint_gutter_arrow(column, line_height, execution.arrow, window);
+                    }
+                }
+                rows.push((p.y, p.y + height, buffer_line));
+
                 // Add ghost line height after cursor row for line numbers alignment
                 if !prepaint.ghost_lines.is_empty() && prepaint.current_row == Some(buffer_line) {
                     offset_y += prepaint.ghost_lines_height;
                 }
+            }
+
+            // (sik) A click in the gutter goes to whoever asked for it,
+            // instead of moving the cursor.
+            if let Some(click) = gutter_click {
+                window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, window, cx| {
+                    if !phase.capture() || !gutter_bounds.contains(&event.position) {
+                        return;
+                    }
+                    let y = event.position.y;
+                    if let Some(&(_, _, line)) = rows.iter().find(|(top, bottom, _)| *top <= y && y < *bottom) {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        click(line, event, window, cx);
+                    }
+                });
             }
         }
 
@@ -3311,6 +3396,36 @@ impl<M: InputModeKind> Element for TextElement<M> {
         }
 
         self.paint_mouse_listeners(&prepaint.hitbox, window, cx);
+    }
+}
+
+/// (sik) A breakpoint: a dot centred in the gutter column, or a ring.
+fn paint_gutter_mark(column: Point<Pixels>, line_height: Pixels, color: Hsla, hollow: bool, window: &mut Window) {
+    let diameter = px(10.);
+    let origin = point(
+        column.x + (GUTTER_COLUMN_WIDTH - diameter).half(),
+        column.y + (line_height - diameter).half(),
+    );
+    let bounds = Bounds::new(origin, size(diameter, diameter));
+    let background = if hollow { gpui::transparent_black() } else { color };
+    window.paint_quad(
+        gpui::quad(bounds, diameter.half(), background, px(1.5), color, gpui::BorderStyle::Solid),
+    );
+}
+
+/// (sik) Where a debugger is stopped: an arrow in the gutter column.
+fn paint_gutter_arrow(column: Point<Pixels>, line_height: Pixels, color: Hsla, window: &mut Window) {
+    let height = px(10.);
+    let width = px(9.);
+    let left = column.x + (GUTTER_COLUMN_WIDTH - width).half();
+    let top = column.y + (line_height - height).half();
+    let mut builder = gpui::PathBuilder::fill();
+    builder.move_to(point(left, top));
+    builder.line_to(point(left + width, top + height.half()));
+    builder.line_to(point(left, top + height));
+    builder.close();
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
     }
 }
 

@@ -14,6 +14,7 @@ mod lsp;
 mod platform;
 mod ports;
 mod pty;
+mod relay;
 mod search;
 mod server;
 mod snapshot;

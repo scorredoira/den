@@ -76,6 +76,22 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{ToggleMarkdownSource}} | Markdown: show the source or the preview |
 | {{OpenPreviewToSide}} | Markdown: open the preview to the side |
 
+## Debugging
+
+`.sik/debug.json` says how to start the workspace's program; see the debugger's documentation.
+
+| Shortcut | Does |
+| --- | --- |
+| {{DebugContinue}} | Start debugging, or continue the stopped program |
+| {{DebugStop}} | Stop debugging |
+| {{DebugRestart}} | Restart |
+| {{DebugPause}} | Pause: the next code that runs stops |
+| {{ToggleBreakpoint}} | Toggle a breakpoint on the cursor's line (or click the gutter; right-click it for a condition) |
+| {{StepOver}} / {{StepInto}} / {{StepOut}} | Step over, into, out |
+| {{RunToCursor}} | Run to the cursor's line |
+| {{SetNextStatement}} | Make the cursor's line the next one to run |
+| {{ToggleDebugPanel}} | Show or hide the debugger |
+
 ## Search
 
 | Shortcut | Does |

@@ -76,6 +76,17 @@ shortcuts![
     (OpenFolder, "Open Folder", "secondary-o"),
     (OpenRemoteFolder, "Open Folder on Server", "secondary-alt-o"),
     (OpenRecent, "Open Recent", "secondary-shift-o"),
+    (DebugContinue, "Debug: Start or Continue", "f5"),
+    (DebugStop, "Debug: Stop", "shift-f5"),
+    (DebugRestart, "Debug: Restart", "secondary-shift-f5"),
+    (DebugPause, "Debug: Pause", "f6"),
+    (StepOver, "Debug: Step Over", "f10"),
+    (StepInto, "Debug: Step Into", "f11"),
+    (StepOut, "Debug: Step Out", "shift-f11"),
+    (ToggleBreakpoint, "Debug: Toggle Breakpoint", "f9"),
+    (RunToCursor, "Debug: Run to Cursor", "ctrl-f10"),
+    (SetNextStatement, "Debug: Set Next Statement", "ctrl-shift-f10"),
+    (ToggleDebugPanel, "Debug: Toggle Panel", "secondary-shift-y"),
 ];
 
 impl Shortcut {

@@ -156,6 +156,13 @@ pub enum Request {
     /// open `root` as a workspace, with `file` in it. Responds `Count`: how
     /// many other connections it was sent to (none: no app is listening).
     Open { root: PathBuf, file: Option<PathBuf> },
+    /// Connects to `port` at the agent's loopback and relays lines of text
+    /// both ways: how the UI talks to a debugger listening there, local or
+    /// over SSH. Responds `Relay`; the lines arrive as `RelayLine`.
+    RelayConnect { port: u16 },
+    /// Writes `line` and a newline to the relay.
+    RelaySend { relay: u64, line: String },
+    RelayClose { relay: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -326,6 +333,7 @@ pub enum Response {
     /// `None` if nothing formats that kind of file; `by` says what did.
     Formatted { text: Option<String>, by: Option<String> },
     Count(usize),
+    Relay(u64),
 }
 
 /// A port a process started from a terminal listens on (at loopback or on
@@ -407,6 +415,10 @@ pub enum Event {
     /// Asks the UI to open `root` as a workspace, with `file` in it (see
     /// `Request::Open`).
     Open { root: PathBuf, file: Option<PathBuf> },
+    /// A line read from a relay, without its newline.
+    RelayLine { relay: u64, line: String },
+    /// The other end closed the relay, or it failed.
+    RelayClosed { relay: u64 },
 }
 
 /// Fingerprint of a binary (64-bit FNV-1a): tells agent versions apart.

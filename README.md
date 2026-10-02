@@ -18,6 +18,7 @@
 - **Persistent sessions.** A terminal multiplexer per workspace, with tabs and splits. Every terminal lives in `sik-agent`, not in the app, like in tmux. Close Sik, update it or lose the connection and Claude keeps working; reopening reattaches each terminal with its screen and history.
 - **Remote like local.** A server is a name from `~/.ssh/config`. Sik uploads its agent, which runs the terminals, search, git and language servers next to the files; only terminal output and results travel. On Windows, WSL distros work the same way.
 - **Git built in.** Every workspace is a folder, a checkout or a worktree, and New Worktree (Cmd-N) starts one per task. Uncommitted changes, the history of the repo or of a file, side-by-side diffs, commits with all their files, and the blame of the current line. Sik only reads: commit and push from a terminal.
+- **A debugger.** Breakpoints in the gutter (with conditions, hit counts and logpoints), stepping, the values of the variables written in the code as it stops, hover, watches and a console that evaluates and assigns. For any program that speaks [Sik's debug protocol](docs/debugger.md), on your machine or on a server.
 - **Every agent at a glance.** The workspaces of all your servers in one column, with a dot each: red when Claude is asking something, yellow while it works, green when it finished unseen. No hooks: Sik reads the terminals. Cmd-1…9 and Cmd-E jump between them.
 
 ## Install
@@ -67,6 +68,21 @@ Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settin
 Cmd-1…9 go to a workspace, Cmd-E back to the previous one, Cmd-K finds one across servers. Every shortcut can be changed in Settings (Cmd-,).
 
 Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
+
+## Debugging
+
+A workspace says how to start its program in `.sik/debug.json`:
+
+```json
+{
+    "configurations": [
+        { "name": "Server", "command": "sim -d server", "port": 4444 },
+        { "name": "Attach", "port": 4444 }
+    ]
+}
+```
+
+F5 runs the command in a terminal and connects to the port; a configuration without a command attaches to a program already running, and so does F5 when something already answers on the port. F9 toggles a breakpoint (or click the gutter; right-click it for a condition, a hit count or a log message), F10 steps over, F11 into, Shift-F11 out, Ctrl-F10 runs to the cursor, Ctrl-Shift-F10 makes the cursor's line the next statement, F6 pauses, Shift-F5 stops and Cmd-Shift-Y shows or hides the panel. See [docs/debugger.md](docs/debugger.md).
 
 ## Updates
 

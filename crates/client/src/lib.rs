@@ -39,6 +39,26 @@ pub enum TermUpdate {
 }
 type Watcher = Box<dyn Fn(&Event) + Send>;
 
+/// What the follower of a relay (`Client::connect_relay`) receives.
+pub enum RelayUpdate {
+    Line(String),
+    /// The other end closed it, or the connection to the agent was lost.
+    Closed,
+}
+type RelaySubscriber = Box<dyn FnMut(RelayUpdate) + Send>;
+
+/// The followers of relays, and what arrived for a relay before its
+/// follower: the agent may read the program's first lines before the
+/// response that names the relay gets here.
+#[derive(Default)]
+struct Relays {
+    subscribers: HashMap<u64, RelaySubscriber>,
+    early: HashMap<u64, Vec<RelayUpdate>>,
+}
+
+/// Lines kept for a relay nobody follows yet.
+const EARLY_LINES: usize = 1000;
+
 pub struct Client {
     process: Mutex<Option<std::process::Child>>,
     close_stream: Option<CloseStream>,
@@ -52,6 +72,7 @@ pub struct Client {
     /// Receive the events not tied to a specific terminal (activity).
     watchers: Arc<Mutex<Vec<Watcher>>>,
     on_disconnect: Arc<Mutex<Vec<OnDisconnect>>>,
+    relays: Arc<Mutex<Relays>>,
     /// The server's `ssh` destination (or `wsl:<distro>`), for remote connections.
     destination: Option<String>,
     /// Ports of the server forwarded to this machine: remote → local.
@@ -156,6 +177,7 @@ impl Client {
             subscribers: Arc::default(),
             watchers: Arc::default(),
             on_disconnect: Arc::default(),
+            relays: Arc::default(),
             destination,
             forwards: Mutex::default(),
         });
@@ -164,6 +186,7 @@ impl Client {
         let watchers = client.watchers.clone();
         let connected = client.connected.clone();
         let on_disconnect = client.on_disconnect.clone();
+        let relays = client.relays.clone();
         std::thread::spawn(move || {
             let mut reader = reader;
             while let Ok(Some(decoded)) = proto::read_message::<ServerMessage, ServerEnvelope>(&mut reader) {
@@ -188,12 +211,37 @@ impl Client {
                             watcher(&event);
                         }
                     }
+                    ServerMessage::Event(Event::RelayLine { relay, line }) => {
+                        let mut relays = relays.lock().unwrap();
+                        match relays.subscribers.get_mut(&relay) {
+                            Some(subscriber) => subscriber(RelayUpdate::Line(line)),
+                            None => {
+                                let early = relays.early.entry(relay).or_default();
+                                if early.len() < EARLY_LINES {
+                                    early.push(RelayUpdate::Line(line));
+                                }
+                            }
+                        }
+                    }
+                    ServerMessage::Event(Event::RelayClosed { relay }) => {
+                        let mut relays = relays.lock().unwrap();
+                        match relays.subscribers.remove(&relay) {
+                            Some(mut subscriber) => subscriber(RelayUpdate::Closed),
+                            None => relays.early.entry(relay).or_default().push(RelayUpdate::Closed),
+                        }
+                    }
                     ServerMessage::Event(event) => {
                         let term = match &event {
                             Event::TermOutput { term, .. }
                             | Event::TermTitle { term, .. }
                             | Event::TermExit { term } => *term,
-                            Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. } | Event::Open { .. } => unreachable!(),
+                            Event::Activity { .. }
+                            | Event::Blocked { .. }
+                            | Event::OpenTask { .. }
+                            | Event::FsChanged { .. }
+                            | Event::Open { .. }
+                            | Event::RelayLine { .. }
+                            | Event::RelayClosed { .. } => unreachable!(),
                         };
                         let exit = matches!(event, Event::TermExit { .. });
                         let mut subscribers = subscribers.lock().unwrap();
@@ -214,6 +262,9 @@ impl Client {
             }
             for (_, subscriber) in subscribers.lock().unwrap().drain() {
                 subscriber(TermUpdate::Disconnected);
+            }
+            for (_, mut subscriber) in relays.lock().unwrap().subscribers.drain() {
+                subscriber(RelayUpdate::Closed);
             }
             for callback in on_disconnect.lock().unwrap().drain(..) {
                 callback();
@@ -321,6 +372,53 @@ impl Client {
     /// Receives (from another thread) the events not tied to a specific terminal.
     pub fn watch(&self, watcher: impl Fn(&Event) + Send + 'static) {
         self.watchers.lock().unwrap().push(Box::new(watcher));
+    }
+
+    /// Connects a relay to `port` on the agent's machine (`Request::RelayConnect`)
+    /// and calls `subscriber` (from another thread) with each line it reads.
+    /// It gets every line, also those the agent read before the response
+    /// that names the relay arrived.
+    pub fn connect_relay<S: FnMut(RelayUpdate) + Send + 'static>(
+        &self,
+        port: u16,
+        mut subscriber: S,
+    ) -> impl Future<Output = Result<u64>> + use<S> {
+        let relays = self.relays.clone();
+        let (tx, rx) = smol::channel::bounded(1);
+        // Runs in the reader thread before it reads the relay's first line.
+        self.request_with(Request::RelayConnect { port }, move |result| {
+            let result = match result {
+                Ok(Response::Relay(relay)) => {
+                    let mut relays = relays.lock().unwrap();
+                    let mut closed = false;
+                    for update in relays.early.remove(&relay).unwrap_or_default() {
+                        closed |= matches!(update, RelayUpdate::Closed);
+                        subscriber(update);
+                    }
+                    if !closed {
+                        relays.subscribers.insert(relay, Box::new(subscriber));
+                    }
+                    Ok(relay)
+                }
+                Ok(other) => Err(anyhow!("unexpected response {other:?}")),
+                Err(err) => Err(err),
+            };
+            let _ = tx.try_send(result);
+        });
+        async move { rx.recv().await.map_err(|_| anyhow!("no response from the agent"))? }
+    }
+
+    /// Writes a line to a relay.
+    pub fn relay_send(&self, relay: u64, line: String) {
+        self.notify(Request::RelaySend { relay, line });
+    }
+
+    pub fn close_relay(&self, relay: u64) {
+        let mut relays = self.relays.lock().unwrap();
+        relays.subscribers.remove(&relay);
+        relays.early.remove(&relay);
+        drop(relays);
+        self.notify(Request::RelayClose { relay });
     }
 
     pub fn unsubscribe(&self, term: TermId) {

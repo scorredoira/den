@@ -6,7 +6,7 @@ use std::{
 };
 
 use client::Client;
-use gpui_base::input::LineStyle;
+use gpui_base::input::{ExecutionLine, GutterMark, LineStyle};
 use proto::{CommitInfo, GitOp, LspLocation, LspOp, PortInfo, Request, Response, SearchHit};
 
 use gpui_kit::component::{
@@ -31,6 +31,9 @@ use crate::{
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, SavedTab, Session, TextArea, UiText},
+    debug::{self, DebugEvent, Debugger, EditKind},
+    DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
+    ToggleBreakpoint, ToggleDebugPanel,
     diff,
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
@@ -174,6 +177,8 @@ struct FileTab {
     /// A page of the app's own (the shortcuts guide), with no file behind
     /// it: read-only, never saved, not reopened with the session.
     doc: bool,
+    /// Lines of the text, to move breakpoints with the lines edited.
+    lines: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -270,6 +275,7 @@ pub struct Workspace {
     signature: Option<SignatureHint>,
     signature_at: Option<Position>,
     signature_task: Task<()>,
+    debugger: Entity<Debugger>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -291,7 +297,10 @@ impl Workspace {
         let changes = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
+        let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let subscriptions = vec![
+            cx.subscribe_in(&debugger, window, Self::on_debug_event),
+            cx.observe(&debugger, |_, _, cx| cx.notify()),
             cx.observe_self(|this, cx| this.remember(cx)),
             cx.subscribe_in(
                 &file_tree,
@@ -412,6 +421,7 @@ impl Workspace {
             signature: None,
             signature_at: None,
             signature_task: Task::ready(()),
+            debugger,
             _subscriptions: subscriptions,
         }
     }
@@ -648,6 +658,7 @@ impl Workspace {
         self.changes
             .update(cx, |changes, cx| changes.set_client(client.clone(), changes_visible, cx));
         self.search.update(cx, |search, _| search.set_client(client.clone()));
+        self.debugger.update(cx, |debugger, cx| debugger.set_client(client.clone(), cx));
         self.terminals
             .update(cx, |terminals, cx| terminals.set_client(client, window, cx));
         // Reopened files that couldn't be read while offline are read now for the first time.
@@ -1562,6 +1573,150 @@ impl Workspace {
         }
     }
 
+    fn on_debug_event(&mut self, debugger: &Entity<Debugger>, event: &DebugEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            DebugEvent::Show { path, line, focus } => {
+                let goto = Position::new(*line, 0);
+                let open = self.tabs.iter().position(|tab| tab.path == *path && tab.is_file());
+                self.open_at_with(path.clone(), goto, true, *focus, window, cx);
+                // a file already open only scrolls if the line isn't in view
+                if let Some(ix) = open {
+                    let editor = self.tabs[ix].editor.clone();
+                    reveal_centered(&editor, *line, false, 10, window, cx);
+                }
+                if *focus && debugger.read(cx).is_stopped() {
+                    window.activate_window();
+                }
+                self.refresh_debug_marks(cx);
+            }
+            DebugEvent::Marks => self.refresh_debug_marks(cx),
+            DebugEvent::Run { term, line } => {
+                self.terminals_visible = true;
+                let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line.clone(), window, cx));
+                let debugger = debugger.downgrade();
+                cx.spawn(async move |_, cx| {
+                    let term = run.await;
+                    debugger.update(cx, |debugger, cx| debugger.set_terminal(term, cx)).ok();
+                })
+                .detach();
+                cx.notify();
+            }
+            DebugEvent::Interrupt { term } => {
+                self.terminals.update(cx, |terminals, cx| terminals.interrupt(*term, cx));
+            }
+            DebugEvent::Refocus => self.focus_active(window, cx),
+        }
+    }
+
+    /// Redraws the breakpoints and the line stopped at in every editor.
+    fn refresh_debug_marks(&mut self, cx: &mut Context<Self>) {
+        let debugger = self.debugger.read(cx);
+        let execution = debugger.execution();
+        let theme = cx.theme();
+        let (stop_line, stop_arrow) = (theme.warning.opacity(0.22), theme.warning);
+        let (frame_line, frame_arrow) = (theme.info.opacity(0.14), theme.info);
+        let (red, orange, gray) = (debug::panel::breakpoint_color(cx), theme.warning, theme.muted_foreground);
+        let mut updates = Vec::new();
+        for tab in &self.tabs {
+            if tab.diff.is_some() || tab.doc {
+                continue;
+            }
+            let marks: Vec<GutterMark> = debugger
+                .breakpoints
+                .of(&tab.path)
+                .iter()
+                .map(|bp| GutterMark {
+                    line: bp.line as usize,
+                    color: if !bp.enabled {
+                        gray
+                    } else if bp.error.is_some() || bp.is_special() {
+                        orange
+                    } else {
+                        red
+                    },
+                    hollow: !bp.enabled || !bp.log.is_empty(),
+                })
+                .collect();
+            let line = execution.as_ref().filter(|(path, _, _)| *path == tab.path).map(|(_, line, top)| ExecutionLine {
+                line: *line as usize,
+                background: if *top { stop_line } else { frame_line },
+                arrow: if *top { stop_arrow } else { frame_arrow },
+            });
+            updates.push((tab.editor.clone(), marks, line));
+        }
+        for (editor, marks, line) in updates {
+            editor.update(cx, |state, cx| {
+                state.set_gutter_marks(marks, cx);
+                state.set_execution_line(line, cx);
+            });
+        }
+    }
+
+    /// A click in an editor's gutter: left toggles a breakpoint, right edits
+    /// its condition.
+    fn gutter_clicked(&mut self, editor: &Entity<EditorState>, line: u32, button: MouseButton, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.tab_index(editor) else {
+            return;
+        };
+        let tab = &self.tabs[ix];
+        if tab.diff.is_some() || tab.doc || tab.image.is_some() {
+            return;
+        }
+        let path = tab.path.clone();
+        match button {
+            MouseButton::Left => self.debugger.update(cx, |debugger, cx| debugger.toggle_breakpoint(&path, line, cx)),
+            MouseButton::Right => {
+                self.debugger.update(cx, |debugger, cx| debugger.edit_breakpoint(path, line, EditKind::Condition, window, cx))
+            }
+            _ => {}
+        }
+    }
+
+    /// The file and line (0-based) of the active editor's cursor.
+    fn cursor_place(&self, cx: &App) -> Option<(PathBuf, u32)> {
+        let ix = self.active?;
+        let tab = &self.tabs[ix];
+        if tab.diff.is_some() || tab.doc {
+            return None;
+        }
+        Some((tab.path.clone(), tab.editor.read(cx).cursor_position().line))
+    }
+
+    fn toggle_breakpoint(&mut self, _: &ToggleBreakpoint, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((path, line)) = self.cursor_place(cx) {
+            self.debugger.update(cx, |debugger, cx| debugger.toggle_breakpoint(&path, line, cx));
+        }
+    }
+
+    fn run_to_cursor(&mut self, _: &RunToCursor, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((path, line)) = self.cursor_place(cx) {
+            self.debugger.update(cx, |debugger, _| debugger.run_to(&path, line));
+        }
+    }
+
+    fn set_next_statement(&mut self, _: &SetNextStatement, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, line)) = self.cursor_place(cx) else {
+            return;
+        };
+        let here = self.debugger.read(cx).execution().is_some_and(|(at, _, top)| at == path && top);
+        if here {
+            self.debugger.update(cx, |debugger, _| debugger.jump(line));
+        } else {
+            self.message = Some("The next statement must be in the function stopped at".into());
+            cx.notify();
+        }
+    }
+
+    fn toggle_debug_panel(&mut self, _: &ToggleDebugPanel, _: &mut Window, cx: &mut Context<Self>) {
+        self.debugger.update(cx, |debugger, cx| {
+            debugger.visible = !debugger.visible;
+            if debugger.visible {
+                debugger.refresh_launches(cx);
+            }
+            cx.notify();
+        });
+    }
+
     fn new_tab(&mut self, path: PathBuf, preview: bool, window: &mut Window, cx: &mut Context<Self>) -> FileTab {
         let language = language::for_path(&path);
         self.new_tab_with(path, preview, language, window, cx)
@@ -1578,14 +1733,25 @@ impl Workspace {
         let markdown =
             (language == "markdown").then(|| cx.new(|cx| TextViewState::markdown("", cx)));
         let workspace = cx.entity().downgrade();
+        let debugger = self.debugger.downgrade();
         let editor = cx.new(|cx| {
             let mut editor = EditorState::new(window, cx)
                 .language(language)
                 .line_number(true)
                 .soft_wrap(Config::get(cx).word_wrap);
             let lsp = editor.lsp_mut();
-            lsp.completion_provider = Some(Rc::new(Completions::new(workspace, cx.entity().downgrade())));
+            lsp.completion_provider = Some(Rc::new(Completions::new(workspace.clone(), cx.entity().downgrade())));
             lsp.completion_menu.max_width = px(480.);
+            lsp.hover_provider = Some(Rc::new(debug::hover::DebugHover { debugger: debugger.clone() }));
+            editor.set_gutter_column(true, cx);
+            let this_editor = cx.entity().downgrade();
+            editor.on_gutter_click(Some(Rc::new(move |line, event: &MouseDownEvent, window, cx| {
+                if let Some(editor) = this_editor.upgrade() {
+                    workspace
+                        .update(cx, |this, cx| this.gutter_clicked(&editor, line as u32, event.button, window, cx))
+                        .ok();
+                }
+            })));
             editor
         });
         let focus_handle = editor.read(cx).focus_handle(cx);
@@ -1632,6 +1798,7 @@ impl Workspace {
             shown: 0,
             view: false,
             doc: false,
+            lines: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -1684,6 +1851,7 @@ impl Workspace {
                         tab.saved = text.clone();
                         tab.content = Content::Ready;
                         tab.restored = false;
+                        tab.lines = text.split('\n').count();
                         let focused = window.focused(cx);
                         tab.editor.update(cx, |state, cx| {
                             let cursor = state.cursor_position();
@@ -1716,6 +1884,7 @@ impl Workspace {
                             });
                         }
                         this.load_blame(path.clone(), cx);
+                        this.refresh_debug_marks(cx);
                         // Setting the text moves focus to the editor: it goes back to
                         // where it was, or where it belongs if this is the active tab.
                         let grab = this
@@ -1813,6 +1982,17 @@ impl Workspace {
         }
         if let Some(markdown) = &self.tabs[ix].markdown {
             markdown.update(cx, |view, cx| view.set_text(&text, cx));
+        }
+        // Breakpoints move with the lines they're on.
+        if self.tabs[ix].is_file() {
+            let lines = text.split('\n').count();
+            let before = std::mem::replace(&mut self.tabs[ix].lines, lines);
+            if before != 0 && lines != before {
+                let delta = lines as i64 - before as i64;
+                let cursor = editor.read(cx).cursor_position().line as i64;
+                let at = if delta > 0 { cursor - delta } else { cursor }.max(0) as u32;
+                self.debugger.update(cx, |debugger, cx| debugger.shift_breakpoints(&path, at, delta, cx));
+            }
         }
         // Editing a preview turns it into a pinned tab.
         if self.tabs[ix].preview {
@@ -2189,6 +2369,7 @@ impl Workspace {
                         }
                         this.message = None;
                         this.load_blame(path.clone(), cx);
+                        this.debugger.update(cx, |debugger, cx| debugger.file_saved(&path, cx));
                     }
                     Err(err) => {
                         this.message = Some(format!("Couldn't save: {err:#}").into());
@@ -2730,6 +2911,8 @@ impl Workspace {
                             .on_action(cx.listener(|this, _: &DuplicateLineDown, window, cx| this.edit_lines(false, true, window, cx)))
                             .child(editor)
                             .children(blame.and_then(|blame| inline_blame(&tab.editor, &blame, cx)))
+                            .children(debug_inline_values(&tab.editor, &tab.path, &self.debugger, cx))
+                            .children(breakpoint_edit_box(&tab.editor, &tab.path, &self.debugger, cx))
                             .children(
                                 self.signature
                                     .as_ref()
@@ -3009,6 +3192,21 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusPaneDown, window, cx| this.focus_pane(Direction::Down, window, cx)))
             .on_action(cx.listener(Self::toggle_terminals))
             .on_action(cx.listener(Self::maximize_terminals))
+            .on_action(cx.listener(Self::toggle_breakpoint))
+            .on_action(cx.listener(Self::run_to_cursor))
+            .on_action(cx.listener(Self::set_next_statement))
+            .on_action(cx.listener(Self::toggle_debug_panel))
+            .on_action(cx.listener(|this, _: &DebugContinue, window, cx| {
+                this.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &DebugStop, _, cx| this.debugger.update(cx, |debugger, cx| debugger.stop(cx))))
+            .on_action(cx.listener(|this, _: &DebugRestart, window, cx| {
+                this.debugger.update(cx, |debugger, cx| debugger.restart(window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &DebugPause, _, cx| this.debugger.update(cx, |debugger, cx| debugger.pause(cx))))
+            .on_action(cx.listener(|this, _: &StepOver, _, cx| this.debugger.update(cx, |debugger, cx| debugger.step_over(cx))))
+            .on_action(cx.listener(|this, _: &StepInto, _, cx| this.debugger.update(cx, |debugger, cx| debugger.step_in(cx))))
+            .on_action(cx.listener(|this, _: &StepOut, _, cx| this.debugger.update(cx, |debugger, cx| debugger.step_out(cx))))
             .relative()
             .size_full()
             .font_family(cx.theme().font_family.clone())
@@ -3025,7 +3223,7 @@ impl Render for Workspace {
                     let free = f32::from(window.bounds().size.width) - layout.tasks - layout.side;
                     (free / 2.).max(400.)
                 });
-                h_resizable("workspace-split")
+                let split = h_resizable("workspace-split")
                     .with_state(self.split.state(self.width, &[side_visible, editor_visible, terminals_visible], cx))
                     .child(
                         resizable_panel()
@@ -3056,7 +3254,27 @@ impl Render for Workspace {
                                 config.layout.terminals = Some(f32::from(*terminals));
                             }
                         });
-                    })
+                    });
+                // The debugger goes under everything, as wide as the window.
+                if self.debugger.read(cx).visible {
+                    v_resizable("workspace-debug")
+                        .child(resizable_panel().child(split))
+                        .child(
+                            resizable_panel()
+                                .size(px(layout.debug.clamp(120., 2000.)))
+                                .size_range(px(120.)..px(2000.))
+                                .child(self.debugger.clone()),
+                        )
+                        .on_resize(|state, _, cx| {
+                            if let Some(height) = state.read(cx).sizes().get(1) {
+                                let height = f32::from(*height);
+                                Config::update_quietly(cx, |config| config.layout.debug = height);
+                            }
+                        })
+                        .into_any_element()
+                } else {
+                    split.into_any_element()
+                }
             })
             .children(self.finder.as_ref().map(|(finder, _)| {
                 div()
@@ -3069,6 +3287,111 @@ impl Render for Workspace {
                     .child(finder.clone())
             }))
     }
+}
+
+/// The values of the variables of the frame stopped at, at the end of the
+/// lines of its function above where it stopped, like Visual Studio's
+/// inline values; and the exception, at the line that raised it.
+fn debug_inline_values(editor: &Entity<EditorState>, path: &Path, debugger: &Entity<Debugger>, cx: &App) -> Vec<AnyElement> {
+    let debugger = debugger.read(cx);
+    let Some((at, stop_line, _)) = debugger.execution() else {
+        return Vec::new();
+    };
+    if at != path {
+        return Vec::new();
+    }
+    let locals = debugger.frame_locals();
+    let state = editor.read(cx);
+    let Some(visible) = state.visible_row_range() else {
+        return Vec::new();
+    };
+    let text = state.text();
+    let stop_line = stop_line as usize;
+    if stop_line >= text.lines_len() {
+        return Vec::new();
+    }
+
+    // the function: up from the line stopped at to its declaration
+    let mut first = stop_line;
+    while first > 0 && stop_line - first < 200 {
+        let line = text.slice_line(first).to_string();
+        if debug::starts_function(&line) {
+            break;
+        }
+        first -= 1;
+    }
+
+    let theme = cx.theme();
+    let area = state.input_bounds();
+    let mut labels = Vec::new();
+    for row in first.max(visible.start)..=stop_line.min(visible.end.saturating_sub(1)) {
+        let line = text.slice_line(row).to_string();
+        let mut parts = Vec::new();
+        for name in debug::names_in(&line) {
+            if let Some(var) = locals.iter().find(|var| var.name == name) {
+                let mut value = var.value.clone();
+                if value.chars().count() > 60 {
+                    value = value.chars().take(60).collect::<String>() + "…";
+                }
+                parts.push(format!("{name} = {value}"));
+            }
+        }
+        let exception = (row == stop_line).then(|| debugger.exception()).flatten();
+        if parts.is_empty() && exception.is_none() {
+            continue;
+        }
+        let end = text.line_start_offset(row) + line.trim_end_matches(['\n', '\r']).len();
+        let Some(bounds) = state.range_to_bounds(&(end..end)) else {
+            continue;
+        };
+        let origin = point(bounds.origin.x + px(24.), bounds.origin.y);
+        let width = area.right() - origin.x;
+        if bounds.origin.y < area.top() || bounds.bottom() > area.bottom() || width < px(40.) {
+            continue;
+        }
+        let (text, color) = match exception {
+            Some(message) => (format!("⚠ {message}"), theme.danger),
+            None => (parts.join("   "), theme.info.opacity(0.85)),
+        };
+        labels.push(
+            anchored()
+                .position(origin)
+                .child(
+                    div()
+                        .h(bounds.size.height)
+                        .max_w(width)
+                        .flex()
+                        .items_center()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(color)
+                        .font_family(theme.mono_font_family.clone())
+                        .child(text),
+                )
+                .into_any_element(),
+        );
+    }
+    labels
+}
+
+/// The editor of a breakpoint's condition, under its line.
+fn breakpoint_edit_box(editor: &Entity<EditorState>, path: &Path, debugger: &Entity<Debugger>, cx: &App) -> Option<AnyElement> {
+    let edit = debugger.read(cx).edit.as_ref()?;
+    if edit.path != path {
+        return None;
+    }
+    let state = editor.read(cx);
+    let text = state.text();
+    let line = edit.line as usize;
+    if line >= text.lines_len() {
+        return None;
+    }
+    let start = text.line_start_offset(line);
+    let bounds = state.range_to_bounds(&(start..start))?;
+    let origin = point(state.input_bounds().left() + px(8.), bounds.bottom() + px(2.));
+    let body = debug::panel::breakpoint_editor(debugger, cx)?;
+    Some(anchored().position(origin).child(body).into_any_element())
 }
 
 /// At the end of the cursor's line, in gray: the commit that last changed it.

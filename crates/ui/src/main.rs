@@ -6,6 +6,7 @@ mod app_menu;
 mod assets;
 mod config;
 mod crash;
+mod debug;
 mod drag_drop;
 mod diff;
 mod editing;
@@ -88,6 +89,17 @@ actions!(
         OpenFolder,
         OpenRemoteFolder,
         OpenRecent,
+        DebugContinue,
+        DebugStop,
+        DebugRestart,
+        DebugPause,
+        StepOver,
+        StepInto,
+        StepOut,
+        ToggleBreakpoint,
+        RunToCursor,
+        SetNextStatement,
+        ToggleDebugPanel,
     ]
 );
 

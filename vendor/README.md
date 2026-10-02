@@ -17,6 +17,12 @@ the gutter, painted in `src/input/base/element.rs`), `target_scroll_offset`,
 and a notification when the scrollbar moves the offset, so the other side can
 follow it.
 
+Also `(sik)`, for the debugger: `set_gutter_column` reserves a column
+before the line numbers (`GUTTER_COLUMN_WIDTH` in `src/input/base/element.rs`),
+`set_gutter_marks` paints a breakpoint's dot or ring in it, `set_execution_line`
+paints the line stopped at and an arrow, and `on_gutter_click` gets a mouse
+down on the gutter instead of the cursor moving.
+
 Markdown previews use `resolve_image_source` in `src/text/text_view.rs` and
 `src/text/node.rs` to load file images through the workspace's agent, while
 keeping the default handling of HTTP and embedded data URLs. The component
