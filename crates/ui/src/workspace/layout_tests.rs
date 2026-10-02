@@ -1,66 +1,129 @@
 use super::*;
-use crate::config::PanelAt;
+use crate::config::Side;
 use core::prelude::v1::test;
 
-/// Draws a workspace with a file, the terminals and the debugger, their
-/// places as `layout` says, and returns where the code, the terminals and
-/// the debugger are.
-fn draw(cx: &mut TestAppContext, debug_at: PanelAt, terminals_at: PanelAt) -> [Bounds<Pixels>; 3] {
+/// Draws a workspace with a file, the terminals and the debugger shown,
+/// the panels where `layout` says.
+fn draw(cx: &mut TestAppContext, layout: impl FnOnce(&mut config::Layout)) -> (Entity<Workspace>, &mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         let mut config = Config::default();
-        config.layout.debug_at = debug_at;
-        config.layout.terminals_at = terminals_at;
-        config.layout.terminals = Some(400.);
+        layout(&mut config.layout);
         cx.set_global(config);
     });
-    let (_, cx) = cx.add_window_view(|window, cx| {
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::new(PathBuf::from("/layout-test"), None, true, "layout-test".into(), window, cx);
-        workspace.side_panel_visible = false;
         let mut tab = workspace.new_tab(PathBuf::from("main.ts"), false, window, cx);
         tab.content = Content::Ready;
         workspace.tabs.push(tab);
         workspace.activate(0, window, cx);
-        workspace.debugger.update(cx, |debugger, _| debugger.visible = true);
+        workspace.show_panel(Panel::Debugger, cx);
         workspace
     });
     cx.run_until_parked();
-    let code = cx.debug_bounds("editor-body-0").expect("the code is drawn");
-    let terminals = cx.debug_bounds("terminals").expect("the terminals are drawn");
-    let debugger = cx.debug_bounds("debugger").expect("the debugger is drawn");
-    [code, terminals, debugger]
+    (workspace, cx)
+}
+
+fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+    cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is drawn"))
 }
 
 #[gpui_kit::test]
-fn debugger_under_everything_and_terminals_on_the_right(cx: &mut TestAppContext) {
-    let [code, terminals, debugger] = draw(cx, PanelAt::Bottom, PanelAt::Right);
+fn files_code_with_the_debugger_under_it_and_terminals_on_the_right(cx: &mut TestAppContext) {
+    let (_, cx) = draw(cx, |_| {});
+    let files = bounds(cx, "stack-Files");
+    let code = bounds(cx, "editor-body-0");
+    let terminals = bounds(cx, "terminals");
+    let debugger = bounds(cx, "debugger");
+    assert!(files.right() <= code.left(), "{files:?} {code:?}");
     assert!(terminals.left() >= code.right(), "{terminals:?} {code:?}");
-    assert!(debugger.top() >= code.bottom() && debugger.top() >= terminals.bottom());
-    assert!(debugger.left() <= code.left() && debugger.right() >= terminals.right());
+    assert!(debugger.top() >= code.bottom(), "{debugger:?} {code:?}");
+    assert!(debugger.right() <= terminals.left(), "{debugger:?} {terminals:?}");
 }
 
 #[gpui_kit::test]
-fn debugger_under_everything_and_terminals_under_the_code(cx: &mut TestAppContext) {
-    let [code, terminals, debugger] = draw(cx, PanelAt::Bottom, PanelAt::Bottom);
+fn columns_in_any_order(cx: &mut TestAppContext) {
+    // Files, debugger, code, terminals; the changes a column of their own.
+    let (_, cx) = draw(cx, |layout| {
+        assert!(layout.move_panel(Panel::Debugger, Panel::Code, Side::Left));
+        assert!(layout.move_panel(Panel::Changes, Panel::Terminals, Side::Right));
+    });
+    let files = bounds(cx, "stack-Files");
+    let debugger = bounds(cx, "debugger");
+    let code = bounds(cx, "editor-body-0");
+    let terminals = bounds(cx, "terminals");
+    let changes = bounds(cx, "stack-Changes");
+    assert!(files.right() <= debugger.left(), "{files:?} {debugger:?}");
+    assert!(debugger.right() <= code.left(), "{debugger:?} {code:?}");
+    assert!(code.right() <= terminals.left(), "{code:?} {terminals:?}");
+    assert!(terminals.right() <= changes.left(), "{terminals:?} {changes:?}");
+}
+
+#[gpui_kit::test]
+fn dragging_the_terminals_tab_under_the_code(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let start = bounds(cx, "panel-tab-Terminals").center();
+    let code = bounds(cx, "stack-Code");
+    let end = point(code.center().x, code.bottom() - px(10.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    cx.update(|_, cx| {
+        assert!(cx.has_active_drag());
+        assert_eq!(workspace.read(cx).panel_drop, Some((Panel::Code, crate::drag_drop::DropPlacement::Bottom)));
+    });
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
+    let (column, stack) = layout.find(Panel::Terminals).unwrap();
+    assert_eq!(layout.find(Panel::Code), Some((column, stack - 1)));
+    let code = bounds(cx, "editor-body-0");
+    let terminals = bounds(cx, "terminals");
     assert!(terminals.top() >= code.bottom(), "{terminals:?} {code:?}");
-    assert_eq!((terminals.left(), terminals.right()), (code.left(), code.right()));
-    assert!(debugger.top() >= terminals.bottom());
+    assert_eq!(cx.update(|_, cx| workspace.read(cx).panel_drop), None);
 }
 
 #[gpui_kit::test]
-fn debugger_on_the_right_and_terminals_on_the_right(cx: &mut TestAppContext) {
-    let [code, terminals, debugger] = draw(cx, PanelAt::Right, PanelAt::Right);
-    assert!(terminals.left() >= code.right(), "{terminals:?} {code:?}");
-    assert!(debugger.left() >= terminals.right(), "{debugger:?} {terminals:?}");
-    assert!(debugger.top() <= code.top() && debugger.bottom() >= code.bottom());
+fn dropping_the_changes_on_the_terminals_tab_makes_them_tabs(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let start = bounds(cx, "panel-tab-Changes").center();
+    let end = bounds(cx, "panel-tab-Terminals").center();
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    // Over the tabs, the preview says it joins them, not that it goes above.
+    let drop = cx.update(|_, cx| workspace.read(cx).panel_drop);
+    assert_eq!(drop, Some((Panel::Terminals, crate::drag_drop::DropPlacement::Center)));
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
+    let (column, stack) = layout.find(Panel::Terminals).unwrap();
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Changes, Panel::Terminals]);
+    // The panel dropped shows; the terminals are a tab away.
+    cx.update(|_, cx| {
+        assert!(workspace.read(cx).is_shown(Panel::Changes, cx));
+        assert!(!workspace.read(cx).terminals_visible(cx));
+    });
+    bounds(cx, "stack-Changes");
 }
 
 #[gpui_kit::test]
-fn debugger_on_the_right_and_terminals_under_the_code(cx: &mut TestAppContext) {
-    let [code, terminals, debugger] = draw(cx, PanelAt::Right, PanelAt::Bottom);
-    assert!(terminals.top() >= code.bottom(), "{terminals:?} {code:?}");
-    assert!(debugger.left() >= code.right() && debugger.left() >= terminals.right());
-    assert!(debugger.top() <= code.top() && debugger.bottom() >= terminals.bottom());
+fn closing_a_stack_gives_its_width_to_the_code(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let before = bounds(cx, "editor-body-0");
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("terminals").is_none());
+    let after = bounds(cx, "editor-body-0");
+    assert!(after.size.width > before.size.width, "{after:?} {before:?}");
+    // Cmd-B closes the stack with the files, whichever panel it shows.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));
+    cx.dispatch_action(ToggleSidePanel);
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("stack-Search").is_none());
+    cx.dispatch_action(ToggleSidePanel);
+    cx.run_until_parked();
+    bounds(cx, "stack-Search");
 }
 
 /// Run and Debug go on the lines that declare a test, and nowhere else.
@@ -72,8 +135,8 @@ fn the_tests_get_run_and_debug(cx: &mut TestAppContext) {
     });
     let (_, cx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::new(PathBuf::from("/lens-test"), None, true, "lens-test".into(), window, cx);
-        workspace.side_panel_visible = false;
-        workspace.terminals_visible = false;
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
         let file = crate::debug::parse_launch_file(
             r#"{"configurations":[],"tests":{"match":"^export function (test\\w+)\\(","run":"run ${test}","debug":"debug ${test}"}}"#,
         )
@@ -103,8 +166,8 @@ fn typing_in_the_preview_edits_the_markdown(cx: &mut TestAppContext) {
     });
     let (workspace, cx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::new(PathBuf::from("/md-test"), None, true, "md-test".into(), window, cx);
-        workspace.side_panel_visible = false;
-        workspace.terminals_visible = false;
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
         let mut tab = workspace.new_tab(PathBuf::from("/md-test/README.md"), false, window, cx);
         tab.content = Content::Ready;
         workspace.tabs.push(tab);

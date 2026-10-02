@@ -13,9 +13,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
-use super::{ConsoleLine, Debugger, EditKind, Status, Var, child_path};
+use super::{ConsoleLine, DebugEvent, Debugger, EditKind, Status, Var, child_path};
 use crate::{
-    config::{Config, PanelAt, UiText},
+    config::UiText,
     menu,
 };
 
@@ -113,7 +113,8 @@ impl Debugger {
         rows
     }
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let leading = self.leading.as_ref().map(|leading| leading(window, cx));
         let theme = cx.theme();
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
         let active = self.status != Status::Idle;
@@ -156,6 +157,7 @@ impl Debugger {
             .flex_none()
             .border_b_1()
             .border_color(theme.border)
+            .children(leading)
             .child(
                 h_flex()
                     .id("debug-launch")
@@ -230,7 +232,7 @@ impl Debugger {
                     .text_ui_small(cx)
                     .text_color(if stopped { theme.warning } else { theme.muted_foreground })
                     .child(status)
-                    .context_menu(|menu, _, cx| menu.item(menu::move_debugger(cx))),
+                    .context_menu(|menu, _, _| menu.item(menu::reset_layout())),
             )
             .child(
                 div()
@@ -242,10 +244,7 @@ impl Debugger {
                     .rounded(theme.radius)
                     .hover(|style| style.bg(theme.secondary))
                     .child(svg().path("icons/tab-close.svg").size(px(14.)).text_color(theme.muted_foreground))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.visible = false;
-                        cx.notify();
-                    }))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DebugEvent::Hide)))
                     .tooltip(|window, cx| Tooltip::new("Hide (Cmd-Shift-Y)").build(window, cx)),
             )
             .into_any_element()
@@ -755,7 +754,7 @@ impl Debugger {
 }
 
 impl Render for Debugger {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.console.len() != self.console_seen {
             self.console_seen = self.console.len();
             self.console_scroll.scroll_to_bottom();
@@ -785,7 +784,7 @@ impl Render for Debugger {
         let watches = self.render_watches(cx);
         let console = self.render_console(cx);
         let problem = self.render_launch_problem(cx);
-        let toolbar = self.render_toolbar(cx);
+        let toolbar = self.render_toolbar(window, cx);
         let theme = cx.theme();
         let stack_and_breakpoints = v_flex()
             .size_full()
@@ -823,8 +822,7 @@ impl Render for Debugger {
                     .child(div().flex_1().min_h_0().child(console)),
             );
         // Under the code its parts are columns; as a column, they are rows.
-        let column = Config::get(cx).layout.debug_at == PanelAt::Right;
-        let parts = if column {
+        let parts = if self.tall {
             v_resizable("debug-rows")
                 .child(resizable_panel().size(px(240.)).child(stack_and_breakpoints))
                 .child(resizable_panel().child(variables))
@@ -841,8 +839,6 @@ impl Render for Debugger {
             .size_full()
             .when(cfg!(test), |el| el.debug_selector(|| "debugger".into()))
             .bg(theme.background)
-            .map(|el| if column { el.border_l_1() } else { el.border_t_1() })
-            .border_color(theme.border)
             .text_ui(cx)
             .child(toolbar)
             .children(problem)

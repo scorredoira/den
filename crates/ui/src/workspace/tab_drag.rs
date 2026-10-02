@@ -150,8 +150,8 @@ mod tests {
         // GPUI's test platform renders offscreen; it never opens a desktop window.
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::new(PathBuf::from("/tab-drag-test"), None, true, "tab-drag-test".into(), window, cx);
-            workspace.side_panel_visible = false;
-            workspace.terminals_visible = false;
+            workspace.hide_panel(Panel::Files, cx);
+            workspace.hide_panel(Panel::Terminals, cx);
             add_tab(&mut workspace, "first.rs", window, cx);
             add_tab(&mut workspace, "second.rs", window, cx);
             workspace.activate(1, window, cx);

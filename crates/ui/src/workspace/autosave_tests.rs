@@ -9,8 +9,8 @@ fn workspace(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestCont
     cx.add_window_view(|window, cx| {
         window.activate_window();
         let mut workspace = Workspace::new(PathBuf::from("/auto-save-test"), None, true, "auto-save-test".into(), window, cx);
-        workspace.side_panel_visible = false;
-        workspace.terminals_visible = false;
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
         workspace
     })
 }

@@ -1,7 +1,11 @@
 //! UI configuration: `config.json` in sik's config folder. It lives as a GPUI
 //! global and is saved on every change.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    path::PathBuf,
+};
 
 use gpui_kit::component::ResizableState;
 use gpui_kit::{App, AppContext as _, Bounds, Entity, Global, Pixels, Styled, WindowBounds, point, px, size};
@@ -16,50 +20,240 @@ pub enum ThemeChoice {
     Dark,
 }
 
-/// Panel widths, the same for every task.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+/// Where the panels go and their sizes, the same for every task.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
     pub tasks: f32,
-    pub side: f32,
-    /// When unsaved, the terminals take half of the code area.
-    pub terminals: Option<f32>,
-    /// Height of the debugger panel under the code.
-    #[serde(default = "default_debug_height")]
-    pub debug: f32,
-    /// Where the debugger goes: under everything or a column on the right.
-    pub debug_at: PanelAt,
-    /// Width of the debugger as a column.
-    pub debug_width: f32,
-    /// Where the terminals go: a column on the right or a row under the code.
-    pub terminals_at: PanelAt,
-    /// Height of the terminals as a row.
-    pub terminals_height: f32,
+    /// Left to right, after the tasks column. Missing (a config from before
+    /// the columns), it's made from the old fields below.
+    #[serde(default)]
+    pub columns: Vec<Column>,
+    // Read to carry an older layout over; never written.
+    #[serde(skip_serializing)]
+    side: Option<f32>,
+    #[serde(skip_serializing)]
+    terminals: Option<f32>,
+    #[serde(skip_serializing)]
+    debug: Option<f32>,
+    #[serde(skip_serializing)]
+    debug_at: Option<PanelAt>,
+    #[serde(skip_serializing)]
+    debug_width: Option<f32>,
+    #[serde(skip_serializing)]
+    terminals_at: Option<PanelAt>,
+    #[serde(skip_serializing)]
+    terminals_height: Option<f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PanelAt {
+enum PanelAt {
     Bottom,
     Right,
 }
 
-fn default_debug_height() -> f32 {
-    260.
+/// What can be placed in a column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Panel {
+    Files,
+    Changes,
+    Search,
+    References,
+    Code,
+    Terminals,
+    Debugger,
+}
+
+impl Panel {
+    pub const ALL: [Panel; 7] = [
+        Panel::Files,
+        Panel::Changes,
+        Panel::Search,
+        Panel::References,
+        Panel::Code,
+        Panel::Terminals,
+        Panel::Debugger,
+    ];
+}
+
+/// Panels one above the other. The one with the code takes the width left
+/// by the others.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Column {
+    /// Unset, half of the space left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+    pub stacks: Vec<Stack>,
+}
+
+/// Panels in the same place, as tabs; one shows at a time. The code is
+/// alone in its stack, which takes the height left by the others.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Stack {
+    /// Unset, half of the column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    pub panels: Vec<Panel>,
+}
+
+impl Stack {
+    fn of(panels: &[Panel]) -> Self {
+        Self { height: None, panels: panels.to_vec() }
+    }
+}
+
+impl Column {
+    fn of(width: Option<f32>, stacks: Vec<Stack>) -> Self {
+        Self { width, stacks }
+    }
+}
+
+/// Where a dragged panel goes, next to the stack it is dropped on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// One more tab, before that one (or the last).
+    Tab(Option<Panel>),
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 impl Default for Layout {
     fn default() -> Self {
-        Self {
+        let mut layout = Self {
             tasks: 240.,
-            side: 260.,
+            columns: Vec::new(),
+            side: None,
             terminals: None,
-            debug: default_debug_height(),
-            debug_at: PanelAt::Bottom,
-            debug_width: 420.,
-            terminals_at: PanelAt::Right,
-            terminals_height: 280.,
+            debug: None,
+            debug_at: None,
+            debug_width: None,
+            terminals_at: None,
+            terminals_height: None,
+        };
+        layout.carry_over();
+        layout
+    }
+}
+
+impl Layout {
+    /// The columns as the fields before them said (or the defaults), and
+    /// every panel exactly once.
+    fn carry_over(&mut self) {
+        if self.columns.is_empty() {
+            let mut code = vec![Stack::of(&[Panel::Code])];
+            let mut columns = vec![Column::of(
+                Some(self.side.unwrap_or(260.)),
+                vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::Search, Panel::References])],
+            )];
+            if self.terminals_at == Some(PanelAt::Bottom) {
+                code.push(Stack { height: Some(self.terminals_height.unwrap_or(280.)), panels: vec![Panel::Terminals] });
+            }
+            if self.debug_at != Some(PanelAt::Right) {
+                code.push(Stack { height: Some(self.debug.unwrap_or(260.)), panels: vec![Panel::Debugger] });
+            }
+            columns.push(Column::of(None, code));
+            if self.terminals_at != Some(PanelAt::Bottom) {
+                columns.push(Column::of(self.terminals, vec![Stack::of(&[Panel::Terminals])]));
+            }
+            if self.debug_at == Some(PanelAt::Right) {
+                columns.push(Column::of(Some(self.debug_width.unwrap_or(420.)), vec![Stack::of(&[Panel::Debugger])]));
+            }
+            self.columns = columns;
         }
+        self.repair();
+    }
+
+    /// Mends a layout edited by hand: each panel once, the code alone in
+    /// its stack, nothing empty.
+    fn repair(&mut self) {
+        let mut seen = Vec::new();
+        for column in &mut self.columns {
+            let mut stacks = Vec::new();
+            for mut stack in column.stacks.drain(..) {
+                stack.panels.retain(|panel| {
+                    let new = !seen.contains(panel);
+                    seen.push(*panel);
+                    new
+                });
+                if stack.panels.len() > 1 && stack.panels.contains(&Panel::Code) {
+                    stack.panels.retain(|panel| *panel != Panel::Code);
+                    stacks.push(Stack::of(&[Panel::Code]));
+                }
+                stacks.push(stack);
+            }
+            column.stacks = stacks;
+        }
+        self.prune();
+        if !seen.contains(&Panel::Code) {
+            self.columns = Self::default().columns;
+            return;
+        }
+        for panel in Panel::ALL.into_iter().filter(|panel| !seen.contains(panel)) {
+            let stack = self.columns.iter_mut().flat_map(|column| &mut column.stacks).find(|stack| stack.panels[0] != Panel::Code);
+            match stack {
+                Some(stack) => stack.panels.push(panel),
+                None => self.columns.push(Column::of(None, vec![Stack::of(&[panel])])),
+            }
+        }
+    }
+
+    fn prune(&mut self) {
+        for column in &mut self.columns {
+            column.stacks.retain(|stack| !stack.panels.is_empty());
+        }
+        self.columns.retain(|column| !column.stacks.is_empty());
+    }
+
+    /// The column and the stack in it where `panel` is.
+    pub fn find(&self, panel: Panel) -> Option<(usize, usize)> {
+        self.columns.iter().enumerate().find_map(|(column, col)| {
+            col.stacks.iter().position(|stack| stack.panels.contains(&panel)).map(|stack| (column, stack))
+        })
+    }
+
+    /// Moves `panel` to `side` of the stack with `anchor` (which can be
+    /// `panel`'s own); false if that is where it already was or can't go.
+    pub fn move_panel(&mut self, panel: Panel, anchor: Panel, side: Side) -> bool {
+        let Some((column, stack)) = self.find(anchor).filter(|_| panel != Panel::Code && side != Side::Tab(Some(panel))) else {
+            return false;
+        };
+        // Something that stays where the panel goes, to find the place again
+        // once the panel is taken out.
+        let stays = match side {
+            Side::Left | Side::Right => self.columns[column].stacks.iter().flat_map(|stack| &stack.panels).copied().find(|p| *p != panel),
+            _ => self.columns[column].stacks[stack].panels.iter().copied().find(|p| *p != panel),
+        };
+        let Some(stays) = stays else {
+            return false;
+        };
+        if matches!(side, Side::Tab(_)) && stays == Panel::Code {
+            return false;
+        }
+        let before = self.clone();
+        let (from_column, from_stack) = self.find(panel).expect("every panel is placed");
+        self.columns[from_column].stacks[from_stack].panels.retain(|p| *p != panel);
+        self.prune();
+        let (column, stack) = self.find(stays).expect("it stays");
+        match side {
+            Side::Tab(tab) => {
+                let panels = &mut self.columns[column].stacks[stack].panels;
+                let at = tab.and_then(|tab| panels.iter().position(|p| *p == tab)).unwrap_or(panels.len());
+                panels.insert(at, panel);
+            }
+            Side::Top | Side::Bottom => {
+                let at = stack + usize::from(side == Side::Bottom);
+                self.columns[column].stacks.insert(at, Stack::of(&[panel]));
+            }
+            Side::Left | Side::Right => {
+                let at = column + usize::from(side == Side::Right);
+                self.columns.insert(at, Column::of(None, vec![Stack::of(&[panel])]));
+            }
+        }
+        *self != before
     }
 }
 
@@ -304,7 +498,11 @@ impl Config {
     pub fn load() -> Self {
         Self::path()
             .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
+            .map(|mut config| {
+                config.layout.carry_over();
+                config
+            })
             .unwrap_or_default()
     }
 
@@ -373,7 +571,7 @@ pub fn width(saved: f32, min: f32, max: f32) -> Pixels {
 pub struct Split {
     state: Entity<ResizableState>,
     width: Option<Pixels>,
-    visible: Vec<bool>,
+    key: Option<u64>,
 }
 
 impl Split {
@@ -381,21 +579,24 @@ impl Split {
         Self {
             state: cx.new(|_| ResizableState::default()),
             width: None,
-            visible: Vec::new(),
+            key: None,
         }
     }
 
     /// The state for painting the row in a space of `width`, with the
-    /// panels `visible`; if either changed, it starts again from the saved
-    /// sizes. A hidden panel keeps the size it was last painted at, and
-    /// dragging would count it as taken: the dragged panel jumps back to
-    /// its minimum with every move.
-    pub fn state(&mut self, width: Pixels, visible: &[bool], cx: &mut App) -> &Entity<ResizableState> {
-        if self.width.is_some_and(|last| last != width) || (!self.visible.is_empty() && self.visible != visible) {
+    /// panels `key` says (which are visible, in which order); if either
+    /// changed, it starts again from the saved sizes. A hidden panel keeps
+    /// the size it was last painted at, and dragging would count it as
+    /// taken: the dragged panel jumps back to its minimum with every move.
+    pub fn state(&mut self, width: Pixels, key: impl Hash, cx: &mut App) -> &Entity<ResizableState> {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let key = hasher.finish();
+        if self.width.is_some_and(|last| last != width) || self.key.is_some_and(|last| last != key) {
             self.state.update(cx, |state, _| state.clear());
         }
         self.width = Some(width);
-        self.visible = visible.to_vec();
+        self.key = Some(key);
         &self.state
     }
 }
@@ -416,7 +617,7 @@ mod split_tests {
 
     impl Render for Row {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let state = self.split.state(px(1000.), &[true, true, self.terminals], cx).clone();
+            let state = self.split.state(px(1000.), [true, true, self.terminals], cx).clone();
             div().w(px(1000.)).h(px(100.)).child(
                 h_resizable("row")
                     .with_state(&state)
@@ -453,7 +654,7 @@ mod split_tests {
             window.draw(cx).clear(cx);
             window.draw(cx).clear(cx);
         });
-        let state = view.update(cx, |view, cx| view.split.state(px(1000.), &[true, true, false], cx).clone());
+        let state = view.update(cx, |view, cx| view.split.state(px(1000.), [true, true, false], cx).clone());
         for width in [260., 300., 340.] {
             cx.update(|window, cx| state.update(cx, |state, cx| state.resize_panel(0, px(width), window, cx)));
             cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -469,7 +670,87 @@ mod split_tests {
             window.draw(cx).clear(cx);
             window.draw(cx).clear(cx);
         });
-        let state = view.update(cx, |view, cx| view.split.state(px(1000.), &[true, true, true], cx).clone());
+        let state = view.update(cx, |view, cx| view.split.state(px(1000.), [true, true, true], cx).clone());
         assert_eq!(state.read_with(cx, |state, _| state.sizes()[2]), px(300.));
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{Layout, Panel, Side};
+    use core::prelude::v1::test;
+
+    fn places(layout: &Layout) -> Vec<Vec<Vec<Panel>>> {
+        layout.columns.iter().map(|column| column.stacks.iter().map(|stack| stack.panels.clone()).collect()).collect()
+    }
+
+    use Panel::*;
+
+    #[test]
+    fn an_older_layout_carries_over() {
+        let old = r#"{"tasks": 200, "side": 300, "terminals": 500, "debug_at": "right", "debug_width": 380, "terminals_at": "bottom", "terminals_height": 220}"#;
+        let mut layout: Layout = serde_json::from_str(old).unwrap();
+        layout.carry_over();
+        assert_eq!(places(&layout), [vec![vec![Files, Changes, Search, References]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]]]);
+        assert_eq!(layout.columns[0].width, Some(300.));
+        assert_eq!(layout.columns[1].stacks[1].height, Some(220.));
+        assert_eq!(layout.columns[2].width, Some(380.));
+        // Written again, only the columns are.
+        let written = serde_json::to_string(&layout).unwrap();
+        assert!(!written.contains("terminals_at"), "{written}");
+        let mut again: Layout = serde_json::from_str(&written).unwrap();
+        again.carry_over();
+        assert_eq!(places(&again), places(&layout));
+    }
+
+    #[test]
+    fn a_layout_edited_by_hand_is_mended() {
+        let edited = r#"{"columns": [{"stacks": [{"panels": ["files", "code", "files"]}]}, {"stacks": []}]}"#;
+        let mut layout: Layout = serde_json::from_str(edited).unwrap();
+        layout.carry_over();
+        assert_eq!(places(&layout), [vec![vec![Code], vec![Files, Changes, Search, References, Terminals, Debugger]]]);
+        let mut layout: Layout = serde_json::from_str(r#"{"columns": [{"stacks": [{"panels": ["files"]}]}]}"#).unwrap();
+        layout.carry_over();
+        assert!(layout == Layout::default(), "without the code, it starts again");
+    }
+
+    #[test]
+    fn moving_panels() {
+        let mut layout = Layout::default();
+        assert_eq!(places(&layout), [vec![vec![Files, Changes, Search, References]], vec![vec![Code], vec![Debugger]], vec![vec![Terminals]]]);
+        // The changes, a column of their own after the files.
+        assert!(layout.move_panel(Changes, Files, Side::Right));
+        assert_eq!(places(&layout)[1], [vec![Changes]]);
+        // Back as a tab, before the search.
+        assert!(layout.move_panel(Changes, Search, Side::Tab(Some(Search))));
+        assert_eq!(places(&layout)[0], [vec![Files, Changes, Search, References]]);
+        assert_eq!(layout.columns.len(), 3, "the empty column goes");
+        // Under the files, in their column.
+        assert!(layout.move_panel(References, Files, Side::Bottom));
+        assert_eq!(places(&layout)[0], [vec![Files, Changes, Search], vec![References]]);
+        // The terminals left of everything: the debugger keeps its place.
+        assert!(layout.move_panel(Terminals, Files, Side::Left));
+        assert_eq!(places(&layout)[0], [vec![Terminals]]);
+        assert_eq!(places(&layout)[2], [vec![Code], vec![Debugger]]);
+    }
+
+    #[test]
+    fn moves_that_change_nothing() {
+        let mut layout = Layout::default();
+        let before = places(&layout);
+        // The code doesn't move, and takes no tabs.
+        assert!(!layout.move_panel(Code, Terminals, Side::Left));
+        assert!(!layout.move_panel(Terminals, Code, Side::Tab(None)));
+        // Alone in its column, beside itself or on itself.
+        assert!(!layout.move_panel(Terminals, Terminals, Side::Left));
+        assert!(!layout.move_panel(Terminals, Terminals, Side::Top));
+        assert!(!layout.move_panel(Terminals, Terminals, Side::Tab(None)));
+        // On its own tab, or as the last tab when it is.
+        assert!(!layout.move_panel(Changes, Changes, Side::Tab(Some(Changes))));
+        assert!(!layout.move_panel(References, Files, Side::Tab(None)));
+        assert_eq!(places(&layout), before);
+        // Next to its own stack, with others in it, it does move.
+        assert!(layout.move_panel(Changes, Changes, Side::Bottom));
+        assert_eq!(places(&layout)[0], [vec![Files, Search, References], vec![Changes]]);
     }
 }

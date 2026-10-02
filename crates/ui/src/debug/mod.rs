@@ -154,6 +154,10 @@ pub enum DebugEvent {
     Interrupt { term: TermId },
     /// The breakpoint editor closed: the keys go back to the code.
     Refocus,
+    /// Show the panel (it started or stopped somewhere).
+    Reveal,
+    /// Its close button.
+    Hide,
 }
 
 type Reply = Box<dyn FnOnce(&mut Debugger, Result<Map<String, Value>, String>, &mut Context<Debugger>)>;
@@ -288,8 +292,10 @@ pub struct Debugger {
     history_at: Option<usize>,
     value_edit: Option<ValueEdit>,
     pub edit: Option<BreakpointEdit>,
-    /// The panel is shown.
-    pub visible: bool,
+    /// Its column is narrow and tall: its parts go one above the other.
+    pub tall: bool,
+    /// Drawn first in the toolbar: the tabs of the place it is in.
+    pub leading: Option<crate::workspace::Leading>,
     /// The value shown by hovering its name in the code.
     pub hover: Option<HoverValue>,
     _subscriptions: Vec<Subscription>,
@@ -358,7 +364,8 @@ impl Debugger {
             history_at: None,
             value_edit: None,
             edit: None,
-            visible: false,
+            tall: false,
+            leading: None,
             hover: None,
             tests: None,
             _subscriptions: subscriptions,
@@ -452,7 +459,7 @@ impl Debugger {
             self.info("No agent: can't debug".into(), cx);
             return;
         };
-        self.visible = true;
+        cx.emit(DebugEvent::Reveal);
         self.status = Status::Connecting("Reading the launch configuration…".into());
         self.generation += 1;
         let generation = self.generation;
@@ -496,7 +503,7 @@ impl Debugger {
 
     /// Debugs `command`, which listens on `port`: a test, from the code.
     pub fn launch_command(&mut self, command: String, port: u16, window: &mut Window, cx: &mut Context<Self>) {
-        self.visible = true;
+        cx.emit(DebugEvent::Reveal);
         if self.status != Status::Idle {
             self.info("A program is being debugged: stop it first (Shift-F5)".into(), cx);
             return;
@@ -818,7 +825,7 @@ impl Debugger {
         self.hover = None;
         self.loading.clear();
         self.value_edit = None;
-        self.visible = true;
+        cx.emit(DebugEvent::Reveal);
         self.refetch();
         self.evaluate_watches(cx);
         if let Some((path, line)) = show {

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for};
 
 use crate::{
-    config::{Config, PanelAt, UiText},
+    config::UiText,
     CloseTab, NewTerminal, SplitDown, SplitRight, agent, menu,
     splits::{Axis, Direction, Tree},
 };
@@ -72,6 +72,8 @@ pub struct TerminalArea {
     /// Size of the terminal area at the last paint, so each shell is created
     /// at its final size (otherwise it redraws the prompt when resized).
     body_size: Rc<Cell<Option<Size<Pixels>>>>,
+    /// Drawn first in the tab bar: the tabs of the place it is in.
+    pub leading: Option<crate::workspace::Leading>,
     /// Terminals on this machine (not on a server).
     local: bool,
     /// For right-click menus.
@@ -94,6 +96,7 @@ impl TerminalArea {
             terminal_drop: None,
             drag_origin: None,
             body_size: Rc::default(),
+            leading: None,
             local,
             weak: cx.entity().downgrade(),
             _subscriptions: Vec::new(),
@@ -572,7 +575,8 @@ impl TerminalArea {
         }
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let leading = self.leading.as_ref().map(|leading| leading(window, cx));
         let theme = cx.theme();
         h_flex()
             .id("terminal-tabs")
@@ -583,6 +587,7 @@ impl TerminalArea {
             .border_color(theme.border)
             .overflow_x_scroll()
             .on_drop(cx.listener(|this, drag: &TerminalDrag, window, cx| this.drop_on_bar(drag, None, window, cx)))
+            .children(leading)
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
                 let active = ix == self.active;
                 let title = self
@@ -620,7 +625,7 @@ impl TerminalArea {
                     .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
                     .context_menu({
                         let area = self.weak.clone();
-                        move |menu, _, cx| {
+                        move |menu, _, _| {
                             menu.item(
                                 menu::item("New Terminal", &area, |this, window, cx| this.new_terminal(window, cx))
                                     .action(Box::new(NewTerminal)),
@@ -644,7 +649,7 @@ impl TerminalArea {
                                     this.close_tab(ix, window, cx)
                                 }))
                                 .separator()
-                                .item(menu::move_terminals(cx))
+                                .item(menu::reset_layout())
                         }
                     })
             }))
@@ -668,7 +673,7 @@ impl TerminalArea {
                     .min_w(px(24.))
                     .when(cfg!(test), |el| el.debug_selector(|| "terminal-tab-end".into()))
                     .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
-                    .context_menu(|menu, _, cx| menu.item(menu::move_terminals(cx))),
+                    .context_menu(|menu, _, _| menu.item(menu::reset_layout())),
             )
     }
 
@@ -784,12 +789,7 @@ impl Render for TerminalArea {
             .size_full()
             .when(cfg!(test), |el| el.debug_selector(|| "terminals".into()))
             .bg(theme.background)
-            .map(|el| match Config::get(cx).layout.terminals_at {
-                PanelAt::Right => el.border_l_1(),
-                PanelAt::Bottom => el.border_t_1(),
-            })
-            .border_color(theme.border)
-            .child(self.render_tab_bar(cx))
+            .child(self.render_tab_bar(window, cx))
             .child(
                 div()
                     .relative()

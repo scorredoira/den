@@ -85,6 +85,10 @@ Cmd-1…9 go to a workspace, Cmd-E back to the previous one, Cmd-K finds one acr
 
 Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
 
+## Layout
+
+Files, Changes, Search, References, the terminals and the debugger each have a tab (an icon at the start of their bar). Drag one onto another tab to put them together, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code stays where it is and takes the space the others leave, but anything can go around it. Cmd-B shows or hides the place with the files. Right-click the title next to the tabs to hide that place; Reset Layout, in that menu and in the terminals' and the debugger's, puts everything back. The places are the same for every workspace.
+
 ## Debugging
 
 A workspace says how to start its program in `.sik/debug.json`:

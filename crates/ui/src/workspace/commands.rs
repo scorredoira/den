@@ -23,8 +23,7 @@ impl Workspace {
     /// `sik diff`: the Changes panel and, for `file` (relative to the root),
     /// its uncommitted changes.
     pub fn show_changes(&mut self, file: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_mode(Mode::Changes, cx);
-        self.side_panel_visible = true;
+        self.show_panel(Panel::Changes, cx);
         if let Some(file) = file {
             self.terminals_maximized = false;
             self.open_diff(DiffOf { file, commit: None, source: false }, true, window, cx);
@@ -102,8 +101,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Option<proto::TermId>> {
-        self.terminals_visible = true;
-        cx.notify();
+        self.show_panel(Panel::Terminals, cx);
         self.terminals
             .update(cx, |terminals, cx| terminals.open_for_command(beside, split, line, focus, window, cx))
     }
@@ -112,8 +110,7 @@ impl Workspace {
     pub fn focus_terminal(&mut self, term: proto::TermId, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let found = self.terminals.update(cx, |terminals, cx| terminals.focus_term(term, window, cx));
         if found {
-            self.terminals_visible = true;
-            cx.notify();
+            self.show_panel(Panel::Terminals, cx);
         }
         found
     }

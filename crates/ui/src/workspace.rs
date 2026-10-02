@@ -30,7 +30,7 @@ use crate::{
     commit_view::{CommitView, CommitViewEvent},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
-    config::{self, Config, PanelAt, SavedTab, Session, TextArea, UiText},
+    config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, Debugger, EditKind},
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
     ToggleBreakpoint, ToggleDebugPanel,
@@ -45,6 +45,7 @@ use crate::{
 };
 
 mod tab_drag;
+mod layout;
 mod markdown_images;
 mod commands;
 #[cfg(test)]
@@ -52,37 +53,8 @@ mod autosave_tests;
 #[cfg(test)]
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Files,
-    Changes,
-    Search,
-    References,
-}
-
-impl Mode {
-    const ALL: [Mode; 4] = [Mode::Files, Mode::Changes, Mode::Search, Mode::References];
-
-    fn icon(self) -> &'static str {
-        match self {
-            Mode::Files => "icons/files.svg",
-            Mode::Changes => "icons/git-branch.svg",
-            Mode::Search => "icons/text-search.svg",
-            Mode::References => "icons/references.svg",
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            Mode::Files => "Files",
-            Mode::Changes => "Changes",
-            Mode::Search => "Search",
-            Mode::References => "References",
-        }
-    }
-
-}
+use layout::Panels;
+pub(crate) use layout::Leading;
 
 enum Content {
     Loading,
@@ -234,14 +206,17 @@ pub struct Workspace {
     /// Last session's tabs were already reopened (nothing is saved before that).
     restored: bool,
     focus_handle: FocusHandle,
-    mode: Mode,
-    side_panel_visible: bool,
+    /// Which panel each stack shows, and the stacks closed.
+    panels: Panels,
+    /// Preview of a panel's drop: next to the stack showing that panel.
+    panel_drop: Option<(Panel, crate::drag_drop::DropPlacement)>,
     file_tree: Entity<FileTree>,
     terminals: Entity<TerminalArea>,
-    terminals_visible: bool,
     terminals_maximized: bool,
-    /// Side panel, code and terminals.
+    /// The columns.
     split: config::Split,
+    /// The stacks of each column.
+    column_splits: Vec<config::Split>,
     width: Pixels,
     /// The checked-out branch, from the workspaces list (see `set_branch`).
     branch: Option<String>,
@@ -401,13 +376,13 @@ impl Workspace {
             session_key,
             restored: false,
             focus_handle,
-            mode: Mode::Files,
-            side_panel_visible: true,
+            panels: Panels::new(),
+            panel_drop: None,
             file_tree,
             terminals,
-            terminals_visible: true,
             terminals_maximized: false,
             split: config::Split::new(cx),
+            column_splits: Vec::new(),
             width: px(0.),
             branch: None,
             client: agent,
@@ -670,7 +645,7 @@ impl Workspace {
         Self::watch_fs(&self.root, &client, window, cx);
         self.file_tree
             .update(cx, |tree, cx| tree.set_client(client.clone(), cx));
-        let changes_visible = self.side_panel_visible && self.mode == Mode::Changes;
+        let changes_visible = self.is_shown(Panel::Changes, cx);
         self.changes
             .update(cx, |changes, cx| changes.set_client(client.clone(), changes_visible, cx));
         self.search.update(cx, |search, _| search.set_client(client.clone()));
@@ -1461,21 +1436,20 @@ impl Workspace {
     }
 
     fn step_result(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let panel = if self.mode == Mode::References { &self.references } else { &self.search };
+        let references = self.panels.stamp(Panel::References) > self.panels.stamp(Panel::Search);
+        let panel = if references { &self.references } else { &self.search };
         panel.update(cx, |panel, cx| panel.step(delta, cx));
     }
 
     /// Shows the References panel without moving focus.
     fn show_references(&mut self, cx: &mut Context<Self>) {
-        self.side_panel_visible = true;
         self.terminals_maximized = false;
-        self.set_mode(Mode::References, cx);
+        self.show_panel(Panel::References, cx);
     }
 
     /// Cmd-Shift-F: the search panel, with the editor's selection.
     fn show_search(&mut self, _: &ShowSearch, window: &mut Window, cx: &mut Context<Self>) {
-        self.mode = Mode::Search;
-        self.side_panel_visible = true;
+        self.show_panel(Panel::Search, cx);
         let selection = self
             .active
             .map(|ix| self.tabs[ix].editor.read(cx).selected_text().to_string())
@@ -1490,14 +1464,14 @@ impl Workspace {
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        self.terminals_visible = true;
+        self.show_panel(Panel::Terminals, cx);
         self.terminals
             .update(cx, |terminals, cx| terminals.new_terminal(window, cx));
         cx.notify();
     }
 
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
-        self.terminals_visible = true;
+        self.show_panel(Panel::Terminals, cx);
         self.terminals
             .update(cx, |terminals, cx| terminals.split(axis, window, cx));
         cx.notify();
@@ -1515,23 +1489,22 @@ impl Workspace {
     /// them and focus returns to the IDE.
     fn toggle_terminals(&mut self, _: &ToggleTerminals, window: &mut Window, cx: &mut Context<Self>) {
         let focused = self.terminals.read(cx).contains_focus(window, cx);
-        self.set_terminals_visible(!(self.terminals_visible && focused), window, cx);
+        self.set_terminals_visible(!(self.is_shown(Panel::Terminals, cx) && focused), window, cx);
     }
 
-    pub fn terminals_visible(&self) -> bool {
-        self.terminals_visible
+    pub fn terminals_visible(&self, cx: &App) -> bool {
+        self.is_shown(Panel::Terminals, cx)
     }
 
     /// Shows the terminals and focuses them, or hides them and focus returns to
     /// the IDE. The title bar's button, which ignores where the focus is.
     pub fn set_terminals_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         if visible {
-            self.terminals_visible = true;
+            self.show_panel(Panel::Terminals, cx);
             self.terminals
                 .update(cx, |terminals, cx| terminals.focus(window, cx));
         } else {
-            self.terminals_visible = false;
-            self.terminals_maximized = false;
+            self.hide_panel(Panel::Terminals, cx);
             self.focus_ide(window, cx);
         }
         cx.notify();
@@ -1540,7 +1513,7 @@ impl Workspace {
     fn maximize_terminals(&mut self, _: &MaximizeTerminals, window: &mut Window, cx: &mut Context<Self>) {
         self.terminals_maximized = !self.terminals_maximized;
         if self.terminals_maximized {
-            self.terminals_visible = true;
+            self.show_panel(Panel::Terminals, cx);
             self.terminals
                 .update(cx, |terminals, cx| terminals.focus(window, cx));
         }
@@ -1577,7 +1550,7 @@ impl Workspace {
 
     /// Focus on entering the task: the terminal if there is one, otherwise the IDE.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.terminals_visible && !self.terminals.read(cx).is_empty() {
+        if self.is_shown(Panel::Terminals, cx) && !self.terminals.read(cx).is_empty() {
             self.terminals.update(cx, |terminals, cx| terminals.focus(window, cx));
         } else {
             self.focus_ide(window, cx);
@@ -1621,7 +1594,7 @@ impl Workspace {
                         return;
                     }
                 };
-                self.terminals_visible = true;
+                self.show_panel(Panel::Terminals, cx);
                 let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line, window, cx));
                 let debugger = debugger.downgrade();
                 cx.spawn(async move |_, cx| {
@@ -1635,6 +1608,12 @@ impl Workspace {
                 self.terminals.update(cx, |terminals, cx| terminals.interrupt(*term, cx));
             }
             DebugEvent::Refocus => self.focus_active(window, cx),
+            DebugEvent::Reveal => {
+                if !self.is_shown(Panel::Debugger, cx) {
+                    self.show_panel(Panel::Debugger, cx);
+                }
+            }
+            DebugEvent::Hide => self.hide_panel(Panel::Debugger, cx),
         }
     }
 
@@ -1738,13 +1717,7 @@ impl Workspace {
     }
 
     fn toggle_debug_panel(&mut self, _: &ToggleDebugPanel, _: &mut Window, cx: &mut Context<Self>) {
-        self.debugger.update(cx, |debugger, cx| {
-            debugger.visible = !debugger.visible;
-            if debugger.visible {
-                debugger.refresh_launches(cx);
-            }
-            cx.notify();
-        });
+        self.toggle_panel(Panel::Debugger, cx);
     }
 
     fn new_tab(&mut self, path: PathBuf, preview: bool, window: &mut Window, cx: &mut Context<Self>) -> FileTab {
@@ -1972,7 +1945,7 @@ impl Workspace {
         }
         self.file_tree
             .update(cx, |tree, cx| tree.invalidate(&paths, cx));
-        let changes_visible = self.side_panel_visible && self.mode == Mode::Changes;
+        let changes_visible = self.is_shown(Panel::Changes, cx);
         self.changes
             .update(cx, |changes, cx| changes.mark_stale(changes_visible, cx));
         let reload: Vec<PathBuf> = self
@@ -2252,8 +2225,7 @@ impl Workspace {
     }
 
     fn reveal_in_tree(&mut self, path: &Path, cx: &mut Context<Self>) {
-        self.side_panel_visible = true;
-        self.set_mode(Mode::Files, cx);
+        self.show_panel(Panel::Files, cx);
         self.file_tree.update(cx, |tree, cx| tree.reveal(path, cx));
     }
 
@@ -2445,8 +2417,7 @@ impl Workspace {
             self.terminals
                 .update(cx, |terminals, cx| terminals.close_focused(window, cx));
             if self.terminals.read(cx).is_empty() {
-                self.terminals_visible = false;
-                self.terminals_maximized = false;
+                self.hide_panel(Panel::Terminals, cx);
                 self.focus_ide(window, cx);
             }
             return;
@@ -2565,21 +2536,6 @@ impl Workspace {
         }
     }
 
-    fn toggle_side_panel(&mut self, _: &ToggleSidePanel, _: &mut Window, cx: &mut Context<Self>) {
-        self.side_panel_visible = !self.side_panel_visible;
-        cx.notify();
-    }
-
-    /// The same key that shows a mode hides it; focus doesn't move.
-    fn show_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
-        if self.side_panel_visible && self.mode == mode {
-            self.side_panel_visible = false;
-        } else {
-            self.set_mode(mode, cx);
-            self.side_panel_visible = true;
-        }
-        cx.notify();
-    }
 
     /// The Changes panel with the commits that changed `path`.
     fn show_history(&mut self, path: &Path, dir: bool, cx: &mut Context<Self>) {
@@ -2587,59 +2543,9 @@ impl Workspace {
             return;
         };
         let file = relative.to_string_lossy().into_owned();
-        self.mode = Mode::Changes;
-        self.side_panel_visible = true;
+        self.show_panel(Panel::Changes, cx);
         self.changes.update(cx, |changes, cx| changes.show_history(Some((file, dir)), cx));
         cx.notify();
-    }
-
-    fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
-        self.mode = mode;
-        if mode == Mode::Changes {
-            self.changes.update(cx, |changes, cx| changes.shown(cx));
-        }
-        cx.notify();
-    }
-
-    fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Modes are icon tabs in the panel's own header: no separate bar,
-        // and one click (or shortcut) away.
-        let tabs: Vec<AnyElement> = Mode::ALL
-            .into_iter()
-            .map(|mode| {
-                mode_button(("mode", mode as usize), mode.icon(), self.mode == mode, cx)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_mode(mode, cx)))
-                    .into_any_element()
-            })
-            .collect();
-        let theme = cx.theme();
-        v_flex()
-            .size_full()
-            .bg(theme.sidebar)
-            .child(
-                h_flex()
-                    .h(px(34.))
-                    .flex_none()
-                    .px_2()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(theme.sidebar_border)
-                    .children(tabs)
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .pr_1()
-                            .text_ui_small(cx)
-                            .text_color(theme.muted_foreground)
-                            .child(self.mode.title()),
-                    ),
-            )
-            .child(match self.mode {
-                Mode::Changes => div().flex_1().min_h_0().child(self.changes.clone()),
-                Mode::Search => div().flex_1().min_h_0().child(self.search.clone()),
-                Mode::References => div().flex_1().min_h_0().child(self.references.clone()),
-                Mode::Files => div().flex_1().min_h_0().child(self.file_tree.clone()),
-            })
     }
 
     fn render_tab_bar(&self, group: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3215,6 +3121,7 @@ impl Render for Workspace {
         self.apply_word_wrap(window, cx);
         if !cx.has_active_drag() {
             self.editor_drop = None;
+            self.panel_drop = None;
         }
         h_flex()
             .id("workspace")
@@ -3223,6 +3130,7 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && cx.stop_active_drag(window) {
                     this.editor_drop = None;
+                    this.panel_drop = None;
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -3237,8 +3145,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::prev_tab))
             .on_action(cx.listener(Self::toggle_side_panel))
-            .on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.show_mode(Mode::Files, cx)))
-            .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show_mode(Mode::Changes, cx)))
+            .on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.toggle_panel(Panel::Files, cx)))
+            .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.toggle_panel(Panel::Changes, cx)))
             .on_action(cx.listener(Self::show_search))
             .on_action(cx.listener(Self::open_file_finder))
             // F4 steps through the visible panel's results: References or Search.
@@ -3250,7 +3158,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NavigateForward, window, cx| this.navigate(false, window, cx)))
             .on_action(cx.listener(Self::find_references))
             .on_action(
-                cx.listener(|this, _: &ShowReferences, _, cx| this.show_mode(Mode::References, cx)),
+                cx.listener(|this, _: &ShowReferences, _, cx| this.toggle_panel(Panel::References, cx)),
             )
             .on_action(cx.listener(Self::toggle_markdown_source))
             .on_action(cx.listener(Self::open_preview_to_side))
@@ -3287,106 +3195,7 @@ impl Render for Workspace {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .text_color(cx.theme().foreground)
-            .child({
-                let layout = Config::get(cx).layout;
-                let side_visible = self.side_panel_visible && !self.terminals_maximized;
-                let editor_visible = !self.terminals_maximized;
-                let terminals_visible = self.terminals_visible;
-                let terminals_right = layout.terminals_at == PanelAt::Right;
-                let debug_visible = self.debugger.read(cx).visible;
-                let debug_right = debug_visible && layout.debug_at == PanelAt::Right;
-                // With no saved size, the terminals take half the space left
-                // by the tasks column and the side panel.
-                let terminals = layout.terminals.unwrap_or_else(|| {
-                    let free = f32::from(window.bounds().size.width) - layout.tasks - layout.side;
-                    (free / 2.).max(400.)
-                });
-                // The code, with the terminals under it when they are a row.
-                let center = if terminals_right {
-                    self.render_editor_area(cx).into_any_element()
-                } else if !editor_visible {
-                    self.terminals.clone().into_any_element()
-                } else if terminals_visible {
-                    v_resizable("code-terminals")
-                        .child(resizable_panel().child(self.render_editor_area(cx)))
-                        .child(
-                            resizable_panel()
-                                .size(px(layout.terminals_height.clamp(120., 2000.)))
-                                .size_range(px(120.)..px(2000.))
-                                .child(self.terminals.clone()),
-                        )
-                        .on_resize(|state, _, cx| {
-                            if let Some(height) = state.read(cx).sizes().get(1) {
-                                let height = f32::from(*height);
-                                Config::update_quietly(cx, |config| config.layout.terminals_height = height);
-                            }
-                        })
-                        .into_any_element()
-                } else {
-                    self.render_editor_area(cx).into_any_element()
-                };
-                let center_visible = editor_visible || !terminals_right;
-                let terminals_column = terminals_right && terminals_visible;
-                let visible = [side_visible, center_visible, terminals_column, debug_right];
-                let split = h_resizable("workspace-split")
-                    .with_state(self.split.state(self.width, &visible, cx))
-                    .child(
-                        resizable_panel()
-                            .size(config::width(layout.side, 160., 600.))
-                            .size_range(px(160.)..px(600.))
-                            .visible(side_visible)
-                            .child(self.render_side_panel(cx)),
-                    )
-                    .child(resizable_panel().visible(center_visible).child(center))
-                    .child(
-                        resizable_panel()
-                            .size(config::width(terminals, 240., 4000.))
-                            .size_range(px(240.)..px(4000.))
-                            .visible(terminals_column)
-                            .when(terminals_column, |panel| panel.child(self.terminals.clone())),
-                    )
-                    .child(
-                        resizable_panel()
-                            .size(config::width(layout.debug_width, 240., 2000.))
-                            .size_range(px(240.)..px(2000.))
-                            .visible(debug_right)
-                            .when(debug_right, |panel| panel.child(self.debugger.clone())),
-                    )
-                    .on_resize(move |state, _, cx| {
-                        let sizes = state.read(cx).sizes().clone();
-                        Config::update_quietly(cx, |config| {
-                            if side_visible && let Some(side) = sizes.first() {
-                                config.layout.side = f32::from(*side);
-                            }
-                            if center_visible && terminals_column && let Some(terminals) = sizes.get(2) {
-                                config.layout.terminals = Some(f32::from(*terminals));
-                            }
-                            if debug_right && let Some(debug) = sizes.get(3) {
-                                config.layout.debug_width = f32::from(*debug);
-                            }
-                        });
-                    });
-                // Under everything, the debugger is as wide as the window.
-                if debug_visible && !debug_right {
-                    v_resizable("workspace-debug")
-                        .child(resizable_panel().child(split))
-                        .child(
-                            resizable_panel()
-                                .size(px(layout.debug.clamp(120., 2000.)))
-                                .size_range(px(120.)..px(2000.))
-                                .child(self.debugger.clone()),
-                        )
-                        .on_resize(|state, _, cx| {
-                            if let Some(height) = state.read(cx).sizes().get(1) {
-                                let height = f32::from(*height);
-                                Config::update_quietly(cx, |config| config.layout.debug = height);
-                            }
-                        })
-                        .into_any_element()
-                } else {
-                    split.into_any_element()
-                }
-            })
+            .child(self.render_layout(window, cx))
             .children(self.finder.as_ref().map(|(finder, _)| {
                 div()
                     .absolute()
@@ -3481,7 +3290,7 @@ impl Workspace {
             self.debugger.update(cx, |debugger, cx| debugger.launch_command(line, tests.port, window, cx));
             return;
         }
-        self.terminals_visible = true;
+        self.show_panel(Panel::Terminals, cx);
         let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(self.test_term, line, window, cx));
         cx.spawn(async move |this, cx| {
             let term = run.await;
