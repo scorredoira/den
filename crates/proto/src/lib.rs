@@ -250,6 +250,8 @@ pub enum GitOp {
     WholeDiff { file: String, commit: Option<String>, uncommitted: bool },
     /// Responds `Commits`: those that changed `file`, from `HEAD`.
     FileLog { file: String, skip: usize, limit: usize },
+    /// Makes the folder (not in a repo yet) a git repo.
+    Init,
 }
 
 /// Repo status for the Changes mode, uncommitted.

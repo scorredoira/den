@@ -9,9 +9,7 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Servers", "Workspaces", "Updates", "Keyboard Shortcuts"];
-
-pub(super) const SERVERS: usize = 2;
+const SECTIONS: [&str; 4] = ["Appearance", "Editor", "Updates", "Keyboard Shortcuts"];
 
 pub(super) struct Settings {
     focus: FocusHandle,
@@ -46,29 +44,6 @@ impl Sik {
         self.new_task = None;
         self.confirm_remove = None;
         self.error = None;
-        if self.host_input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("add: bill or user@host"));
-            let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.add_host(window, cx);
-                }
-            });
-            self._subscriptions.push(subscription);
-            self.host_input = Some(input);
-        }
-        for ix in 0..self.hosts.len() {
-            if self.hosts[ix].repo_input.is_none() {
-                let name = self.hosts[ix].name.clone();
-                let input = cx.new(|cx| InputState::new(window, cx).placeholder("add folder: ~/path"));
-                let subscription = cx.subscribe_in(&input, window, move |this, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        this.add_repo(name.clone(), window, cx);
-                    }
-                });
-                self._subscriptions.push(subscription);
-                self.hosts[ix].repo_input = Some(input);
-            }
-        }
         if self.settings.is_none() {
             let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));
             let subscription = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
@@ -100,20 +75,11 @@ impl Sik {
         if let Some(settings) = &self.settings {
             settings.search.update(cx, |search, cx| search.focus(window, cx));
         }
-        self.refresh_repos(window, cx);
         cx.notify();
-    }
-
-    /// Opens settings at one of its sections.
-    pub(super) fn open_settings_at(&mut self, section: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_settings(window, cx);
-        self.go_to_section(section, window, cx);
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings = None;
-        self.host_picker = None;
-        self.folder_picker = None;
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -207,8 +173,6 @@ impl Sik {
         let sections: Vec<(AnyElement, bool)> = vec![
             self.render_appearance(&matches, cx),
             self.render_editor(settings, &matches, cx),
-            self.render_hosts(&matches, cx),
-            self.render_workspaces(&matches, cx),
             self.render_updates(&matches, cx),
             self.render_shortcuts(settings, &matches, cx),
         ];
@@ -282,12 +246,8 @@ impl Sik {
                     .bg(theme.popover)
                     .shadow_lg()
                     .text_ui(cx)
-                    // A click outside closes it, except in the pickers it opens.
-                    .on_mouse_down_out(cx.listener(|this, _, window, cx| {
-                        if this.host_picker.is_none() && this.folder_picker.is_none() {
-                            this.close_settings(window, cx);
-                        }
-                    }))
+                    // A click outside closes it.
+                    .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_settings(window, cx)))
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if event.keystroke.key == "escape" {
                             this.close_settings(window, cx);
@@ -415,121 +375,8 @@ impl Sik {
         Self::section(SECTIONS[1], rows, visible, cx)
     }
 
-    fn render_hosts(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[2]) || matches("ssh server");
-        let theme = cx.theme();
-        let mut rows = Vec::new();
-        let mut any = false;
-        for host in self.hosts.iter().skip(1) {
-            if !title_matches && !matches(&host.name) {
-                continue;
-            }
-            any = true;
-            let name = host.name.clone();
-            let status = match &host.status {
-                HostStatus::Connected => "connected",
-                HostStatus::Connecting(step) => step,
-                HostStatus::Failed(_) => "offline",
-            };
-            rows.push(
-                list_row(name.to_string(), status, cx)
-                    .child(link(format!("host-remove-{name}"), "remove", cx).on_click(cx.listener(
-                        move |this, _, window, cx| this.remove_host(name.clone(), window, cx),
-                    )))
-                    .into_any_element(),
-            );
-        }
-        if title_matches {
-            rows.extend(self.host_input.as_ref().map(|input| {
-                h_flex()
-                    .pt_1()
-                    .gap_1()
-                    .max_w(px(480.))
-                    .child(div().flex_1().child(Input::new(input)))
-                    .child(icon_button("pick-host", "icons/server.svg", cx).on_click(
-                        cx.listener(|this, _, window, cx| this.open_host_picker(window, cx)),
-                    ))
-                    .into_any_element()
-            }));
-            rows.extend(
-                self.error
-                    .as_ref()
-                    .filter(|(target, _)| target.is_none())
-                    .map(|(_, error)| error_text(error.clone(), cx).into_any_element()),
-            );
-            rows.push(
-                div()
-                    .text_ui_small(cx)
-                    .text_color(theme.muted_foreground)
-                    .child("A name from ~/.ssh/config or user@host. The icon looks them up in ~/.ssh/config.")
-                    .into_any_element(),
-            );
-        }
-        Self::section(SECTIONS[2], rows, title_matches || any, cx)
-    }
-
-    /// Each server's folders, its repos' worktrees under them: shown in the
-    /// column or hidden, removed from it, and the field to add another.
-    fn render_workspaces(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[3]) || matches("repos") || matches("hidden") || matches("folders");
-        let hidden = Config::get(cx).hidden.clone();
-        let muted = cx.theme().muted_foreground;
-        let mut rows = Vec::new();
-        let mut any = false;
-        for host in self.hosts.iter().filter(|host| host.client.is_some()) {
-            let host_matches = title_matches || matches(&host.name);
-            let folders: Vec<&PathBuf> = host
-                .repos
-                .iter()
-                .filter(|folder| host_matches || matches(&folder.to_string_lossy()))
-                .collect();
-            if !host_matches && folders.is_empty() {
-                continue;
-            }
-            any = true;
-            rows.push(
-                div()
-                    .pt_2()
-                    .text_ui_small(cx)
-                    .font_semibold()
-                    .text_color(muted)
-                    .child(host.name.to_uppercase())
-                    .into_any_element(),
-            );
-            for folder in folders {
-                let key = TaskKey { host: host.name.clone(), path: folder.clone() };
-                let (name, path) = (host.name.clone(), folder.clone());
-                rows.push(
-                    visibility(list_row(folder_name(folder), &folder.display().to_string(), cx), &key, &hidden, cx)
-                        .child(link(format!("folder-remove-{}", key.config()), "remove", cx).on_click(
-                            cx.listener(move |this, _, window, cx| this.remove_repo(name.clone(), path.clone(), window, cx)),
-                        ))
-                        .into_any_element(),
-                );
-                for worktree in host.tasks.iter().filter(|task| task.repo == *folder && !task.main) {
-                    let key = TaskKey { host: host.name.clone(), path: worktree.path.clone() };
-                    let row = list_row(folder_name(&worktree.path), &worktree.path.display().to_string(), cx).pl(px(28.));
-                    rows.push(visibility(row, &key, &hidden, cx).into_any_element());
-                }
-            }
-            let name = host.name.clone();
-            rows.extend(host.repo_input.as_ref().map(|input| {
-                h_flex()
-                    .pt_1()
-                    .gap_1()
-                    .max_w(px(480.))
-                    .child(div().flex_1().child(Input::new(input)))
-                    .child(icon_button(format!("pick-folder-{name}"), "icons/tree-folder.svg", cx).on_click(
-                        cx.listener(move |this, _, window, cx| this.open_folder_picker(name.clone(), FolderPurpose::AddFolder, window, cx)),
-                    ))
-                    .into_any_element()
-            }));
-        }
-        Self::section(SECTIONS[3], rows, title_matches || any, cx)
-    }
-
     fn render_updates(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[4], "Check for Updates", "automatically", "release", "version"].iter().any(|text| matches(text));
+        let visible = [SECTIONS[2], "Check for Updates", "automatically", "release", "version"].iter().any(|text| matches(text));
         let check = Switch::new("check-for-updates")
             .accessibility_label("Check for Updates Automatically")
             .checked(Config::get(cx).checks_for_updates())
@@ -546,11 +393,11 @@ impl Sik {
             check,
             cx,
         )];
-        Self::section(SECTIONS[4], rows, visible, cx)
+        Self::section(SECTIONS[2], rows, visible, cx)
     }
 
     fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[5]) || matches("keybindings");
+        let title_matches = matches(SECTIONS[3]) || matches("keybindings");
         let recording = settings.recording.as_ref().map(|(id, _)| *id);
         let mut rows = Vec::new();
         for shortcut in SHORTCUTS {
@@ -562,7 +409,7 @@ impl Sik {
             rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
         }
         let visible = title_matches || !rows.is_empty();
-        Self::section(SECTIONS[5], rows, visible, cx)
+        Self::section(SECTIONS[3], rows, visible, cx)
     }
 
     fn shortcut_row(
@@ -655,47 +502,6 @@ fn setting(title: &'static str, description: &'static str, control: impl IntoEle
         .child(div().text_color(theme.muted_foreground).child(description))
         .child(div().pt_1().child(control))
         .into_any_element()
-}
-
-/// A list row (servers, repos, hidden tasks).
-/// A workspace row's "hide" or "show": whether the column lists it.
-fn visibility(row: Div, key: &TaskKey, hidden: &[String], cx: &mut Context<Sik>) -> Div {
-    let (key, config) = (key.clone(), key.config());
-    let shown = !hidden.contains(&config);
-    let muted = cx.theme().muted_foreground;
-    row.when(!shown, |row| row.text_color(muted)).child(
-        link(format!("workspace-visibility-{config}"), if shown { "hide" } else { "show" }, cx).on_click(cx.listener(
-            move |this, _, _, cx| {
-                if shown {
-                    this.hide_task(&key, cx)
-                } else {
-                    this.show_task(&config, cx)
-                }
-            },
-        )),
-    )
-}
-
-fn list_row(name: String, detail: &str, cx: &App) -> Div {
-    let theme = cx.theme();
-    h_flex()
-        .h(px(28.))
-        .px_3()
-        .gap_3()
-        .rounded(theme.radius)
-        .hover(|style| style.bg(theme.accent.opacity(0.5)))
-        .child(div().flex_none().child(name))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .text_ui_small(cx)
-                .text_color(theme.muted_foreground)
-                .child(detail.to_string()),
-        )
 }
 
 fn link(id: impl Into<SharedString>, label: &'static str, cx: &App) -> Stateful<Div> {

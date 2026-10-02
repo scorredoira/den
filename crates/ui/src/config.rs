@@ -119,19 +119,16 @@ pub struct SavedTask {
 #[serde(default)]
 pub struct Config {
     pub theme: ThemeChoice,
-    /// Tasks removed from the list (without deleting anything). Each is its
-    /// path locally or `server:path` on a server.
-    pub hidden: Vec<String>,
-    /// List order, set by dragging (same keys as `hidden`); those not in it
-    /// go at the end.
+    /// List order, set by dragging; those not in it go at the end. Each is
+    /// its path locally or `server:path` on a server.
     pub order: Vec<String>,
     /// Repos whose worktrees are folded under their checkout (same keys as
-    /// `hidden`, the checkout's).
+    /// `order`, the checkout's).
     pub collapsed: Vec<String>,
     pub hosts: Vec<HostConfig>,
     pub layout: Layout,
     pub window: Option<SavedWindow>,
-    /// What's open in each task (same keys as `hidden`).
+    /// What's open in each task (same keys as `order`).
     pub sessions: HashMap<String, Session>,
     /// The last task visited, to return to on launch.
     pub last: Option<SavedTask>,

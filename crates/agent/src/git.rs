@@ -130,6 +130,13 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
                 branches,
             })
         }
+        GitOp::Init => {
+            if git(dir, &["rev-parse", "--git-dir"]).is_ok() {
+                bail!("{} is already in a git repo", dir.display());
+            }
+            git(dir, &["init"])?;
+            Ok(Response::Ok)
+        }
         GitOp::Switch { branch } => {
             git(dir, &["switch", &branch])?;
             Ok(Response::Ok)

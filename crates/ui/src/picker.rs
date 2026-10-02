@@ -37,6 +37,8 @@ pub struct Picker {
     hints: HashMap<String, String>,
     /// No list: Enter picks what was typed.
     free_text: bool,
+    /// What's typed is offered too, after the matches, unless it's one of them.
+    typed: bool,
     matches: Vec<String>,
     selected: usize,
     filter: Option<Task<()>>,
@@ -66,6 +68,7 @@ impl Picker {
             files,
             hints: HashMap::new(),
             free_text: false,
+            typed: false,
             matches: Vec::new(),
             selected: 0,
             filter: None,
@@ -78,6 +81,12 @@ impl Picker {
     /// Asks for a line of text: Enter picks what was typed.
     pub fn free_text(placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self { free_text: true, ..Self::new(Arc::new(Vec::new()), placeholder, false, window, cx) }
+    }
+
+    /// The list, or anything typed (Add Server: a `user@host` not in the list).
+    pub fn typed(mut self) -> Self {
+        self.typed = true;
+        self
     }
 
     pub fn with_hints(mut self, hints: HashMap<String, String>) -> Self {
@@ -94,9 +103,13 @@ impl Picker {
     fn refilter(&mut self, cx: &mut Context<Self>) {
         let query = self.input.read(cx).value().to_string();
         let files = self.files.clone();
+        let typed = self.typed.then(|| query.trim().to_string()).filter(|typed| !typed.is_empty());
         let filter = cx.background_spawn(async move { filter(&files, &query) });
         self.filter = Some(cx.spawn(async move |this, cx| {
-            let matches = filter.await;
+            let mut matches = filter.await;
+            if let Some(typed) = typed.filter(|typed| !matches.contains(typed)) {
+                matches.push(typed);
+            }
             this.update(cx, |this, cx| {
                 this.matches = matches;
                 this.selected = 0;

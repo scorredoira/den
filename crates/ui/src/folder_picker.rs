@@ -1,5 +1,5 @@
 //! Folder browser for a server, through its agent (works the same locally
-//! and over SSH): for choosing a repo's folder.
+//! and over SSH): for choosing a folder to open, or making a new one.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -109,11 +109,46 @@ impl FolderPicker {
             .collect()
     }
 
+    /// What's typed in the filter, if no subfolder has that name: offered as
+    /// a new folder, after those that match.
+    fn new_name(&self, cx: &App) -> Option<String> {
+        let name = self.filter.read(cx).value().trim().to_string();
+        let valid = !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != "..";
+        (valid && !self.dirs.contains(&name)).then_some(name)
+    }
+
     fn enter_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(name) = self.visible(cx).get(self.selected) {
-            let dir = self.dir.join(name);
-            self.open(dir, cx);
+        let visible = self.visible(cx);
+        match visible.get(self.selected) {
+            Some(name) => {
+                let dir = self.dir.join(name);
+                self.open(dir, cx);
+            }
+            None if self.selected == visible.len() => self.create(cx),
+            None => {}
         }
+    }
+
+    /// Makes the folder typed in the filter and goes into it.
+    fn create(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.new_name(cx) else {
+            return;
+        };
+        let (client, dir) = (self.client.clone(), self.dir.join(name));
+        self.loading = true;
+        self.load = Some(cx.spawn(async move |this, cx| {
+            let result = client.request(Request::CreateDir { path: dir.clone() }).await;
+            this.update(cx, |this, cx| match result {
+                Ok(_) => this.open(dir, cx),
+                Err(err) => {
+                    this.loading = false;
+                    this.error = Some(format!("{err:#}").into());
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Cmd-↑, like in Finder. From `~`, to the root.
@@ -130,14 +165,8 @@ impl FolderPicker {
         cx.emit(FolderPickerEvent::Pick(self.dir.clone()));
     }
 
-    /// The agent couldn't use the chosen folder (not a git repo…).
-    pub fn set_error(&mut self, error: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.error = Some(error.into());
-        cx.notify();
-    }
-
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let len = self.visible(cx).len() as isize;
+        let len = (self.visible(cx).len() + usize::from(self.new_name(cx).is_some())) as isize;
         if len > 0 {
             self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
             cx.notify();
@@ -151,6 +180,9 @@ impl Render for FolderPicker {
             self.filter.update(cx, |filter, cx| filter.set_value("", window, cx));
         }
         let visible = self.visible(cx);
+        let new_name = self.new_name(cx);
+        let no_subfolders = visible.is_empty() && !self.loading && new_name.is_none();
+        let new_selected = self.selected == visible.len();
         let theme = cx.theme();
         let name = self
             .dir
@@ -245,7 +277,21 @@ impl Render for FolderPicker {
                                 this.open(dir, cx);
                             }))
                     }))
-                    .when(visible.is_empty() && !self.loading, |el| {
+                    .children(new_name.map(|name| {
+                        h_flex()
+                            .id("folder-new")
+                            .h(px(26.))
+                            .px_2()
+                            .gap_2()
+                            .rounded(theme.radius)
+                            .when(new_selected, |el| el.bg(theme.accent))
+                            .hover(|style| style.bg(theme.accent.opacity(0.6)))
+                            .text_color(theme.muted_foreground)
+                            .child(svg().path("icons/plus.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                            .child(format!("New Folder “{name}”"))
+                            .on_click(cx.listener(|this, _, _, cx| this.create(cx)))
+                    }))
+                    .when(no_subfolders, |el| {
                         el.child(div().px_2().py_1().text_ui_small(cx).text_color(theme.muted_foreground).child("No subfolders"))
                     }),
             )
@@ -258,7 +304,7 @@ impl Render for FolderPicker {
                             .flex_1()
                             .text_ui_small(cx)
                             .text_color(theme.muted_foreground)
-                            .child("Enter to open · Cmd-↑ to go up · Cmd-Enter to add"),
+                            .child("Enter to go in · Cmd-↑ to go up · Cmd-Enter to open · type a new name to create it"),
                     )
                     .child(button("folder-cancel", "Cancel".into()).on_click(cx.listener(|_, _, _, cx| cx.emit(FolderPickerEvent::Dismiss))))
                     .child(
@@ -270,7 +316,7 @@ impl Render for FolderPicker {
                             .bg(theme.primary)
                             .text_color(theme.primary_foreground)
                             .hover(|style| style.bg(theme.primary_hover))
-                            .child(format!("Add “{name}”"))
+                            .child(format!("Open “{name}”"))
                             .on_click(cx.listener(|this, _, _, cx| this.pick(cx))),
                     ),
             )
