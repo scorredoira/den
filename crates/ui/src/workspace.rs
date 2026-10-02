@@ -1290,7 +1290,7 @@ impl Workspace {
             let response = client.request(request).await;
             this.update(cx, |this, cx| {
                 this.report_lsp(&editor, &response, cx);
-                picker.update(cx, |picker, cx| picker.set_symbols(None, symbols_of(response), cx));
+                picker.update(cx, |picker, cx| picker.set_symbols(None, symbols_of(response, "No language server for this file"), cx));
             })
             .ok();
         })
@@ -1343,20 +1343,25 @@ impl Workspace {
             // Asked a moment after the last key, so typing doesn't send a request per key.
             SymbolPickerEvent::Query(query) => {
                 let (picker, query) = (picker.clone(), query.clone());
-                let file = self.active_editor().and_then(|editor| {
-                    let (_, _, path) = self.completion_target(&editor)?;
-                    Some((path, editor.read(cx).text().to_string()))
-                });
                 let (Some(client), false) = (self.client.clone(), query.is_empty()) else {
                     return;
                 };
                 let root = self.root.clone();
-                let request = cx.spawn(async move |_, cx| {
+                let request = cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
+                    // The file in front, as the editor has it.
+                    let Ok(file) = this.update(cx, |this, cx| {
+                        let editor = this.active_editor()?;
+                        let (_, _, path) = this.completion_target(&editor)?;
+                        Some((path, editor.read(cx).text().to_string()))
+                    }) else {
+                        return;
+                    };
                     let (path, text) = file.map_or((None, String::new()), |(path, text)| (Some(path), text));
                     let request = Request::LspWorkspaceSymbols { root, path, text, query: query.clone() };
                     let response = client.request(request).await;
-                    picker.update(cx, |picker, cx| picker.set_symbols(Some(&query), symbols_of(response), cx));
+                    let symbols = symbols_of(response, "No language server is running for this workspace: open one of its files");
+                    picker.update(cx, |picker, cx| picker.set_symbols(Some(&query), symbols, cx));
                 });
                 if let Some(search) = &mut self.symbols {
                     search.request = request;
@@ -3616,10 +3621,11 @@ fn inline_blame(editor: &Entity<EditorState>, blame: &Blame, cx: &App) -> Option
     Some(anchored().position(origin).child(label).into_any_element())
 }
 
-/// The symbols in a `Symbols` response, or why there are none.
-fn symbols_of(response: anyhow::Result<Response>) -> Result<Vec<proto::LspSymbol>, SharedString> {
+/// The symbols in a `Symbols` response, or why there are none: `no_server`
+/// if no language server answered.
+fn symbols_of(response: anyhow::Result<Response>, no_server: &'static str) -> Result<Vec<proto::LspSymbol>, SharedString> {
     match response {
-        Ok(Response::Symbols { server: None, .. }) => Err("No language server for this file".into()),
+        Ok(Response::Symbols { server: None, .. }) => Err(no_server.into()),
         Ok(Response::Symbols { symbols, .. }) => Ok(symbols),
         Ok(other) => Err(format!("Unexpected response: {other:?}").into()),
         Err(err) => Err(format!("{err:#}").into()),

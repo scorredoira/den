@@ -220,13 +220,21 @@ pub fn workspace_symbols(task: &Path, path: Option<&Path>, text: &str, query: &s
         .filter(|(_, server)| server.alive.load(Ordering::Relaxed))
         .collect();
     let file = path.and_then(|path| Some((path, language(path)?)));
+    // If it can't start, the others still answer.
+    let mut failed = None;
     let front = match file {
-        Some((path, (language, _))) => server(language, &project_root(language, task, path))?,
+        Some((path, (language, _))) => server(language, &project_root(language, task, path)).unwrap_or_else(|err| {
+            failed = Some(err);
+            None
+        }),
         None => None,
     };
     servers.retain(|(_, server)| !front.as_ref().is_some_and(|front| Arc::ptr_eq(front, server)));
     if servers.is_empty() && front.is_none() {
-        return Ok(Response::Symbols { server: None, symbols: Vec::new() });
+        return match failed {
+            Some(err) => Err(err),
+            None => Ok(Response::Symbols { server: None, symbols: Vec::new() }),
+        };
     }
     let params = json!({ "query": query });
     let mut sent = Vec::new();
@@ -242,7 +250,6 @@ pub fn workspace_symbols(task: &Path, path: Option<&Path>, text: &str, query: &s
     }
     let mut names = Vec::new();
     let mut symbols = Vec::new();
-    let mut failed = None;
     // The file in front as the editor has it; the rest, from disk.
     let mut files: HashMap<PathBuf, Option<String>> =
         path.map(|path| (path.to_path_buf(), Some(text.to_string()))).into_iter().collect();
