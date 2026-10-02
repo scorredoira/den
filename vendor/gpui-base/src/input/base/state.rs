@@ -2454,12 +2454,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Check if mouse is within bounds
-        let within_bounds = self
-            .last_bounds
-            .as_ref()
-            .map(|bounds| bounds.contains(&event.position))
-            .unwrap_or(false);
+        // (sik) The visible area: `last_bounds` moves up with the scroll.
+        let within_bounds = self.last_bounds.is_some()
+            && self.input_bounds.contains(&event.position);
 
         if !within_bounds {
             // Clear hover when mouse leaves the input
@@ -7601,6 +7598,58 @@ mod tests {
                 assert!(!state.unfold_at(Position::new(3, 0), cx));
             });
         });
+    }
+
+    struct CountingHover(Rc<std::cell::Cell<usize>>);
+
+    impl crate::input::HoverProvider for CountingHover {
+        fn hover(
+            &self,
+            _: &Rope,
+            _: usize,
+            _: &mut Window,
+            _: &mut App,
+        ) -> gpui::Task<anyhow::Result<Option<lsp_types::Hover>>> {
+            self.0.set(self.0.get() + 1);
+            gpui::Task::ready(Ok(None))
+        }
+    }
+
+    /// Hovering asks the provider also once the editor has scrolled.
+    ///
+    /// The bounds the text is laid out in move up with the scroll, so they
+    /// stopped containing the pointer and every move was taken for leaving
+    /// the input: hover only worked at the top of a file.
+    #[gpui::test]
+    fn test_hover_in_a_scrolled_editor(cx: &mut TestAppContext) {
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let provider_calls = calls.clone();
+        let view = InputView::build_editor(cx, move |mut state| {
+            state.extras.lsp.hover_provider = Some(Rc::new(CountingHover(provider_calls)));
+            state
+        });
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let input = view.input;
+        let text = (0..400).map(|i| format!("select {i}")).collect::<Vec<_>>().join("\n");
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| state.set_value(text, window, cx));
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                let line_height = state.last_layout.as_ref().unwrap().line_height;
+                state.set_scroll_offset(point(px(0.), -line_height * 200.), cx);
+            });
+        });
+        cx.run_until_parked();
+        let scrolled = input.read_with(&cx, |state, _| state.scroll_handle.offset().y);
+        assert!(scrolled < px(-1000.), "the editor must have scrolled: {scrolled:?}");
+
+        cx.simulate_mouse_move(gpui::point(px(60.), px(200.)), None, gpui::Modifiers::default());
+        cx.executor().advance_clock(std::time::Duration::from_millis(300));
+        cx.run_until_parked();
+
+        assert_eq!(calls.get(), 1, "the hover provider must be asked");
     }
 
     /// Losing focus hides the hover popover but keeps the decorations.

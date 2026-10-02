@@ -2875,7 +2875,11 @@ impl Workspace {
                     None => {
                         let readonly = tab.diff.is_some() || tab.doc;
                         let file = self.tabs.iter().find(|file| file.path == tab.path && file.is_file());
-                        let blame = file.filter(|file| !file.dirty && tab.diff.is_none()).and_then(|file| file.blame.clone());
+                        // Stopped here, the ends of the lines show the debugger's values.
+                        let stopped_here = self.debugger.read(cx).execution().is_some_and(|(at, _, _)| at == tab.path);
+                        let blame = file
+                            .filter(|file| !file.dirty && tab.diff.is_none() && !stopped_here)
+                            .and_then(|file| file.blame.clone());
                         let editor = Editor::new(&tab.editor)
                             .bordered(false)
                             .readonly(readonly)
