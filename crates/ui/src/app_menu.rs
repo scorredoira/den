@@ -110,6 +110,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Go to File…", OpenFileFinder),
             MenuItem::action("Go to Line…", GoToLine),
             MenuItem::action("Go to Symbol in File…", GoToSymbol),
+            MenuItem::action("Go to Symbol in Workspace…", GoToWorkspaceSymbol),
             MenuItem::action("Go to Definition", GoToDefinition),
             MenuItem::action("Find References", FindReferences),
             MenuItem::separator(),

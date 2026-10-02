@@ -25,7 +25,7 @@ use crate::{
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
-    GoToLine, GoToSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
+    GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     changes::{self, ChangesEvent, ChangesPanel},
     commit_view::{CommitView, CommitViewEvent},
     completion::Completions,
@@ -187,14 +187,13 @@ struct Place {
     position: Position,
 }
 
-/// Cmd-Shift-O open on `editor`, which shows each symbol as it's selected.
+/// Cmd-Shift-O or Cmd-Shift-T, while open.
 struct SymbolSearch {
     picker: Entity<SymbolPicker>,
-    editor: Entity<EditorState>,
-    /// Where the editor was, to go back to on Esc and to remember on a pick.
-    place: Option<Place>,
-    selections: Vec<(usize, usize)>,
-    scroll: Point<Pixels>,
+    /// The editor in front, its selections and scroll: what Esc goes back to.
+    origin: Option<(Entity<EditorState>, Vec<(usize, usize)>, Point<Pixels>)>,
+    /// The workspace's symbols being asked for.
+    request: Task<()>,
     _subscription: Subscription,
 }
 
@@ -251,7 +250,7 @@ pub struct Workspace {
     /// References panel: the latest F12 (with several targets) or Shift-F12.
     references: Entity<SearchPanel>,
     finder: Option<(Entity<Picker>, Subscription)>,
-    /// Cmd-Shift-O, while it's open.
+    /// Cmd-Shift-O or Cmd-Shift-T, while open.
     symbols: Option<SymbolSearch>,
     /// Where you were before each jump (F12, results, Cmd-P…), to go back
     /// with Ctrl-Opt-←; and what was undone, to go forward with Ctrl-Opt-→.
@@ -820,13 +819,9 @@ impl Workspace {
 
     /// Before a jump: records where you were (unless it's the last one recorded).
     fn remember_place(&mut self, cx: &App) {
-        if let Some(place) = self.place(cx) {
-            self.push_place(place);
-        }
-    }
-
-    /// Records `place` as where you were before a jump.
-    fn push_place(&mut self, place: Place) {
+        let Some(place) = self.place(cx) else {
+            return;
+        };
         if self.back.last() != Some(&place) {
             self.back.push(place);
             if self.back.len() > MAX_PLACES {
@@ -1268,103 +1263,133 @@ impl Workspace {
     /// Cmd-Shift-O: to a symbol of the file, from its language server (in
     /// Markdown, its headings).
     fn go_to_symbol(&mut self, _: &GoToSymbol, window: &mut Window, cx: &mut Context<Self>) {
-        if self.symbols.is_some() {
-            return;
-        }
-        self.finder = None;
-        let Some(ix) = self.active else {
+        let Some(ix) = self.active.filter(|_| self.symbols.is_none()) else {
             return;
         };
-        let markdown = self.tabs[ix].markdown.is_some();
-        if !matches!(self.tabs[ix].content, Content::Ready) || self.tabs[ix].diff.is_some() || self.tabs[ix].image.is_some() {
+        let tab = &mut self.tabs[ix];
+        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() || tab.image.is_some() {
             return;
         }
         // The headings are found in the source, and shown there.
-        if markdown && !self.tabs[ix].show_source {
-            self.tabs[ix].show_source = true;
+        let markdown = tab.markdown.is_some();
+        tab.show_source |= markdown;
+        let (path, editor) = (tab.path.clone(), tab.editor.clone());
+        let text = editor.read(cx).text().to_string();
+        let picker = self.open_symbols(None, window, cx);
+        if markdown {
+            let symbols = symbol_picker::markdown_symbols(&path, &text);
+            picker.update(cx, |picker, cx| picker.set_symbols(None, Ok(symbols), cx));
+            return;
         }
-        let tab = &self.tabs[ix];
-        let editor = tab.editor.clone();
-        let state = editor.read(cx);
-        let text = state.text().to_string();
-        let (selections, scroll) = (state.selections(), state.scroll_offset());
-        let picker = cx.new(|cx| SymbolPicker::new(window, cx));
-        let subscription = cx.subscribe_in(&picker, window, |this, _, event: &SymbolPickerEvent, window, cx| {
-            if let SymbolPickerEvent::Preview(symbol) = event {
-                // Its name selected, without taking the focus from what's typed.
-                if let Some(SymbolSearch { editor, .. }) = &this.symbols {
+        let Some(client) = self.client.clone() else {
+            picker.update(cx, |picker, cx| picker.set_symbols(None, Err("Not connected to the agent".into()), cx));
+            return;
+        };
+        let request = Request::Lsp { root: self.root.clone(), path, text, line: 0, column: 0, op: LspOp::Symbols };
+        cx.spawn(async move |this, cx| {
+            let response = client.request(request).await;
+            this.update(cx, |this, cx| {
+                this.report_lsp(&editor, &response, cx);
+                picker.update(cx, |picker, cx| picker.set_symbols(None, symbols_of(response), cx));
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Cmd-Shift-T: to a symbol of the workspace, from the language servers
+    /// running for it and that of the file in front.
+    fn go_to_workspace_symbol(&mut self, _: &GoToWorkspaceSymbol, window: &mut Window, cx: &mut Context<Self>) {
+        if self.symbols.is_none() {
+            self.open_symbols(Some(self.root.clone()), window, cx);
+        }
+    }
+
+    /// Opens the symbol picker: of the workspace at `workspace`, or of the
+    /// file in front, which shows each one as it's selected.
+    fn open_symbols(&mut self, workspace: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Entity<SymbolPicker> {
+        self.finder = None;
+        let origin = self.active_editor().map(|editor| {
+            let state = editor.read(cx);
+            let (selections, scroll) = (state.selections(), state.scroll_offset());
+            (editor, selections, scroll)
+        });
+        let picker = cx.new(|cx| SymbolPicker::new(workspace, window, cx));
+        let subscription = cx.subscribe_in(&picker, window, Self::on_symbol_picker);
+        self.symbols = Some(SymbolSearch { picker: picker.clone(), origin, request: Task::ready(()), _subscription: subscription });
+        cx.notify();
+        picker
+    }
+
+    fn on_symbol_picker(&mut self, picker: &Entity<SymbolPicker>, event: &SymbolPickerEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(search) = &self.symbols else {
+            return;
+        };
+        match event {
+            // Its name selected, without taking the focus from what's typed.
+            SymbolPickerEvent::Preview(symbol) => {
+                if let Some((editor, ..)) = &search.origin {
                     editor.update(cx, |state, cx| {
                         let text = state.text();
                         let start = text.position_to_offset(&Position::new(symbol.line, symbol.column));
                         let end = (start + symbol.name.len()).min(text.len());
-                        let named = text.slice(start..end).to_string() == symbol.name;
-                        let end = if named { end } else { start };
-                        state.set_selections(&[(start, end)], cx);
+                        let named = text.slice(start..end) == symbol.name.as_str();
+                        state.set_selections(&[(start, if named { end } else { start })], cx);
                     });
                     reveal_centered(editor, symbol.line, false, 10, window, cx);
                 }
                 return;
             }
-            let Some(search) = this.symbols.take() else {
+            // Asked a moment after the last key, so typing doesn't send a request per key.
+            SymbolPickerEvent::Query(query) => {
+                let (picker, query) = (picker.clone(), query.clone());
+                let file = self.active_editor().and_then(|editor| {
+                    let (_, _, path) = self.completion_target(&editor)?;
+                    Some((path, editor.read(cx).text().to_string()))
+                });
+                let (Some(client), false) = (self.client.clone(), query.is_empty()) else {
+                    return;
+                };
+                let root = self.root.clone();
+                let request = cx.spawn(async move |_, cx| {
+                    cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
+                    let (path, text) = file.map_or((None, String::new()), |(path, text)| (Some(path), text));
+                    let request = Request::LspWorkspaceSymbols { root, path, text, query: query.clone() };
+                    let response = client.request(request).await;
+                    picker.update(cx, |picker, cx| picker.set_symbols(Some(&query), symbols_of(response), cx));
+                });
+                if let Some(search) = &mut self.symbols {
+                    search.request = request;
+                }
                 return;
-            };
-            let editor = search.editor;
-            match event {
-                SymbolPickerEvent::Pick(symbol) => {
-                    if let Some(place) = search.place {
-                        this.push_place(place);
-                    }
-                    let goto = Position::new(symbol.line, symbol.column);
-                    editor.update(cx, |state, cx| state.set_cursor_position(goto, window, cx));
-                    reveal_centered(&editor, goto.line, false, 10, window, cx);
-                    this.focus_ide(window, cx);
-                }
-                SymbolPickerEvent::Dismiss => {
-                    editor.update(cx, |state, cx| {
-                        state.set_selections(&search.selections, cx);
-                        state.set_scroll_offset(search.scroll, cx);
-                    });
-                    this.focus_ide(window, cx);
-                }
-                // Clicked elsewhere: the editor stays on what it shows.
-                SymbolPickerEvent::Close | SymbolPickerEvent::Preview(_) => {}
             }
-            cx.notify();
-        });
-        self.symbols = Some(SymbolSearch {
-            picker: picker.clone(),
-            editor: editor.clone(),
-            place: self.place(cx),
-            selections,
-            scroll,
-            _subscription: subscription,
-        });
-        cx.notify();
-        if markdown {
-            let symbols = symbol_picker::markdown_symbols(&text);
-            picker.update(cx, |picker, cx| picker.set_symbols(Ok(symbols), cx));
-            return;
+            _ => {}
         }
-        let Some(client) = self.client.clone() else {
-            picker.update(cx, |picker, cx| picker.set_symbols(Err("Not connected to the agent".into()), cx));
+        let Some(SymbolSearch { origin, .. }) = self.symbols.take() else {
             return;
         };
-        let request = Request::Lsp { root: self.root.clone(), path: tab.path.clone(), text, line: 0, column: 0, op: LspOp::Symbols };
-        cx.spawn(async move |this, cx| {
-            let response = client.request(request).await;
-            this.update(cx, |this, cx| {
-                this.report_lsp(&editor, &response, cx);
-                let symbols = match response {
-                    Ok(Response::Symbols { server: None, .. }) => Err("No language server for this file".into()),
-                    Ok(Response::Symbols { symbols, .. }) => Ok(symbols),
-                    Ok(other) => Err(format!("Unexpected response: {other:?}").into()),
-                    Err(err) => Err(format!("{err:#}").into()),
-                };
-                picker.update(cx, |picker, cx| picker.set_symbols(symbols, cx));
-            })
-            .ok();
-        })
-        .detach();
+        // Back to where it was: it's where Go Back returns after a pick.
+        let restore = |cx: &mut Context<Self>| {
+            if let Some((editor, selections, scroll)) = origin {
+                editor.update(cx, |state, cx| {
+                    state.set_selections(&selections, cx);
+                    state.set_scroll_offset(scroll, cx);
+                });
+            }
+        };
+        match event {
+            SymbolPickerEvent::Pick(symbol) => {
+                restore(cx);
+                self.open_at(symbol.path.clone(), Position::new(symbol.line, symbol.column), window, cx);
+            }
+            SymbolPickerEvent::Dismiss => {
+                restore(cx);
+                self.focus_ide(window, cx);
+            }
+            // Clicked elsewhere: the editor stays on what it shows.
+            _ => {}
+        }
+        cx.notify();
     }
 
     /// F12: to the definition of what's under the cursor. With one target it
@@ -3306,6 +3331,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::go_to_definition))
             .on_action(cx.listener(Self::go_to_line))
             .on_action(cx.listener(Self::go_to_symbol))
+            .on_action(cx.listener(Self::go_to_workspace_symbol))
             .on_action(cx.listener(|this, _: &NavigateBack, window, cx| this.navigate(true, window, cx)))
             .on_action(cx.listener(|this, _: &NavigateForward, window, cx| this.navigate(false, window, cx)))
             .on_action(cx.listener(Self::find_references))
@@ -3588,6 +3614,16 @@ fn inline_blame(editor: &Entity<EditorState>, blame: &Blame, cx: &App) -> Option
         .child(format!("{}, {} ({})", commit.subject, commit.author, changes::ago(commit.time)));
     // In window coordinates, like the editor's layout.
     Some(anchored().position(origin).child(label).into_any_element())
+}
+
+/// The symbols in a `Symbols` response, or why there are none.
+fn symbols_of(response: anyhow::Result<Response>) -> Result<Vec<proto::LspSymbol>, SharedString> {
+    match response {
+        Ok(Response::Symbols { server: None, .. }) => Err("No language server for this file".into()),
+        Ok(Response::Symbols { symbols, .. }) => Ok(symbols),
+        Ok(other) => Err(format!("Unexpected response: {other:?}").into()),
+        Err(err) => Err(format!("{err:#}").into()),
+    }
 }
 
 /// After a jump: if `line` wasn't visible, scrolls to center it, like VS Code

@@ -52,6 +52,7 @@ actions!(
         GoToDefinition,
         GoToLine,
         GoToSymbol,
+        GoToWorkspaceSymbol,
         ToggleWordWrap,
         FormatDocument,
         SplitEditorRight,

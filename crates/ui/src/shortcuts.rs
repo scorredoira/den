@@ -52,6 +52,7 @@ shortcuts![
     (GoToDefinition, "Go to Definition", "f12"),
     (GoToLine, "Go to Line", "ctrl-g"),
     (GoToSymbol, "Go to Symbol in File", "secondary-shift-o"),
+    (GoToWorkspaceSymbol, "Go to Symbol in Workspace", "secondary-shift-t"),
     (FindReferences, "Find References", "shift-f12"),
     (NavigateBack, "Go Back", if cfg!(target_os = "macos") { "ctrl-alt-left" } else { "alt-left" }),
     (NavigateForward, "Go Forward", if cfg!(target_os = "macos") { "ctrl-alt-right" } else { "alt-right" }),

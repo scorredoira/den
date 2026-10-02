@@ -470,6 +470,12 @@ fn own_separators(request: &mut Request) {
             fix(root);
             fix(path);
         }
+        Request::LspWorkspaceSymbols { root, path, .. } => {
+            fix(root);
+            if let Some(path) = path {
+                fix(path);
+            }
+        }
         Request::Open { root, file } => {
             fix(root);
             if let Some(file) = file {
@@ -516,6 +522,7 @@ fn is_slow(request: &Request) -> bool {
             | Request::Git { .. }
             | Request::Lsp { .. }
             | Request::LspResolve { .. }
+            | Request::LspWorkspaceSymbols { .. }
             | Request::Format { .. }
             | Request::Replace { .. }
             | Request::Ports
@@ -571,6 +578,9 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
         Request::Git { path, op } => git::run(&path, op),
         Request::Lsp { root, path, text, line, column, op } => lsp::request(&root, &path, &text, line, column, op),
         Request::LspResolve { root, path, list, item } => lsp::resolve(&root, &path, list, item),
+        Request::LspWorkspaceSymbols { root, path, text, query } => {
+            lsp::workspace_symbols(&root, path.as_deref(), &text, &query)
+        }
         Request::Format { root, path, text } => format::format(&root, &path, &text),
         Request::FindFiles { path } => Ok(Response::Files(search::files(&path))),
         Request::Search {
@@ -727,6 +737,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         | Request::Git { .. }
         | Request::Lsp { .. }
         | Request::LspResolve { .. }
+        | Request::LspWorkspaceSymbols { .. }
         | Request::Format { .. }
         | Request::Replace { .. }
         | Request::Ports => unreachable!("handled on its own thread"),

@@ -73,6 +73,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{FindReferences}} | Find the references, in the References panel |
 | {{GoToLine}} | Go to a line (`line` or `line:column`) |
 | {{GoToSymbol}} | Go to a function, class or method of the file (Markdown: a heading) |
+| {{GoToWorkspaceSymbol}} | Go to a function, class or method of the whole workspace |
 | {{NavigateBack}} / {{NavigateForward}} | Back and forward through the places you jumped to |
 | {{ToggleMarkdownSource}} | Markdown: show the source or the preview |
 | {{OpenPreviewToSide}} | Markdown: open the preview to the side |

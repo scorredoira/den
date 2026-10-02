@@ -38,6 +38,8 @@ const MAX_MESSAGE: usize = 64 << 20;
 const CONTENT_MODIFIED: i64 = -32801;
 /// Beyond this many, a completion list counts as incomplete.
 const MAX_COMPLETIONS: usize = 2000;
+/// Beyond this many, the symbols of a task are left out: typing more finds them.
+const MAX_SYMBOLS: usize = 500;
 /// Names each completion list, for `resolve`.
 static NEXT_LIST: AtomicU64 = AtomicU64::new(1);
 
@@ -190,7 +192,7 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
         return Ok(Response::Signature(server.signature(&result)));
     }
     if op == LspOp::Symbols {
-        return Ok(Response::Symbols { server: Some(language.name.to_string()), symbols: server.symbols(&result, text) });
+        return Ok(Response::Symbols { server: Some(language.name.to_string()), symbols: server.symbols(&result, path, text) });
     }
     if op == LspOp::Completion {
         let (items, raw, incomplete) = server.completions(&result, line, line_text, column);
@@ -202,6 +204,66 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
     locations.sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
     locations.dedup();
     Ok(Response::Lsp { server: Some(language.name.to_string()), locations })
+}
+
+/// The symbols of the task at `task` that match `query`, from every language
+/// server running for it and that of `path` (the file in front, as `text`),
+/// which is started if it isn't. A server that fails is left out, unless all do.
+pub fn workspace_symbols(task: &Path, path: Option<&Path>, text: &str, query: &str) -> Result<Response> {
+    let mut servers: Vec<(&'static str, Arc<Server>)> = SERVERS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|((root, _), _)| root.starts_with(task))
+        // One that's starting isn't waited for.
+        .filter_map(|((_, name), slot)| Some((*name, slot.try_lock().ok()?.server.clone()?)))
+        .filter(|(_, server)| server.alive.load(Ordering::Relaxed))
+        .collect();
+    let file = path.and_then(|path| Some((path, language(path)?)));
+    let front = match file {
+        Some((path, (language, _))) => server(language, &project_root(language, task, path))?,
+        None => None,
+    };
+    servers.retain(|(_, server)| !front.as_ref().is_some_and(|front| Arc::ptr_eq(front, server)));
+    if servers.is_empty() && front.is_none() {
+        return Ok(Response::Symbols { server: None, symbols: Vec::new() });
+    }
+    let params = json!({ "query": query });
+    let mut sent = Vec::new();
+    // The file in front is opened on its server: TypeScript only searches
+    // the projects of the files it has open.
+    if let (Some((path, (language, language_id))), Some(front)) = (file, front) {
+        let request = front.sync_and_send(path, text, language_id, "workspace/symbol", params.clone());
+        sent.push((language.name, front, request));
+    }
+    for (name, server) in servers {
+        let request = server.send_request("workspace/symbol", params.clone());
+        sent.push((name, server, request));
+    }
+    let mut names = Vec::new();
+    let mut symbols = Vec::new();
+    let mut failed = None;
+    // The file in front as the editor has it; the rest, from disk.
+    let mut files: HashMap<PathBuf, Option<String>> =
+        path.map(|path| (path.to_path_buf(), Some(text.to_string()))).into_iter().collect();
+    for (name, server, request) in sent {
+        match request.and_then(|request| server.wait(request, REQUEST_TIMEOUT)) {
+            Ok(result) => {
+                names.push(name);
+                symbols.extend(server.workspace_symbols(&result, &mut files));
+            }
+            Err(err) => failed = failed.or(Some(err.context(name))),
+        }
+    }
+    if let (true, Some(err)) = (names.is_empty(), failed) {
+        return Err(err);
+    }
+    // Not the language's own declarations (TypeScript's `lib.d.ts`). The
+    // server may give the real path of a task reached through a link.
+    let real = task.canonicalize().unwrap_or_else(|_| task.to_path_buf());
+    symbols.retain(|symbol| symbol.path.starts_with(task) || symbol.path.starts_with(&real));
+    symbols.truncate(MAX_SYMBOLS);
+    Ok(Response::Symbols { server: Some(names.join(", ")), symbols })
 }
 
 /// Asks the server that gave completion list `list` for the rest of its
@@ -544,6 +606,7 @@ impl Server {
                     "workspace": {
                         "workspaceFolders": true,
                         "configuration": true,
+                        "symbol": {},
                         "didChangeWatchedFiles": { "dynamicRegistration": false },
                     },
                 },
@@ -797,40 +860,64 @@ impl Server {
         Some(LspSignature { label, active: range, documentation })
     }
 
-    /// The symbols in a `documentSymbol` response, a tree of `DocumentSymbol`
-    /// or a list of `SymbolInformation`, flattened in the order of the file.
-    fn symbols(&self, result: &Value, text: &str) -> Vec<LspSymbol> {
-        fn walk(server: &Server, items: &[Value], container: Option<&str>, lines: &[&str], out: &mut Vec<LspSymbol>) {
+    /// The symbols in a `documentSymbol` response for `path`, a tree of
+    /// `DocumentSymbol` or a list of `SymbolInformation`, flattened in the
+    /// order of the file.
+    fn symbols(&self, result: &Value, path: &Path, text: &str) -> Vec<LspSymbol> {
+        fn walk(server: &Server, items: &[Value], container: Option<&str>, path: &Path, text: &str, out: &mut Vec<LspSymbol>) {
             for item in items {
-                let Some(name) = item["name"].as_str() else { continue };
                 // `DocumentSymbol` has where the name is; `SymbolInformation`, the whole thing.
-                let start = item
-                    .get("selectionRange")
-                    .or_else(|| item.get("range"))
-                    .unwrap_or(&item["location"]["range"]);
-                let Some(line) = start["start"]["line"].as_u64() else { continue };
-                let line = line as u32;
-                let units = start["start"]["character"].as_u64().unwrap_or(0) as u32;
-                let line_text = lines.get(line as usize).copied().unwrap_or("");
-                let container = container.or_else(|| item["containerName"].as_str()).filter(|name| !name.is_empty());
-                out.push(LspSymbol {
-                    name: name.to_string(),
-                    kind: item["kind"].as_u64().unwrap_or(0) as u32,
-                    container: container.map(str::to_string),
-                    line,
-                    column: server.decode_column(line_text, units),
-                });
-                if let Some(children) = item["children"].as_array() {
-                    walk(server, children, Some(name), lines, out);
+                let range = item.get("selectionRange").or_else(|| item.get("range")).unwrap_or(&item["location"]["range"]);
+                out.extend(server.symbol(item, path, range, container, Some(text)));
+                if let (Some(name), Some(children)) = (item["name"].as_str(), item["children"].as_array()) {
+                    walk(server, children, Some(name), path, text, out);
                 }
             }
         }
-        let lines: Vec<&str> = text.lines().collect();
         let mut symbols = Vec::new();
-        walk(self, result.as_array().map(Vec::as_slice).unwrap_or_default(), None, &lines, &mut symbols);
+        walk(self, result.as_array().map(Vec::as_slice).unwrap_or_default(), None, path, text, &mut symbols);
         // Stable: a parent stays before the children that start on its line.
         symbols.sort_by_key(|symbol| (symbol.line, symbol.column));
         symbols
+    }
+
+    /// The symbols in a `workspace/symbol` response, `SymbolInformation` or
+    /// `WorkspaceSymbol` (which may come without a range: then, line 1).
+    /// `files` keeps the files already read, to find the columns.
+    fn workspace_symbols(&self, result: &Value, files: &mut HashMap<PathBuf, Option<String>>) -> Vec<LspSymbol> {
+        let items = result.as_array().map(Vec::as_slice).unwrap_or_default();
+        items
+            .iter()
+            .filter_map(|item| {
+                let path = path_from_uri(item["location"]["uri"].as_str()?)?;
+                let text = files.entry(path.clone()).or_insert_with(|| std::fs::read_to_string(&path).ok());
+                self.symbol(item, &path, &item["location"]["range"], None, text.as_deref())
+            })
+            .collect()
+    }
+
+    /// The symbol `item` of `path` (whose text is `text`) that starts at
+    /// `range`: where its name is, if it's on that line (a whole declaration
+    /// starts at `export`, `pub`…).
+    fn symbol(&self, item: &Value, path: &Path, range: &Value, container: Option<&str>, text: Option<&str>) -> Option<LspSymbol> {
+        let name = item["name"].as_str()?;
+        let line = range["start"]["line"].as_u64().unwrap_or(0) as u32;
+        let units = range["start"]["character"].as_u64().unwrap_or(0) as u32;
+        let line_text = text.and_then(|text| text.lines().nth(line as usize)).unwrap_or("");
+        let mut column = self.decode_column(line_text, units);
+        let rest: String = line_text.chars().skip(column as usize).collect();
+        if let Some(at) = rest.find(name) {
+            column += rest[..at].chars().count() as u32;
+        }
+        let container = container.or_else(|| item["containerName"].as_str()).filter(|name| !name.is_empty());
+        Some(LspSymbol {
+            path: path.to_path_buf(),
+            name: name.to_string(),
+            kind: item["kind"].as_u64().unwrap_or(0) as u32,
+            container: container.map(str::to_string),
+            line,
+            column,
+        })
     }
 
     /// The locations in a `definition` or `references` response: nothing, a
@@ -1093,6 +1180,8 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].path.canonicalize().unwrap(), rust.join("src/util.rs").canonicalize().unwrap());
         assert_eq!((found[0].line, found[0].column, found[0].length), (0, 7, 5));
+        let Response::Symbols { symbols, .. } = workspace_symbols(&rust, Some(&file), main, "twice").unwrap() else { panic!() };
+        assert!(symbols.iter().any(|s| s.name == "twice" && s.path.ends_with("src/util.rs") && (s.line, s.column) == (0, 7)), "{symbols:?}");
         let Response::Lsp { locations, .. } = request(&rust, &file, main, 3, column, LspOp::References).unwrap() else {
             panic!()
         };
@@ -1159,6 +1248,15 @@ mod tests {
             found,
             [("Sale", 5, None, 0, 13), ("cancel", 6, Some("Sale"), 1, 2), ("onCronTick", 12, None, 3, 16)],
         );
+        // Of the whole project: util.ts from disk, main.ts as the editor has it.
+        let Response::Symbols { symbols, server } = workspace_symbols(&ts, Some(&ts.join("main.ts")), text, "o").unwrap() else {
+            panic!()
+        };
+        assert_eq!(server.as_deref(), Some("typescript"));
+        let found = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| (s.path.file_name().unwrap().to_owned(), s.line, s.column));
+        assert_eq!(found("onCronTick"), Some(("main.ts".into(), 3, 16)), "{symbols:?}");
+        let Response::Symbols { symbols, .. } = workspace_symbols(&ts, None, "", "twice").unwrap() else { panic!() };
+        assert!(symbols.iter().any(|s| s.name == "twice" && s.path.ends_with("util.ts") && s.column == 16), "{symbols:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

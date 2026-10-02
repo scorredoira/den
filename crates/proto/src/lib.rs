@@ -178,6 +178,11 @@ pub enum Request {
     /// The folder `path` names on this machine: `~` expanded, links
     /// followed. Responds `Path`.
     Resolve { path: PathBuf },
+    /// The symbols of the task at `root` that match `query`, from the
+    /// language servers running for it and, with `path` (the file in front,
+    /// `text` its editor's text), the one of that file, started if needed.
+    /// Responds `Symbols`.
+    LspWorkspaceSymbols { root: PathBuf, path: Option<PathBuf>, text: String, query: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -236,9 +241,10 @@ pub struct LspLocation {
     pub text: String,
 }
 
-/// A symbol of a file (a function, a class, a method…), for Go to Symbol.
+/// A symbol (a function, a class, a method…), for Go to Symbol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LspSymbol {
+    pub path: PathBuf,
     pub name: String,
     /// LSP `SymbolKind`.
     pub kind: u32,
@@ -364,7 +370,8 @@ pub enum Response {
     Formatted { text: Option<String>, by: Option<String> },
     Count(usize),
     Relay(u64),
-    /// In the order they're in the file. `server` as in `Lsp`.
+    /// Of a file, in its order. `server` as in `Lsp`; of a task, the servers
+    /// that answered, separated by commas.
     Symbols { server: Option<String>, symbols: Vec<LspSymbol> },
 }
 

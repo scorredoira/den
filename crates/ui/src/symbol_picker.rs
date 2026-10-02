@@ -1,8 +1,13 @@
 //! Cmd-Shift-O: the symbols of the file (functions, classes, methods…), from
 //! its language server or, in Markdown, its headings. Filtered as you type,
 //! like VS Code; the editor shows the selected one while you choose.
+//! Cmd-Shift-T: those of the whole workspace, asked again as you type.
 
-use std::{ops::Range, rc::Rc};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use gpui_kit::component::{
     ActiveTheme as _, h_flex,
@@ -23,8 +28,10 @@ const ROW: f32 = 26.;
 const ROWS: usize = 14;
 
 pub enum SymbolPickerEvent {
-    /// The selection moved to this symbol: the editor shows it.
+    /// The selection moved to this symbol of the file: the editor shows it.
     Preview(LspSymbol),
+    /// Of the workspace: what's typed changed, its symbols are wanted.
+    Query(String),
     Pick(LspSymbol),
     /// Esc: back to where the cursor was.
     Dismiss,
@@ -41,6 +48,8 @@ enum Symbols {
 }
 
 pub struct SymbolPicker {
+    /// Of the workspace at this folder (else, of the file): their paths are shown from it.
+    workspace: Option<PathBuf>,
     input: Entity<InputState>,
     symbols: Symbols,
     /// The symbols that match, best first, and the characters of their name that matched.
@@ -53,12 +62,23 @@ pub struct SymbolPicker {
 impl EventEmitter<SymbolPickerEvent> for SymbolPicker {}
 
 impl SymbolPicker {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Go to Symbol in File…"));
+    pub fn new(workspace: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let placeholder = if workspace.is_some() { "Go to Symbol in Workspace…" } else { "Go to Symbol in File…" };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
+            // Meanwhile, what was found for the previous text is narrowed.
             InputEvent::Change => {
                 this.refilter(cx);
-                this.preview(cx);
+                match this.workspace {
+                    Some(_) => {
+                        let query = this.query(cx);
+                        if this.matches.is_empty() && !query.is_empty() {
+                            this.symbols = Symbols::Loading;
+                        }
+                        cx.emit(SymbolPickerEvent::Query(query));
+                    }
+                    None => this.preview(cx),
+                }
             }
             InputEvent::PressEnter { .. } => {
                 if let Some(symbol) = this.selected_symbol() {
@@ -69,8 +89,10 @@ impl SymbolPicker {
         });
         input.update(cx, |input, cx| input.focus(window, cx));
         Self {
+            // Of the workspace, nothing to show until something's typed.
+            symbols: if workspace.is_some() { Symbols::Ready(Rc::new([])) } else { Symbols::Loading },
+            workspace,
             input,
-            symbols: Symbols::Loading,
             matches: Rc::new([]),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
@@ -78,27 +100,33 @@ impl SymbolPicker {
         }
     }
 
-    pub fn set_symbols(&mut self, symbols: Result<Vec<LspSymbol>, SharedString>, cx: &mut Context<Self>) {
+    /// The symbols, or why there are none. Of the workspace, those that
+    /// match `query`: ignored if something else is typed by now.
+    pub fn set_symbols(&mut self, query: Option<&str>, symbols: Result<Vec<LspSymbol>, SharedString>, cx: &mut Context<Self>) {
+        if query.is_some_and(|query| query != self.query(cx)) {
+            return;
+        }
         self.symbols = match symbols {
             Ok(symbols) => Symbols::Ready(symbols.into()),
             Err(error) => Symbols::Failed(error),
         };
         self.refilter(cx);
         // Something typed while they were coming: show the best match.
-        if !self.query(cx).is_empty() {
+        if self.workspace.is_none() && !self.query(cx).is_empty() {
             self.preview(cx);
         }
     }
 
-    /// What's typed, without VS Code's `@`.
-    fn query(&self, cx: &App) -> String {
+    /// What's typed, without VS Code's `@` or `#`.
+    pub fn query(&self, cx: &App) -> String {
         let value = self.input.read(cx).value();
-        value.trim().trim_start_matches('@').trim().to_string()
+        value.trim().trim_start_matches(['@', '#']).trim().to_string()
     }
 
     fn refilter(&mut self, cx: &mut Context<Self>) {
         let query = self.query(cx);
         self.matches = match &self.symbols {
+            Symbols::Ready(_) if self.workspace.is_some() && query.is_empty() => Rc::new([]),
             Symbols::Ready(symbols) => filter(symbols, &query).into(),
             _ => Rc::new([]),
         };
@@ -127,7 +155,9 @@ impl SymbolPicker {
         let len = self.matches.len() as isize;
         self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
         self.scroll.scroll_to_item(self.selected, ScrollStrategy::Nearest);
-        self.preview(cx);
+        if self.workspace.is_none() {
+            self.preview(cx);
+        }
         cx.notify();
     }
 }
@@ -177,8 +207,8 @@ fn char_ranges(text: &str, indices: &[u32]) -> Vec<Range<usize>> {
     ranges
 }
 
-/// The headings of a Markdown file, as symbols: each inside the one above it.
-pub fn markdown_symbols(text: &str) -> Vec<LspSymbol> {
+/// The headings of Markdown file `path`, as symbols: each inside the one above it.
+pub fn markdown_symbols(path: &Path, text: &str) -> Vec<LspSymbol> {
     let mut symbols = Vec::new();
     // The headings that contain the next one: their level and name.
     let mut open: Vec<(usize, String)> = Vec::new();
@@ -207,6 +237,7 @@ pub fn markdown_symbols(text: &str) -> Vec<LspSymbol> {
         }
         open.retain(|(open, _)| *open < level);
         symbols.push(LspSymbol {
+            path: path.to_path_buf(),
             name: name.clone(),
             // String, as VS Code's.
             kind: 15,
@@ -249,10 +280,12 @@ fn kind_icon(kind: u32, cx: &App) -> (&'static str, Hsla) {
 impl Render for SymbolPicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let typed = !self.query(cx).is_empty();
         let status = match &self.symbols {
+            Symbols::Ready(_) if self.workspace.is_some() && !typed => Some("Type the name of a symbol".into()),
             Symbols::Loading => Some(SharedString::from("Loading symbols…")),
             Symbols::Failed(error) => Some(error.clone()),
-            Symbols::Ready(symbols) if symbols.is_empty() => Some("No symbols in this file".into()),
+            Symbols::Ready(symbols) if symbols.is_empty() && self.workspace.is_none() => Some("No symbols in this file".into()),
             Symbols::Ready(_) if self.matches.is_empty() => Some("No matching symbols".into()),
             Symbols::Ready(_) => None,
         };
@@ -263,6 +296,7 @@ impl Render for SymbolPicker {
         let matches = self.matches.clone();
         let selected = self.selected;
         let count = matches.len();
+        let workspace = self.workspace.clone();
         let view = cx.entity();
         v_flex()
             .id("symbol-picker")
@@ -322,6 +356,11 @@ impl Render for SymbolPicker {
                                     .map(|range| (range, highlight))
                                     .collect();
                                 let picked = symbol.clone();
+                                // Of the workspace, also its file.
+                                let file = workspace.as_ref().map(|root| {
+                                    symbol.path.strip_prefix(root).unwrap_or(&symbol.path).to_string_lossy().into_owned()
+                                });
+                                let description: Vec<String> = symbol.container.iter().cloned().chain(file).collect();
                                 h_flex()
                                     .id(("symbol-row", ix))
                                     .w_full()
@@ -346,7 +385,7 @@ impl Render for SymbolPicker {
                                             .overflow_hidden()
                                             .whitespace_nowrap()
                                             .text_ellipsis()
-                                            .child(symbol.container.clone().unwrap_or_default()),
+                                            .child(description.join("  ·  ")),
                                     )
                                     .when(ix == 0, |el| {
                                         el.child(
@@ -376,12 +415,14 @@ impl Render for SymbolPicker {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use proto::LspSymbol;
 
     use super::{char_ranges, filter, markdown_symbols};
 
     fn symbol(name: &str) -> LspSymbol {
-        LspSymbol { name: name.into(), kind: 12, container: None, line: 0, column: 0 }
+        LspSymbol { path: "main.ts".into(), name: name.into(), kind: 12, container: None, line: 0, column: 0 }
     }
 
     #[test]
@@ -407,7 +448,7 @@ mod tests {
     fn markdown_headings_nest_and_skip_code() {
         let text = "# Title\n\nintro\n\n## One ##\n```\n# not a heading\n```\n### Deep\n## Two\n#hashtag\n";
         let found: Vec<_> =
-            markdown_symbols(text).into_iter().map(|s| (s.name, s.container, s.line)).collect();
+            markdown_symbols(Path::new("README.md"), text).into_iter().map(|s| (s.name, s.container, s.line)).collect();
         assert_eq!(
             found,
             [
