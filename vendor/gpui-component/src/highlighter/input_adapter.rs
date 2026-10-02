@@ -234,29 +234,37 @@ fn extract_fold_ranges_in_range(
     tree: &tree_sitter::Tree,
     byte_range: Range<usize>,
 ) -> Vec<FoldRange> {
-    fn collect(node: tree_sitter::Node, bytes: &Range<usize>, ranges: &mut Vec<FoldRange>) {
-        if node.end_byte() <= bytes.start || node.start_byte() >= bytes.end {
-            return;
-        }
-        let start = node.start_position().row;
-        let end = node.end_position().row;
-        if end.saturating_sub(start) < 2 {
-            return;
-        }
-        ranges.push(FoldRange::new(start, end));
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            collect(child, bytes, ranges);
-        }
-    }
-
-    let root = tree.root_node();
+    // (sik) Walks the tree with a cursor instead of recursing: a deeply nested
+    // tree (a long chain of expressions, say) overflowed the stack and crashed.
     let mut ranges = Vec::new();
-    let mut cursor = root.walk();
-    for child in root.named_children(&mut cursor) {
-        collect(child, &byte_range, &mut ranges);
+    let mut cursor = tree.root_node().walk();
+    if !cursor.goto_first_child() {
+        return ranges;
     }
-    ranges.sort_by_key(|range| range.start_line);
-    ranges.dedup_by_key(|range| range.start_line);
-    ranges
+    loop {
+        let node = cursor.node();
+        let mut descend = false;
+        if node.is_named()
+            && node.end_byte() > byte_range.start
+            && node.start_byte() < byte_range.end
+        {
+            let start = node.start_position().row;
+            let end = node.end_position().row;
+            if end.saturating_sub(start) >= 2 {
+                ranges.push(FoldRange::new(start, end));
+                descend = true;
+            }
+        }
+        if descend && cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() || cursor.depth() == 0 {
+                ranges.sort_by_key(|range| range.start_line);
+                ranges.dedup_by_key(|range| range.start_line);
+                return ranges;
+            }
+        }
+    }
 }
+

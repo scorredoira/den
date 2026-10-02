@@ -48,5 +48,10 @@ the completion menu drawn like VS Code's, with an icon per kind, the letters
 that match what's typed highlighted, the detail at the right of the selected
 item only, and that item resolved for its detail and documentation.
 
+And one fix marked `(sik)` in `src/highlighter/input_adapter.rs`: the fold
+ranges were collected by recursing over the syntax tree, which overflowed a
+background thread's stack on a deeply nested file and killed the app. They
+are now walked with a tree cursor.
+
 Updating: copy the new release over it, drop `benches/`, `tests/` and their
 `[[bench]]`/`[[test]]` entries, and reapply the `(sik)` functions.
