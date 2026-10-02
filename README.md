@@ -87,7 +87,7 @@ Drag a terminal tab to the left, right, top or bottom edge of another terminal t
 
 ## Layout
 
-The activity bar, on the window's left edge, has an icon for each panel but the code: a click shows the panel wherever it's placed, or hides it if it shows. The icons carry what's going on in their panel: the number of files changed, Claude's state in this workspace's terminals and, on the workspaces', the most urgent of the others; the debugger's is yellow while stopped and green while running. Drag the icons up or down to reorder them. Right-click the bar, or go to View > Activity Bar, to take an icon off it: its panel still opens with its shortcut and from the menus. At its bottom, Open Folder on Server and Settings.
+The activity bar, on the window's left edge, has an icon for each panel but the code: a click shows the panel wherever it's placed, or hides it if it shows. The icons carry what's going on in their panel: the number of files changed, Claude's state in this workspace's terminals and, on the workspaces', the most urgent of the others; the debugger's is yellow while stopped and green while running. Drag the icons up or down to reorder them. Right-click the bar, or go to View > Activity Bar, to take an icon off it: its panel still opens with its shortcut and from the menus. At its bottom, Add Server (a host from `~/.ssh/config`, `user@host` or, on Windows, a WSL distro) and Settings.
 
 Under each workspace in the workspaces column, a row for every terminal running a coding agent (Claude Code, Codex, Gemini…): what it's on (Claude Code's title) and its state, working, waiting for an answer, or done while you weren't looking. A click goes to that terminal. A folded repo sums up its agents in a dot.
 

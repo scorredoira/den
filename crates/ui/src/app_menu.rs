@@ -47,6 +47,7 @@ pub fn set(cx: &mut App) {
         Menu::new("File").items([
             MenuItem::action("Open Folder…", OpenFolder),
             MenuItem::action("Open Folder on Server…", OpenRemoteFolder),
+            MenuItem::action("Add Server…", AddServer),
             MenuItem::action("Open Recent…", OpenRecent),
             MenuItem::separator(),
             MenuItem::action("New Worktree…", NewTask),

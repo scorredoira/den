@@ -29,7 +29,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleActivityIcon, ToggleTasks,
+    AddServer, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleActivityIcon, ToggleTasks,
     config::{self, Config, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -57,6 +57,8 @@ pub const LOCAL: &str = "local";
 const FOLD_WIDTH: f32 = 12.;
 
 /// How far a server's workspaces sit in from its name.
+/// The last choice of Open Folder on Server: a server not connected yet.
+const ADD_SERVER: &str = "Add Server…";
 const ROW_INDENT: f32 = 24.;
 /// Where an agent's row starts, under a workspace of the column's own and
 /// under a repo's worktree: past its workspace's icon.
@@ -1285,12 +1287,15 @@ impl Sik {
             .collect();
         match hosts.as_slice() {
             [] => self.open_host_picker(window, cx),
-            [host] => self.open_folder_picker(host.clone().into(), window, cx),
+            // The servers connected, and another to connect to.
             _ => {
-                let picker = cx.new(|cx| Picker::new(Arc::new(hosts), "Open a folder on…", false, window, cx));
+                let mut choices = hosts;
+                choices.push(ADD_SERVER.to_string());
+                let picker = cx.new(|cx| Picker::new(Arc::new(choices), "Open a folder on…", false, window, cx));
                 let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
                     this.host_picker = None;
                     match event {
+                        PickerEvent::Pick(choice) if choice == ADD_SERVER => this.open_host_picker(window, cx),
                         PickerEvent::Pick(host) => {
                             this.open_folder_picker(host.clone().into(), window, cx)
                         }
@@ -2355,6 +2360,7 @@ impl Render for Sik {
             .on_action(|_: &ResetLayout, _, cx| menu::reset_layout_now(cx))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_remote_folder))
+            .on_action(cx.listener(|this, _: &AddServer, window, cx| this.open_host_picker(window, cx)))
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(Self::new_task_action))
             .on_action(cx.listener(Self::open_task_picker))

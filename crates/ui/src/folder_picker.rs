@@ -99,8 +99,20 @@ impl FolderPicker {
         cx.notify();
     }
 
-    /// The subfolders that match the filter (case-insensitive).
+    /// What's typed, if it's a path rather than a filter: from the root
+    /// (`/var/sim`, `C:\x`) or the home (`~/x`).
+    fn typed_path(&self, cx: &App) -> Option<PathBuf> {
+        let typed = self.filter.read(cx).value().trim().to_string();
+        let drive = typed.len() >= 3 && typed.as_bytes()[1] == b':' && matches!(typed.as_bytes()[2], b'/' | b'\\');
+        (typed.starts_with(['/', '~', '\\']) || drive).then(|| PathBuf::from(typed))
+    }
+
+    /// The subfolders that match the filter (case-insensitive); none while
+    /// a path is typed.
     fn visible(&self, cx: &App) -> Vec<String> {
+        if self.typed_path(cx).is_some() {
+            return Vec::new();
+        }
         let filter = self.filter.read(cx).value().to_lowercase();
         self.dirs
             .iter()
@@ -118,6 +130,10 @@ impl FolderPicker {
     }
 
     fn enter_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.typed_path(cx) {
+            self.open(path, cx);
+            return;
+        }
         let visible = self.visible(cx);
         match visible.get(self.selected) {
             Some(name) => {
@@ -164,7 +180,9 @@ impl FolderPicker {
     /// The folder shown, as the agent's machine names it: `~/x` would be a
     /// different workspace from `/home/me/x`, and only some requests expand it.
     fn pick(&mut self, cx: &mut Context<Self>) {
-        let (client, dir) = (self.client.clone(), self.dir.clone());
+        // A path typed opens as it is.
+        let dir = self.typed_path(cx).unwrap_or_else(|| self.dir.clone());
+        let client = self.client.clone();
         self.load = Some(cx.spawn(async move |this, cx| {
             // An older agent doesn't know the request: the folder goes as it is.
             let dir = match client.request(Request::Resolve { path: dir.clone() }).await {
@@ -191,7 +209,8 @@ impl Render for FolderPicker {
         }
         let visible = self.visible(cx);
         let new_name = self.new_name(cx);
-        let no_subfolders = visible.is_empty() && !self.loading && new_name.is_none();
+        let typed_path = self.typed_path(cx);
+        let no_subfolders = visible.is_empty() && !self.loading && new_name.is_none() && typed_path.is_none();
         let new_selected = self.selected == visible.len();
         let theme = cx.theme();
         let name = self
@@ -301,6 +320,18 @@ impl Render for FolderPicker {
                             .child(format!("New Folder “{name}”"))
                             .on_click(cx.listener(|this, _, _, cx| this.create(cx)))
                     }))
+                    .children(typed_path.map(|path| {
+                        h_flex()
+                            .id("folder-go")
+                            .h(px(26.))
+                            .px_2()
+                            .gap_2()
+                            .rounded(theme.radius)
+                            .bg(theme.accent)
+                            .child(svg().path("icons/tree-folder.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                            .child(format!("Go to {}", path.display()))
+                            .on_click(cx.listener(move |this, _, _, cx| this.open(path.clone(), cx)))
+                    }))
                     .when(no_subfolders, |el| {
                         el.child(div().px_2().py_1().text_ui_small(cx).text_color(theme.muted_foreground).child("No subfolders"))
                     }),
@@ -314,7 +345,7 @@ impl Render for FolderPicker {
                             .flex_1()
                             .text_ui_small(cx)
                             .text_color(theme.muted_foreground)
-                            .child("Enter to go in · Cmd-↑ to go up · Cmd-Enter to open · type a new name to create it"),
+                            .child("Enter to go in · Cmd-↑ to go up · Cmd-Enter to open · type a path (/ or ~) to go there, or a new name to create it"),
                     )
                     .child(button("folder-cancel", "Cancel".into()).on_click(cx.listener(|_, _, _, cx| cx.emit(FolderPickerEvent::Dismiss))))
                     .child(

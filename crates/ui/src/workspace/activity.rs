@@ -66,8 +66,8 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
         }))
         // Past the icons, it goes last.
         .child(div().flex_1().w_full().on_drop(|drag: &PanelDrag, _, cx| reorder(drag.0, None, cx)))
-        // At the bottom, as in VS Code: a folder on a server, and Settings.
-        .child(bottom_button("activity-remote", "icons/satellite-dish.svg", "Open Folder on Server…", Box::new(crate::OpenRemoteFolder), cx))
+        // At the bottom, as in VS Code: connecting to a server, and Settings.
+        .child(bottom_button("activity-remote", "icons/satellite-dish.svg", ADD_SERVER, Box::new(crate::AddServer), cx))
         .child(bottom_button("activity-settings", "icons/settings.svg", "Settings", Box::new(crate::OpenSettings), cx))
         .context_menu(|popup, _, cx| {
             let config = Config::get(cx);
@@ -110,6 +110,8 @@ fn activity_button(panel: Panel, shown: bool, cx: &App) -> Stateful<Div> {
         .hover(|style| style.bg(theme.sidebar_accent))
         .child(svg().path(thin(icon(panel))).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
 }
+
+const ADD_SERVER: &str = if cfg!(windows) { "Add Server or WSL Distro…" } else { "Add Server…" };
 
 /// An icon at the bottom of the bar that runs `action`.
 fn bottom_button(id: &'static str, path: &'static str, tip: &'static str, action: Box<dyn Action>, cx: &App) -> Stateful<Div> {

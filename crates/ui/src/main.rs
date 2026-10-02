@@ -92,6 +92,7 @@ actions!(
         ToggleTasks,
         OpenFolder,
         OpenRemoteFolder,
+        AddServer,
         OpenRecent,
         DebugContinue,
         DebugStop,
