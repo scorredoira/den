@@ -136,11 +136,16 @@ fn closing_a_stack_gives_its_width_to_the_code(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_code_shares_a_place_like_any_panel(cx: &mut TestAppContext) {
+fn the_code_goes_in_tabs_like_any_panel(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    let start = bounds(cx, "activity-Code").center();
-    let files = bounds(cx, "stack-Files");
-    let end = point(files.center().x, files.top() + px(10.));
+    // With the activity bar it has no icon: it stays put. Without it, its tab
+    // drags it.
+    assert!(cx.debug_bounds("activity-Code").is_none());
+    cx.update(|_, cx| Config::update(cx, |config| config.activity_bar = Some(false)));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let start = bounds(cx, "panel-tab-Code").center();
+    let end = bounds(cx, "panel-tab-Search").center();
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
@@ -148,22 +153,14 @@ fn the_code_shares_a_place_like_any_panel(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Code).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::Search, Panel::References, Panel::Code]);
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::Code, Panel::Search, Panel::References]);
     bounds(cx, "editor-body-0");
-    // Another panel there hides it; hiding that one brings it back, its place
-    // never closes.
+    // Another tab hides it; hiding that one brings it back, its stack never closes.
     workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Files, cx));
     cx.run_until_parked();
     assert!(cx.debug_bounds("editor-body-0").is_none());
     workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Files, cx));
     cx.run_until_parked();
-    bounds(cx, "editor-body-0");
-    // Its icon brings it to the front, and never hides it.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));
-    cx.run_until_parked();
-    click(cx, "activity-Code");
-    bounds(cx, "editor-body-0");
-    click(cx, "activity-Code");
     bounds(cx, "editor-body-0");
     // Opening a file shows it too.
     workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));

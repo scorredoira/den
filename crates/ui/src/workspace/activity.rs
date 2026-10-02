@@ -1,8 +1,8 @@
-//! The activity bar, on the window's left edge: an icon for each panel. A
-//! click shows or hides the panel wherever it's placed (the code is never
-//! hidden: its place doesn't close); dragging an icon reorders the bar, or
-//! places the panel. While it shows, the places have no tabs: it does their
-//! job.
+//! The activity bar, on the window's left edge: an icon for each panel but
+//! the code, which stays put and never closes (the others go around it). A
+//! click shows or hides the panel wherever it's placed; dragging an icon
+//! reorders the bar, or places the panel. While it shows, the places have no
+//! tabs: it does their job.
 use super::*;
 use super::layout::{PanelDrag, icon, title};
 use crate::config::Panel;
@@ -46,8 +46,7 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
             div()
                 .relative()
                 .child(
-                    mode_button(("activity", panel as usize), icon(panel), shown, cx)
-                        .size(px(32.))
+                    activity_button(panel, shown, cx)
                         .when(cfg!(test), |el| el.debug_selector(move || format!("activity-{panel:?}")))
                         .tooltip(move |window, cx| Tooltip::new(title(panel)).build(window, cx))
                         .on_click(move |_, window, cx| click(panel, window, cx))
@@ -63,6 +62,21 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
         // Past the icons, it goes last.
         .child(div().flex_1().w_full().on_drop(|drag: &PanelDrag, _, cx| reorder(drag.0, None, cx)))
         .into_any_element()
+}
+
+/// An icon in the foreground's color while its panel shows: unlike a tab,
+/// several show at once, so none is filled in as if selected.
+fn activity_button(panel: Panel, shown: bool, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    div()
+        .id(("activity", panel as usize))
+        .size(px(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme.radius)
+        .hover(|style| style.bg(theme.sidebar_accent))
+        .child(svg().path(icon(panel)).size(px(18.)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
 }
 
 fn reorder(panel: Panel, target: Option<Panel>, cx: &mut App) {
@@ -126,9 +140,8 @@ impl Workspace {
         }
     }
 
-    /// Shows the panel, or hides it if it shows (but the code, see
-    /// `hide_panel`). The terminals and the search get the focus, as their
-    /// keys do.
+    /// Shows the panel, or hides it if it shows. The terminals and the
+    /// search get the focus, as their keys do.
     pub(super) fn click_activity(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
         let shown = self.is_shown(panel, cx);
         match panel {

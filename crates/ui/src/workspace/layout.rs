@@ -410,8 +410,10 @@ impl Workspace {
                     .when(!untabbed, |el| el.justify_end())
                     .pr_1()
                     .text_ui_small(cx)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.muted_foreground)
-                    .child(title(active))
+                    // As the workspaces column's.
+                    .child(title(active).to_uppercase())
                     .context_menu(move |menu, _, _| {
                         menu.item(menu::item("Hide", &workspace, move |this, _, cx| this.hide_panel(active, cx)))
                             .item(menu::reset_layout())

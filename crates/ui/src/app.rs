@@ -1982,6 +1982,8 @@ impl Sik {
                     .h(px(34.))
                     .flex_none()
                     .px_3()
+                    .border_b_1()
+                    .border_color(theme.sidebar_border)
                     .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)

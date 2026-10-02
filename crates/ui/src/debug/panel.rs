@@ -151,7 +151,7 @@ impl Debugger {
         let entity = cx.entity().downgrade();
         let launches = self.launches.clone();
         h_flex()
-            .h(px(32.))
+            .h(px(34.))
             .px_2()
             .gap_1()
             .flex_none()
