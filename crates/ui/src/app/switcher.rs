@@ -57,13 +57,14 @@ impl Sik {
         true
     }
 
-    /// The workspaces that exist, the most recently used first, with the
-    /// one in front at the start.
+    /// Every workspace in the column: the one in front, then the most
+    /// recently used, then the rest in the column's order.
     fn recently_used(&self, cx: &App) -> Vec<TaskKey> {
-        let mut keys: Vec<TaskKey> = self.active.iter().cloned().collect();
-        for recent in &Config::get(cx).recent {
-            let key = TaskKey { host: recent.host.clone().into(), path: recent.path.clone() };
-            if !keys.contains(&key) && self.task(&key).is_some() {
+        let column: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
+        let recent = Config::get(cx).recent.iter().map(|recent| TaskKey { host: recent.host.clone().into(), path: recent.path.clone() });
+        let mut keys: Vec<TaskKey> = Vec::new();
+        for key in self.active.iter().cloned().chain(recent).chain(column.iter().cloned()) {
+            if !keys.contains(&key) && column.contains(&key) {
                 keys.push(key);
             }
         }
@@ -93,19 +94,30 @@ impl Sik {
     pub(super) fn render_switcher(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let switcher = self.switcher.as_ref()?;
         let theme = cx.theme().clone();
-        let rows = switcher.keys.iter().enumerate().take(12).map(|(ix, key)| {
+        let rows = switcher.keys.iter().enumerate().map(|(ix, key)| {
             let selected = ix == switcher.selected;
-            let icon = self.task(key).map(kind_icon).unwrap_or("icons/folder.svg");
+            let task = self.task(key);
+            let icon = task.map(kind_icon).unwrap_or("icons/folder.svg");
+            // Named as in the column: a worktree by its branch, with its
+            // repo and its server beside it.
+            let name = task.map(column_label).unwrap_or_else(|| folder_name(&key.path).into());
+            let repo = task.filter(|task| !task.main).map(|task| folder_name(&task.repo));
+            let place = [repo, (key.host != LOCAL).then(|| key.host.to_string())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+            let (dot, color) = task.map(|task| self.status(key, task, cx)).unwrap_or(("○", theme.muted_foreground));
             let key = key.clone();
             h_flex()
                 .id(("switcher", ix))
                 .h(px(30.))
+                .flex_none()
                 .px_3()
                 .gap_2()
                 .rounded(theme.radius)
                 .when(selected, |el| el.bg(theme.accent))
                 .child(svg().path(icon).size(px(14.)).flex_none().text_color(theme.muted_foreground))
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(self.label(&key)))
+                .child(div().flex_none().max_w(px(260.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_ui_small(cx).text_color(theme.muted_foreground).child(place))
+                .child(div().flex_1())
+                .when(dot != "○", |row| row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.switcher = None;
                     this.activate(key.clone(), window, cx);
@@ -114,6 +126,8 @@ impl Sik {
         Some(
             div()
                 .absolute()
+                .top_0()
+                .left_0()
                 .size_full()
                 .flex()
                 .items_center()
@@ -122,7 +136,9 @@ impl Sik {
                     v_flex()
                         .id("switcher")
                         .occlude()
-                        .w(px(420.))
+                        .w(px(480.))
+                        .max_h(px(560.))
+                        .overflow_y_scroll()
                         .p_1()
                         .gap_0p5()
                         .bg(theme.popover)

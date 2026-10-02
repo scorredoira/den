@@ -2108,13 +2108,8 @@ impl Sik {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let folder: SharedString = folder_name(&task.path).into();
-        // A worktree goes by its branch, what its agent works on (its folder
-        // usually repeats the repo's name); a checkout by its folder, with
-        // its branch beside it when off the main one.
-        let label = match (&task.branch, task.main) {
-            (Some(branch), false) => SharedString::from(branch.clone()),
-            _ => folder.clone(),
-        };
+        // A checkout off its main branch has the branch beside it.
+        let label = column_label(task);
         let branch = task
             .branch
             .clone()
@@ -2518,6 +2513,16 @@ fn recent_label(key: &TaskKey) -> String {
 }
 
 /// A workspace's icon: a folder, or a branch for a repo's worktree.
+/// A workspace's name in the column: a worktree goes by its branch, what
+/// its agent works on (its folder usually repeats the repo's name); a
+/// checkout by its folder.
+fn column_label(task: &TaskInfo) -> SharedString {
+    match (&task.branch, task.main) {
+        (Some(branch), false) => branch.clone().into(),
+        _ => folder_name(&task.path).into(),
+    }
+}
+
 fn kind_icon(task: &TaskInfo) -> &'static str {
     if task.main { "icons/folder.svg" } else { "icons/git-branch.svg" }
 }

@@ -114,13 +114,14 @@ impl Sik {
     }
 }
 
-/// What the agent is on: Claude Code's title without its spinner, or the
+/// What the agent is on: its title without its spinner, or the
 /// agent's name.
 fn agent_title(agent: &AgentInfo) -> SharedString {
     let title = agent
         .title
         .as_deref()
-        .map(|title| title.trim_start_matches(|ch: char| ch == '✳' || ('\u{2800}'..='\u{28FF}').contains(&ch)).trim())
+        // Whatever spinner it starts with (✳, braille, ◐…).
+        .map(|title| title.trim_start_matches(|ch: char| !ch.is_alphanumeric()).trim())
         .filter(|title| !title.is_empty());
     match title {
         Some(title) => title.to_string().into(),
