@@ -547,8 +547,9 @@ impl Debugger {
         list.into_any_element()
     }
 
-    /// The card of a hovered value, under its name. It goes away when the
-    /// pointer leaves both, or the code under it scrolls.
+    /// The card of a hovered value, under its name, opened. It goes away a
+    /// moment after the pointer leaves both, or when the code under it
+    /// scrolls; the wheel over it scrolls only the card.
     pub fn render_hover(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let hover = self.hover.as_ref()?;
         let anchor = hover.anchor;
@@ -563,8 +564,8 @@ impl Debugger {
                 let keep = bounds.union(&anchor);
                 let moved = entity.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                    if phase.bubble() && !keep.contains(&event.position) {
-                        moved.update(cx, |this, cx| this.clear_hover(cx)).ok();
+                    if phase.bubble() {
+                        moved.update(cx, |this, cx| this.track_hover(keep.contains(&event.position), cx)).ok();
                     }
                 });
                 let scrolled = entity.clone();
@@ -583,6 +584,8 @@ impl Debugger {
                     div()
                         .relative()
                         .occlude()
+                        // the card scrolls first; what it doesn't use stops here
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .min_w(px(260.))
                         .max_w(px(640.))
                         .bg(theme.popover)

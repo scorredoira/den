@@ -110,7 +110,9 @@ bar is dragged: see Layout in the README.
 
 When a VM stops, its line is marked, the values of the variables are written
 at the end of the lines of its function, and hovering a name shows its value
-in a card that opens like the variables view.
+in a card that opens like the variables view, already open one level. The
+card waits a moment before it goes, or shows another name's, so the pointer
+can reach it across other names; the wheel over it scrolls only the card.
 Values that the last step changed are shown in another color. In the
 variables view a double click edits a value; the console evaluates
 expressions and assignments (`total = 5`) with the history on ↑ and ↓.

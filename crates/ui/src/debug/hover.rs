@@ -29,7 +29,7 @@ impl HoverProvider for DebugHover {
                 !matches!(&line[span.clone()], "let" | "const" | "var" | "function" | "return" | "if" | "else" | "for" | "while" | "new" | "export" | "import" | "true" | "false" | "null" | "undefined")
             });
         let Some(span) = span else {
-            debugger.update(cx, |debugger, cx| debugger.clear_hover(cx));
+            debugger.update(cx, |debugger, cx| debugger.leave_hover(cx));
             return Task::ready(Ok(None));
         };
         let expr = line[span.clone()].to_string();
@@ -40,7 +40,7 @@ impl HoverProvider for DebugHover {
         cx.spawn(async move |cx| {
             let anchor = editor.read_with(cx, |editor, _| editor.range_to_bounds(&range)).ok().flatten();
             if let Some(anchor) = anchor {
-                debugger.update(cx, |debugger, _| debugger.show_hover(expr, anchor));
+                debugger.update(cx, |debugger, cx| debugger.show_hover(expr, anchor, cx));
             }
             Ok(None)
         })
