@@ -1,4 +1,4 @@
-//! Cmd-E (Ctrl-Tab on Linux and Windows), as macOS's Cmd-Tab: the workspaces
+//! Cmd-Alt-E (Ctrl-Tab on Linux and Windows), as macOS's Cmd-Tab: the workspaces
 //! being worked on (the previous one and those with a coding agent, the ones
 //! waiting for an answer first), with the previous one selected; each E (or ↓)
 //! selects the next, Shift-E (or ↑) the one before, letting go of Cmd enters
@@ -13,7 +13,7 @@ pub(super) struct Switcher {
 }
 
 impl Den {
-    /// Cmd-E: opens the switcher on the previous workspace or, open, selects
+    /// Cmd-Alt-E: opens the switcher on the previous workspace or, open, selects
     /// the next one.
     pub(super) fn previous_task(&mut self, _: &PreviousTask, window: &mut Window, cx: &mut Context<Self>) {
         if self.switcher.is_some() {
@@ -31,6 +31,21 @@ impl Den {
         }
         self.switcher = Some(Switcher { keys, selected: 1 });
         cx.notify();
+    }
+
+    /// Cmd-E, and Cmd-Alt-Shift-E: straight into the next workspace in
+    /// the column (the first after the last), only those with a coding agent
+    /// or any of them.
+    pub(super) fn next_task(&mut self, with_agent: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let column: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
+        let start = self.active.as_ref().and_then(|active| column.iter().position(|key| key == active));
+        let after = start.map_or(0, |ix| ix + 1);
+        let next = (0..column.len())
+            .map(|step| &column[(after + step) % column.len()])
+            .find(|key| Some(*key) != self.active.as_ref() && (!with_agent || !self.workspace_agents(key).is_empty()));
+        if let Some(key) = next.cloned() {
+            self.activate(key, window, cx);
+        }
     }
 
     /// Selects `by` further down the list (up if negative), round the ends.
@@ -67,7 +82,7 @@ impl Den {
     }
 
     /// The workspaces being worked on: the one in front, the previous one (so
-    /// a quick Cmd-E goes back), then those with a coding agent, the ones
+    /// a quick Cmd-Alt-E goes back), then those with a coding agent, the ones
     /// waiting for an answer first, each the most recently used first. With
     /// no agent anywhere else, every workspace in the column.
     fn recently_used(&self, cx: &App) -> Vec<TaskKey> {

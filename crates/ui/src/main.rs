@@ -93,6 +93,8 @@ actions!(
         OpenCommandPalette,
         ShowShortcuts,
         PreviousTask,
+        NextActiveTask,
+        NextTask,
         ToggleTasks,
         OpenFolder,
         OpenRemoteFolder,

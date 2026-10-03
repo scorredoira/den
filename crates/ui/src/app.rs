@@ -29,7 +29,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    AddServer, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleActivityIcon, ToggleTasks,
+    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleActivityIcon, ToggleTasks,
     config::{self, Config, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -470,7 +470,7 @@ pub struct Den {
     /// The server just added, until a folder is opened on it (or not, and
     /// it goes).
     adding_host: Option<SharedString>,
-    /// Cmd-E held: the workspaces to go through.
+    /// Cmd-Alt-E held: the workspaces to go through.
     switcher: Option<switcher::Switcher>,
     /// Cmd-K: jump to a task by name.
     task_picker: Option<(Entity<Picker>, Subscription)>,
@@ -2927,6 +2927,8 @@ impl Render for Den {
             .on_action(cx.listener(|this, _: &OpenCommandPalette, window, cx| this.open_command_palette(window, cx)))
             .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| this.open_command_palette(window, cx)))
             .on_action(cx.listener(Self::previous_task))
+            .on_action(cx.listener(|this, _: &NextActiveTask, window, cx| this.next_task(true, window, cx)))
+            .on_action(cx.listener(|this, _: &NextTask, window, cx| this.next_task(false, window, cx)))
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, window, cx| {
                 this.switcher_modifiers(&event.modifiers, window, cx)
             }))

@@ -129,6 +129,8 @@ pub fn set(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Find Workspace…", OpenTaskPicker),
             MenuItem::action("Switch Workspace", PreviousTask),
+            MenuItem::action("Next Workspace with an Agent", NextActiveTask),
+            MenuItem::action("Next Workspace", NextTask),
         ]),
         Menu::new("Debug").items([
             MenuItem::action("Start or Continue", DebugContinue),
