@@ -44,6 +44,10 @@ const LAUNCH_TEMPLATE: &str = r#"{
 /// How often to look whether the program listens on the port of `open`.
 const OPEN_POLL: Duration = Duration::from_millis(100);
 
+/// How long a value's card waits, once the pointer leaves its name, before
+/// it goes or shows another name's: time to reach it across other names.
+const HOVER_GRACE: Duration = Duration::from_millis(300);
+
 /// How long to keep trying to reach a program that is starting.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const CONNECT_RETRY: Duration = Duration::from_millis(100);
@@ -314,6 +318,12 @@ pub struct Debugger {
     pub tab: bool,
     /// The value shown by hovering its name in the code.
     pub hover: Option<HoverValue>,
+    /// The pointer is over the card or its name: the code under the card
+    /// asks for nothing.
+    hover_inside: bool,
+    /// What replaces the card once the grace is over: another name's value,
+    /// or nothing.
+    hover_change: Option<(Option<(String, Bounds<Pixels>)>, Task<()>)>,
     /// The test (its file and name) launched from the code, until it connects.
     launching_test: Option<(PathBuf, String)>,
     /// A restart: the program started again doesn't open `open` again.
@@ -386,6 +396,8 @@ impl Debugger {
             tall: false,
             tab: false,
             hover: None,
+            hover_inside: false,
+            hover_change: None,
             launching_test: None,
             restarting: false,
             tests: None,
@@ -1148,11 +1160,25 @@ impl Debugger {
     // ---- values ----
 
     /// Shows the value of `expr` by `anchor`; an expression without a value
-    /// (a function's name, a type) shows nothing.
-    pub fn show_hover(&mut self, expr: String, anchor: Bounds<Pixels>) {
-        if self.hover.as_ref().is_some_and(|hover| hover.var.name == expr && hover.anchor == anchor) {
+    /// (a function's name, a type) shows nothing. Over another name's card,
+    /// it waits a little: the pointer may be on its way to that card.
+    pub fn show_hover(&mut self, expr: String, anchor: Bounds<Pixels>, cx: &mut Context<Self>) {
+        if self.hover_inside && self.hover.is_some() {
             return;
         }
+        if self.hover.as_ref().is_some_and(|hover| hover.var.name == expr && hover.anchor == anchor) {
+            self.hover_change = None;
+            return;
+        }
+        if self.hover.is_none() {
+            self.hover_change = None;
+            self.evaluate_hover(expr, anchor);
+            return;
+        }
+        self.change_hover(Some((expr, anchor)), cx);
+    }
+
+    fn evaluate_hover(&mut self, expr: String, anchor: Bounds<Pixels>) {
         let serial = self.serial;
         self.evaluate(expr.clone(), move |this, result, cx| {
             if this.serial != serial {
@@ -1160,11 +1186,65 @@ impl Debugger {
             }
             this.expanded.retain(|key| key != "h" && !key.starts_with("h/"));
             this.hover = result.ok().map(|var| HoverValue { var: Var { name: expr, ..var }, anchor });
+            // open, as what's in it is what one hovers for
+            if let Some(reference) = this.hover.as_ref().map(|hover| hover.var.reference).filter(|&reference| reference != 0) {
+                this.expanded.insert("h".into());
+                if !this.children.contains_key(&reference) {
+                    this.fetch(reference, 0);
+                }
+            }
             cx.notify();
         });
     }
 
+    /// The pointer is on no name: the card goes, after the grace.
+    pub fn leave_hover(&mut self, cx: &mut Context<Self>) {
+        if self.hover.is_none() {
+            self.hover_change = None;
+        } else if !self.hover_inside {
+            self.change_hover(None, cx);
+        }
+    }
+
+    /// The pointer moved, over the card or its name (`inside`) or not.
+    pub fn track_hover(&mut self, inside: bool, cx: &mut Context<Self>) {
+        self.hover_inside = inside;
+        if inside {
+            self.hover_change = None;
+        } else if self.hover_change.is_none() {
+            self.change_hover(None, cx);
+        }
+    }
+
+    fn change_hover(&mut self, to: Option<(String, Bounds<Pixels>)>, cx: &mut Context<Self>) {
+        if self.hover_change.as_ref().is_some_and(|(pending, _)| *pending == to) {
+            return;
+        }
+        let next = to.clone();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HOVER_GRACE).await;
+            this.update(cx, |this, cx| {
+                this.hover_change = None;
+                if this.hover_inside || this.hover.is_none() {
+                    return;
+                }
+                // the card stays until the other value comes, or doesn't
+                match next {
+                    Some((expr, anchor)) => this.evaluate_hover(expr, anchor),
+                    None => {
+                        this.hover = None;
+                        cx.notify();
+                    }
+                }
+            })
+            .ok();
+        });
+        self.hover_change = Some((to, task));
+    }
+
     pub fn clear_hover(&mut self, cx: &mut Context<Self>) {
+        self.hover_change = None;
+        self.hover_inside = false;
         if self.hover.take().is_some() {
             cx.notify();
         }
