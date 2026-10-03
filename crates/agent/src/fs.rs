@@ -3,7 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    io::Read as _,
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     sync::{Mutex, mpsc},
     time::Duration,
@@ -38,7 +38,38 @@ pub fn read(path: &Path) -> Result<Vec<u8>> {
 }
 
 pub fn write(path: &Path, data: &[u8]) -> Result<()> {
-    std::fs::write(path, data).with_context(|| format!("could not write {}", path.display()))
+    atomic_write(path, |file| file.write_all(data))
+        .with_context(|| format!("could not write {}", path.display()))
+}
+
+/// Keep the old contents until the complete replacement is on disk. Follow
+/// symlinks so saving through one updates its target instead of removing it.
+fn atomic_write(path: &Path, write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> Result<()> {
+    let resolved = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_symlink() => path.canonicalize()?,
+        _ => path.to_path_buf(),
+    };
+    let permissions = match std::fs::metadata(&resolved) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                bail!("{} is not a regular file", resolved.display());
+            }
+            // Replacing the directory entry must not bypass file permissions.
+            std::fs::OpenOptions::new().write(true).open(&resolved)?;
+            Some(metadata.permissions())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+    let parent = resolved.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let mut temporary = tempfile::Builder::new().prefix(".sik-save-").tempfile_in(parent)?;
+    write(temporary.as_file_mut())?;
+    if let Some(permissions) = permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
+    temporary.as_file().sync_all()?;
+    temporary.persist(&resolved)?;
+    Ok(())
 }
 
 /// A folder, honoring `.gitignore` (including those of parent folders):
@@ -241,6 +272,38 @@ mod tests {
         file.set_len(MAX_READ + 1).unwrap();
         assert!(read(&path).unwrap_err().to_string().contains("too large"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_save_keeps_original_and_cleans_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("document.txt");
+        std::fs::write(&path, b"original document").unwrap();
+        let result = atomic_write(&path, |file| {
+            file.write_all(b"partial replacement")?;
+            Err(std::io::Error::other("simulated write failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"original document");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        write(&path, b"complete replacement").unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"complete replacement");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn atomic_save_follows_symlinks_and_preserves_executable_mode() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script");
+        let link = dir.path().join("link");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
+        symlink("script", &link).unwrap();
+        write(&link, b"new").unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o751);
     }
 
     #[test]

@@ -7,6 +7,8 @@ use anyhow::{Context as _, Result};
 /// Connection with a UI: read on one thread and written on another.
 pub trait Stream: std::io::Read + std::io::Write + Send + 'static {
     fn try_clone_stream(&self) -> Result<Box<dyn Stream>>;
+    /// Wakes both a blocked reader and writer without waiting for either.
+    fn close_handle(&self) -> Result<std::sync::Arc<dyn Fn() + Send + Sync>>;
 }
 
 #[cfg(unix)]
@@ -26,6 +28,11 @@ mod unix {
     impl Stream for UnixStream {
         fn try_clone_stream(&self) -> Result<Box<dyn Stream>> {
             Ok(Box::new(self.try_clone()?))
+        }
+
+        fn close_handle(&self) -> Result<std::sync::Arc<dyn Fn() + Send + Sync>> {
+            let stream = self.try_clone()?;
+            Ok(std::sync::Arc::new(move || { let _ = stream.shutdown(std::net::Shutdown::Both); }))
         }
     }
 
@@ -87,6 +94,11 @@ mod windows {
     impl Stream for client::windows_pipe::Stream {
         fn try_clone_stream(&self) -> Result<Box<dyn Stream>> {
             Ok(Box::new(self.clone()))
+        }
+
+        fn close_handle(&self) -> Result<std::sync::Arc<dyn Fn() + Send + Sync>> {
+            let stream = self.clone();
+            Ok(std::sync::Arc::new(move || stream.close()))
         }
     }
 

@@ -23,6 +23,17 @@ fn add_tab(this: &mut Workspace, path: PathBuf, window: &mut Window, cx: &mut Co
     this.tabs.push(tab);
 }
 
+/// A disconnected workspace for exercising application close/save flows.
+pub(crate) fn dirty_workspace(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity<Workspace> {
+    cx.new(|cx| {
+        let mut workspace = Workspace::new(root.clone(), None, false, "dirty-test".into(), window, cx);
+        add_tab(&mut workspace, root.join("unsaved.txt"), window, cx);
+        workspace.tabs[0].editor.update(cx, |state, cx| state.set_value("unsaved", window, cx));
+        workspace.tabs[0].dirty = true;
+        workspace
+    })
+}
+
 #[test]
 fn defaults_off_and_round_trips() {
     let mut config: Config = serde_json::from_str("{}").unwrap();

@@ -61,7 +61,7 @@ const EARLY_LINES: usize = 1000;
 
 pub struct Client {
     process: Mutex<Option<std::process::Child>>,
-    close_stream: Option<CloseStream>,
+    close_stream: Mutex<Option<CloseStream>>,
     /// The connected agent is from a different build than the one that would be launched now.
     outdated: std::sync::atomic::AtomicBool,
     connected: Arc<std::sync::atomic::AtomicBool>,
@@ -110,9 +110,18 @@ fn stable_copy(agent_bin: &Path, state_dir: &Path) -> Result<std::path::PathBuf>
 
 impl Drop for Client {
     fn drop(&mut self) {
+        self.disconnect();
+    }
+}
+
+impl Client {
+    /// Close only this connection. The agent keeps its terminals, and the UI
+    /// can reattach from snapshots after a transport or output overflow.
+    pub fn disconnect(&self) {
+        self.connected.store(false, Ordering::Relaxed);
         // Closing just the writer leaves the reader's cloned socket alive.
         // Shut down both directions to wake the reader and notify the agent.
-        if let Some(close) = self.close_stream.take() {
+        if let Some(close) = self.close_stream.lock().unwrap().take() {
             close();
         }
         if let Some(mut process) = self.process.lock().unwrap().take() {
@@ -168,7 +177,7 @@ impl Client {
     ) -> Arc<Self> {
         let client = Arc::new(Self {
             process: Mutex::new(process),
-            close_stream,
+            close_stream: Mutex::new(close_stream),
             outdated: std::sync::atomic::AtomicBool::new(false),
             connected: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             writer: Mutex::new(writer),
@@ -190,6 +199,9 @@ impl Client {
         std::thread::spawn(move || {
             let mut reader = reader;
             while let Ok(Some(decoded)) = proto::read_message::<ServerMessage, ServerEnvelope>(&mut reader) {
+                if !connected.load(Ordering::Relaxed) {
+                    break;
+                }
                 let message = match decoded {
                     Decoded::Known(message) => message,
                     // From a newer agent: its response fails, its events are ignored.
@@ -461,5 +473,24 @@ mod tests {
         let mut notifications: Vec<_> = (0..3).map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap()).collect();
         notifications.sort();
         assert_eq!(notifications, vec!["disconnect", "request", "terminal"]);
+    }
+
+    #[test]
+    fn explicit_disconnect_fails_pending_requests_and_notifies_the_ui() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let (reader, writer, close) = platform::split(stream).unwrap();
+        let client = Client::from_stream(reader, writer, None, Some(close), None);
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (tx, rx) = mpsc::channel();
+        client.request_with(Request::TaskList, move |result| { tx.send(result.is_err()).unwrap(); });
+        assert!(proto::read_frame::<ClientMessage>(&mut peer).unwrap().is_some());
+        let (tx, disconnected) = mpsc::channel();
+        client.on_disconnect(move || { tx.send(()).unwrap(); });
+        client.disconnect();
+        assert!(!client.is_connected());
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        disconnected.recv_timeout(Duration::from_secs(2)).unwrap();
+        client.disconnect(); // idempotent; the Arc can remain alive in views.
     }
 }

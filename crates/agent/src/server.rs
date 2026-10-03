@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     io::Read as _,
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, mpsc, atomic::{AtomicBool, AtomicUsize, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -41,6 +41,66 @@ const WORKING_WINDOW: Duration = Duration::from_secs(2);
 const QUIET: Duration = Duration::from_millis(800);
 
 type ConnId = u64;
+
+const MAX_PENDING_MESSAGES: usize = 128;
+const MAX_PENDING_OUTPUT: usize = 8 * 1024 * 1024;
+
+/// Never wait for a slow connection while holding the agent's state lock.
+/// Closing it lets the UI reconnect from a snapshot; the terminals live on.
+#[derive(Clone)]
+struct Outbox {
+    sender: mpsc::SyncSender<QueuedMessage>,
+    output_bytes: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
+    close: Arc<dyn Fn() + Send + Sync>,
+}
+
+struct QueuedMessage {
+    message: ServerMessage,
+    bytes: usize,
+    output_bytes: Arc<AtomicUsize>,
+}
+
+impl Drop for QueuedMessage {
+    fn drop(&mut self) {
+        self.output_bytes.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+impl Outbox {
+    fn new(close: Arc<dyn Fn() + Send + Sync>) -> (Self, mpsc::Receiver<QueuedMessage>) {
+        let (sender, receiver) = mpsc::sync_channel(MAX_PENDING_MESSAGES);
+        (Self { sender, output_bytes: Arc::default(), closed: Arc::default(), close }, receiver)
+    }
+
+    fn disconnect(&self) {
+        if !self.closed.swap(true, Ordering::Relaxed) {
+            (self.close)();
+        }
+    }
+
+    fn send(&self, message: ServerMessage) -> Result<(), ()> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(());
+        }
+        let bytes = match &message {
+            ServerMessage::Event(Event::TermOutput { data, .. }) => data.len(),
+            _ => 0,
+        };
+        if self.output_bytes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+            pending.checked_add(bytes).filter(|bytes| *bytes <= MAX_PENDING_OUTPUT)
+        }).is_err() {
+            self.disconnect();
+            return Err(());
+        }
+        let message = QueuedMessage { message, bytes, output_bytes: self.output_bytes.clone() };
+        if self.sender.try_send(message).is_err() {
+            self.disconnect();
+            return Err(());
+        }
+        Ok(())
+    }
+}
 
 /// Collects the events of the agent's emulator.
 #[derive(Clone, Default)]
@@ -80,7 +140,7 @@ struct AgentTerm {
 #[derive(Default)]
 struct State {
     terms: HashMap<TermId, AgentTerm>,
-    clients: HashMap<ConnId, mpsc::Sender<ServerMessage>>,
+    clients: HashMap<ConnId, Outbox>,
     next_term: TermId,
     next_conn: ConnId,
     idle_since: Option<Instant>,
@@ -305,7 +365,10 @@ pub fn run(listener: Listener) -> Result<()> {
 }
 
 fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
-    let (tx, rx) = mpsc::channel::<ServerMessage>();
+    let mut writer = stream.try_clone_stream()?;
+    let (tx, rx) = Outbox::new(stream.close_handle()?);
+    let writer_closed = tx.closed.clone();
+    let close_writer = tx.close.clone();
     let conn = {
         let mut state = state.lock().unwrap();
         let conn = state.next_conn;
@@ -315,10 +378,12 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
         conn
     };
 
-    let mut writer = stream.try_clone_stream()?;
     std::thread::spawn(move || {
         while let Ok(message) = rx.recv() {
-            if write_message(&mut writer, &message).is_err() {
+            if write_message(&mut writer, &message.message).is_err() {
+                if !writer_closed.swap(true, Ordering::Relaxed) {
+                    close_writer();
+                }
                 break;
             }
         }
@@ -373,7 +438,9 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     })();
 
     let mut state = state.lock().unwrap();
-    state.clients.remove(&conn);
+    if let Some(client) = state.clients.remove(&conn) {
+        client.disconnect();
+    }
     state.watchers.remove(&conn);
     state.relays.remove(&conn);
     state.apps.retain(|app| *app != conn);
@@ -476,6 +543,68 @@ mod frame_tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
+    fn output_overflow_wakes_the_socket_threads_and_cleans_the_connection() {
+        let (stream, _unread_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let state = Shared::default();
+        let shared = state.clone();
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || { let _ = done.send(serve(Box::new(stream), shared)); });
+        let started = Instant::now();
+        let outbox = loop {
+            if let Some(outbox) = state.lock().unwrap().clients.values().next().cloned() {
+                break outbox;
+            }
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // The peer doesn't read, so the writer must eventually block. The
+        // next overflow has to wake both it and serve's idle socket reader.
+        for _ in 0..8 {
+            if outbox.send(ServerMessage::Event(Event::TermOutput { term: 1, data: vec![0; MAX_PENDING_OUTPUT / 2] })).is_err() {
+                break;
+            }
+        }
+        finished.recv_timeout(Duration::from_secs(2)).expect("connection stayed blocked").unwrap();
+        assert!(state.lock().unwrap().clients.is_empty());
+    }
+
+    #[test]
+    fn slow_consumers_disconnect_without_blocking_other_connections() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let flag = closed.clone();
+        let (outbox, pending) = Outbox::new(Arc::new(move || { flag.store(true, Ordering::Relaxed); }));
+        let (other, other_pending) = Outbox::new(Arc::new(|| {}));
+        let output = || ServerMessage::Event(Event::TermOutput { term: 1, data: vec![0; MAX_PENDING_OUTPUT / 2] });
+        outbox.send(output()).unwrap();
+        outbox.send(output()).unwrap();
+        assert!(outbox.send(output()).is_err());
+        assert!(closed.load(Ordering::Relaxed));
+        assert_eq!(outbox.output_bytes.load(Ordering::Relaxed), MAX_PENDING_OUTPUT);
+        other.send(ServerMessage::Response { id: 1, result: Ok(Response::Ok) }).unwrap();
+        assert!(other_pending.try_recv().is_ok());
+        drop(pending);
+        assert_eq!(outbox.output_bytes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn bounds_small_messages_and_releases_consumed_output() {
+        let (outbox, pending) = Outbox::new(Arc::new(|| {}));
+        for _ in 0..MAX_PENDING_MESSAGES {
+            outbox.send(ServerMessage::Response { id: 1, result: Ok(Response::Ok) }).unwrap();
+        }
+        assert!(outbox.send(ServerMessage::Response { id: 2, result: Ok(Response::Ok) }).is_err());
+        assert!(outbox.closed.load(Ordering::Relaxed));
+        drop(pending);
+        let (outbox, pending) = Outbox::new(Arc::new(|| {}));
+        for _ in 0..3 {
+            outbox.send(ServerMessage::Event(Event::TermOutput { term: 1, data: vec![0; MAX_PENDING_OUTPUT] })).unwrap();
+            drop(pending.recv().unwrap());
+            assert_eq!(outbox.output_bytes.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
     fn oversized_response_returns_an_error_and_keeps_the_stream_usable() {
         let mut bytes = Vec::new();
         write_message(&mut bytes, &ServerMessage::Response {
@@ -576,6 +705,7 @@ fn is_slow(request: &Request) -> bool {
     matches!(
         request,
         Request::TaskCreate { .. }
+            | Request::TaskList
             | Request::TaskRemove { .. }
             | Request::GitChanges { .. }
             | Request::GitDiff { .. }
@@ -597,6 +727,14 @@ fn is_slow(request: &Request) -> bool {
 
 fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
     match request {
+        Request::TaskList => {
+            let mut list = tasks::list();
+            let state = state.lock().unwrap();
+            for task in &mut list {
+                task.working = state.working.contains(task.path.to_string_lossy().as_ref());
+            }
+            Ok(Response::Tasks(list))
+        }
         Request::Ports => {
             let shells: HashMap<u32, String> = state
                 .lock()
@@ -764,14 +902,6 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             tasks::add_repo(&tasks::expand_home(&path))?;
             Ok(Response::Ok)
         }
-        Request::TaskList => {
-            let mut list = tasks::list();
-            let state = state.lock().unwrap();
-            for task in &mut list {
-                task.working = state.working.contains(task.path.to_string_lossy().as_ref());
-            }
-            Ok(Response::Tasks(list))
-        }
         Request::RepoRemove { path } => {
             tasks::remove_repo(&path)?;
             Ok(Response::Ok)
@@ -792,6 +922,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::Count(count))
         }
         Request::TaskCreate { .. }
+        | Request::TaskList
         | Request::TaskRemove { .. }
         | Request::GitChanges { .. }
         | Request::GitDiff { .. }

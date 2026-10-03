@@ -9,7 +9,7 @@ use std::{
     path::Path,
     process::Stdio,
     sync::mpsc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -50,20 +50,50 @@ fn script(task: &Path, path: &Path, text: &str) -> Result<Option<(String, String
     let mut stdin = child.stdin.take().context("no stdin")?;
     let input = text.to_string();
     std::thread::spawn(move || stdin.write_all(input.as_bytes()));
-    let (mut stdout, mut stderr) = (child.stdout.take().context("no stdout")?, child.stderr.take().context("no stderr")?);
+    let (stdout, stderr) = (child.stdout.take().context("no stdout")?, child.stderr.take().context("no stderr")?);
     let (tx, rx) = mpsc::channel();
+    let out_tx = tx.clone();
     std::thread::spawn(move || {
-        let (mut out, mut err) = (Vec::new(), String::new());
-        let _ = stdout.read_to_end(&mut out);
-        let _ = stderr.read_to_string(&mut err);
-        let _ = tx.send((out, err));
+        let mut out = Vec::new();
+        let result = stdout.take(proto::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut out).map(|_| out);
+        let _ = out_tx.send((true, result));
     });
-    let Ok((out, err)) = rx.recv_timeout(SCRIPT_TIMEOUT) else {
+    std::thread::spawn(move || {
+        let _ = tx.send((false, diagnostic_tail(stderr)));
+    });
+    let deadline = Instant::now() + SCRIPT_TIMEOUT;
+    let result = (|| -> Result<_> {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        for _ in 0..2 {
+            let (stdout, bytes) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .with_context(|| format!("{hook} did not finish in {} s", SCRIPT_TIMEOUT.as_secs()))?;
+            let bytes = bytes.with_context(|| format!("could not read {hook}'s output"))?;
+            if stdout {
+                if bytes.len() > proto::MAX_FILE_BYTES {
+                    bail!("{hook} produced too much output");
+                }
+                out = bytes;
+            } else {
+                err = bytes;
+            }
+        }
+        // Closing stdout/stderr does not necessarily mean the child exited.
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok((out, err, status));
+            }
+            if Instant::now() >= deadline {
+                bail!("{hook} did not finish in {} s", SCRIPT_TIMEOUT.as_secs());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
         let _ = child.kill();
         let _ = child.wait();
-        bail!("{hook} did not finish in {} s", SCRIPT_TIMEOUT.as_secs());
-    };
-    let status = child.wait()?;
+    }
+    let (out, err, status) = result?;
+    let err = String::from_utf8_lossy(&err);
     match status.code() {
         Some(0) => Ok(Some((String::from_utf8(out).map_err(|_| anyhow!("{hook} did not write UTF-8"))?, hook))),
         Some(NOT_MINE) => Ok(None),
@@ -71,6 +101,22 @@ fn script(task: &Path, path: &Path, text: &str) -> Result<Option<(String, String
             "" => bail!("{hook} failed ({status})"),
             err => bail!("{hook}: {}", err.lines().last().unwrap_or(err)),
         },
+    }
+}
+
+/// Drain diagnostics concurrently with stdout, retaining only the tail.
+fn diagnostic_tail(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+    const LIMIT: usize = 8192;
+    let mut tail = Vec::new();
+    let mut buffer = [0; LIMIT];
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            return Ok(tail);
+        }
+        let discard = (tail.len() + n).saturating_sub(LIMIT);
+        tail.drain(..discard);
+        tail.extend_from_slice(&buffer[..n]);
     }
 }
 
@@ -251,6 +297,22 @@ fn json_tokens(text: &str) -> Result<Vec<Token<'_>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn drains_verbose_diagnostics_while_formatting() {
+        use std::os::unix::fs::PermissionsExt;
+        let task = tempfile::tempdir().unwrap();
+        std::fs::create_dir(task.path().join(".sik")).unwrap();
+        let hook = task.path().join(".sik/format");
+        std::fs::write(&hook, "#!/bin/sh\ndd if=/dev/zero bs=65536 count=32 >&2 2>/dev/null\ntr a-z A-Z\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let input = "hello\n".repeat(20_000);
+        let result = script(task.path(), &task.path().join("a.txt"), &input).unwrap().unwrap();
+        assert_eq!(result.0, input.to_uppercase());
+        let diagnostics = vec![b'x'; 100_000];
+        assert_eq!(diagnostic_tail(diagnostics.as_slice()).unwrap().len(), 8192);
+    }
 
     #[test]
     fn json_one_item_per_line_keeping_order_and_spelling() {

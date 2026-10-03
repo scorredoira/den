@@ -107,14 +107,25 @@ async fn join(
     client: Arc<Client>,
     term: TermId,
 ) -> Result<(Rc<AgentBackend>, smol::channel::Receiver<PtyEvent>, u16, u16, Vec<u8>)> {
-    let (tx, rx) = smol::channel::unbounded();
+    // Agent output comes in chunks of at most 64 KiB: at most 8 MiB can
+    // wait for this terminal's UI. Never block the connection's reader,
+    // which also delivers the snapshot awaited below.
+    let (tx, rx) = smol::channel::bounded(128);
+    let overflow_rx = rx.downgrade();
+    let weak = Arc::downgrade(&client);
     client.subscribe(term, move |update| {
-        let _ = match update {
-            TermUpdate::Event(Event::TermOutput { data, .. }) => tx.try_send(PtyEvent::Output(data)),
-            TermUpdate::Event(Event::TermExit { .. }) => tx.try_send(PtyEvent::Exit),
-            TermUpdate::Disconnected => tx.try_send(PtyEvent::Disconnected),
-            TermUpdate::Event(_) => Ok(()),
+        let Some(overflow_rx) = overflow_rx.upgrade() else { return };
+        let event = match update {
+            TermUpdate::Event(Event::TermOutput { data, .. }) => PtyEvent::Output(data),
+            TermUpdate::Event(Event::TermExit { .. }) => PtyEvent::Exit,
+            TermUpdate::Disconnected => PtyEvent::Disconnected,
+            TermUpdate::Event(_) => return,
         };
+        if !queue_output(&tx, &overflow_rx, event)
+            && let Some(client) = weak.upgrade()
+        {
+            client.disconnect();
+        }
     });
     let response = client.request(Request::TermAttach { term }).await?;
     let Response::TermSnapshot { cols, rows, data } = response else {
@@ -126,6 +137,20 @@ async fn join(
         cwd: Arc::default(),
     });
     Ok((backend, rx, cols, rows, data))
+}
+
+/// On overflow the partial screen is no longer trustworthy. Tell the
+/// terminal it's disconnected and request a fresh snapshot on reconnect.
+fn queue_output(tx: &smol::channel::Sender<PtyEvent>, rx: &smol::channel::Receiver<PtyEvent>, event: PtyEvent) -> bool {
+    match tx.try_send(event) {
+        Ok(()) | Err(smol::channel::TrySendError::Closed(_)) => true,
+        Err(smol::channel::TrySendError::Full(_)) => {
+            while rx.try_recv().is_ok() {}
+            let _ = tx.try_send(PtyEvent::Disconnected);
+            tx.close();
+            false
+        }
+    }
 }
 
 /// Attaches to an agent terminal: receives its snapshot and then its output.
@@ -146,5 +171,21 @@ pub async fn list(client: &Client, group: String) -> Result<Vec<TermId>> {
     match client.request(Request::TermList { group }).await? {
         Response::TermList(terms) => Ok(terms.into_iter().map(|info| info.term).collect()),
         other => bail!("unexpected response from the agent: {other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_overflow_requests_a_snapshot_instead_of_losing_bytes_silently() {
+        let (tx, rx) = smol::channel::bounded(2);
+        assert!(queue_output(&tx, &rx, PtyEvent::Output(vec![1])));
+        assert!(queue_output(&tx, &rx, PtyEvent::Output(vec![2])));
+        assert!(!queue_output(&tx, &rx, PtyEvent::Output(vec![3])));
+        assert!(matches!(rx.try_recv(), Ok(PtyEvent::Disconnected)));
+        assert!(rx.is_closed());
+        assert!(rx.try_recv().is_err());
     }
 }

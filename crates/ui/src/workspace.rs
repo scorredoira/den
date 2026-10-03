@@ -52,7 +52,7 @@ mod activity;
 mod markdown_images;
 mod commands;
 #[cfg(test)]
-mod autosave_tests;
+pub(crate) mod autosave_tests;
 #[cfg(test)]
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};

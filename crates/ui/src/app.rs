@@ -1757,6 +1757,43 @@ impl Sik {
         if name == LOCAL {
             return;
         }
+        if self.unsaved(cx).iter().any(|(key, _)| key.host == name) {
+            let answer = window.prompt(
+                PromptLevel::Warning,
+                &format!("Remove {name} with unsaved files?"),
+                Some("Save your changes before removing the server, or discard them."),
+                &[PromptButton::new("Cancel"), PromptButton::new("Discard Changes"), PromptButton::new("Save and Remove")],
+                cx,
+            );
+            cx.spawn_in(window, async move |this, cx| {
+                match answer.await {
+                    Ok(1) => {
+                        this.update_in(cx, |this, window, cx| this.forget_host(name, window, cx)).ok();
+                    }
+                    Ok(2) => {
+                        let Ok(saves) = this.update(cx, |this, cx| {
+                            this.workspaces.iter().filter(|(key, _)| key.host == name)
+                                .map(|(_, workspace)| workspace.update(cx, |workspace, cx| workspace.save_all(cx)))
+                                .collect::<Vec<_>>()
+                        }) else { return };
+                        let mut saved = true;
+                        for save in saves {
+                            saved &= save.await;
+                        }
+                        if saved {
+                            // Recheck: another buffer may have changed during saving.
+                            this.update_in(cx, |this, window, cx| this.remove_host(name, window, cx)).ok();
+                        }
+                    }
+                    _ => {}
+                }
+            }).detach();
+            return;
+        }
+        self.forget_host(name, window, cx);
+    }
+
+    fn forget_host(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.hosts.retain(|host| host.name != name);
         self.workspaces.retain(|key, _| key.host != name);
         Config::update(cx, |c| c.hosts.retain(|host| host.name != name.as_ref()));
@@ -2676,6 +2713,41 @@ mod palette_tests {
 
     use super::Sik;
     use crate::{config::Config, picker::PickerEvent};
+
+    #[gpui_kit::test]
+    fn removing_a_server_preserves_unsaved_files_until_discard_is_explicit(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
+        let key = super::TaskKey { host: "remote".into(), path: "/remote-project".into() };
+        cx.update(|window, cx| {
+            let workspace = crate::workspace::autosave_tests::dirty_workspace(key.path.clone(), window, cx);
+            sik.update(cx, |sik, cx| {
+                sik.workspaces.insert(key.clone(), workspace);
+                sik.remove_host(key.host.clone(), window, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert!(sik.read_with(cx, |sik, _| sik.workspaces.contains_key(&key)));
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert!(sik.read_with(cx, |sik, cx| !sik.unsaved(cx).is_empty()));
+
+        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.remove_host(key.host.clone(), window, cx)));
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Save and Remove");
+        cx.run_until_parked();
+        // There is no connection: saving fails, so all unsaved text remains.
+        assert!(sik.read_with(cx, |sik, cx| sik.workspaces.contains_key(&key) && !sik.unsaved(cx).is_empty()));
+
+        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.remove_host(key.host.clone(), window, cx)));
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Discard Changes");
+        cx.run_until_parked();
+        assert!(sik.read_with(cx, |sik, _| !sik.workspaces.contains_key(&key)));
+    }
 
     /// Settings from the command palette: the action reaches `Sik` itself,
     /// which must not be in the middle of an update then.

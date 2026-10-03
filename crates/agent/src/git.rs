@@ -4,6 +4,7 @@
 
 use std::{
     collections::HashMap,
+    io::Read as _,
     path::Path,
 };
 
@@ -22,6 +23,11 @@ fn default_branch(dir: &Path) -> Option<String> {
 /// Comparison point: the commit where the task branched off the main
 /// branch, or `HEAD` to see only what isn't committed yet.
 fn base(dir: &Path, uncommitted: bool) -> Result<(String, Option<String>)> {
+    if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
+        // Let Git choose the empty tree's hash (SHA-1 or SHA-256).
+        let empty = git(dir, &["hash-object", "-t", "tree", "--stdin"])?;
+        return Ok((empty.trim().to_string(), None));
+    }
     if uncommitted {
         return Ok(("HEAD".into(), Some("HEAD".into())));
     }
@@ -75,10 +81,39 @@ fn untracked(dir: &Path) -> Result<Vec<ChangedFile>> {
         .map(|path| ChangedFile {
             path: path.to_string(),
             status: '?',
-            added: std::fs::read_to_string(dir.join(path)).map_or(0, |text| text.lines().count() as u32),
+            added: untracked_lines(&dir.join(path)),
             removed: 0,
         })
         .collect())
+}
+
+/// Line counts are a decoration: never read a large dataset or an entire
+/// binary just to populate the Changes panel. Keep memory bounded even for
+/// a single very long line or a file that grows during the read.
+const MAX_COUNT_BYTES: u64 = 1024 * 1024;
+
+fn untracked_lines(path: &Path) -> u32 {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else { return 0 };
+    if !metadata.is_file() || metadata.len() > MAX_COUNT_BYTES {
+        return 0;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else { return 0 };
+    let mut buffer = [0; 8192];
+    let (mut bytes, mut lines, mut last) = (0, 0, None);
+    loop {
+        let n = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => return 0,
+        };
+        bytes += n as u64;
+        if bytes > MAX_COUNT_BYTES || buffer[..n].contains(&0) {
+            return 0;
+        }
+        lines += buffer[..n].iter().filter(|&&byte| byte == b'\n').count() as u32;
+        last = Some(buffer[n - 1]);
+    }
+    lines + u32::from(last.is_some_and(|byte| byte != b'\n'))
 }
 
 pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
@@ -396,6 +431,39 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn diffs_staged_files_before_the_first_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        run(dir, &["init", "-q"]);
+        std::fs::write(dir.join("first.txt"), "hello\n").unwrap();
+        run(dir, &["add", "first.txt"]);
+        for uncommitted in [true, false] {
+            assert!(diff(dir, "first.txt", uncommitted).unwrap().contains("+hello"));
+            let (_, files) = changes(dir, uncommitted).unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!((files[0].path.as_str(), files[0].added), ("first.txt", 1));
+        }
+        std::fs::write(dir.join("first.txt"), "hello\nworld\n").unwrap();
+        assert!(diff(dir, "first.txt", true).unwrap().contains("+world"));
+    }
+
+    #[test]
+    fn untracked_counts_skip_large_and_binary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file");
+        for (text, count) in [("", 0), ("a", 1), ("a\nb\n", 2), ("a\r\nb", 2), ("a\0b\n", 0)] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(untracked_lines(&path), count);
+        }
+        let text = format!("{}\nlast", "x".repeat(9000));
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(untracked_lines(&path), 2);
+        std::fs::File::create(&path).unwrap().set_len(MAX_COUNT_BYTES + 1).unwrap();
+        assert_eq!(untracked_lines(&path), 0);
+        assert_eq!(untracked_lines(dir.path()), 0);
+    }
 
     fn run(dir: &Path, args: &[&str]) {
         let output = crate::platform::command("git").args(args).current_dir(dir).output().unwrap();
