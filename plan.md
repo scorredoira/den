@@ -162,7 +162,7 @@ The main unit is the task; the server is an attribute of the task, not a level t
 
 **Shortcuts:** the app's shortcuts use Cmd on Mac and Ctrl on Windows and Linux (GPUI's `secondary` modifier).
 
-**Shortcuts in terminals:** terminals get every key except the app's shortcuts. On Mac the shortcuts use Cmd, so Ctrl is left entirely to the shell, vim and agents. On Windows and Linux, Ctrl plus a letter (Ctrl-D, Ctrl-W, Ctrl-E…) always goes to the shell inside a terminal, even when it's an app shortcut, user-defined ones included (`shortcuts::for_the_shell`). The shortcuts used from the terminal have other defaults there, as in Windows Terminal and VS Code: Close Tab Ctrl-Shift-W, New Terminal Ctrl-Shift-`, Split Right Ctrl-Shift-5, Toggle Terminals Ctrl-`, Find Workspace Ctrl-Shift-K and Switch Workspace Ctrl-Tab. The rest keep Ctrl and work outside the terminal.
+**Shortcuts in terminals:** terminals get every key except the app's shortcuts. On Mac the shortcuts use Cmd, so Ctrl is left entirely to the shell, vim and agents. On Windows and Linux, Ctrl plus a letter (Ctrl-D, Ctrl-W, Ctrl-E…) always goes to the shell inside a terminal, even when it's an app shortcut, user-defined ones included (`shortcuts::for_the_shell`). The shortcuts used from the terminal have other defaults there, as in Windows Terminal and VS Code: Close Tab Ctrl-Shift-W, New Terminal Ctrl-Shift-`, Split Right Ctrl-Shift-5, Split Down Ctrl-Alt-D, Toggle Terminals Ctrl-`, Find Workspace Ctrl-Shift-K and Switch Workspace Ctrl-Tab. The rest keep Ctrl and work outside the terminal.
 
 ## Viewer
 
