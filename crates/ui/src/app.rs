@@ -1087,10 +1087,11 @@ impl Den {
 
     /// Whether the tasks column shows: as last chosen or, if never chosen,
     /// once there's more than folders to it (a server or a worktree). In a
-    /// window opened with `den -s`, hidden until shown.
+    /// window opened with `den -s`, hidden once a folder opens, until shown;
+    /// before, it's where the connection's progress (or failure) shows.
     fn tasks_visible(&self, cx: &App) -> bool {
         if !self.remembers() {
-            return crate::workspace::column_shown(self.handle.window_id(), cx).unwrap_or(false);
+            return crate::workspace::column_shown(self.handle.window_id(), cx).unwrap_or(self.active.is_none());
         }
         Config::get(cx)
             .tasks_column
