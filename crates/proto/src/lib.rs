@@ -77,11 +77,11 @@ pub enum Request {
     /// Tasks from all known repos: their worktrees, the main one included.
     TaskList,
     /// Creates a task in the repo of `repo` (a worktree works too): runs
-    /// `.sik/create <name>` if it exists and, otherwise, `git worktree add`.
+    /// `.den/create <name>` if it exists and, otherwise, `git worktree add`.
     /// May take a while; the response arrives when it's done. With `open`, the
-    /// connected UIs open it (`sik task` from a sik terminal).
+    /// connected UIs open it (`den task` from a den terminal).
     TaskCreate { repo: PathBuf, name: String, open: bool },
-    /// Removes the task (its worktree) with the repo's `.sik/remove` if it
+    /// Removes the task (its worktree) with the repo's `.den/remove` if it
     /// exists and, otherwise, with `git worktree remove` (which refuses if
     /// there are uncommitted changes). Closes its terminals. May take a while.
     TaskRemove { path: PathBuf },
@@ -152,7 +152,7 @@ pub enum Request {
     /// `text`, the editor's, formatted for file `path` in the task at
     /// `root`. Responds `Formatted`.
     Format { root: PathBuf, path: PathBuf, text: String },
-    /// `sik <path>` in a terminal: asks the UIs connected to this agent to
+    /// `den <path>` in a terminal: asks the UIs connected to this agent to
     /// open `root` as a workspace, with `file` in it. Responds `Count`: how
     /// many other connections it was sent to (none: no app is listening).
     Open { root: PathBuf, file: Option<PathBuf> },
@@ -163,11 +163,11 @@ pub enum Request {
     /// Writes `line` and a newline to the relay.
     RelaySend { relay: u64, line: String },
     RelayClose { relay: u64 },
-    /// This connection is an app: `sik` commands that need one are sent to
+    /// This connection is an app: `den` commands that need one are sent to
     /// it (to the last one that said so) as `Event::Command`.
     Serve,
-    /// A `sik` command run in a terminal (`args` after `sik`), for the app.
-    /// `term` is the terminal it ran in, if it was one of sik's. Responds
+    /// A `den` command run in a terminal (`args` after `den`), for the app.
+    /// `term` is the terminal it ran in, if it was one of den's. Responds
     /// `Text` once the app answers with `CommandDone`.
     Command { args: Vec<String>, cwd: PathBuf, term: Option<TermId> },
     /// The app's answer to `Event::Command`: what to print, or the error.
@@ -481,7 +481,7 @@ pub enum Event {
     RelayLine { relay: u64, line: String },
     /// The other end closed the relay, or it failed.
     RelayClosed { relay: u64 },
-    /// A `sik` command for the app to run (see `Request::Command`), from
+    /// A `den` command for the app to run (see `Request::Command`), from
     /// terminal `term` of workspace `group` if it ran in one. Answered with
     /// `Request::CommandDone`.
     Command { command: u64, args: Vec<String>, cwd: PathBuf, term: Option<TermId>, group: Option<String> },
@@ -606,7 +606,7 @@ pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read) -> Result<Option<
 
 /// The app's state directory (the agent's socket and log).
 pub fn state_dir() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("SIK_STATE_DIR") { return Ok(path.into()); }
+    if let Some(path) = std::env::var_os("DEN_STATE_DIR") { return Ok(path.into()); }
     let base = dirs::state_dir()
         .or_else(dirs::data_local_dir)
         .context("no state directory")?;
@@ -615,30 +615,30 @@ pub fn state_dir() -> Result<PathBuf> {
 
 /// The app's config directory.
 pub fn config_dir() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("SIK_CONFIG_DIR") { return Ok(path.into()); }
+    if let Some(path) = std::env::var_os("DEN_CONFIG_DIR") { return Ok(path.into()); }
     Ok(dirs::config_dir().context("no config directory")?.join(APP))
 }
 
 /// The local agent's socket identity. Windows maps it to a per-user named pipe;
 /// the filesystem path also locates restart state.
-/// `SIK_AGENT_SOCKET` overrides it (tests, or a separate development agent).
+/// `DEN_AGENT_SOCKET` overrides it (tests, or a separate development agent).
 pub fn socket_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("SIK_AGENT_SOCKET") {
+    if let Some(path) = std::env::var_os("DEN_AGENT_SOCKET") {
         return Ok(PathBuf::from(path));
     }
     Ok(state_dir()?.join(format!("agent-{PROTOCOL}.sock")))
 }
 
 /// App name: paths and binaries derive from it.
-pub const APP: &str = "sik";
+pub const APP: &str = "den";
 
-/// Where the app writes its own binary's path on starting, for `sik <path>`
+/// Where the app writes its own binary's path on starting, for `den <path>`
 /// to start it when it isn't running (the agent runs from a copy, elsewhere).
 pub fn app_file() -> Result<PathBuf> {
     Ok(state_dir()?.join("app"))
 }
 
-/// What `sik <path>` opens: a folder as it is; a file in its repo (the
+/// What `den <path>` opens: a folder as it is; a file in its repo (the
 /// folder of the nearest `.git` above it), or in its own folder outside one.
 /// `path` is absolute.
 pub fn open_target(path: &std::path::Path) -> (PathBuf, Option<PathBuf>) {
@@ -651,7 +651,7 @@ pub fn open_target(path: &std::path::Path) -> (PathBuf, Option<PathBuf>) {
 }
 
 /// Name of the agent binary.
-pub const AGENT_BIN: &str = if cfg!(windows) { "sik-agent.exe" } else { "sik-agent" };
+pub const AGENT_BIN: &str = if cfg!(windows) { "den-agent.exe" } else { "den-agent" };
 
 #[cfg(test)]
 mod tests {

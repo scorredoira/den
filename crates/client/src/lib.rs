@@ -93,7 +93,7 @@ fn stable_copy(agent_bin: &Path, state_dir: &Path) -> Result<std::path::PathBuf>
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let name = format!("sik-agent-{PROTOCOL}-{modified}{}", std::env::consts::EXE_SUFFIX);
+    let name = format!("den-agent-{PROTOCOL}-{modified}{}", std::env::consts::EXE_SUFFIX);
     let copy = dir.join(&name);
     if !copy.exists() {
         let partial = dir.join(format!("{name}.part"));

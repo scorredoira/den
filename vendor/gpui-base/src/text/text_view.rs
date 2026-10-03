@@ -251,7 +251,7 @@ impl TextView {
         self
     }
 
-    /// (sik) Resolves document images selectively. `None` keeps the default
+    /// (den) Resolves document images selectively. `None` keeps the default
     /// URI/data URL handling; a returned source stays authoritative while loading.
     pub fn resolve_image_source<F>(mut self, resolver: F) -> Self
     where

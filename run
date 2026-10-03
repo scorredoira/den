@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds sik and its agent, and opens sik with whatever arguments are passed (a
+# Builds den and its agent, and opens den with whatever arguments are passed (a
 # folder or a file; by default, the current folder). `run task <name>` creates a
-# task like `sik task` does inside its terminals, without opening the app.
+# task like `den task` does inside its terminals, without opening the app.
 #
 # The app isn't run from target/: on macOS, rebuilding a running binary can kill
 # the process. It's copied (along with the agent, which the app looks for next to
@@ -11,25 +11,25 @@ set -e
 dir="$(cd "$(dirname "$0")" && pwd)"
 cargo build --quiet --manifest-path "$dir/Cargo.toml"
 # The agent for Linux servers, uploaded over SSH when needed.
-linux="$dir/target/x86_64-unknown-linux-musl/release/sik-agent"
+linux="$dir/target/x86_64-unknown-linux-musl/release/den-agent"
 if command -v cargo-zigbuild >/dev/null; then
   cargo zigbuild --quiet --release -p agent --target x86_64-unknown-linux-musl \
     --manifest-path "$dir/Cargo.toml" 2>/dev/null || echo "warning: could not build the agent for Linux" >&2
 fi
 if [ "$1" = task ]; then
-  exec "$dir/target/debug/sik-agent" "$@"
+  exec "$dir/target/debug/den-agent" "$@"
 fi
-builds="$HOME/Library/Application Support/sik/builds"
-stamp="$(stat -f %m "$dir/target/debug/sik")-$(stat -f %m "$dir/target/debug/sik-agent")"
+builds="$HOME/Library/Application Support/den/builds"
+stamp="$(stat -f %m "$dir/target/debug/den")-$(stat -f %m "$dir/target/debug/den-agent")"
 [ -f "$linux" ] && stamp="$stamp-$(stat -f %m "$linux")"
 copy="$builds/$stamp"
-if [ ! -x "$copy/sik" ]; then
+if [ ! -x "$copy/den" ]; then
   mkdir -p "$copy.part"
-  cp -p "$dir/target/debug/sik" "$dir/target/debug/sik-agent" "$copy.part/"
-  [ -f "$linux" ] && cp -p "$linux" "$copy.part/sik-agent-linux-x86_64"
+  cp -p "$dir/target/debug/den" "$dir/target/debug/den-agent" "$copy.part/"
+  [ -f "$linux" ] && cp -p "$linux" "$copy.part/den-agent-linux-x86_64"
   mv "$copy.part" "$copy"
 fi
 for old in "$builds"/*; do
   [ "$old" = "$copy" ] || rm -rf "$old"
 done
-exec "$copy/sik" "$@"
+exec "$copy/den" "$@"

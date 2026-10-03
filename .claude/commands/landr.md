@@ -42,7 +42,7 @@ it were somebody else's code you had to defend:
   exists elsewhere in the repo — find it and reuse it instead.
 - **Errors and panics** — a swallowed error (`.ok()`, `let _ =`, an ignored `Result`),
   an `unwrap`/`expect` that can actually fail, a task that dies silently.
-- **Local and remote** — sik runs workspaces locally and on servers over SSH through the
+- **Local and remote** — den runs workspaces locally and on servers over SSH through the
   agent: does the change work for both, and does it keep an older agent working (or
   say it needs a restart)?
 - **Style drift** — the code reads like its neighbours: English in UI text, comments and

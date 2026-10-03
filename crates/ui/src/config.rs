@@ -1,4 +1,4 @@
-//! UI configuration: `config.json` in sik's config folder. It lives as a GPUI
+//! UI configuration: `config.json` in den's config folder. It lives as a GPUI
 //! global and is saved on every change.
 
 use std::{

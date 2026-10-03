@@ -1,8 +1,8 @@
 # Keyboard Shortcuts
 
-Sik keeps a **workspace** for each folder you open: its files, its terminals and its Claude Code session. A git repo's **worktrees** are workspaces too, folded under the repo in the workspaces column, so several branches can be open side by side. Terminals live in an agent, on this machine or on a server: closing Sik doesn't stop them, and they come back as they were.
+Den keeps a **workspace** for each folder you open: its files, its terminals and its Claude Code session. A git repo's **worktrees** are workspaces too, folded under the repo in the workspaces column, so several branches can be open side by side. Terminals live in an agent, on this machine or on a server: closing Den doesn't stop them, and they come back as they were.
 
-From any terminal, `sik <folder or file>` opens it in Sik.
+From any terminal, `den <folder or file>` opens it in Den.
 
 The shortcuts below are the current ones: change them in Settings → Keyboard Shortcuts. Those marked *(editor)* can't be changed.
 
@@ -49,7 +49,7 @@ Right-click a workspace to hide it, remove it from the list (nothing on disk is 
 | {{MoveLineUp}} / {{MoveLineDown}} | Move the line, or the selected lines, up or down *(editor)* |
 | {{DuplicateLineUp}} / {{DuplicateLineDown}} | Copy the line above or below *(editor)* |
 | {{Indent}} / {{Outdent}} | Indent or outdent the lines *(editor)* |
-| {{FormatDocument}} | Format the file (the repo's `.sik/format`, else its language server) |
+| {{FormatDocument}} | Format the file (the repo's `.den/format`, else its language server) |
 | {{ToggleWordWrap}} | Wrap long lines |
 
 ## Multiple cursors
@@ -80,7 +80,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 
 ## Debugging
 
-`.sik/debug.json` says how to start the workspace's program; see the debugger's documentation.
+`.den/debug.json` says how to start the workspace's program; see the debugger's documentation.
 
 | Shortcut | Does |
 | --- | --- |

@@ -28,13 +28,13 @@ jobs:
       - name: Prepare agent
         run: |
           mkdir -p ssh-agent
-          cp target/x86_64-unknown-linux-musl/release/sik-agent ssh-agent/sik-agent-linux-x86_64
-          file ssh-agent/sik-agent-linux-x86_64
-          ./ssh-agent/sik-agent-linux-x86_64 --version
+          cp target/x86_64-unknown-linux-musl/release/den-agent ssh-agent/den-agent-linux-x86_64
+          file ssh-agent/den-agent-linux-x86_64
+          ./ssh-agent/den-agent-linux-x86_64 --version
       - uses: actions/upload-artifact@v7
         with:
           name: ssh-agent
-          path: ssh-agent/sik-agent-linux-x86_64
+          path: ssh-agent/den-agent-linux-x86_64
           if-no-files-found: error
   desktop:
     name: ${{ matrix.name }}
@@ -98,7 +98,7 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p ui -p agent --target ${{ matrix.target }}
       - name: Package
-        run: python packaging/package.py --target ${{ matrix.target }} --agent ssh-agent/sik-agent-linux-x86_64
+        run: python packaging/package.py --target ${{ matrix.target }} --agent ssh-agent/den-agent-linux-x86_64
       - uses: actions/upload-artifact@v7
         with:
           name: package-${{ matrix.target }}

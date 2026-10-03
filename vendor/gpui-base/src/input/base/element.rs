@@ -49,7 +49,7 @@ fn diagnostic_highlight_style(
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(6.);
-/// (sik) Width of the debugger's column before the line numbers.
+/// (den) Width of the debugger's column before the line numbers.
 const GUTTER_COLUMN_WIDTH: Pixels = px(16.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
@@ -783,7 +783,7 @@ impl<M: InputModeKind> TextElement<M> {
         (!corners.is_empty()).then_some(corners)
     }
 
-    /// (sik) Paints the background of the line a debugger is stopped at,
+    /// (den) Paints the background of the line a debugger is stopped at,
     /// from the gutter's edge to the right.
     fn paint_execution_line(
         &self,
@@ -813,7 +813,7 @@ impl<M: InputModeKind> TextElement<M> {
         }
     }
 
-    /// (sik) Paints each styled line's background and hatching, from the
+    /// (den) Paints each styled line's background and hatching, from the
     /// gutter's edge to the right, under everything else.
     fn paint_line_styles(
         &self,
@@ -1163,7 +1163,7 @@ impl<M: InputModeKind> TextElement<M> {
         // Reserve three digits for small documents, then follow the actual
         // line count up to seven digits.
         let mut line_number_len = line_number_len(total_lines);
-        // (sik) Labels of their own: as wide as the widest.
+        // (den) Labels of their own: as wide as the widest.
         if !state.line_styles.is_empty() {
             line_number_len = state
                 .line_styles
@@ -1201,7 +1201,7 @@ impl<M: InputModeKind> TextElement<M> {
             line_number_width += FOLD_ICON_HITBOX_WIDTH
         }
 
-        // (sik)
+        // (den)
         if state.gutter_column && state.mode.line_number() {
             line_number_width += GUTTER_COLUMN_WIDTH
         }
@@ -2909,7 +2909,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         width = line_number_len
                     )
                 } else {
-                    // (sik)
+                    // (den)
                     let label = state
                         .line_styles
                         .get(buffer_line)
@@ -2924,7 +2924,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 } else {
                     other_line_runs.clone()
                 };
-                // (sik) A label's width is in characters and a run's length
+                // (den) A label's width is in characters and a run's length
                 // in bytes: they differ with a label like `12−`.
                 runs[0].len = line_no.len();
 
@@ -3057,12 +3057,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
             }
         }
 
-        // (sik) Line backgrounds and hatched gaps, across the whole line.
+        // (den) Line backgrounds and hatched gaps, across the whole line.
         if !self.state.read(cx).line_styles.is_empty() {
             self.paint_line_styles(prepaint, input_bounds, window, cx);
         }
 
-        // (sik) The line a debugger is stopped at.
+        // (den) The line a debugger is stopped at.
         self.paint_execution_line(prepaint, input_bounds, window, cx);
 
         // Keep scrollbar offset always be positive，Start from the left position
@@ -3251,7 +3251,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             );
             window.paint_quad(fill(gutter_bounds, gutter_bg));
 
-            // (sik) The debugger's column comes before the numbers.
+            // (den) The debugger's column comes before the numbers.
             let (gutter_column, gutter_marks, execution_line, gutter_click) = {
                 let state = self.state.read(cx);
                 (
@@ -3295,7 +3295,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     offset_y += line_height;
                 }
 
-                // (sik)
+                // (den)
                 if gutter_column {
                     let column = point(input_bounds.origin.x, p.y);
                     if let Some(mark) = gutter_marks.iter().find(|mark| mark.line == buffer_line) {
@@ -3313,7 +3313,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 }
             }
 
-            // (sik) A click in the gutter goes to whoever asked for it,
+            // (den) A click in the gutter goes to whoever asked for it,
             // instead of moving the cursor.
             if let Some(click) = gutter_click {
                 // Over the breakpoints and the numbers, an arrow: they are
@@ -3360,7 +3360,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state.scroll_size = prepaint.scroll_size;
             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
             state.deferred_scroll_offset = None;
-            // (sik) The scrollbar moves the offset without notifying.
+            // (den) The scrollbar moves the offset without notifying.
             let offset = state.scroll_handle.offset();
             if state.painted_scroll_offset.replace(offset).is_some_and(|painted| painted != offset) {
                 cx.notify();
@@ -3405,7 +3405,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
     }
 }
 
-/// (sik) A breakpoint: a dot centred in the gutter column, or a ring.
+/// (den) A breakpoint: a dot centred in the gutter column, or a ring.
 fn paint_gutter_mark(column: Point<Pixels>, line_height: Pixels, color: Hsla, hollow: bool, window: &mut Window) {
     let diameter = px(10.);
     let origin = point(
@@ -3419,7 +3419,7 @@ fn paint_gutter_mark(column: Point<Pixels>, line_height: Pixels, color: Hsla, ho
     );
 }
 
-/// (sik) Where a debugger is stopped: an arrow in the gutter column.
+/// (den) Where a debugger is stopped: an arrow in the gutter column.
 fn paint_gutter_arrow(column: Point<Pixels>, line_height: Pixels, color: Hsla, window: &mut Window) {
     let height = px(10.);
     let width = px(9.);

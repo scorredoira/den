@@ -1,4 +1,4 @@
-# sik: native IDE (Rust + GPUI)
+# den: native IDE (Rust + GPUI)
 
 2026-09-30 · Santiago Corredoira
 
@@ -18,7 +18,7 @@ A single native program that combines what herdr and an editor do today: tabbed 
 - Click on a `file:line` path inside a terminal: it opens in the viewer.
 - Hosts: local and any SSH server that has been added, transparently.
 - Platforms: macOS and Linux now; Windows later. The architecture is portable from the start, but for now it is only tested on the Mac (see Platforms).
-- A debugger for programs that speak Sik's own line protocol (`docs/debugger.md`), reached through the agent like everything else.
+- A debugger for programs that speak Den's own line protocol (`docs/debugger.md`), reached through the agent like everything else.
 
 **Out:** serious editing (refactors, advanced multi-cursor), AI, extensions, collaboration, remote Windows servers (the remote agent only runs on Linux and macOS).
 
@@ -78,8 +78,8 @@ Local and remote use the same agent and the same protocol: only the transport ch
 
 A single byte stream with binary frames, the same locally and over SSH; the only thing that changes is how the stream is opened.
 
-- **Local transport:** the agent's Unix socket on macOS and Linux (in the app's state directory); a named pipe (`\\.\pipe\sik-agent-<user>`) on Windows.
-- **Remote transport:** `ssh <host> sik-agent bridge`. The `bridge` starts the daemon if it isn't running and connects its stdin/stdout to the socket. The UI doesn't know whether it's talking to a local or a remote host.
+- **Local transport:** the agent's Unix socket on macOS and Linux (in the app's state directory); a named pipe (`\\.\pipe\den-agent-<user>`) on Windows.
+- **Remote transport:** `ssh <host> den-agent bridge`. The `bridge` starts the daemon if it isn't running and connects its stdin/stdout to the socket. The UI doesn't know whether it's talking to a local or a remote host.
 - **Frames:** `u32` length + body serialized with `serde` as MessagePack (`rmp-serde`). Each frame is a request with an `id`, a response to that `id`, or an event.
 - **Startup:** `Hello { protocol }`. Then `Version` returns the fingerprint of the agent's binary; if it isn't the one this app carries, the server shows "outdated agent · restart" (see Agent versions).
 
@@ -142,11 +142,11 @@ The main unit is the task; the server is an attribute of the task, not a level t
 - **IDE and terminals side by side**, with adjustable size. One shortcut maximizes either of them; another hides the tasks column.
 - **State of each task:** the agent watches whether its terminals are producing output (Claude Code produces it nonstop while it works) and notifies all UIs with `Activity`. Red `●`: waiting for a reply (the screen is read once it goes quiet, using herdr's rules); yellow `◐`: working; green `●`: finished without you looking at it; `○` stopped. It works with any program and without configuring hooks. No separate "agents" view is needed.
 - **New Task:** repo (the known ones on that machine) and name. How the worktree is created is up to each repo: if it has an executable `.task/create`, the agent calls it with the name (scl runs `swt`; v3, `sim wt`); otherwise, `git worktree add ../<repo>-<name>`. Then it looks up that branch's worktree in `git worktree list`, so it doesn't matter where the script creates it or what it prints. The task opens with a terminal in its folder. Not done yet: starting `claude` in it by itself (a `task_command` in `config.json`).
-- **From the terminal:** `sik task <name>` creates the task in the repo of the current folder (being in a worktree is fine) and prints only its path, for `cd "$(sik task x)"`. `sik` is the agent itself, linked in a folder that comes first in the PATH of sik's terminals, so it talks to the agent on its own machine and works the same over SSH. Inside sik, the app also switches to the task.
+- **From the terminal:** `den task <name>` creates the task in the repo of the current folder (being in a worktree is fine) and prints only its path, for `cd "$(den task x)"`. `den` is the agent itself, linked in a folder that comes first in the PATH of den's terminals, so it talks to the agent on its own machine and works the same over SSH. Inside den, the app also switches to the task.
 - **Deleting a task:** right-click → Delete Task…, with confirmation. The agent calls the repo's `.task/remove <name> <path>` (scl: `swt -r`; v3: `sim wt -r`) or, if there isn't one, `git worktree remove`, which won't delete with uncommitted changes. Then it checks that the worktree is gone and closes its terminals. The main checkout is never deleted.
 - **Column:** right-click with New Task in Repo…, Copy Path, Reveal in Finder, Hide and Delete; drag to reorder (the order for Cmd-1…9). The gear at the bottom (or Cmd-,) opens Settings: theme, servers, repos, hidden tasks and keyboard shortcuts. Stored in `config.json`.
 - **Agent versions:** each protocol version uses its own socket (`agent-<version>.sock`). A new app never shuts down an old agent: its terminals stay alive for the old app, and the agent shuts itself down once they're gone. Within the same protocol, a rebuilt agent has a different fingerprint: the server shows "outdated agent · restart", and restarting (after confirming) swaps in the new binary. Before exiting, the old agent writes each terminal's id, task, folder, size and, if Claude Code was running in it, its command line to `agent-<protocol>.restart.json` next to the socket; the new one recreates them under the same ids and types the Claude command plus `--continue`. Scrollback and other running processes are lost.
-- **Where things are stored:** tasks aren't stored: they're the worktrees of the repos known to each server's agent (`repos.json` in its config; opening sik in a repo adds it). Each task's terminal layout lives in the UI (`layout.json`); servers, open tabs per task, panel sizes and shortcuts in `config.json`.
+- **Where things are stored:** tasks aren't stored: they're the worktrees of the repos known to each server's agent (`repos.json` in its config; opening den in a repo adds it). Each task's terminal layout lives in the UI (`layout.json`); servers, open tabs per task, panel sizes and shortcuts in `config.json`.
 - **Task shortcuts:** Cmd-1…9 go to task N; Cmd-E goes back to the previous one (again, to the one before, like Alt-Tab); Cmd-K opens a fuzzy finder for tasks across all servers.
 
 **Navigating results:** when moving through a result in Search or References, the viewer shows it in a preview tab (in italics), which the next preview reuses. Enter or double-click turns it into a pinned tab. F4 and Shift-F4 go to the next and previous result without leaving the viewer.
@@ -194,7 +194,7 @@ Everything runs in the agent, next to the files, and the UI only receives the re
 A host is a name from `~/.ssh/config` or `user@machine`, and the app does the rest: uploads the agent, starts it and reconnects.
 
 - **Adding:** in Settings → Servers, a name from `~/.ssh/config` (the icon lists its `Host` entries) or `user@host`. Stored in `config.json`. `local` always exists. Each server's repos are known by its agent (the folders added to it, plus those that already have tasks).
-- **Agent installation:** on connect, `ssh host uname -sm` detects the system. If `~/.local/share/sik/sik-agent-<protocol>-<fingerprint>` isn't there, the agent is uploaded over the same connection and older ones are deleted. `Sik.app` bundles the agent for Linux x86_64, statically linked with musl; that's the only server system supported so far (aarch64 and macOS servers are pending). The Windows one would only be used locally.
+- **Agent installation:** on connect, `ssh host uname -sm` detects the system. If `~/.local/share/den/den-agent-<protocol>-<fingerprint>` isn't there, the agent is uploaded over the same connection and older ones are deleted. `Den.app` bundles the agent for Linux x86_64, statically linked with musl; that's the only server system supported so far (aarch64 and macOS servers are pending). The Windows one would only be used locally.
 - **Connection:** `ssh -o ControlMaster=auto -o ControlPersist=10m -o ServerAliveInterval=15`, so opening more streams is instant and a drop is detected quickly. Windows' `ssh` (OpenSSH) doesn't support `ControlMaster`: there each stream opens its own connection.
 - **Drops:** if the connection is lost, the server's tasks are marked as disconnected, it retries with increasing backoff, and on reconnect each terminal gets a `TermAttach`. Nothing is lost because the agent stays alive.
 - **Several servers at once:** the list shows the tasks of all of them; each task talks to its server's agent.
@@ -222,7 +222,7 @@ The desktop builds and tests run in GitHub Actions on macOS (Apple Silicon and I
 | Daemon startup | `fork` and `setsid` | `fork` and `setsid` | Process without an inherited console |
 | Pty | `portable-pty` | `portable-pty` | `portable-pty` (ConPTY) |
 | A terminal's current directory | `proc_pidinfo` | `/proc/<pid>/cwd` | OSC 7; integrated into the default PowerShell prompt |
-| Config and state | `~/Library/Application Support/sik` | `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` | `%APPDATA%\sik` via `dirs` |
+| Config and state | `~/Library/Application Support/den` | `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` | `%APPDATA%\den` via `dirs` |
 | SSH | `ssh` with `ControlMaster` | `ssh` with `ControlMaster` | OpenSSH without `ControlMaster`: one connection per stream |
 | `C:\path:12` paths in the terminal | — | — | Supported |
 | Package | Ad hoc signed `.app` in `.zip`; no notarization | `.tar.gz` with per-user installer | Portable `.zip` with optional per-user installer |
@@ -234,7 +234,7 @@ A Cargo workspace with small crates, so that a change in the UI rebuilds only th
 | Crate | What it contains | Depends on |
 | --- | --- | --- |
 | `proto` | Messages, frames and protocol version | `serde` |
-| `agent` | Daemon: terminals, files, search, git, LSP and tasks; `sik-agent` binary with `daemon` and `bridge`, and `sik` for terminals | `proto`, `portable-pty`, `alacritty_terminal` |
+| `agent` | Daemon: terminals, files, search, git, LSP and tasks; `den-agent` binary with `daemon` and `bridge`, and `den` for terminals | `proto`, `portable-pty`, `alacritty_terminal` |
 | `client` | Connection to hosts (socket or `ssh`), reconnection, agent upload | `proto` |
 | `syntax` | Only if gpui-component's highlighting falls short: our own grammars and queries, themes | `tree-sitter` |
 | `ui-term` | Terminal view in GPUI | `gpui-kit`, `alacritty_terminal` |
@@ -268,14 +268,14 @@ Each phase leaves something usable every day; the persistent terminal comes earl
 4. **Phase 3, SSH:** adding servers, agent upload, `bridge`, reconnection; tasks from several servers in the list. Done when: working on a server feels the same as locally and cutting the wifi for 1 minute loses nothing. (Done and tested with bill: Linux agent built with cargo-zigbuild and uploaded over the same connection; files, search, changes and terminals go through each server's agent; reconnection with increasing backoff and terminals that reattach.)
 5. **Phase 4, search and changes:** global search and Cmd-P in the panel, Changes mode with git relative to the base branch. Done when: it replaces sid's search. (Done.)
 6. **Phase 5, LSP:** F12 and Shift-F12 with the References panel. Done when: it works in TypeScript, Go and Rust, locally and over SSH. (Done: `lsp.rs` in the agent, tested against rust-analyzer, gopls and TypeScript 7; Ctrl-Opt-←/→ to go back and forward.)
-7. **Phase 6, polish:** themes, settings, signed `.app` and Linux package. (Done on Mac: `./install` builds in release, assembles `Sik.app` with its icon and agents, signs it with the development certificate and installs it in `/Applications`. Release automation now builds macOS ZIPs, Linux tarballs and Windows ZIPs. Developer ID signing and notarization remain optional future work.)
+7. **Phase 6, polish:** themes, settings, signed `.app` and Linux package. (Done on Mac: `./install` builds in release, assembles `Den.app` with its icon and agents, signs it with the development certificate and installs it in `/Applications`. Release automation now builds macOS ZIPs, Linux tarballs and Windows ZIPs. Developer ID signing and notarization remain optional future work.)
 8. **Phase 7, Windows:** fill in the gaps in the Platforms table (named pipe, daemon startup, ConPTY, OSC 7, `C:\` paths) and package it. Done when: the app is used daily on Windows with PowerShell and Claude Code, against a Linux server over SSH.
 
 ## Status and next steps
 
-From here on sik is developed inside sik (Claude Code in a terminal of the `sik/master` task). Done in phases 0–4, in addition to the above:
+From here on den is developed inside den (Claude Code in a terminal of the `den/master` task). Done in phases 0–4, in addition to the above:
 
-- Each task remembers its tabs (and the cursor); with no folder at startup, sik returns to the last task (`sessions` and `last` in `config.json`).
+- Each task remembers its tabs (and the cursor); with no folder at startup, den returns to the last task (`sessions` and `last` in `config.json`).
 - "outdated agent · restart" notice when the connected agent isn't the one from this build (`Version` request with the binary's fingerprint).
 - XML grammar added by hand (`language::register`), plus Python, C, C++ and Makefile.
 - Warning on quit (Cmd-Q or closing the window) with unsaved tabs in any task.
@@ -295,7 +295,7 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 - Restarting an agent to update it reopens its terminals: the old agent writes `agent-<protocol>.restart.json` next to its socket and the new one recreates them under the same ids, so the UIs reattach without noticing.
 - Git in Changes mode: Branch, Uncommitted and History (commits with their files and diffs) views, read only; the current branch in the status bar. `Git { path, op }` request in the agent.
 
-**Careful when working on sik from sik:**
+**Careful when working on den from den:**
 
 - Rebuilding and restarting the app (`./run`) is safe: the terminals live in the agent and reattach.
 - Restarting an agent ("outdated agent · restart") restarts all its terminals, including the one where Claude is working: they reopen in the same place (same ids, folder and size), and where Claude Code was running it's resumed with its options plus `--continue`. The scrollback and whatever else was running are lost.
@@ -320,7 +320,7 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 - [x] **Global replace:** a Replace box in the Search panel. A "preserve case" toggle (VS Code's AB): the replacement takes the case of each match (`payment` → `invoice`, `Payment` → `Invoice`, `PAYMENT` → `INVOICE`). The agent writes the files; open tabs without unsaved changes reload on their own.
 - [x] **Occurrences of the symbol:** clicking on a name highlights its other occurrences in the file: same exact word, whole words only. (With LSP, `textDocument/documentHighlight` would tell reads from writes; not done.)
 - [x] **Ctrl-G:** go to `line` or `line:column`, in Cmd-P's spot; Ctrl-Opt-← comes back.
-- [x] **Menu bar (macOS):** Sik, File, Edit, Selection, View, Go, Terminal, Window and Help, as in VS Code; each entry is an existing action and shows its shortcut (`app_menu.rs`).
+- [x] **Menu bar (macOS):** Den, File, Edit, Selection, View, Go, Terminal, Window and Help, as in VS Code; each entry is an existing action and shows its shortcut (`app_menu.rs`).
 - [x] **Word wrap:** Opt-Z (and View > Word Wrap), for every tab and task, saved in `config.json` (`word_wrap`).
 - [x] **Split editor:** two groups of tabs, side by side (Cmd-Opt-S) or one above the other (Cmd-Opt-Shift-S; not VS Code's Cmd-\, which on a Spanish keyboard needs Opt), or from the tab's menu. As in VS Code, splitting opens the active file on the other side too: another view with its own editor (cursor, scroll, undo), kept in sync with the first by applying the same edit; saving, unsaved changes and the blame are the file's, and if the file's tab closes a view takes over. A Markdown file opens its preview on the other side (Open Preview to the Side, Cmd-Opt-V), updating as you type. Move to Other Side moves a tab; a group left empty closes the split.
 - [ ] **Drag tabs** to split the editor or move them between groups (later: the menu and the shortcuts cover it).
@@ -339,8 +339,8 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 
 **Open questions:**
 
-- [x] Project name: **sik** (binary `sik`, agent `sik-agent`, folders `sik`). From the sid family (the TUI), without clobbering its binary or its folders.
-- [x] Is sid abandoned once phase 4 lands, or do they coexist? They coexist: sik is a different tool, not its replacement.
+- [x] Project name: **den** (binary `den`, agent `den-agent`, folders `den`). From the sid family (the TUI), without clobbering its binary or its folders.
+- [x] Is sid abandoned once phase 4 lands, or do they coexist? They coexist: den is a different tool, not its replacement.
 - [x] Is an "agents" view like herdr's needed? No: Claude Code's state goes in the task list.
 - [x] Default shortcuts: VS Code's, sid's, or sid's with Cmd on Mac? VS Code's. (The modifier is settled: Cmd on Mac, Ctrl on Windows and Linux, never Ctrl plus a letter inside the terminal.)
 

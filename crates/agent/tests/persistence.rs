@@ -20,15 +20,15 @@ fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
 
 #[test]
 fn terminal_survives_reconnect() {
-    let dir = std::env::temp_dir().join(format!("sik-agent-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("den-agent-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // SAFETY: the test is the only thread touching the environment.
-    unsafe { std::env::set_var("SIK_AGENT_SOCKET", dir.join("agent.sock")) };
+    unsafe { std::env::set_var("DEN_AGENT_SOCKET", dir.join("agent.sock")) };
     unsafe {
-        std::env::set_var("SIK_STATE_DIR", dir.join("state"));
-        std::env::set_var("SIK_CONFIG_DIR", dir.join("config"));
+        std::env::set_var("DEN_STATE_DIR", dir.join("state"));
+        std::env::set_var("DEN_CONFIG_DIR", dir.join("config"));
     }
-    let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
+    let agent = Path::new(env!("CARGO_BIN_EXE_den-agent"));
 
     // First connection: starts the agent and creates a terminal.
     eprintln!("connecting to the agent");
@@ -36,7 +36,7 @@ fn terminal_survives_reconnect() {
     eprintln!("a failed process launch must not block the agent");
     assert!(smol::block_on(client.request(Request::TermCreate {
         group: "test".into(), cwd: dir.clone(),
-        command: Some(vec!["sik-command-that-does-not-exist".into()]),
+        command: Some(vec!["den-command-that-does-not-exist".into()]),
         cols: 40, rows: 10,
     })).is_err());
     eprintln!("creating the terminal");

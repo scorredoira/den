@@ -96,7 +96,7 @@ pub trait CompletionProvider {
         Task::ready(Ok(false))
     }
 
-    /// (sik) `item` with its detail and documentation, for servers that only
+    /// (den) `item` with its detail and documentation, for servers that only
     /// give them when asked for one item (`completionItem/resolve`).
     fn resolve_completion(&self, item: &CompletionItem, _: &mut App) -> Task<Result<CompletionItem>> {
         Task::ready(Ok(item.clone()))
@@ -147,7 +147,7 @@ impl InputBaseState<EditorMode> {
         let start = range.end;
         let new_offset = self.cursor();
 
-        // (sik) An open menu closes on text that isn't a trigger, and on
+        // (den) An open menu closes on text that isn't a trigger, and on
         // going back past where it opened; a closed one starts again here.
         let open = self.extras.context_menu_content.completion.open;
         if !provider.is_completion_trigger(start, new_text, cx) {

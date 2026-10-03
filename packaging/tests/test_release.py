@@ -12,7 +12,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "release.py"
 
 class ReleaseTest(unittest.TestCase):
     def test_bump_tag_push_and_reject_reuse_or_dirty_tree(self):
-        with tempfile.TemporaryDirectory(prefix="sik-release-test-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="den-release-test-") as temporary:
             base = Path(temporary)
             repo, remote = base / "work", base / "remote.git"
             repo.mkdir()

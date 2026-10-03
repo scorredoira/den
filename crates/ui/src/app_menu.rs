@@ -3,7 +3,7 @@
 //! handles where the focus is (Undo in a terminal) show up disabled.
 //!
 //! macOS draws it at the top of the screen; on Windows and Linux nobody
-//! does, so the window draws it in its title bar (`bar`), and what the Sik
+//! does, so the window draws it in its title bar (`bar`), and what the Den
 //! menu has there goes in File and Help.
 
 use gpui_base::input;
@@ -27,8 +27,8 @@ pub fn set(cx: &mut App) {
     let mac = cfg!(target_os = "macos");
     let mut menus = Vec::new();
     if mac {
-        menus.push(Menu::new("Sik").items([
-            MenuItem::action("About Sik", About),
+        menus.push(Menu::new("Den").items([
+            MenuItem::action("About Den", About),
             MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
@@ -36,11 +36,11 @@ pub fn set(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide Sik", Hide),
+            MenuItem::action("Hide Den", Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
-            MenuItem::action("Quit Sik", Quit),
+            MenuItem::action("Quit Den", Quit),
         ]));
     }
     menus.extend([
@@ -172,7 +172,7 @@ pub fn set(cx: &mut App) {
                 "Help" => menu.items.extend([
                     MenuItem::separator(),
                     MenuItem::action("Check for Updates…", CheckForUpdates),
-                    MenuItem::action("About Sik", About),
+                    MenuItem::action("About Den", About),
                 ]),
                 _ => {}
             }
@@ -203,7 +203,7 @@ pub fn bar(cx: &App) -> Option<Entity<AppMenuBar>> {
     cx.try_global::<Bar>().map(|bar| bar.0.clone())
 }
 
-/// The Sik menu's actions, which belong to the app rather than to a view.
+/// The Den menu's actions, which belong to the app rather than to a view.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());

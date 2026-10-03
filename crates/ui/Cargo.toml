@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "sik"
+name = "den"
 path = "src/main.rs"
 
 [dependencies]

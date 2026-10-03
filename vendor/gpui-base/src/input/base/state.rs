@@ -346,7 +346,7 @@ struct PasteTarget {
 /// — write `InputState`, not `InputBaseState<InputMode>`.
 /// How one line looks, as the sides of a diff need: a background across
 /// the whole line, a hatched gap standing for lines only the other side has,
-/// and the label in the gutter (`None`: blank). (sik)
+/// and the label in the gutter (`None`: blank). (den)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LineStyle {
     pub background: Option<Hsla>,
@@ -356,7 +356,7 @@ pub struct LineStyle {
 
 /// A debugger's mark in the gutter column before the line numbers (see
 /// [`InputBaseState::set_gutter_column`]): a breakpoint's dot, filled, or a
-/// ring when `hollow`. (sik)
+/// ring when `hollow`. (den)
 #[derive(Clone, Debug, PartialEq)]
 pub struct GutterMark {
     pub line: usize,
@@ -365,7 +365,7 @@ pub struct GutterMark {
 }
 
 /// The line a debugger is stopped at: painted with `background` across the
-/// whole line and an arrow of `arrow` color in the gutter column. (sik)
+/// whole line and an arrow of `arrow` color in the gutter column. (den)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExecutionLine {
     pub line: usize,
@@ -373,7 +373,7 @@ pub struct ExecutionLine {
     pub arrow: Hsla,
 }
 
-/// Called with the buffer line clicked in the gutter. (sik)
+/// Called with the buffer line clicked in the gutter. (den)
 pub type GutterClick = Rc<dyn Fn(usize, &MouseDownEvent, &mut Window, &mut App)>;
 
 pub struct InputBaseState<M: InputModeKind> {
@@ -447,15 +447,15 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
-    /// (sik) How each line looks, by buffer line; see [`LineStyle`].
+    /// (den) How each line looks, by buffer line; see [`LineStyle`].
     pub(crate) line_styles: Vec<LineStyle>,
-    /// (sik) A column for debugger marks before the line numbers, its
+    /// (den) A column for debugger marks before the line numbers, its
     /// marks, the line stopped at and what a click in the gutter does.
     pub(crate) gutter_column: bool,
     pub(crate) gutter_marks: Vec<GutterMark>,
     pub(crate) execution_line: Option<ExecutionLine>,
     pub(crate) gutter_click: Option<GutterClick>,
-    /// (sik) The scroll offset of the last paint, to notify when something
+    /// (den) The scroll offset of the last paint, to notify when something
     /// else (the scrollbar) moved it.
     pub(crate) painted_scroll_offset: Option<Point<Pixels>>,
     /// The size of the scrollable content.
@@ -2454,7 +2454,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // (sik) The visible area: `last_bounds` moves up with the scroll.
+        // (den) The visible area: `last_bounds` moves up with the scroll.
         let within_bounds = self.last_bounds.is_some()
             && self.input_bounds.contains(&event.position);
 
@@ -3067,7 +3067,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// Every selection as `(anchor, cursor)` UTF-8 byte offsets; the first is
-    /// the active one. (sik)
+    /// the active one. (den)
     pub fn selections(&self) -> Vec<(usize, usize)> {
         self.selections
             .iter()
@@ -3077,7 +3077,7 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     /// Replaces every selection with `selections`, `(anchor, cursor)` UTF-8
     /// byte offsets; the first is the active one and overlapping ones merge.
-    /// An empty list is ignored. (sik)
+    /// An empty list is ignored. (den)
     pub fn set_selections(&mut self, selections: &[(usize, usize)], cx: &mut Context<Self>) {
         if selections.is_empty() {
             return;
@@ -3102,7 +3102,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// Sets how each line looks (`styles[i]` for buffer line `i`); with any,
-    /// the gutter shows each line's `number` instead of its position. (sik)
+    /// the gutter shows each line's `number` instead of its position. (den)
     pub fn set_line_styles(&mut self, styles: Vec<LineStyle>, cx: &mut Context<Self>) {
         if self.line_styles != styles {
             self.line_styles = styles;
@@ -3111,7 +3111,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// Reserves a column before the line numbers for debugger marks, so they
-    /// don't move the text when they come and go. (sik)
+    /// don't move the text when they come and go. (den)
     pub fn set_gutter_column(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.gutter_column != on {
             self.gutter_column = on;
@@ -3119,7 +3119,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
     }
 
-    /// The marks of the gutter column, by buffer line. (sik)
+    /// The marks of the gutter column, by buffer line. (den)
     pub fn set_gutter_marks(&mut self, marks: Vec<GutterMark>, cx: &mut Context<Self>) {
         if self.gutter_marks != marks {
             self.gutter_marks = marks;
@@ -3127,7 +3127,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
     }
 
-    /// The line a debugger is stopped at, if any. (sik)
+    /// The line a debugger is stopped at, if any. (den)
     pub fn set_execution_line(&mut self, line: Option<ExecutionLine>, cx: &mut Context<Self>) {
         if self.execution_line != line {
             self.execution_line = line;
@@ -3136,17 +3136,17 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// What a mouse down on the gutter (column and line numbers) does,
-    /// instead of moving the cursor. (sik)
+    /// instead of moving the cursor. (den)
     pub fn on_gutter_click(&mut self, click: Option<GutterClick>) {
         self.gutter_click = click;
     }
 
-    /// The scroll offset, counting one set but not applied yet. (sik)
+    /// The scroll offset, counting one set but not applied yet. (den)
     pub fn target_scroll_offset(&self) -> Point<Pixels> {
         self.deferred_scroll_offset.unwrap_or_else(|| self.scroll_handle.offset())
     }
 
-    /// Scrolls just enough to show `offset`. (sik)
+    /// Scrolls just enough to show `offset`. (den)
     pub fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.scroll_to(offset.min(self.text.len()), None, cx);
     }
@@ -3155,7 +3155,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// their replacements) and then sets `selections` (as in
     /// [`Self::set_selections`], offsets in the new text), undone as one step
     /// that brings the old selections back. With `reveal`, it scrolls to the
-    /// cursor. (sik)
+    /// cursor. (den)
     pub fn edit(
         &mut self,
         edits: &[(Range<usize>, String)],

@@ -3,7 +3,7 @@
 //! a program on a server is debugged like a local one.
 //!
 //! Nothing here knows the language or VM of the program. The launch file
-//! (`.sik/debug.json`) says which command starts it, given the open file,
+//! (`.den/debug.json`) says which command starts it, given the open file,
 //! and on which port it listens: the program decides what debugging that
 //! file means.
 
@@ -32,7 +32,7 @@ use protocol::{Event, Message, Stop, Var};
 use crate::config::{Config, DebugSaved};
 
 /// Where the launch file is, relative to the workspace.
-pub const LAUNCH_FILE: &str = ".sik/debug.json";
+pub const LAUNCH_FILE: &str = ".den/debug.json";
 
 const LAUNCH_TEMPLATE: &str = r#"{
     "command": "sim -d ${file}",
@@ -549,7 +549,7 @@ impl Debugger {
     pub fn create_launch_file(&mut self, cx: &mut Context<Self>) -> PathBuf {
         let path = self.root.join(LAUNCH_FILE);
         if let Some(client) = self.client.clone() {
-            let dir = self.root.join(".sik");
+            let dir = self.root.join(".den");
             let file = path.clone();
             cx.spawn(async move |this, cx| {
                 let _ = client.request(Request::CreateDir { path: dir }).await;

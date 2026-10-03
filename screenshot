@@ -1,21 +1,21 @@
 #!/bin/sh
-# Takes the README screenshot (docs/screenshots/main.png): opens Sik.app with a
+# Takes the README screenshot (docs/screenshots/main.png): opens Den.app with a
 # demo config of its own (dark theme, a clone of this repo with a few worktrees),
 # runs Claude Code and a shell in split terminals, captures the window and closes
 # it. Your config, agent and terminals aren't touched: the demo instance has its
 # own config, state and agent socket.
 #
-# Usage: ./screenshot [path to Sik.app]   (default /Applications/Sik.app)
-# The terminal running it needs Accessibility permission (it types into sik);
+# Usage: ./screenshot [path to Den.app]   (default /Applications/Den.app)
+# The terminal running it needs Accessibility permission (it types into den);
 # leave the keyboard and mouse alone while it runs.
 # Claude Code runs a read-only question, which takes about a minute.
 set -eu
 dir="$(cd "$(dirname "$0")" && pwd)"
-app="${1:-/Applications/Sik.app}/Contents/MacOS/sik"
+app="${1:-/Applications/Den.app}/Contents/MacOS/den"
 out="$dir/docs/screenshots/main.png"
 # Short paths: the shell prompt shows the folder and a socket path has a limit.
 # The real path (/private/tmp), the one git reports for the worktrees.
-demo="$(cd "$(mktemp -d /tmp/sikdemo.XXXX)" && pwd -P)"
+demo="$(cd "$(mktemp -d /tmp/dendemo.XXXX)" && pwd -P)"
 projects="$demo/p"
 socket="$demo/agent.sock"
 pid=""
@@ -29,14 +29,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-git clone -q "$dir" "$projects/sik"
+git clone -q "$dir" "$projects/den"
 for branch in lsp-hover ssh-reconnect tab-drag wsl-distros; do
-  git -C "$projects/sik" worktree add -q -b "$branch" "$projects/wt/$branch"
+  git -C "$projects/den" worktree add -q -b "$branch" "$projects/wt/$branch"
 done
 task="$projects/wt/wsl-distros"
 
 mkdir -p "$demo/config" "$demo/state" "$demo/zdot"
-printf '["%s"]\n' "$projects/sik" > "$demo/config/repos.json"
+printf '["%s"]\n' "$projects/den" > "$demo/config/repos.json"
 cat > "$demo/config/config.json" <<EOF
 {
   "theme": "dark",
@@ -70,7 +70,7 @@ for w in list where (w[kCGWindowOwnerPID as String] as? Int32) == pid && (w[kCGW
 }
 EOF
 
-# keys <AppleScript lines>: sends keystrokes to the demo sik.
+# keys <AppleScript lines>: sends keystrokes to the demo den.
 keys() {
   osascript -e "tell application \"System Events\"
     set frontmost of (first process whose unix id is $pid) to true
@@ -83,8 +83,8 @@ type_line() {
     key code 36"
 }
 
-(cd "$task" && ZDOTDIR="$demo/zdot" SIK_CONFIG_DIR="$demo/config" SIK_STATE_DIR="$demo/state" \
-  SIK_AGENT_SOCKET="$socket" exec "$app") >"$demo/app.log" 2>&1 &
+(cd "$task" && ZDOTDIR="$demo/zdot" DEN_CONFIG_DIR="$demo/config" DEN_STATE_DIR="$demo/state" \
+  DEN_AGENT_SOCKET="$socket" exec "$app") >"$demo/app.log" 2>&1 &
 pid=$!
 window=""
 for _ in $(seq 30); do
@@ -92,7 +92,7 @@ for _ in $(seq 30); do
   [ -n "$window" ] && break
   sleep 1
 done
-[ -n "$window" ] || { echo "sik didn't open a window; see $demo/app.log" >&2; exit 1; }
+[ -n "$window" ] || { echo "den didn't open a window; see $demo/app.log" >&2; exit 1; }
 sleep 5
 
 echo "running Claude Code…"

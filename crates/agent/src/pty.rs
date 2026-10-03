@@ -41,16 +41,16 @@ impl Pty {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", proto::APP);
-        // `sik task` knows it runs inside sik, and the app opens the task.
-        cmd.env("SIK_TERMINAL", "1");
-        // `sik` commands act on the workspace of the terminal they run in.
-        cmd.env("SIK_TERM", term.to_string());
+        // `den task` knows it runs inside den, and the app opens the task.
+        cmd.env("DEN_TERMINAL", "1");
+        // `den` commands act on the workspace of the terminal they run in.
+        cmd.env("DEN_TERM", term.to_string());
         if std::env::var_os("LANG").is_none()
             && let Some(lang) = crate::platform::default_lang()
         {
             cmd.env("LANG", lang);
         }
-        // `sik` in the PATH is the agent itself: `sik task <name>` creates tasks.
+        // `den` in the PATH is the agent itself: `den task <name>` creates tasks.
         if let Ok(bin) = crate::cli::bin_dir() {
             let path = std::env::var_os("PATH").unwrap_or_default();
             let mut paths = vec![bin];

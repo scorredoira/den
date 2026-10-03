@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn replaces_in_the_given_files() {
-        let dir = std::env::temp_dir().join(format!("sik-replace-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-replace-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.ts"), "payment(Payment, PAYMENT)\n").unwrap();
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn replacement_only_changes_the_lines_search_matches() {
-        let dir = std::env::temp_dir().join(format!("sik-replace-lines-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-replace-lines-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("a.txt");
         for (query, text, replacement, expected, matching_lines) in [
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn searches_and_lists_respecting_gitignore() {
-        let dir = std::env::temp_dir().join(format!("sik-search-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-search-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();

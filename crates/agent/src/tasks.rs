@@ -1,6 +1,6 @@
 //! The workspaces: the folders this agent was given and, for those that are
 //! git repos, their worktrees. How a worktree is created is up to each repo
-//! through its `.sik/create` script, which the agent calls if present.
+//! through its `.den/create` script, which the agent calls if present.
 
 use std::{
     path::{Path, PathBuf},
@@ -241,7 +241,7 @@ mod tests {
     }
 
     fn repo(name: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!("sik-tasks-{}-{name}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("den-tasks-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let repo = base.join("project");
         std::fs::create_dir_all(&repo).unwrap();
@@ -253,7 +253,7 @@ mod tests {
     /// A folder that isn't a repo is kept as it is.
     #[test]
     fn plain_folders_are_kept_as_they_are() {
-        let base = std::env::temp_dir().join(format!("sik-tasks-{}-plain", std::process::id()));
+        let base = std::env::temp_dir().join(format!("den-tasks-{}-plain", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let folder = base.canonicalize().unwrap();
@@ -280,8 +280,8 @@ mod tests {
     #[cfg(unix)]
     fn calls_the_repo_script() {
         let repo = repo("script");
-        std::fs::create_dir_all(repo.join(".sik")).unwrap();
-        let script = repo.join(".sik/create");
+        std::fs::create_dir_all(repo.join(".den")).unwrap();
+        let script = repo.join(".den/create");
         std::fs::write(&script, "#!/bin/sh\ngit worktree add -q -b \"$1\" \"../other-place-$1\"\necho done\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -293,8 +293,8 @@ mod tests {
     #[cfg(windows)]
     fn calls_powershell_repo_script() {
         let repo = repo("powershell");
-        std::fs::create_dir_all(repo.join(".sik")).unwrap();
-        std::fs::write(repo.join(".sik/create.ps1"),
+        std::fs::create_dir_all(repo.join(".den")).unwrap();
+        std::fs::write(repo.join(".den/create.ps1"),
             "param([string]$TaskName)\ngit worktree add -q -b $TaskName \"../custom-$TaskName\"\nexit $LASTEXITCODE\n").unwrap();
         let task = create(&repo, "windows").unwrap();
         assert_eq!(task.path.file_name().unwrap(), "custom-windows");
@@ -320,8 +320,8 @@ mod tests {
     fn remove_script_must_really_remove() {
         let repo = repo("noremove");
         let task = create(&repo, "x").unwrap();
-        std::fs::create_dir_all(repo.join(".sik")).unwrap();
-        let script = repo.join(".sik/remove");
+        std::fs::create_dir_all(repo.join(".den")).unwrap();
+        let script = repo.join(".den/remove");
         std::fs::write(&script, "#!/bin/sh\necho \"doing nothing with $1 in $2\"\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -333,8 +333,8 @@ mod tests {
     #[cfg(unix)]
     fn reports_script_failures() {
         let repo = repo("fails");
-        std::fs::create_dir_all(repo.join(".sik")).unwrap();
-        let script = repo.join(".sik/create");
+        std::fs::create_dir_all(repo.join(".den")).unwrap();
+        let script = repo.join(".den/create");
         std::fs::write(&script, "#!/bin/sh\necho 'no space left' >&2\nexit 3\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();

@@ -26,7 +26,7 @@ fn runtime() -> &'static Runtime {
 fn name(path: &Path) -> String {
     use std::os::windows::ffi::OsStrExt;
     let bytes: Vec<u8> = path.as_os_str().encode_wide().flat_map(u16::to_le_bytes).collect();
-    format!(r"\\.\pipe\sik-{}", proto::build_id(&bytes))
+    format!(r"\\.\pipe\den-{}", proto::build_id(&bytes))
 }
 
 fn server(name: &str, first: bool) -> io::Result<NamedPipeServer> {
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn duplex_and_close_wakes_idle_reader() {
-        let path = std::env::temp_dir().join(format!("sik-pipe-test-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("den-pipe-test-{}", std::process::id()));
         let listener = Listener::bind(&path).unwrap();
         assert!(Listener::bind(&path).is_err(), "only one agent may listen");
         let mut client = Stream::connect(&path).unwrap();

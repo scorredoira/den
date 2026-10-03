@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="192 192 640 640" width="640" height="640">
-  <!-- The geometric S from the app icon, sampled on a quiet dot grid. -->
+  <!-- The geometric D from the app icon, sampled on a quiet dot grid. -->
   <defs>
     <pattern id="dots" width="10" height="10" patternUnits="userSpaceOnUse">
       <circle cx="5" cy="5" r="2.3" fill="#000"/>
     </pattern>
   </defs>
   <g fill="url(#dots)">
-    <path d="M710 298H418L290 426V468L586 608H314V726H606L734 598V556L438 416H710Z"/>
+    <path fill-rule="evenodd" d="M290 298H606L734 426V598L606 726H290ZM390 398V626H565L634 557V467L565 398Z"/>
   </g>
 </svg>

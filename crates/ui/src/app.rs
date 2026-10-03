@@ -1,4 +1,4 @@
-//! The sik window: the open folder's workspace and, optionally, the tasks
+//! The den window: the open folder's workspace and, optionally, the tasks
 //! column, grouped by server. Any folder can be opened; a task is a folder
 //! that is a worktree of a known repo. Each open folder has its own
 //! workspace, which is kept when switching from one to another. With none
@@ -147,7 +147,7 @@ impl Render for DragPreview {
 /// after it's closed: the app goes on without it on macOS).
 #[derive(Default)]
 struct Main {
-    window: Option<(AnyWindowHandle, WeakEntity<Sik>)>,
+    window: Option<(AnyWindowHandle, WeakEntity<Den>)>,
     agent: Option<Arc<Client>>,
 }
 
@@ -159,9 +159,9 @@ pub fn set_agent(agent: Option<Arc<Client>>, cx: &mut App) {
 }
 
 /// The window, while it's open.
-fn main_window(cx: &App) -> Option<(AnyWindowHandle, Entity<Sik>)> {
-    let (handle, sik) = cx.try_global::<Main>()?.window.as_ref()?;
-    Some((*handle, sik.upgrade()?))
+fn main_window(cx: &App) -> Option<(AnyWindowHandle, Entity<Den>)> {
+    let (handle, den) = cx.try_global::<Main>()?.window.as_ref()?;
+    Some((*handle, den.upgrade()?))
 }
 
 /// Opens the window with `root` and `file` in it; with no `root`, the last
@@ -170,7 +170,7 @@ pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, c
     let agent = cx.default_global::<Main>().agent.clone();
     let title = match &root {
         Some(root) => folder_name(root),
-        None => "sik".to_string(),
+        None => "den".to_string(),
     };
     // The app draws the title bar itself (`TitleBar`), in the theme's color.
     let options = WindowOptions {
@@ -182,10 +182,10 @@ pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, c
         ..TitleBar::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| Sik::new(root.clone(), file.clone(), resume, agent, window, cx))
+        cx.new(|cx| Den::new(root.clone(), file.clone(), resume, agent, window, cx))
     });
     match opened {
-        Ok((handle, sik)) => cx.default_global::<Main>().window = Some((handle, sik.downgrade())),
+        Ok((handle, den)) => cx.default_global::<Main>().window = Some((handle, den.downgrade())),
         Err(err) => eprintln!("could not open the window: {err:#}"),
     }
 }
@@ -197,19 +197,19 @@ pub fn reopen(cx: &mut App) {
     }
 }
 
-/// Whether the window is open: the `sik` commands run in it.
+/// Whether the window is open: the `den` commands run in it.
 pub fn has_window(cx: &App) -> bool {
     main_window(cx).is_some()
 }
 
-/// `sik <path>` in a terminal of `host`: `root` as a workspace, with `file`
+/// `den <path>` in a terminal of `host`: `root` as a workspace, with `file`
 /// open in it, and the window to the front (opened if it was closed).
 pub fn handle_open(host: SharedString, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
     match main_window(cx) {
-        Some((handle, sik)) => {
+        Some((handle, den)) => {
             handle
                 .update(cx, |_, window, cx| {
-                    sik.update(cx, |sik, cx| sik.open_from_terminal(host, root, file, window, cx));
+                    den.update(cx, |den, cx| den.open_from_terminal(host, root, file, window, cx));
                     window.activate_window();
                 })
                 .ok();
@@ -217,10 +217,10 @@ pub fn handle_open(host: SharedString, root: PathBuf, file: Option<PathBuf>, cx:
         None if host == LOCAL => open_window(Some(root), file, false, cx),
         None => {
             open_window(None, None, false, cx);
-            if let Some((handle, sik)) = main_window(cx) {
+            if let Some((handle, den)) = main_window(cx) {
                 handle
                     .update(cx, |_, window, cx| {
-                        sik.update(cx, |sik, cx| sik.open_from_terminal(host, root, file, window, cx))
+                        den.update(cx, |den, cx| den.open_from_terminal(host, root, file, window, cx))
                     })
                     .ok();
             }
@@ -231,9 +231,9 @@ pub fn handle_open(host: SharedString, root: PathBuf, file: Option<PathBuf>, cx:
 
 /// Cmd-Q: quits once there are no unsaved files, or they're saved.
 pub fn quit(cx: &mut App) {
-    if let Some((handle, sik)) = main_window(cx) {
+    if let Some((handle, den)) = main_window(cx) {
         let ready = handle
-            .update(cx, |_, window, cx| sik.update(cx, |sik, cx| sik.confirm_quit(window, cx)))
+            .update(cx, |_, window, cx| den.update(cx, |den, cx| den.confirm_quit(window, cx)))
             .unwrap_or(true);
         if !ready {
             return;
@@ -256,7 +256,7 @@ fn window_bounds(cx: &App) -> WindowBounds {
     WindowBounds::centered(size(screen.width * 0.92, screen.height * 0.9), cx)
 }
 
-pub struct Sik {
+pub struct Den {
     hosts: Vec<Host>,
     active: Option<TaskKey>,
     workspaces: HashMap<TaskKey, Entity<Workspace>>,
@@ -276,7 +276,7 @@ pub struct Sik {
     removing: HashSet<TaskKey>,
     /// Last error from a column action, with the task it affects.
     error: Option<(TaskKey, SharedString)>,
-    /// File to open in the first workspace (`sik file`).
+    /// File to open in the first workspace (`den file`).
     open_file: Option<PathBuf>,
     /// Last task from the previous session, on a server not yet connected:
     /// it's entered on connecting (unless another was opened first).
@@ -318,7 +318,7 @@ pub struct Sik {
     _subscriptions: Vec<Subscription>,
 }
 
-impl Sik {
+impl Den {
     pub fn new(
         root: Option<PathBuf>,
         open_file: Option<PathBuf>,
@@ -393,10 +393,10 @@ impl Sik {
             guide: None,
             split: config::Split::new(cx),
             workspaces_panel: {
-                let sik = cx.entity().downgrade();
+                let den = cx.entity().downgrade();
                 cx.new(|_| {
                     WorkspacesPanel::new(move |_, cx| {
-                        sik.update(cx, |sik, cx| sik.render_column(cx).into_any_element())
+                        den.update(cx, |den, cx| den.render_column(cx).into_any_element())
                             .unwrap_or_else(|_| div().into_any_element())
                     })
                 })
@@ -407,9 +407,9 @@ impl Sik {
             _subscriptions: vec![appearance, bounds, {
                 // The switcher's keys come before any shortcut (Cmd-Shift-E
                 // is the files' too), wherever the focus is.
-                let sik = cx.entity().downgrade();
+                let den = cx.entity().downgrade();
                 cx.intercept_keystrokes(move |event, _, cx| {
-                    if sik.update(cx, |this, cx| this.switcher_key(&event.keystroke, cx)).unwrap_or(false) {
+                    if den.update(cx, |this, cx| this.switcher_key(&event.keystroke, cx)).unwrap_or(false) {
                         cx.stop_propagation();
                     }
                 })
@@ -418,9 +418,9 @@ impl Sik {
         Self::install_theme(cx);
         this.apply_theme(window, cx);
 
-        let sik = cx.entity().downgrade();
+        let den = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
-            sik.update(cx, |sik, cx| sik.confirm_quit(window, cx)).unwrap_or(true)
+            den.update(cx, |den, cx| den.confirm_quit(window, cx)).unwrap_or(true)
         });
 
         for name in this.hosts.iter().skip(1).map(|host| host.name.clone()).collect::<Vec<_>>() {
@@ -662,9 +662,9 @@ impl Sik {
     }
 
     /// Receives the agents running on the server and the tasks created with
-    /// `sik task` on it.
+    /// `den task` on it.
     fn watch_host(&mut self, name: SharedString, client: Arc<Client>, window: &mut Window, cx: &mut Context<Self>) {
-        // The `sik` commands run in its terminals come here.
+        // The `den` commands run in its terminals come here.
         client.notify(Request::Serve);
         let (tx, rx) = smol::channel::unbounded::<Event>();
         let name_for_watch = name.clone();
@@ -901,7 +901,7 @@ impl Sik {
             }
         };
         workspace.update(cx, |workspace, cx| workspace.focus(window, cx));
-        window.set_window_title(&format!("{} — sik", self.label(&key)));
+        window.set_window_title(&format!("{} — den", self.label(&key)));
         let last = SavedTask {
             host: key.host.to_string(),
             path: key.path.clone(),
@@ -1154,9 +1154,9 @@ impl Sik {
                     restore(this, window, cx);
                     if let Some(shortcut) = SHORTCUTS.iter().find(|shortcut| shortcut.label == label) {
                         match &previous {
-                            // Once this update is over, and outside `Sik`:
+                            // Once this update is over, and outside `Den`:
                             // dispatching on a focus handle runs now, and the
-                            // action may reach `Sik` (Settings), which can't be
+                            // action may reach `Den` (Settings), which can't be
                             // updated from within itself (`defer_in` would be).
                             Some(focus) => {
                                 let (focus, action) = (focus.clone(), shortcut.action());
@@ -1205,7 +1205,7 @@ impl Sik {
         self.activate(TaskKey { host, path }, window, cx);
     }
 
-    /// `sik <path>`: `root` as a workspace (the worktree containing it, if
+    /// `den <path>`: `root` as a workspace (the worktree containing it, if
     /// any), with `file` open in it. A server not yet connected enters it on
     /// connecting.
     fn open_from_terminal(
@@ -1384,7 +1384,7 @@ impl Sik {
         if self.active.as_ref() == Some(key) {
             self.active = None;
             Config::update(cx, |config| config.last = None);
-            window.set_window_title("sik");
+            window.set_window_title("den");
             match self.previous.clone().filter(|key| self.task(key).is_some()) {
                 Some(previous) => self.activate(previous, window, cx),
                 None => self.focus_handle.focus(window, cx),
@@ -1854,16 +1854,16 @@ impl Sik {
     /// where its panel's column is; and the welcome.
     fn render_without_workspace(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
-        let sik = cx.entity().downgrade();
+        let den = cx.entity().downgrade();
         let click: OnActivity = Rc::new(move |_, window, cx| {
-            sik.update(cx, |this, cx| this.toggle_tasks(&ToggleTasks, window, cx)).ok();
+            den.update(cx, |this, cx| this.toggle_tasks(&ToggleTasks, window, cx)).ok();
         });
         let icons = Config::get(cx).shown_activity().contains(&Panel::Workspaces).then_some((Panel::Workspaces, visible, badge));
         let bar = activity_bar(icons.into_iter().collect(), click, cx);
         let layout = &Config::get(cx).layout;
         let width = layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.);
         let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [visible, true], cx).clone();
-        let split = h_resizable("sik-split")
+        let split = h_resizable("den-split")
             .with_state(&state)
             .child(
                 resizable_panel()
@@ -2390,7 +2390,7 @@ impl Sik {
     }
 }
 
-/// How much a task's dot (see `Sik::status`) asks to be looked at: waiting
+/// How much a task's dot (see `Den::status`) asks to be looked at: waiting
 /// for an answer, working, finished unseen, or nothing.
 /// Turning while something takes a while: a worktree made or deleted.
 fn spinner(color: Hsla) -> impl IntoElement {
@@ -2413,7 +2413,7 @@ fn urgency(dot: &str, color: Hsla, cx: &App) -> u8 {
     }
 }
 
-impl Render for Sik {
+impl Render for Den {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(workspace) = self.active_workspace() {
             let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
@@ -2428,10 +2428,10 @@ impl Render for Sik {
             });
         }
         let tasks_visible = self.tasks_shown(cx);
-        let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| "sik".into());
+        let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| "den".into());
         v_flex()
-            .id("sik")
-            .key_context("Sik")
+            .id("den")
+            .key_context("Den")
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().background)
@@ -2558,37 +2558,37 @@ async fn list_tasks(client: &Client) -> anyhow::Result<Vec<TaskInfo>> {
 }
 
 /// The column's + menu: what can be added to it.
-fn add_menu_items(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
-    menu.item(menu::item("Open Folder…", sik, |this, window, cx| this.open_folder(&OpenFolder, window, cx)))
-        .item(menu::item("Open Folder on Server…", sik, |this, window, cx| {
+fn add_menu_items(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
+    menu.item(menu::item("Open Folder…", den, |this, window, cx| this.open_folder(&OpenFolder, window, cx)))
+        .item(menu::item("Open Folder on Server…", den, |this, window, cx| {
             this.open_remote_folder(&OpenRemoteFolder, window, cx)
         }))
         .separator()
-        .item(menu::item("Add Server…", sik, |this, window, cx| this.open_host_picker(window, cx)))
+        .item(menu::item("Add Server…", den, |this, window, cx| this.open_host_picker(window, cx)))
 }
 
 /// Right-click on the tasks column's empty space or its title.
-fn column_menu(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
-    add_menu_items(menu, sik)
+fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
+    add_menu_items(menu, den)
         .separator()
-        .item(menu::item("Hide Panel", sik, |this, _, cx| this.show_tasks_column(false, cx)))
+        .item(menu::item("Hide Panel", den, |this, _, cx| this.show_tasks_column(false, cx)))
 }
 
 /// Right-click on a server's name in the tasks column.
-fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, sik: &WeakEntity<Sik>) -> PopupMenu {
+fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, den: &WeakEntity<Den>) -> PopupMenu {
     if name == LOCAL {
-        return menu.item(menu::item("Open Folder…", sik, |this, window, cx| this.open_folder(&OpenFolder, window, cx)));
+        return menu.item(menu::item("Open Folder…", den, |this, window, cx| this.open_folder(&OpenFolder, window, cx)));
     }
     let (open, reconnect, remove) = (name.clone(), name.clone(), name.clone());
     menu.item(
-        menu::item(format!("Open Folder on {name}…"), sik, move |this, window, cx| {
+        menu::item(format!("Open Folder on {name}…"), den, move |this, window, cx| {
             this.open_folder_picker(open.clone(), window, cx)
         })
         .disabled(!connected),
     )
     .separator()
-    .item(menu::item("Reconnect", sik, move |this, window, cx| this.connect(reconnect.clone(), window, cx)))
-    .item(menu::item("Remove Server", sik, move |this, window, cx| this.remove_host(remove.clone(), window, cx)))
+    .item(menu::item("Reconnect", den, move |this, window, cx| this.connect(reconnect.clone(), window, cx)))
+    .item(menu::item("Remove Server", den, move |this, window, cx| this.remove_host(remove.clone(), window, cx)))
 }
 
 /// In Open Recent: the path (`~/…` locally) and, on a server, its name.
@@ -2769,7 +2769,7 @@ mod palette_tests {
 
     use gpui_kit::*;
 
-    use super::Sik;
+    use super::Den;
     use crate::{config::Config, picker::PickerEvent};
 
     #[gpui_kit::test]
@@ -2778,36 +2778,36 @@ mod palette_tests {
             gpui_kit::init(cx);
             cx.set_global(Config::default());
         });
-        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
         let key = super::TaskKey { host: "remote".into(), path: "/remote-project".into() };
         cx.update(|window, cx| {
             let workspace = crate::workspace::autosave_tests::dirty_workspace(key.path.clone(), window, cx);
-            sik.update(cx, |sik, cx| {
-                sik.workspaces.insert(key.clone(), workspace);
-                sik.remove_host(key.host.clone(), window, cx);
+            den.update(cx, |den, cx| {
+                den.workspaces.insert(key.clone(), workspace);
+                den.remove_host(key.host.clone(), window, cx);
             });
         });
         cx.run_until_parked();
-        assert!(sik.read_with(cx, |sik, _| sik.workspaces.contains_key(&key)));
+        assert!(den.read_with(cx, |den, _| den.workspaces.contains_key(&key)));
         cx.simulate_prompt_answer("Cancel");
         cx.run_until_parked();
-        assert!(sik.read_with(cx, |sik, cx| !sik.unsaved(cx).is_empty()));
+        assert!(den.read_with(cx, |den, cx| !den.unsaved(cx).is_empty()));
 
-        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.remove_host(key.host.clone(), window, cx)));
+        cx.update(|window, cx| den.update(cx, |den, cx| den.remove_host(key.host.clone(), window, cx)));
         cx.run_until_parked();
         cx.simulate_prompt_answer("Save and Remove");
         cx.run_until_parked();
         // There is no connection: saving fails, so all unsaved text remains.
-        assert!(sik.read_with(cx, |sik, cx| sik.workspaces.contains_key(&key) && !sik.unsaved(cx).is_empty()));
+        assert!(den.read_with(cx, |den, cx| den.workspaces.contains_key(&key) && !den.unsaved(cx).is_empty()));
 
-        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.remove_host(key.host.clone(), window, cx)));
+        cx.update(|window, cx| den.update(cx, |den, cx| den.remove_host(key.host.clone(), window, cx)));
         cx.run_until_parked();
         cx.simulate_prompt_answer("Discard Changes");
         cx.run_until_parked();
-        assert!(sik.read_with(cx, |sik, _| !sik.workspaces.contains_key(&key)));
+        assert!(den.read_with(cx, |den, _| !den.workspaces.contains_key(&key)));
     }
 
-    /// Settings from the command palette: the action reaches `Sik` itself,
+    /// Settings from the command palette: the action reaches `Den` itself,
     /// which must not be in the middle of an update then.
     #[gpui_kit::test]
     fn the_palette_opens_settings(cx: &mut TestAppContext) {
@@ -2815,18 +2815,18 @@ mod palette_tests {
             gpui_kit::init(cx);
             cx.set_global(Config::default());
         });
-        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
         cx.update(|window, cx| {
-            sik.update(cx, |sik, cx| {
-                sik.focus_handle.focus(window, cx);
-                sik.open_command_palette(window, cx);
+            den.update(cx, |den, cx| {
+                den.focus_handle.focus(window, cx);
+                den.open_command_palette(window, cx);
             })
         });
         cx.run_until_parked();
-        let picker = sik.read_with(cx, |sik, _| sik.command_palette.as_ref().map(|(picker, _)| picker.clone()).unwrap());
+        let picker = den.read_with(cx, |den, _| den.command_palette.as_ref().map(|(picker, _)| picker.clone()).unwrap());
         picker.update(cx, |_, cx| cx.emit(PickerEvent::Pick("Settings".into())));
         cx.run_until_parked();
-        assert!(sik.read_with(cx, |sik, _| sik.settings.is_some()));
+        assert!(den.read_with(cx, |den, _| den.settings.is_some()));
     }
 
     /// Check for Updates opens About; a build that isn't installed says so
@@ -2838,10 +2838,10 @@ mod palette_tests {
             cx.set_global(Config::default());
             crate::update::init(cx);
         });
-        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
-        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.check_for_updates(window, cx)));
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        cx.update(|window, cx| den.update(cx, |den, cx| den.check_for_updates(window, cx)));
         cx.run_until_parked();
-        assert!(sik.read_with(cx, |sik, _| sik.about.is_some()));
+        assert!(den.read_with(cx, |den, _| den.about.is_some()));
         assert!(cx.update(|_, cx| crate::update::status(cx) == crate::update::Status::NotInstalled));
     }
 
@@ -2852,12 +2852,12 @@ mod palette_tests {
             gpui_kit::init(cx);
             cx.set_global(Config::default());
         });
-        let (sik, cx) = cx.add_window_view(|window, cx| Sik::new(None, None, false, None, window, cx));
-        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.ask_update("9.9.9".into(), window, cx)));
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        cx.update(|window, cx| den.update(cx, |den, cx| den.ask_update("9.9.9".into(), window, cx)));
         cx.run_until_parked();
-        assert!(sik.read_with(cx, |sik, _| sik.confirm_update.is_some()));
-        cx.update(|window, cx| sik.update(cx, |sik, cx| sik.cancel_confirm(window, cx)));
-        assert!(sik.read_with(cx, |sik, _| sik.confirm_update.is_none()));
+        assert!(den.read_with(cx, |den, _| den.confirm_update.is_some()));
+        cx.update(|window, cx| den.update(cx, |den, cx| den.cancel_confirm(window, cx)));
+        assert!(den.read_with(cx, |den, _| den.confirm_update.is_none()));
     }
 
     /// Checking for updates is on unless turned off.

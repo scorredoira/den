@@ -23,14 +23,14 @@ use crate::{
 
 struct ContextMenuDelegate {
     query: SharedString,
-    /// (sik) Weak: the menu owns this list, and a strong handle back would
+    /// (den) Weak: the menu owns this list, and a strong handle back would
     /// keep both alive after the menu goes.
     menu: WeakEntity<CompletionMenu>,
-    /// (sik) The menu's editor, kept here so resolving doesn't read the menu.
+    /// (den) The menu's editor, kept here so resolving doesn't read the menu.
     editor: WeakEntity<EditorState>,
     items: Vec<Rc<CompletionItem>>,
     selected_ix: usize,
-    /// (sik) Items already asked for their detail and documentation.
+    /// (den) Items already asked for their detail and documentation.
     resolved: std::collections::HashSet<usize>,
 }
 
@@ -41,7 +41,7 @@ impl ContextMenuDelegate {
         self.resolved.clear();
     }
 
-    /// (sik) Asks the provider once for the rest of the selected item (the
+    /// (den) Asks the provider once for the rest of the selected item (the
     /// detail and documentation some servers leave out of the list).
     fn resolve_selected(&mut self, cx: &mut Context<ListState<Self>>) {
         let ix = self.selected_ix;
@@ -126,7 +126,7 @@ impl RenderOnce for CompletionMenuItem {
         let item = self.item;
 
         let deprecated = item.deprecated.unwrap_or(false);
-        // (sik) The letters of the label that match what's typed, as VS Code.
+        // (den) The letters of the label that match what's typed, as VS Code.
         let highlight = HighlightStyle {
             color: Some(cx.theme().blue),
             font_weight: Some(gpui::FontWeight::BOLD),
@@ -157,7 +157,7 @@ impl RenderOnce for CompletionMenuItem {
                     .flex_none()
                     .child(StyledText::new(item.label.clone()).with_highlights(highlights)),
             )
-            // (sik) The detail only on the selected one, at the right, as VS Code.
+            // (den) The detail only on the selected one, at the right, as VS Code.
             .when_some(item.detail.clone().filter(|_| self.selected), |this, detail| {
                 this.child(
                     div()
@@ -175,7 +175,7 @@ impl RenderOnce for CompletionMenuItem {
     }
 }
 
-/// (sik) Byte ranges of `label` matching `query`: its start if it starts with
+/// (den) Byte ranges of `label` matching `query`: its start if it starts with
 /// it, or else each letter of it in order (case ignored).
 fn matched(label: &str, query: &str) -> Vec<std::ops::Range<usize>> {
     if query.is_empty() {
@@ -203,7 +203,7 @@ fn matched(label: &str, query: &str) -> Vec<std::ops::Range<usize>> {
     ranges
 }
 
-/// (sik) The icon and color of a `CompletionItemKind`, after VS Code's.
+/// (den) The icon and color of a `CompletionItemKind`, after VS Code's.
 fn kind_icon(kind: Option<CompletionItemKind>, cx: &App) -> (&'static str, Hsla) {
     let theme = cx.theme();
     match kind {
@@ -254,7 +254,7 @@ impl ListDelegate for ContextMenuDelegate {
         cx: &mut Context<ListState<Self>>,
     ) {
         self.selected_ix = ix.map(|i| i.row).unwrap_or(0);
-        // (sik) Resolved once the current update is over: the selection
+        // (den) Resolved once the current update is over: the selection
         // changes while the editor (arrow keys) or the menu (`show`) is
         // leased, and resolving reads the editor.
         let list = cx.entity().downgrade();
@@ -429,7 +429,7 @@ impl CompletionMenu {
         let items = items.into();
         self.offset = offset;
         self.open = true;
-        // (sik) What's highlighted is the word typed before the cursor.
+        // (den) What's highlighted is the word typed before the cursor.
         if let Some(editor) = self.editor.upgrade() {
             let text = editor.read(cx).text();
             let position = text.offset_to_position(offset);

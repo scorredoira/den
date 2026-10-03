@@ -1,4 +1,4 @@
-//! Keeping an installed sik on its latest release: every few hours (unless
+//! Keeping an installed den on its latest release: every few hours (unless
 //! turned off in Settings) or with Check for Updates, it asks GitHub for the
 //! latest release and, if it's newer, installs it in the background in place
 //! of this one. It never restarts by itself: the title bar says there's an
@@ -6,7 +6,7 @@
 //! their tabs reopen as they were, and terminals live in the agent, so
 //! they're still there after restarting.
 //!
-//! Only an installed app updates: `Sik.app` on macOS, or what the Linux
+//! Only an installed app updates: `Den.app` on macOS, or what the Linux
 //! package's `install.sh` installed. A build run from `target` doesn't.
 
 use std::{
@@ -18,18 +18,18 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use gpui_kit::{App, Global};
 
-const RELEASES: &str = "https://github.com/scorredoira/sik/releases";
+const RELEASES: &str = "https://github.com/scorredoira/den/releases";
 
 /// The first check, once the app has settled.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// How this sik was installed, which is what an update replaces.
+/// How this den was installed, which is what an update replaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Install {
-    /// `…/Sik.app` on macOS.
+    /// `…/Den.app` on macOS.
     Bundle(PathBuf),
-    /// `<data>/sik/app/sik`, by the Linux package's `install.sh`.
+    /// `<data>/den/app/den`, by the Linux package's `install.sh`.
     Linux(PathBuf),
 }
 
@@ -189,7 +189,7 @@ fn install_of(exe: &Path) -> Option<Install> {
     }
     let app = exe.parent()?;
     let named = |path: Option<&Path>, name: &str| path.and_then(Path::file_name).is_some_and(|file| file == name);
-    (cfg!(target_os = "linux") && named(Some(app), "app") && named(app.parent(), "sik"))
+    (cfg!(target_os = "linux") && named(Some(app), "app") && named(app.parent(), "den"))
         .then(|| Install::Linux(exe.to_path_buf()))
 }
 
@@ -221,7 +221,7 @@ fn check_and_install(install: &Install) -> Result<std::result::Result<String, (S
         Install::Bundle(_) => ("macos", "zip"),
         Install::Linux(_) => ("linux", "tar.gz"),
     };
-    let label = format!("sik-{version}-{platform}-{}", std::env::consts::ARCH);
+    let label = format!("den-{version}-{platform}-{}", std::env::consts::ARCH);
     let archive_name = format!("{label}.{extension}");
     let work = tempdir()?;
     let result = (|| {
@@ -252,13 +252,13 @@ fn check_and_install(install: &Install) -> Result<std::result::Result<String, (S
     Ok(Err((version, result?)))
 }
 
-/// Unpacks the release's `Sik.app` beside `bundle` and swaps it in. The
+/// Unpacks the release's `Den.app` beside `bundle` and swaps it in. The
 /// running app keeps its files; the next start is the new one.
 fn replace_bundle(archive: &Path, bundle: &Path, work: &Path) -> Result<Vec<String>> {
     run(Command::new("ditto").args(["-x", "-k"]).arg(archive).arg(work))?;
-    let unpacked = work.join("Sik.app");
-    if !unpacked.join("Contents/MacOS/sik").is_file() {
-        bail!("the release has no Sik.app");
+    let unpacked = work.join("Den.app");
+    if !unpacked.join("Contents/MacOS/den").is_file() {
+        bail!("the release has no Den.app");
     }
     let parent = bundle.parent().context("the app is not in a folder")?;
     let name = bundle.file_name().context("the app has no name")?.to_string_lossy().into_owned();
@@ -305,7 +305,7 @@ fn run(command: &mut Command) -> Result<()> {
 }
 
 fn tempdir() -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("sik-update-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("den-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -332,15 +332,15 @@ mod tests {
     fn where_the_app_is_tells_how_it_was_installed() {
         if cfg!(target_os = "macos") {
             assert_eq!(
-                install_of(Path::new("/Applications/Sik.app/Contents/MacOS/sik")),
-                Some(Install::Bundle(PathBuf::from("/Applications/Sik.app")))
+                install_of(Path::new("/Applications/Den.app/Contents/MacOS/den")),
+                Some(Install::Bundle(PathBuf::from("/Applications/Den.app")))
             );
-            assert_eq!(install_of(Path::new("/Users/u/sik/target/release/sik")), None);
+            assert_eq!(install_of(Path::new("/Users/u/den/target/release/den")), None);
         }
         if cfg!(target_os = "linux") {
-            let exe = Path::new("/home/u/.local/share/sik/app/sik");
+            let exe = Path::new("/home/u/.local/share/den/app/den");
             assert_eq!(install_of(exe), Some(Install::Linux(exe.to_path_buf())));
-            assert_eq!(install_of(Path::new("/home/u/sik/target/release/sik")), None);
+            assert_eq!(install_of(Path::new("/home/u/den/target/release/den")), None);
         }
     }
 }
@@ -355,11 +355,11 @@ mod network {
     fn installs_a_release_over_a_bundle() {
         let work = tempdir().unwrap();
         let apps = work.join("Applications");
-        let bundle = apps.join("Sik.app");
+        let bundle = apps.join("Den.app");
         std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
         std::fs::write(bundle.join("Contents/MacOS/old"), "").unwrap();
         let tag = "v0.1.4";
-        let name = format!("sik-0.1.4-macos-{}.zip", std::env::consts::ARCH);
+        let name = format!("den-0.1.4-macos-{}.zip", std::env::consts::ARCH);
         let archive = work.join(&name);
         download(&format!("{RELEASES}/download/{tag}/{name}"), &archive).unwrap();
         download(&format!("{RELEASES}/download/{tag}/SHA256SUMS"), &work.join("SHA256SUMS")).unwrap();
@@ -368,9 +368,9 @@ mod network {
         let unpack = work.join("unpack");
         std::fs::create_dir_all(&unpack).unwrap();
         let relaunch = replace_bundle(&archive, &bundle, &unpack).unwrap();
-        assert!(bundle.join("Contents/MacOS/sik").is_file());
+        assert!(bundle.join("Contents/MacOS/den").is_file());
         assert!(!bundle.join("Contents/MacOS/old").exists());
-        assert!(!apps.join(".Sik.app.old").exists() && !apps.join(".Sik.app.update").exists());
+        assert!(!apps.join(".Den.app.old").exists() && !apps.join(".Den.app.update").exists());
         assert_eq!(relaunch[..2], ["open", "-a"]);
         let _ = std::fs::remove_dir_all(&work);
     }

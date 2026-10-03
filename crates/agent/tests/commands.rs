@@ -1,4 +1,4 @@
-//! End-to-end test: a `sik` command from a terminal goes to the app that
+//! End-to-end test: a `den` command from a terminal goes to the app that
 //! serves them, with the terminal's workspace, and the app's answer comes
 //! back to it. Its own file, so it runs in its own process (the socket is
 //! chosen with an environment variable).
@@ -10,16 +10,16 @@ use proto::{Event, Request, Response};
 
 #[test]
 fn the_app_answers_commands_from_its_terminals() {
-    let dir = std::env::temp_dir().join(format!("sik-agent-commands-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("den-agent-commands-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     // SAFETY: the test is the only thread touching the environment.
     unsafe {
-        std::env::set_var("SIK_AGENT_SOCKET", dir.join("agent.sock"));
-        std::env::set_var("SIK_STATE_DIR", dir.join("state"));
-        std::env::set_var("SIK_CONFIG_DIR", dir.join("config"));
+        std::env::set_var("DEN_AGENT_SOCKET", dir.join("agent.sock"));
+        std::env::set_var("DEN_STATE_DIR", dir.join("state"));
+        std::env::set_var("DEN_CONFIG_DIR", dir.join("config"));
     }
-    let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
+    let agent = Path::new(env!("CARGO_BIN_EXE_den-agent"));
     let app = Client::connect_local(agent).unwrap();
     let cli = Client::connect_local(agent).unwrap();
     let request = |client: &Client, request| smol::block_on(client.request(request));
@@ -27,7 +27,7 @@ fn the_app_answers_commands_from_its_terminals() {
     // no app serves commands yet
     let command = |term| Request::Command { args: vec!["tabs".into()], cwd: dir.clone(), term };
     let err = request(&cli, command(None)).unwrap_err();
-    assert!(err.to_string().contains("no sik app"), "{err:#}");
+    assert!(err.to_string().contains("no den app"), "{err:#}");
 
     // a terminal of the workspace `dir` knows its own id
     let group = dir.to_string_lossy().into_owned();
@@ -37,9 +37,9 @@ fn the_app_answers_commands_from_its_terminals() {
             group: group.clone(),
             cwd: dir.clone(),
             command: Some(if cfg!(windows) {
-                vec!["cmd.exe".into(), "/C".into(), "echo term=%SIK_TERM% & ping -n 30 127.0.0.1 >nul".into()]
+                vec!["cmd.exe".into(), "/C".into(), "echo term=%DEN_TERM% & ping -n 30 127.0.0.1 >nul".into()]
             } else {
-                vec!["/bin/sh".into(), "-c".into(), "echo term=$SIK_TERM; sleep 30".into()]
+                vec!["/bin/sh".into(), "-c".into(), "echo term=$DEN_TERM; sleep 30".into()]
             }),
             cols: 80,
             rows: 24,
@@ -80,7 +80,7 @@ fn the_app_answers_commands_from_its_terminals() {
     };
     assert_eq!(text, "main.rs");
 
-    // and its errors; outside sik's terminals there's no workspace
+    // and its errors; outside den's terminals there's no workspace
     let pending = cli.request(command(None));
     let (id, _, from, from_group) = commands.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!((from, from_group), (None, None));

@@ -1,9 +1,9 @@
-//! `sik-agent`: the daemon that keeps a machine's terminals.
+//! `den-agent`: the daemon that keeps a machine's terminals.
 //!
-//! - `sik-agent daemon`: listens on the local socket (started by the UI).
-//! - `sik-agent bridge`: joins stdin/stdout to the socket, starting the daemon
-//!   if needed. It's what `ssh host sik-agent bridge` runs (phase 3).
-//! - `sik <path>`, `sik worktree <name>`, `sik show <file>`…: from a
+//! - `den-agent daemon`: listens on the local socket (started by the UI).
+//! - `den-agent bridge`: joins stdin/stdout to the socket, starting the daemon
+//!   if needed. It's what `ssh host den-agent bridge` runs (phase 3).
+//! - `den <path>`, `den worktree <name>`, `den show <file>`…: from a
 //!   terminal (see `cli.rs`).
 
 mod blocked;
@@ -30,11 +30,11 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
-            println!("sik-agent {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
+            println!("den-agent {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
             Ok(())
         }
         Some("daemon") => daemon(),
-        None if !cli::invoked_as_sik() => daemon(),
+        None if !cli::invoked_as_den() => daemon(),
         Some("bridge") => bridge(),
         Some("worktree" | "wt" | "task") => cli::task(&args[1..]),
         Some("help" | "--help" | "-h") => {
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         }
         Some("term") => cli::term(&args[1..]),
         Some("show" | "diff" | "doc" | "selection" | "tabs" | "message" | "workspaces") => cli::command(&args),
-        Some(path) if cli::invoked_as_sik() && !path.starts_with('-') && args.len() == 1 => cli::open(path),
+        Some(path) if cli::invoked_as_den() && !path.starts_with('-') && args.len() == 1 => cli::open(path),
         _ => {
             eprint!("{}", cli::USAGE);
             std::process::exit(2);
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
 fn daemon() -> Result<()> {
     platform::detach_session();
     if let Err(err) = cli::install() {
-        eprintln!("could not install the `sik` command for terminals: {err:#}");
+        eprintln!("could not install the `den` command for terminals: {err:#}");
     }
     if let Err(err) = cli::install_skill() {
         eprintln!("could not install the skill for Claude Code: {err:#}");

@@ -12,7 +12,7 @@ pub(super) struct Switcher {
     selected: usize,
 }
 
-impl Sik {
+impl Den {
     /// Cmd-E: opens the switcher on the previous workspace or, open, selects
     /// the next one.
     pub(super) fn previous_task(&mut self, _: &PreviousTask, window: &mut Window, cx: &mut Context<Self>) {

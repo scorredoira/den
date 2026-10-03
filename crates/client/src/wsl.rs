@@ -41,7 +41,7 @@ pub(crate) fn shell(distro: &str) -> Command {
 pub(crate) fn hold(distro: &str, pid: u32) -> Result<()> {
     shell(distro)
         .arg(format!(
-            "exec 9>>/tmp/sik-hold-{pid}; \
+            "exec 9>>/tmp/den-hold-{pid}; \
              if command -v flock >/dev/null; then flock -n 9 || exit 0; fi; \
              while kill -0 {pid} 2>/dev/null; do sleep 30; done"
         ))

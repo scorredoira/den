@@ -106,7 +106,7 @@ mod tests {
             let screenshot = self.screenshot.clone();
             TextView::new(&self.text)
                 .resolve_image_source(move |url| match url.as_ref() {
-                    "packaging/macos/sik.svg" => Some(logo.clone().into()),
+                    "packaging/macos/den.svg" => Some(logo.clone().into()),
                     "docs/screenshots/main.png" => Some(screenshot.clone().into()),
                     _ => None,
                 })
@@ -120,7 +120,7 @@ mod tests {
         cx.update(gpui_kit::init);
         let logo = Arc::new(Image::from_bytes(
             ImageFormat::Svg,
-            include_bytes!("../../../../packaging/macos/sik.svg").to_vec(),
+            include_bytes!("../../../../packaging/macos/den.svg").to_vec(),
         ));
         let screenshot = Arc::new(Image::from_bytes(
             ImageFormat::Png,
@@ -178,7 +178,7 @@ mod tests {
         let root = Path::new("/server/project");
         let document = root.join("docs/README.md");
         for (url, expected) in [
-            ("../packaging/macos/sik.svg", "packaging/macos/sik.svg"),
+            ("../packaging/macos/den.svg", "packaging/macos/den.svg"),
             ("screenshots/main.png", "docs/screenshots/main.png"),
             ("/screenshots/main.png", "screenshots/main.png"),
             ("./a%20b%23c.png?raw=1#image", "docs/a b#c.png"),

@@ -1,12 +1,12 @@
 # Debugger
 
-Sik debugs any program that speaks the protocol below: Sik doesn't know its
-language or its VM. The program listens on a TCP port; Sik reaches it through
+Den debugs any program that speaks the protocol below: Den doesn't know its
+language or its VM. The program listens on a TCP port; Den reaches it through
 the agent, so a program on a server is debugged like a local one.
 
 ## The launch file
 
-`.sik/debug.json` in the workspace:
+`.den/debug.json` in the workspace:
 
 ```json
 { "command": "sim -d ${file}", "port": 4444 }
@@ -77,10 +77,10 @@ expressions and assignments (`total = 5`) with the history on ↑ and ↓.
 
 One JSON object per line over TCP.
 
-- Request (Sik → program): `{"id": 7, "cmd": "next", "vm": 3}`. Arguments are
+- Request (Den → program): `{"id": 7, "cmd": "next", "vm": 3}`. Arguments are
   fields of the same object.
 - Response: `{"id": 7, "ok": true, ...}` or `{"id": 7, "ok": false, "error": "message"}`.
-- Event (program → Sik): `{"event": "stopped", ...}`, without `id`.
+- Event (program → Den): `{"event": "stopped", ...}`, without `id`.
 
 One client at a time: a new connection replaces the previous one. When the
 client goes away, its breakpoints are cleared and every stopped VM resumes, so

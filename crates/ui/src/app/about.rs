@@ -4,9 +4,9 @@
 use super::*;
 use crate::update::{self, Status};
 
-const REPO: &str = "https://github.com/scorredoira/sik";
+const REPO: &str = "https://github.com/scorredoira/den";
 
-impl Sik {
+impl Den {
     pub(super) fn open_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.about.get_or_insert_with(|| cx.focus_handle()).clone();
         focus.focus(window, cx);
@@ -47,11 +47,11 @@ impl Sik {
         let (text, color): (SharedString, Hsla) = match &status {
             Status::Idle => ("Not checked yet".into(), theme.muted_foreground),
             Status::Checking => ("Checking for updates…".into(), theme.muted_foreground),
-            Status::UpToDate(latest) if latest == version => ("Sik is up to date".into(), theme.success),
+            Status::UpToDate(latest) if latest == version => ("Den is up to date".into(), theme.success),
             Status::UpToDate(latest) => (format!("Up to date (the latest release is {latest})").into(), theme.success),
             Status::Failed(err) => (format!("Couldn't check: {err}").into(), theme.danger),
-            Status::NotInstalled => ("A development build: only an installed Sik updates".into(), theme.muted_foreground),
-            Status::Ready(latest) => (format!("Sik {latest} is installed").into(), theme.primary),
+            Status::NotInstalled => ("A development build: only an installed Den updates".into(), theme.muted_foreground),
+            Status::Ready(latest) => (format!("Den {latest} is installed").into(), theme.primary),
         };
         let updates = h_flex()
             .gap_3()
@@ -128,10 +128,10 @@ impl Sik {
                     .child(
                         h_flex()
                             .gap_4()
-                            .child(svg().path("icons/sik-empty.svg").size(px(56.)).flex_none().text_color(theme.foreground))
+                            .child(svg().path("icons/den-empty.svg").size(px(56.)).flex_none().text_color(theme.foreground))
                             .child(
                                 v_flex()
-                                    .child(div().text_xl().font_semibold().child("Sik"))
+                                    .child(div().text_xl().font_semibold().child("Den"))
                                     .child(div().text_color(theme.muted_foreground).child(format!("Version {version}"))),
                             ),
                     )
@@ -233,7 +233,7 @@ impl Sik {
         if let Some(active) = self.active.take() {
             self.previous = Some(active);
         }
-        window.set_window_title("sik");
+        window.set_window_title("den");
         self.focus_handle.focus(window, cx);
         cx.notify();
     }

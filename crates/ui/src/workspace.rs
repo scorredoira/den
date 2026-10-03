@@ -133,7 +133,7 @@ struct FileTab {
     confirm_close: bool,
     /// Where to put the cursor once loading finishes.
     goto: Option<Position>,
-    /// And, with it, the other end of a range to select (`sik show`).
+    /// And, with it, the other end of a range to select (`den show`).
     select_to: Option<Position>,
     /// Once loaded, focus goes to this tab (not if it was opened as a preview
     /// from the tree, which keeps the keyboard).
@@ -2154,8 +2154,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // The launch file changed: its problems and tests show.
-        let sik = self.root.join(".sik");
-        if paths.iter().any(|path| path.starts_with(&sik)) {
+        let den = self.root.join(".den");
+        if paths.iter().any(|path| path.starts_with(&den)) {
             self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         }
         // `root/.git`: a commit, checkout or reset (HEAD moved): the blame of
@@ -2551,7 +2551,7 @@ impl Workspace {
             let formatted = match client.request(request).await {
                 Ok(Response::Formatted { text: Some(formatted), .. }) => formatted,
                 Ok(Response::Formatted { text: None, .. }) => {
-                    return Err("Nothing formats this kind of file: the repo can add a .sik/format".into());
+                    return Err("Nothing formats this kind of file: the repo can add a .den/format".into());
                 }
                 Ok(other) => return Err(format!("Unexpected response: {other:?}").into()),
                 Err(err) => return Err(format!("Couldn't format: {err:#}").into()),
@@ -3044,7 +3044,7 @@ impl Workspace {
                 .justify_center()
                 .child(
                     svg()
-                        .path("icons/sik-empty.svg")
+                        .path("icons/den-empty.svg")
                         .size(px(360.))
                         .max_w_full()
                         .max_h_full()

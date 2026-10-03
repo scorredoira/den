@@ -1,4 +1,4 @@
-//! The `sik` command in terminals: the agent binary itself, linked as `sik`
+//! The `den` command in terminals: the agent binary itself, linked as `den`
 //! in a folder that comes first in each terminal's PATH. It talks to the
 //! agent on its own machine, so it works the same over SSH.
 
@@ -12,50 +12,50 @@ use crate::platform;
 
 pub const USAGE: &str = "\
 Usage:
-  sik <path>          opens a folder, or a file in its repo, in sik. Over
+  den <path>          opens a folder, or a file in its repo, in den. Over
                       SSH, in the app connected to this server.
-  sik worktree <name> creates a worktree in the repo of the current folder,
-                      running its .sik/create if it has one, and prints its
-                      path. Inside sik, the app also opens it.
+  den worktree <name> creates a worktree in the repo of the current folder,
+                      running its .den/create if it has one, and prints its
+                      path. Inside den, the app also opens it.
 
-In sik's terminals, these act on the workspace of the terminal they run in.
+In den's terminals, these act on the workspace of the terminal they run in.
 Paths are relative to the current folder; lines and columns start at 1. The
 keyboard stays in the terminal unless --focus.
 
-  sik show <file>[:<line>[:<col>]] [--focus]
+  den show <file>[:<line>[:<col>]] [--focus]
                       opens the file with the cursor at that line.
-  sik show <file>:<line>[:<col>]-<line>[:<col>] [--focus]
+  den show <file>:<line>[:<col>]-<line>[:<col>] [--focus]
                       opens it with that range selected (whole lines
                       without columns).
-  sik diff [<file>]   shows the uncommitted changes of the file, or the
+  den diff [<file>]   shows the uncommitted changes of the file, or the
                       list of changed files.
-  sik doc [<title>]   shows the Markdown read from stdin in a tab.
-  sik selection       prints the file and range selected in the editor
+  den doc [<title>]   shows the Markdown read from stdin in a tab.
+  den selection       prints the file and range selected in the editor
                       (path:line:col-line:col), then the selected text.
-  sik tabs            lists the files open in the editor, the active one
+  den tabs            lists the files open in the editor, the active one
                       with its cursor.
-  sik message <text>  shows a message in the status bar.
-  sik workspaces      lists the workspaces open on every server: working,
+  den message <text>  shows a message in the status bar.
+  den workspaces      lists the workspaces open on every server: working,
                       waiting (asking something) or finished unseen.
-  sik term list       the workspace's terminals: id, title, `*` the active.
-  sik term new [--right | --down] [--focus] [<command>...]
+  den term list       the workspace's terminals: id, title, `*` the active.
+  den term new [--right | --down] [--focus] [<command>...]
                       opens a terminal (a new tab, or split from this
                       one), types the command in its shell and prints its id.
-  sik term read <id> [<lines>]
+  den term read <id> [<lines>]
                       prints its last lines (50 by default).
-  sik term send <id> [--no-enter] <text>...
+  den term send <id> [--no-enter] <text>...
                       types the text in it, and Enter.
-  sik term focus <id> shows it and gives it the keyboard.
-  sik term close <id> closes it, ending what runs in it.
+  den term focus <id> shows it and gives it the keyboard.
+  den term close <id> closes it, ending what runs in it.
 ";
 
-/// Folder holding the `sik` link, which the agent puts in its terminals' PATH.
+/// Folder holding the `den` link, which the agent puts in its terminals' PATH.
 pub fn bin_dir() -> Result<PathBuf> {
     Ok(proto::state_dir()?.join("bin"))
 }
 
-/// Links `sik` to this binary, for sik's terminals and, in `~/.local/bin`
-/// if there is one, for any other (unless something else is called `sik` there).
+/// Links `den` to this binary, for den's terminals and, in `~/.local/bin`
+/// if there is one, for any other (unless something else is called `den` there).
 pub fn install() -> Result<()> {
     let dir = bin_dir()?;
     std::fs::create_dir_all(&dir)?;
@@ -64,8 +64,8 @@ pub fn install() -> Result<()> {
     if let Some(local) = std::env::home_dir().map(|home| home.join(".local/bin")).filter(|dir| dir.is_dir()) {
         let link = local.join(proto::APP);
         let ours = match std::fs::read_link(&link) {
-            // The agent runs from versioned copies: `sik-agent-6-…`.
-            Ok(target) => target.file_name().is_some_and(|name| name.to_string_lossy().starts_with("sik-agent")),
+            // The agent runs from versioned copies: `den-agent-6-…`.
+            Ok(target) => target.file_name().is_some_and(|name| name.to_string_lossy().starts_with("den-agent")),
             Err(_) => !link.exists(),
         };
         if ours {
@@ -75,7 +75,7 @@ pub fn install() -> Result<()> {
     Ok(())
 }
 
-/// The Claude Code skill that tells Claude about the `sik` commands.
+/// The Claude Code skill that tells Claude about the `den` commands.
 const SKILL: &str = include_str!("skill.md");
 
 /// Installs the skill where Claude Code looks for the user's, if Claude
@@ -94,8 +94,8 @@ pub fn install_skill() -> Result<()> {
     Ok(())
 }
 
-/// Whether we were invoked through the `sik` link rather than as `sik-agent`.
-pub fn invoked_as_sik() -> bool {
+/// Whether we were invoked through the `den` link rather than as `den-agent`.
+pub fn invoked_as_den() -> bool {
     std::env::args_os()
         .next()
         .map(PathBuf::from)
@@ -103,7 +103,7 @@ pub fn invoked_as_sik() -> bool {
         .unwrap_or(false)
 }
 
-/// `sik <path>`: asks the app to open it. With no app connected, it starts
+/// `den <path>`: asks the app to open it. With no app connected, it starts
 /// one on this machine; over SSH, there's no app to start.
 pub fn open(arg: &str) -> Result<()> {
     let path = std::path::absolute(arg)?;
@@ -119,26 +119,26 @@ pub fn open(arg: &str) -> Result<()> {
         return Ok(());
     }
     if std::env::var_os("SSH_CONNECTION").is_some() {
-        bail!("no sik app is connected to this server: add it in sik's Settings → Servers");
+        bail!("no den app is connected to this server: add it in den's Settings → Servers");
     }
     platform::launch_app(&path)
 }
 
-/// `sik worktree <name>`: prints only the path on stdout (messages go to
-/// stderr), so that `cd "$(sik task x)"` works.
+/// `den worktree <name>`: prints only the path on stdout (messages go to
+/// stderr), so that `cd "$(den task x)"` works.
 pub fn task(args: &[String]) -> Result<()> {
     let [name] = args else {
         eprint!("{USAGE}");
         std::process::exit(2);
     };
     let cwd = std::env::current_dir()?;
-    let inside_sik = std::env::var_os("SIK_TERMINAL").is_some();
+    let inside_den = std::env::var_os("DEN_TERMINAL").is_some();
     let client = Client::connect_local(&std::env::current_exe()?).context("could not talk to the agent")?;
     eprintln!("creating worktree {name}…");
     let response = smol::block_on(client.request(Request::TaskCreate {
         repo: cwd,
         name: name.clone(),
-        open: inside_sik,
+        open: inside_den,
     }))?;
     let Response::Task(task) = response else {
         bail!("unexpected response from the agent: {response:?}");
@@ -147,9 +147,9 @@ pub fn task(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The terminal of sik this runs in, if any.
+/// The terminal of den this runs in, if any.
 fn own_term() -> Option<TermId> {
-    std::env::var("SIK_TERM").ok()?.parse().ok()
+    std::env::var("DEN_TERM").ok()?.parse().ok()
 }
 
 fn connect() -> Result<std::sync::Arc<Client>> {
@@ -162,7 +162,7 @@ pub fn command(args: &[String]) -> Result<()> {
     // Markdown comes from stdin; the app gets it as the last argument.
     if args[0] == "doc" {
         if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            bail!("pipe the Markdown into it: echo \"# Title\" | sik doc");
+            bail!("pipe the Markdown into it: echo \"# Title\" | den doc");
         }
         let mut text = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
@@ -185,11 +185,11 @@ pub fn command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `sik term …`: reading, typing in and closing a terminal is the agent's
+/// `den term …`: reading, typing in and closing a terminal is the agent's
 /// own; opening one, or anything about where it is, the app's.
 pub fn term(args: &[String]) -> Result<()> {
     let id = |arg: Option<&String>| -> Result<TermId> {
-        let arg = arg.context("which terminal? (`sik term list`)")?;
+        let arg = arg.context("which terminal? (`den term list`)")?;
         arg.parse().with_context(|| format!("{arg}: not a terminal id"))
     };
     match args.first().map(String::as_str) {

@@ -39,7 +39,7 @@ reporting if any step fails (never force, never push — pushing is the user's):
    `branch -f` over a checked-out master, no `merge` that isn't `--ff-only`, no
    stash/revert/checkout of files you don't own.
    - `master` is normally checked out in a **sibling worktree** (the main checkout,
-     `sik/`; the feature branches live in `sik-<branch>/`). Find its path with
+     `den/`; the feature branches live in `den-<branch>/`). Find its path with
      `git worktree list`, then **just try the fast-forward**:
      `git -C <path> merge --ff-only <branch>`. A dirty worktree is fine *as long as the
      merge does not touch the same files* — git applies the ff cleanly in that case

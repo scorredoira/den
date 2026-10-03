@@ -84,16 +84,16 @@ fn focus_loss_obeys_setting_and_keeps_unsaved_text_on_failure(cx: &mut TestAppCo
     });
 }
 
-/// Run against an isolated test agent: SIK_TEST_AGENT is its executable and
-/// SIK_AGENT_SOCKET / SIK_STATE_DIR must point to a temporary test directory.
+/// Run against an isolated test agent: DEN_TEST_AGENT is its executable and
+/// DEN_AGENT_SOCKET / DEN_STATE_DIR must point to a temporary test directory.
 #[gpui_kit::test]
 #[ignore]
 fn writes_and_formats_the_blurred_file_and_its_split_view(cx: &mut TestAppContext) {
     // The real agent's reader thread wakes UI futures outside the test scheduler.
     cx.executor().allow_parking();
-    let executable = std::env::var_os("SIK_TEST_AGENT").expect("isolated test agent required");
-    let socket = std::env::var_os("SIK_AGENT_SOCKET").expect("isolated test socket required");
-    let root = PathBuf::from(std::env::var_os("SIK_STATE_DIR").expect("isolated test state required"));
+    let executable = std::env::var_os("DEN_TEST_AGENT").expect("isolated test agent required");
+    let socket = std::env::var_os("DEN_AGENT_SOCKET").expect("isolated test socket required");
+    let root = PathBuf::from(std::env::var_os("DEN_STATE_DIR").expect("isolated test state required"));
     assert!(Path::new(&socket).starts_with(&root));
     let client = Client::connect_local(Path::new(&executable)).unwrap();
     let file = root.join("autosave.json");

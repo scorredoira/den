@@ -18,10 +18,10 @@ use proto::{PROTOCOL, Request, Response};
 use crate::Client;
 
 /// Name, next to the app, of the agent built for Linux x86_64 servers.
-pub const AGENT_LINUX_X86_64: &str = "sik-agent-linux-x86_64";
+pub const AGENT_LINUX_X86_64: &str = "den-agent-linux-x86_64";
 
 /// Server folder (relative to its `$HOME`) where the agent is installed.
-const REMOTE_DIR: &str = ".local/share/sik";
+const REMOTE_DIR: &str = ".local/share/den";
 
 /// Common options: never prompt for passwords (keys or agent), and detect a
 /// dropped connection in about 45 s.
@@ -38,7 +38,7 @@ const OPTIONS: [&str; 8] = [
 
 /// Shared master connection: opening more streams to the server is instant.
 #[cfg(unix)]
-const CONTROL_PATH: &str = "ControlPath=~/.ssh/sik-%C";
+const CONTROL_PATH: &str = "ControlPath=~/.ssh/den-%C";
 
 /// Ensures the master connection. It's created separately with no input or
 /// output: if the first regular `ssh` created it, staying in the background it
@@ -119,7 +119,7 @@ fn install(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Res
         "Linux x86_64" => AGENT_LINUX_X86_64,
         other => bail!("server system not supported yet: {other}"),
     };
-    // Next to the app in development; in `Sik.app`, in `Contents/Resources`
+    // Next to the app in development; in `Den.app`, in `Contents/Resources`
     // (`Contents/MacOS` may only contain macOS code, because of signing).
     let local = [agents.join(name), agents.join("../Resources").join(name)]
         .into_iter()
@@ -127,7 +127,7 @@ fn install(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Res
         .unwrap_or_else(|| agents.join(name));
     let binary = std::fs::read(&local)
         .with_context(|| format!("missing the agent for the server: {}", local.display()))?;
-    let remote = format!("{REMOTE_DIR}/sik-agent-{PROTOCOL}-{}", proto::build_id(&binary));
+    let remote = format!("{REMOTE_DIR}/den-agent-{PROTOCOL}-{}", proto::build_id(&binary));
     // Whether it's there and, if not, whether the server can unpack gzip.
     let present = run(
         destination,
@@ -147,7 +147,7 @@ fn install(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Res
             // Old versions are deleted: an agent still using them doesn't notice.
             &format!(
                 "mkdir -p {REMOTE_DIR} && {unpack} > {remote}.part && chmod +x {remote}.part && mv {remote}.part {remote} \
-                 && find {REMOTE_DIR} -maxdepth 1 -name 'sik-agent-*' ! -path {remote} -delete"
+                 && find {REMOTE_DIR} -maxdepth 1 -name 'den-agent-*' ! -path {remote} -delete"
             ),
             Some(&payload),
         )

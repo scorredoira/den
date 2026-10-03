@@ -1,10 +1,10 @@
-//! What the `sik` commands run in a terminal do in its workspace (see
+//! What the `den` commands run in a terminal do in its workspace (see
 //! `app::commands`). Paths are absolute; lines and columns, 0-based here.
 
 use super::*;
 
 impl Workspace {
-    /// `sik show`: `path` with the cursor at `from` or, with `to`, the range
+    /// `den show`: `path` with the cursor at `from` or, with `to`, the range
     /// between them selected. Without `focus`, the keyboard stays where it was.
     pub fn show(&mut self, path: PathBuf, from: Position, to: Option<Position>, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.open_at_with(path.clone(), from, true, focus, window, cx);
@@ -20,7 +20,7 @@ impl Workspace {
         }
     }
 
-    /// `sik diff`: the Changes panel and, for `file` (relative to the root),
+    /// `den diff`: the Changes panel and, for `file` (relative to the root),
     /// its uncommitted changes.
     pub fn show_changes(&mut self, file: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.show_panel(Panel::Changes, cx);
@@ -31,7 +31,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// `sik selection`: the active file and each selection in it
+    /// `den selection`: the active file and each selection in it
     /// (`path:line:col-line:col`, 1-based), followed by its text.
     pub fn selection(&self, cx: &App) -> Result<String, String> {
         let tab = self
@@ -55,7 +55,7 @@ impl Workspace {
         Ok(out)
     }
 
-    /// `sik tabs`: the open files, by group; the active one with a `*` and its cursor.
+    /// `den tabs`: the open files, by group; the active one with a `*` and its cursor.
     pub fn tab_list(&self, cx: &App) -> String {
         let mut out = String::new();
         for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| !tab.view) {
@@ -80,18 +80,18 @@ impl Workspace {
         out
     }
 
-    /// `sik message`: `text` in the status bar.
+    /// `den message`: `text` in the status bar.
     pub fn set_message(&mut self, text: String, cx: &mut Context<Self>) {
         self.message = Some(text.into());
         cx.notify();
     }
 
-    /// `sik term list`: id, title and whether it's the active one.
+    /// `den term list`: id, title and whether it's the active one.
     pub fn terminal_list(&self, cx: &App) -> Vec<(proto::TermId, String, bool)> {
         self.terminals.read(cx).list(cx)
     }
 
-    /// `sik term new`: see `TerminalArea::open_for_command`.
+    /// `den term new`: see `TerminalArea::open_for_command`.
     pub fn open_terminal(
         &mut self,
         beside: Option<proto::TermId>,
@@ -106,7 +106,7 @@ impl Workspace {
             .update(cx, |terminals, cx| terminals.open_for_command(beside, split, line, focus, window, cx))
     }
 
-    /// `sik term focus`: false if `term` isn't one of this workspace's.
+    /// `den term focus`: false if `term` isn't one of this workspace's.
     pub fn focus_terminal(&mut self, term: proto::TermId, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let found = self.terminals.update(cx, |terminals, cx| terminals.focus_term(term, window, cx));
         if found {

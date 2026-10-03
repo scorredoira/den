@@ -153,9 +153,9 @@ struct State {
     /// The relays each connection opened.
     relays: HashMap<ConnId, HashMap<u64, crate::relay::Relay>>,
     next_relay: u64,
-    /// Connections of apps, which run `sik` commands: the last one runs them.
+    /// Connections of apps, which run `den` commands: the last one runs them.
     apps: Vec<ConnId>,
-    /// `sik` commands an app is running: the app, and who asked (its
+    /// `den` commands an app is running: the app, and who asked (its
     /// connection and request).
     commands: HashMap<u64, (ConnId, ConnId, Option<u64>)>,
     next_command: u64,
@@ -459,7 +459,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     result
 }
 
-/// Sends a `sik` command to the app that last said it runs them, with the
+/// Sends a `den` command to the app that last said it runs them, with the
 /// workspace of the terminal it ran in.
 fn send_command(
     state: &Shared,
@@ -473,7 +473,7 @@ fn send_command(
     let app = *state
         .apps
         .last()
-        .ok_or_else(|| anyhow::anyhow!("no sik app is connected to this machine"))?;
+        .ok_or_else(|| anyhow::anyhow!("no den app is connected to this machine"))?;
     let group = term.and_then(|term| state.terms.get(&term)).map(|entry| entry.group.clone());
     let term = term.filter(|_| group.is_some());
     state.next_command += 1;

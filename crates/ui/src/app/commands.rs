@@ -1,4 +1,4 @@
-//! The `sik` commands that need the app (see `USAGE` in the agent's
+//! The `den` commands that need the app (see `USAGE` in the agent's
 //! `cli.rs`): the agent sends them as `Event::Command`, they run here and
 //! the answer goes back with `Request::CommandDone`, to be printed.
 
@@ -19,7 +19,7 @@ pub(super) struct Command {
     pub group: Option<String>,
 }
 
-impl Sik {
+impl Den {
     /// Runs `command` and answers the agent once it's done.
     pub(super) fn run_command(
         &mut self,
@@ -41,8 +41,8 @@ impl Sik {
     fn command(&mut self, host: SharedString, command: Command, window: &mut Window, cx: &mut Context<Self>) -> Task<Answer> {
         let Command { args, cwd, term, group, .. } = command;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        // Only these are sik's: any other belongs to the command's arguments
-        // (`sik term new claude --resume`).
+        // Only these are den's: any other belongs to the command's arguments
+        // (`den term new claude --resume`).
         let (flags, args): (Vec<&str>, Vec<&str>) =
             args.into_iter().partition(|arg| matches!(*arg, "--focus" | "--right" | "--down"));
         let focus = flags.contains(&"--focus");
@@ -115,13 +115,13 @@ impl Sik {
                     Err(format!("terminal {term} isn't in this workspace"))
                 }
             }),
-            _ => Err(format!("sik {}: unknown command; see sik --help", args.join(" "))),
+            _ => Err(format!("den {}: unknown command; see den --help", args.join(" "))),
         };
         Task::ready(answer)
     }
 
     /// The workspace a command acts on, and its root: that of the terminal
-    /// it ran in or, outside sik's terminals, the one containing `cwd`. With
+    /// it ran in or, outside den's terminals, the one containing `cwd`. With
     /// `activate` it's entered (and opened, if it wasn't).
     fn command_workspace(
         &mut self,
@@ -142,11 +142,11 @@ impl Sik {
         }
         match self.workspaces.get(&key) {
             Some(workspace) => Ok((key.path, workspace.clone())),
-            None => Err(format!("{} isn't open in sik", key.path.display())),
+            None => Err(format!("{} isn't open in den", key.path.display())),
         }
     }
 
-    /// `sik workspaces`: one per line, `*` the active one.
+    /// `den workspaces`: one per line, `*` the active one.
     fn workspace_list(&self, cx: &App) -> String {
         let mut out = String::new();
         for (key, task) in self.ordered(cx) {

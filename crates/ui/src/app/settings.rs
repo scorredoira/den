@@ -38,7 +38,7 @@ fn shortcut(id: &str) -> &'static Shortcut {
     SHORTCUTS.iter().find(|shortcut| shortcut.id == id).expect("shortcut")
 }
 
-impl Sik {
+impl Den {
     /// Opens settings (or focuses them if already open).
     pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_task = None;
@@ -97,7 +97,7 @@ impl Sik {
     /// "Change": the next combination pressed (without doing what it already
     /// does) becomes this shortcut's. Esc cancels.
     fn record_shortcut(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        let sik = cx.entity().downgrade();
+        let den = cx.entity().downgrade();
         let interceptor = cx.intercept_keystrokes(move |event, _, cx| {
             let keystroke = &event.keystroke;
             // Only modifiers: not a combination yet.
@@ -106,7 +106,7 @@ impl Sik {
             }
             cx.stop_propagation();
             let keystroke = keystroke.clone();
-            sik.update(cx, |this, cx| this.recorded(id, keystroke, cx)).ok();
+            den.update(cx, |this, cx| this.recorded(id, keystroke, cx)).ok();
         });
         if let Some(settings) = &mut self.settings {
             settings.recording = Some((id, interceptor));
@@ -369,7 +369,7 @@ impl Sik {
             cx,
         ), setting(
             "Format on Save",
-            "File types formatted when saved, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .sik/format if it has one, else the language server; JSON works without either.",
+            "File types formatted when saved, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .den/format if it has one, else the language server; JSON works without either.",
             input,
             cx,
         )];

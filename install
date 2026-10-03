@@ -1,12 +1,12 @@
 #!/bin/sh
-# Builds sik in release, assembles Sik.app (the app, its agent, the agent for
+# Builds den in release, assembles Den.app (the app, its agent, the agent for
 # Linux servers and the icon), signs it and installs it in /Applications. A
-# running Sik keeps working: the whole folder is replaced, and the running
+# running Den keeps working: the whole folder is replaced, and the running
 # process keeps its files; the new one is used the next time it's opened.
 set -e
 dir="$(cd "$(dirname "$0")" && pwd)"
 cargo build --release --quiet --manifest-path "$dir/Cargo.toml" -p ui -p agent
-linux="$dir/target/x86_64-unknown-linux-musl/release/sik-agent"
+linux="$dir/target/x86_64-unknown-linux-musl/release/den-agent"
 if command -v cargo-zigbuild >/dev/null; then
   cargo zigbuild --quiet --release -p agent --target x86_64-unknown-linux-musl \
     --manifest-path "$dir/Cargo.toml" 2>/dev/null || echo "warning: could not build the agent for Linux" >&2
@@ -14,12 +14,12 @@ fi
 
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1)"
 build="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo 0)"
-app="$dir/target/release/Sik.app"
+app="$dir/target/release/Den.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$dir/target/release/sik" "$dir/target/release/sik-agent" "$app/Contents/MacOS/"
-[ -f "$linux" ] && cp "$linux" "$app/Contents/Resources/sik-agent-linux-x86_64"
-cp "$dir/packaging/macos/sik.icns" "$app/Contents/Resources/"
+cp "$dir/target/release/den" "$dir/target/release/den-agent" "$app/Contents/MacOS/"
+[ -f "$linux" ] && cp "$linux" "$app/Contents/Resources/den-agent-linux-x86_64"
+cp "$dir/packaging/macos/den.icns" "$app/Contents/Resources/"
 sed -e "s/@VERSION@/$version/" -e "s/@BUILD@/$build/" "$dir/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
 
 # With a certificate (Developer ID or Apple Development) the app has a stable
@@ -27,16 +27,16 @@ sed -e "s/@VERSION@/$version/" -e "s/@BUILD@/$build/" "$dir/packaging/macos/Info
 # without one, it's signed locally (ad hoc), which is enough for this Mac.
 identity="$(security find-identity -v -p codesigning 2>/dev/null \
   | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p;s/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)"
-codesign --force --sign "${identity:--}" "$app/Contents/MacOS/sik-agent"
+codesign --force --sign "${identity:--}" "$app/Contents/MacOS/den-agent"
 codesign --force --sign "${identity:--}" "$app"
 echo "signed: ${identity:-ad hoc}"
 
 # Install into a separate folder and swap it in all at once.
-rm -rf /Applications/Sik.app.new
-ditto "$app" /Applications/Sik.app.new
-rm -rf /Applications/Sik.app
-mv /Applications/Sik.app.new /Applications/Sik.app
-echo "installed: /Applications/Sik.app ($version, $build)"
+rm -rf /Applications/Den.app.new
+ditto "$app" /Applications/Den.app.new
+rm -rf /Applications/Den.app
+mv /Applications/Den.app.new /Applications/Den.app
+echo "installed: /Applications/Den.app ($version, $build)"
 
 # The staging copy is not left behind: Spotlight would list it beside the
 # installed one.

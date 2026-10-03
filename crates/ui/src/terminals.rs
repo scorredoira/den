@@ -334,7 +334,7 @@ impl TerminalArea {
         self.open_running(Place::NewTab, Some(line), false, window, cx)
     }
 
-    /// `sik term new`: a terminal in a new tab, or split from `beside` (the
+    /// `den term new`: a terminal in a new tab, or split from `beside` (the
     /// one the command ran in, if it's here), typing `line` in its shell.
     pub fn open_for_command(
         &mut self,

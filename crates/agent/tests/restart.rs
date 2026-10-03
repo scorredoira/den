@@ -20,17 +20,17 @@ fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
 
 #[test]
 fn terminals_come_back_after_a_restart() {
-    let dir = std::env::temp_dir().join(format!("sik-agent-restart-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("den-agent-restart-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     let socket = dir.join("agent.sock");
     // SAFETY: the test is the only thread touching the environment.
-    unsafe { std::env::set_var("SIK_AGENT_SOCKET", &socket) };
+    unsafe { std::env::set_var("DEN_AGENT_SOCKET", &socket) };
     unsafe {
-        std::env::set_var("SIK_STATE_DIR", dir.join("state"));
-        std::env::set_var("SIK_CONFIG_DIR", dir.join("config"));
+        std::env::set_var("DEN_STATE_DIR", dir.join("state"));
+        std::env::set_var("DEN_CONFIG_DIR", dir.join("config"));
     }
-    let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
+    let agent = Path::new(env!("CARGO_BIN_EXE_den-agent"));
 
     eprintln!("connecting to the agent for restart test");
     let client = Client::connect_local(agent).unwrap();

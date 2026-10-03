@@ -301,7 +301,7 @@ impl ParentElement for ResizablePanel {
 impl RenderOnce for ResizablePanel {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         if !self.visible {
-            // (sik) Hidden, it takes no room: otherwise dragging a handle counts
+            // (den) Hidden, it takes no room: otherwise dragging a handle counts
             // its last size as taken, and the dragged panel jumps back.
             if let Some(state) = &self.state {
                 state.update(cx, |state, _| state.hide_panel(self.panel_ix));

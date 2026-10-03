@@ -114,7 +114,7 @@ actions!(
 #[action(namespace = app, no_json)]
 pub struct ToggleActivityIcon(pub config::Panel);
 
-/// `sik [folder | file]`: given a file, opens it in its repo (see
+/// `den [folder | file]`: given a file, opens it in its repo (see
 /// `proto::open_target`).
 /// Opened from the Dock or the Finder with nothing to resume, there's no
 /// folder: the welcome screen offers to open one.
@@ -147,7 +147,7 @@ fn main() {
         None => (Some(cwd), None),
     };
 
-    // For `sik <path>` to start the app when it isn't running.
+    // For `den <path>` to start the app when it isn't running.
     if let (Ok(exe), Ok(file)) = (std::env::current_exe(), proto::app_file()) {
         let _ = std::fs::create_dir_all(file.parent().unwrap_or(&file));
         let _ = std::fs::write(file, exe.to_string_lossy().as_bytes());
@@ -184,8 +184,8 @@ fn main() {
     });
 }
 
-/// `sik <path>` in this machine's terminals, also with the window closed.
-/// Other `sik` commands run in the window (see `app::commands`): while it's
+/// `den <path>` in this machine's terminals, also with the window closed.
+/// Other `den` commands run in the window (see `app::commands`): while it's
 /// closed, they're answered here. When the agent restarts, it listens on the
 /// new one.
 fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
@@ -215,7 +215,7 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
                 Received::Open(root, file) => cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx)),
                 Received::Command(command) => {
                     if !cx.update(|cx| app::has_window(cx)) {
-                        let result = Err("sik's window is closed".to_string());
+                        let result = Err("den's window is closed".to_string());
                         agent.notify(proto::Request::CommandDone { command, result });
                     }
                 }

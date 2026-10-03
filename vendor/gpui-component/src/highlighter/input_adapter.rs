@@ -234,7 +234,7 @@ fn extract_fold_ranges_in_range(
     tree: &tree_sitter::Tree,
     byte_range: Range<usize>,
 ) -> Vec<FoldRange> {
-    // (sik) Walks the tree with a cursor instead of recursing: a deeply nested
+    // (den) Walks the tree with a cursor instead of recursing: a deeply nested
     // tree (a long chain of expressions, say) overflowed the stack and crashed.
     let mut ranges = Vec::new();
     let mut cursor = tree.root_node().walk();

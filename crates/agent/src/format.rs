@@ -1,6 +1,6 @@
-//! Format Document: the repo's `.sik/format` if it has one, else the file's language server, else JSON on its own.
+//! Format Document: the repo's `.den/format` if it has one, else the file's language server, else JSON on its own.
 //!
-//! `.sik/format <file>` gets the text on stdin and writes it formatted to
+//! `.den/format <file>` gets the text on stdin and writes it formatted to
 //! stdout; exiting with 2 means it doesn't format that kind of file, and the
 //! next way is tried.
 
@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use proto::Response;
 
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
-/// What `.sik/format` exits with for a file it doesn't format.
+/// What `.den/format` exits with for a file it doesn't format.
 const NOT_MINE: i32 = 2;
 
 pub fn format(task: &Path, path: &Path, text: &str) -> Result<Response> {
@@ -33,7 +33,7 @@ pub fn format(task: &Path, path: &Path, text: &str) -> Result<Response> {
     Ok(Response::Formatted { text: None, by: None })
 }
 
-/// Runs the repo's `.sik/format`: the text, and the hook's name. `None` if there's none or the file isn't its.
+/// Runs the repo's `.den/format`: the text, and the hook's name. `None` if there's none or the file isn't its.
 fn script(task: &Path, path: &Path, text: &str) -> Result<Option<(String, String)>> {
     let Some(script) = crate::platform::repo_hook(task, "format").filter(|path| crate::platform::is_executable_script(path)) else {
         return Ok(None);
@@ -303,8 +303,8 @@ mod tests {
     fn drains_verbose_diagnostics_while_formatting() {
         use std::os::unix::fs::PermissionsExt;
         let task = tempfile::tempdir().unwrap();
-        std::fs::create_dir(task.path().join(".sik")).unwrap();
-        let hook = task.path().join(".sik/format");
+        std::fs::create_dir(task.path().join(".den")).unwrap();
+        let hook = task.path().join(".den/format");
         std::fs::write(&hook, "#!/bin/sh\ndd if=/dev/zero bs=65536 count=32 >&2 2>/dev/null\ntr a-z A-Z\n").unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         let input = "hello\n".repeat(20_000);
@@ -340,9 +340,9 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn formats_with_powershell_hook() {
-        let task = std::env::temp_dir().join(format!("sik-format-ps-{}", std::process::id()));
-        std::fs::create_dir_all(task.join(".sik")).unwrap();
-        std::fs::write(task.join(".sik/format.ps1"),
+        let task = std::env::temp_dir().join(format!("den-format-ps-{}", std::process::id()));
+        std::fs::create_dir_all(task.join(".den")).unwrap();
+        std::fs::write(task.join(".den/format.ps1"),
             "[Console]::Out.Write([Console]::In.ReadToEnd().ToUpperInvariant())").unwrap();
         let Response::Formatted { text, .. } = format(&task, &task.join("a.txt"), "hello").unwrap() else { panic!() };
         assert_eq!(text.as_deref(), Some("HELLO"));
@@ -353,19 +353,19 @@ mod tests {
     #[cfg(unix)]
     fn the_repo_script_first_and_then_the_rest() {
         use std::os::unix::fs::PermissionsExt as _;
-        let task = std::env::temp_dir().join(format!("sik-format-{}", std::process::id()));
-        std::fs::create_dir_all(task.join(".sik")).unwrap();
-        let script = task.join(".sik/format");
+        let task = std::env::temp_dir().join(format!("den-format-{}", std::process::id()));
+        std::fs::create_dir_all(task.join(".den")).unwrap();
+        let script = task.join(".den/format");
         std::fs::write(&script, "#!/bin/sh\ncase \"$1\" in *.xml) tr a-z A-Z ;; *.bad) echo broken >&2; exit 1 ;; *) exit 2 ;; esac\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let Response::Formatted { text, by } = format(&task, &task.join("a.xml"), "<a/>").unwrap() else { panic!() };
-        assert_eq!((text.as_deref(), by.as_deref()), (Some("<A/>"), Some(".sik/format")));
+        assert_eq!((text.as_deref(), by.as_deref()), (Some("<A/>"), Some(".den/format")));
         let Response::Formatted { text, by } = format(&task, &task.join("a.json"), "{\"a\":1}").unwrap() else { panic!() };
         assert_eq!((text.as_deref(), by.as_deref()), (Some("{\n    \"a\": 1\n}"), Some("json")));
         let Response::Formatted { text, .. } = format(&task, &task.join("a.css"), "a{}").unwrap() else { panic!() };
         assert_eq!(text, None);
         let err = format(&task, &task.join("a.bad"), "x").unwrap_err();
-        assert_eq!(err.to_string(), ".sik/format: broken");
+        assert_eq!(err.to_string(), ".den/format: broken");
         let _ = std::fs::remove_dir_all(&task);
     }
 }

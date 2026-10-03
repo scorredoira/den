@@ -583,7 +583,7 @@ impl Server {
                     "uri": uri(root),
                     "name": root.file_name().map(|name| name.to_string_lossy()).unwrap_or_default(),
                 }],
-                "clientInfo": { "name": "sik" },
+                "clientInfo": { "name": "den" },
                 "initializationOptions": options,
                 "capabilities": {
                     "general": { "positionEncodings": ["utf-8", "utf-16"] },
@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     #[ignore]
     fn rust_with_real_server() {
-        let dir = std::env::temp_dir().join(format!("sik-lsp-rust-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-lsp-rust-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let rust = dir.join("rust");
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     #[ignore]
     fn typescript_with_real_server() {
-        let dir = std::env::temp_dir().join(format!("sik-lsp-typescript-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-lsp-typescript-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let ts = dir.join("ts");
         std::fs::create_dir_all(&ts).unwrap();
@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     #[ignore]
     fn go_with_real_server() {
-        let dir = std::env::temp_dir().join(format!("sik-lsp-go-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-lsp-go-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let go = dir.join("go");
         std::fs::create_dir_all(go.join("util")).unwrap();
@@ -1309,7 +1309,7 @@ mod tests {
 
     #[test]
     fn project_roots() {
-        let dir = std::env::temp_dir().join(format!("sik-lsp-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-lsp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("crates/a/src")).unwrap();
         std::fs::write(dir.join("Cargo.toml"), "").unwrap();

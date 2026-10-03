@@ -15,16 +15,16 @@ use client::{Client, RelayUpdate};
 
 #[test]
 fn a_relay_carries_lines_both_ways_until_the_program_closes_it() {
-    let dir = std::env::temp_dir().join(format!("sik-agent-relay-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("den-agent-relay-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     // SAFETY: the test is the only thread touching the environment.
     unsafe {
-        std::env::set_var("SIK_AGENT_SOCKET", dir.join("agent.sock"));
-        std::env::set_var("SIK_STATE_DIR", dir.join("state"));
-        std::env::set_var("SIK_CONFIG_DIR", dir.join("config"));
+        std::env::set_var("DEN_AGENT_SOCKET", dir.join("agent.sock"));
+        std::env::set_var("DEN_STATE_DIR", dir.join("state"));
+        std::env::set_var("DEN_CONFIG_DIR", dir.join("config"));
     }
-    let agent = Path::new(env!("CARGO_BIN_EXE_sik-agent"));
+    let agent = Path::new(env!("CARGO_BIN_EXE_den-agent"));
     let client = Client::connect_local(agent).unwrap();
 
     // a program that answers each line upper-cased, then says goodbye and closes

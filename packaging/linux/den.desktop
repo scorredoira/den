@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Sik
+Name=Den
 Comment=Persistent terminals and a code editor for coding agents
-Exec=sik %F
-Icon=sik
+Exec=den %F
+Icon=den
 Terminal=false
 Categories=Development;IDE;
 StartupNotify=true

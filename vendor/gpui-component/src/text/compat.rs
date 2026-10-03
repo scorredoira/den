@@ -64,7 +64,7 @@ impl TextView {
             stream_fade: None,
         }
     }
-    /// (sik) Resolve file images while preserving default URI/data URL handling.
+    /// (den) Resolve file images while preserving default URI/data URL handling.
     pub fn resolve_image_source<F>(mut self, resolver: F) -> Self
     where
         F: Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync + 'static,

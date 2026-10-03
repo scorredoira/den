@@ -255,7 +255,7 @@ pub fn launch_app(path: &Path) -> Result<()> {
         .map(|app| PathBuf::from(app.trim()))
         .ok()
         .filter(|app| app.exists())
-        .context("could not find the sik app: open it once")?;
+        .context("could not find the den app: open it once")?;
     let bundle = app.ancestors().find(|dir| dir.extension().is_some_and(|ext| ext == "app"));
     let mut command = match bundle {
         Some(bundle) if cfg!(target_os = "macos") => {
@@ -291,12 +291,12 @@ pub fn spawn_daemon(log: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn hooks_in_sik() {
-        let repo = std::env::temp_dir().join(format!("sik-hooks-{}", std::process::id()));
-        std::fs::create_dir_all(repo.join(".sik")).unwrap();
+    fn hooks_in_den() {
+        let repo = std::env::temp_dir().join(format!("den-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(repo.join(".den")).unwrap();
         assert_eq!(super::repo_hook(&repo, "create"), None);
-        std::fs::write(repo.join(".sik/create"), "").unwrap();
-        assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".sik/create")));
+        std::fs::write(repo.join(".den/create"), "").unwrap();
+        assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".den/create")));
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -345,9 +345,9 @@ pub fn repo_script(path: &Path) -> Option<PathBuf> {
     path.is_file().then(|| path.to_path_buf())
 }
 
-/// A repo's hook `name` (`create`, `remove`, `format`), in its `.sik` folder.
+/// A repo's hook `name` (`create`, `remove`, `format`), in its `.den` folder.
 pub fn repo_hook(repo: &Path, name: &str) -> Option<PathBuf> {
-    repo_script(&repo.join(".sik").join(name))
+    repo_script(&repo.join(".den").join(name))
 }
 
 pub fn script_command(path: &Path) -> std::process::Command {
@@ -403,7 +403,7 @@ pub fn default_shell() -> portable_pty::CommandBuilder {
         std::env::split_paths(&path).find_map(|dir| crate::platform::executable(&dir, "pwsh"))
     }).unwrap_or_else(|| "powershell.exe".into());
     let mut command = portable_pty::CommandBuilder::new(shell);
-    command.args(["-NoLogo", "-NoExit", "-Command", r#"$global:SikOriginalPrompt = $function:prompt; function global:prompt { $p = & $global:SikOriginalPrompt; if ($PWD.Provider.Name -eq 'FileSystem') { $u = [Uri]::new($PWD.ProviderPath).AbsoluteUri; [Console]::Write(([char]27).ToString() + ']7;' + $u + [char]7) }; $p }"#]);
+    command.args(["-NoLogo", "-NoExit", "-Command", r#"$global:DenOriginalPrompt = $function:prompt; function global:prompt { $p = & $global:DenOriginalPrompt; if ($PWD.Provider.Name -eq 'FileSystem') { $u = [Uri]::new($PWD.ProviderPath).AbsoluteUri; [Console]::Write(([char]27).ToString() + ']7;' + $u + [char]7) }; $p }"#]);
     command
 }
 

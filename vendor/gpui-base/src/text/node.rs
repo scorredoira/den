@@ -2005,7 +2005,7 @@ pub(crate) struct NodeContext {
 
 impl NodeContext {
     fn image_source(&self, image: &ImageNode) -> ImageSource {
-        // (sik) Unhandled URLs retain the default, including embedded images.
+        // (den) Unhandled URLs retain the default, including embedded images.
         self.image_source.as_ref().and_then(|resolve| resolve(&image.url))
             .unwrap_or_else(|| image.source())
     }

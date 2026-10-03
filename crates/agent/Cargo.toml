@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "sik-agent"
+name = "den-agent"
 path = "src/main.rs"
 
 [dependencies]

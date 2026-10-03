@@ -14,7 +14,7 @@ pub(crate) struct AtRisk {
 /// Commits listed by name in the dialog; the rest, counted.
 const COMMITS_LISTED: usize = 3;
 
-impl Sik {
+impl Den {
     /// Delete Worktree…: asks git what it would lose while the dialog is up.
     pub(super) fn ask_remove(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
         self.error = None;
@@ -90,10 +90,10 @@ impl Sik {
         at_risk: Option<&AtRisk>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let detail = if key.host == LOCAL && self.task(key).is_some_and(|task| task.repo.join(".sik/remove").is_file()) {
-            "The repo's .sik/remove deletes it; depending on the repo, along with its uncommitted changes."
+        let detail = if key.host == LOCAL && self.task(key).is_some_and(|task| task.repo.join(".den/remove").is_file()) {
+            "The repo's .den/remove deletes it; depending on the repo, along with its uncommitted changes."
         } else {
-            "With the repo's .sik/remove if it has one; otherwise git worktree remove, which won't delete with uncommitted changes."
+            "With the repo's .den/remove if it has one; otherwise git worktree remove, which won't delete with uncommitted changes."
         };
         let (warning, action) = match at_risk {
             None => (Some((false, "Looking for uncommitted changes and unmerged commits…".to_string())), "Delete"),
@@ -121,7 +121,7 @@ impl Sik {
     }
 
     pub(super) fn render_confirm_update(&self, version: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = format!("Restart to update to Sik {version}?");
+        let title = format!("Restart to update to Den {version}?");
         let detail = "Workspaces, open files and terminals reopen as they are, and whatever runs in the terminals keeps running. Unsaved files are asked about first.";
         self.render_confirm(focus, title, None, detail, "Restart", false, |this, window, cx| this.restart_to_update(window, cx), cx)
     }

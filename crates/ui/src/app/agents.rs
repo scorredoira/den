@@ -8,7 +8,7 @@ use proto::{AgentInfo, TermId};
 
 use super::*;
 
-impl Sik {
+impl Den {
     /// The agents running on `host` now. One that stops working while its
     /// workspace isn't in front is marked done.
     pub(super) fn set_agents(&mut self, host: SharedString, agents: Vec<AgentInfo>, cx: &mut Context<Self>) {
@@ -90,7 +90,7 @@ impl Sik {
     }
 
     fn render_agent(&self, host: &SharedString, agent: &AgentInfo, indent: f32, cx: &mut Context<Self>) -> AnyElement {
-        // The dot's color says it all; the word is for `sik workspaces`.
+        // The dot's color says it all; the word is for `den workspaces`.
         let (dot, color, _) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);

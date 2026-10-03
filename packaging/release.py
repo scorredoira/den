@@ -41,7 +41,7 @@ def main():
     subprocess.run(["cargo", "update", "--workspace", "--offline"], cwd=ROOT, check=True)
     subprocess.run(["git", "add", "Cargo.toml", "Cargo.lock"], cwd=ROOT, check=True)
     subprocess.run(["git", "commit", "-m", f"Release {tag}"], cwd=ROOT, check=True)
-    subprocess.run(["git", "tag", "-a", tag, "-m", f"Sik {tag}"], cwd=ROOT, check=True)
+    subprocess.run(["git", "tag", "-a", tag, "-m", f"Den {tag}"], cwd=ROOT, check=True)
     subprocess.run(["git", "push", "--atomic", "origin", f"HEAD:refs/heads/{branch}", f"refs/tags/{tag}"], cwd=ROOT, check=True)
     print("GitHub Actions will test, package and publish all platforms. See the repository's Actions tab.")
 

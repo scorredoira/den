@@ -6,7 +6,7 @@ use super::*;
 /// Recent folders listed; the rest are in Open Recent.
 const SHOWN: usize = 8;
 
-impl Sik {
+impl Den {
     pub(super) fn render_welcome(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let keys = |id: &str| {
@@ -102,7 +102,7 @@ impl Sik {
                     // The same logo as an empty editor, as subtle.
                     .child(
                         svg()
-                            .path("icons/sik-empty.svg")
+                            .path("icons/den-empty.svg")
                             .size(px(280.))
                             .max_w_full()
                             .flex_none()

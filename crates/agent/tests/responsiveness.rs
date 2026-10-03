@@ -30,11 +30,11 @@ fn requests_overtake_a_slow_task_list() {
     std::fs::write(&script, "#!/bin/sh\n: > started\nwhile [ ! -f release ]; do sleep 0.02; done\nexit 1\n").unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
-    let _agent = Agent(Command::new(env!("CARGO_BIN_EXE_sik-agent"))
+    let _agent = Agent(Command::new(env!("CARGO_BIN_EXE_den-agent"))
         .arg("daemon")
-        .env("SIK_AGENT_SOCKET", &socket)
-        .env("SIK_CONFIG_DIR", &config)
-        .env("SIK_STATE_DIR", dir.path().join("state"))
+        .env("DEN_AGENT_SOCKET", &socket)
+        .env("DEN_CONFIG_DIR", &config)
+        .env("DEN_STATE_DIR", dir.path().join("state"))
         .env("PATH", path)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().unwrap());

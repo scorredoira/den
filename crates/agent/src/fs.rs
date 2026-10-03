@@ -62,7 +62,7 @@ fn atomic_write(path: &Path, write: impl FnOnce(&mut std::fs::File) -> std::io::
         Err(err) => return Err(err.into()),
     };
     let parent = resolved.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let mut temporary = tempfile::Builder::new().prefix(".sik-save-").tempfile_in(parent)?;
+    let mut temporary = tempfile::Builder::new().prefix(".den-save-").tempfile_in(parent)?;
     write(temporary.as_file_mut())?;
     if let Some(permissions) = permissions {
         temporary.as_file().set_permissions(permissions)?;
@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sik-fs-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("den-fs-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
