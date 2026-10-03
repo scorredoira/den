@@ -9,7 +9,7 @@ the agent, so a program on a server is debugged like a local one.
 `.den/debug.json` in the workspace:
 
 ```json
-{ "command": "sim -d ${file}", "port": 4444 }
+{ "command": "sim -d -dp 127.0.0.1:${port} ${file}" }
 ```
 
 - `command`: a shell line run in a terminal of the workspace (its output stays
@@ -18,10 +18,17 @@ the agent, so a program on a server is debugged like a local one.
   means (a script, a test file, the server it is part of). Without `command`,
   F5 attaches to a program already running.
 - `port`: where the program listens, on the loopback of the agent's machine.
-  4444 when missing.
+  4444 when missing. A command with `${port}` doesn't need it: Den asks the
+  agent for a free port and puts it there, so every session has a port of its
+  own and none reaches another's program (another window's, one left
+  running).
 
-F5 runs the command. If something already answers on the port, it attaches to
-it instead of starting the command again. A program held before running
+F5 runs the command. If something already answers on `port`, it attaches to
+it instead of starting the command again; never with `${port}`, which is
+always started. If the command's terminal goes back to its shell before the
+program listens, the program ended (it didn't compile, its port was taken):
+Den says so instead of waiting. A command is never typed into a terminal that
+still runs something: it gets a new one. A program held before running
 (`waiting` in `hello`) is released with `entry`, so it stops at its entry, as
 Visual Studio's debugger does: where the program says (sim: the first line of
 `main`, or of the function `-de` names). Stop (Shift-F5) interrupts a program it
@@ -34,15 +41,14 @@ A file from when there were several `configurations` starts the first one.
 With a `tests` section, every line that declares a test gets Run (▷) and
 Debug (the bug) at its end. Run starts `run` in a terminal; Debug starts `debug` under the
 debugger. `${file}` is the open file and `${test}` the name `match` captured
-(its first group). `port` (4444 when missing) is where `debug` listens: one
-apart from the program's lets a test be debugged while it runs.
+(its first group). `${port}` in `debug`, as in `command`, is a free port of
+its own; without it, `port` (4444 when missing) is where `debug` listens.
 
 ```json
 "tests": {
     "match": "^export function (test\\w*)\\(",
     "run": "sim test ${file} ${test} -x",
-    "debug": "sim -d -de ${test} -dp 127.0.0.1:4445 test ${file} ${test} -x -c 1",
-    "port": 4445
+    "debug": "sim -d -de ${test} -dp 127.0.0.1:${port} test ${file} ${test} -x -c 1"
 }
 ```
 

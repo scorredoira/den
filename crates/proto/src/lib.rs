@@ -160,6 +160,9 @@ pub enum Request {
     /// both ways: how the UI talks to a debugger listening there, local or
     /// over SSH. Responds `Relay`; the lines arrive as `RelayLine`.
     RelayConnect { port: u16 },
+    /// A TCP port free at the agent's loopback, for a debugger the UI starts
+    /// to listen on: its own, apart from any other program's. Responds `Port`.
+    FreePort,
     /// Writes `line` and a newline to the relay.
     RelaySend { relay: u64, line: String },
     RelayClose { relay: u64 },
@@ -175,6 +178,9 @@ pub enum Request {
     /// The text of terminal `term`: its last `lines` lines (screen and
     /// history), without trailing blanks. Responds `Text`.
     TermRead { term: TermId, lines: u32 },
+    /// Whether terminal `term` runs something in front of its shell.
+    /// Responds `Busy`; always false where the agent can't tell.
+    TermBusy { term: TermId },
     /// The folder `path` names on this machine: `~` expanded, links
     /// followed. Responds `Path`.
     Resolve { path: PathBuf },
@@ -376,6 +382,8 @@ pub enum Response {
     Formatted { text: Option<String>, by: Option<String> },
     Count(usize),
     Relay(u64),
+    Port(u16),
+    Busy(bool),
     /// Of a file, in its order. `server` as in `Lsp`; of a task, the servers
     /// that answered, separated by commas.
     Symbols { server: Option<String>, symbols: Vec<LspSymbol> },

@@ -102,10 +102,10 @@ Drag an icon onto a panel's bar to put them in the same place, one showing at a 
 A workspace says how to start its program in `.den/debug.json`:
 
 ```json
-{ "command": "sim -d ${file}", "port": 4444 }
+{ "command": "sim -d -dp 127.0.0.1:${port} ${file}" }
 ```
 
-`${file}` is the open file: the program decides what debugging it means (a script, a test, the server it belongs to). F5 runs the command in a terminal and connects to the port; it attaches instead when something already answers on the port, or when there's no command. A program started this way stops at its first line, as Visual Studio does: F5 goes on. The debugger is a tab after the terminals' (drag its icon elsewhere to move it). F9 toggles a breakpoint (or click the gutter; right-click it for a condition, a hit count or a log message), F10 steps over, F11 into, Shift-F11 out, Ctrl-F10 runs to the cursor, Ctrl-Shift-F10 makes the cursor's line the next statement, F6 pauses, Shift-F5 stops and Cmd-Shift-Y shows or hides the panel. See [docs/debugger.md](docs/debugger.md).
+`${file}` is the open file: the program decides what debugging it means (a script, a test, the server it belongs to). `${port}` is a free port the agent picks for this session. F5 runs the command in a terminal and connects to the port. With a fixed `"port"` instead of `${port}`, it attaches when something already answers on it, or when there's no command. A program started this way stops at its first line, as Visual Studio does: F5 goes on. The debugger is a tab after the terminals' (drag its icon elsewhere to move it). F9 toggles a breakpoint (or click the gutter; right-click it for a condition, a hit count or a log message), F10 steps over, F11 into, Shift-F11 out, Ctrl-F10 runs to the cursor, Ctrl-Shift-F10 makes the cursor's line the next statement, F6 pauses, Shift-F5 stops and Cmd-Shift-Y shows or hides the panel. See [docs/debugger.md](docs/debugger.md).
 
 ## Updates
 

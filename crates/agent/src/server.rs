@@ -703,7 +703,9 @@ fn own_separators(request: &mut Request) {
         | Request::RelayClose { .. }
         | Request::Serve
         | Request::CommandDone { .. }
-        | Request::TermRead { .. } => {}
+        | Request::TermRead { .. }
+        | Request::TermBusy { .. }
+        | Request::FreePort => {}
     }
 }
 
@@ -1052,6 +1054,15 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         }
         Request::SavePastedImage { extension, data } => {
             Ok(Response::Path(Some(save_pasted_image(&extension, &data)?)))
+        }
+        Request::TermBusy { term } => {
+            let state = state.lock().unwrap();
+            let entry = state.terms.get(&term).ok_or_else(|| gone(term))?;
+            Ok(Response::Busy(entry.pty.foreground_pid() != entry.pty.pid()))
+        }
+        Request::FreePort => {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+            Ok(Response::Port(listener.local_addr()?.port()))
         }
         Request::TermCwd { term } => {
             let state = state.lock().unwrap();

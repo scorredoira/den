@@ -35,8 +35,7 @@ use crate::config::{Config, DebugSaved};
 pub const LAUNCH_FILE: &str = ".den/debug.json";
 
 const LAUNCH_TEMPLATE: &str = r#"{
-    "command": "sim -d ${file}",
-    "port": 4444
+    "command": "sim -d -dp 127.0.0.1:${port} ${file}"
 }
 "#;
 
@@ -56,6 +55,7 @@ const PAGE: u64 = 200;
 pub struct Launch {
     /// A shell command line that starts the program, run in a terminal.
     /// Without it, the debugger attaches to a program already running.
+    /// `${port}` in it is a free port, which `port` then doesn't say.
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default = "default_port")]
@@ -80,8 +80,8 @@ pub struct LaunchFile {
 
 /// `match` finds a test's declaration on a line, its first group being the
 /// test's name; `run` and `debug` start it, with `${file}` and `${test}`.
-/// `port` is where `debug` listens: apart from a program that may be
-/// running, so a test is never attached to it.
+/// `port` is where `debug` listens, unless it has `${port}`: apart from a
+/// program that may be running, so a test is never attached to it.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Tests {
     #[serde(rename = "match", deserialize_with = "regex_field")]
@@ -574,9 +574,11 @@ impl Debugger {
         }
     }
 
-    /// Tries to reach the program until it listens, or the time is up. A
-    /// program that already listens is attached to; otherwise `command`
-    /// starts it.
+    /// Tries to reach the program until it listens, the time is up or the
+    /// command started ends. A program that already listens is attached to;
+    /// otherwise `command` starts it. A command with `${port}` listens on a
+    /// free port of its own: it is always started, never attached to
+    /// another program, a debugger of another window included.
     fn connect(&mut self, port: u16, mut command: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
             return;
@@ -584,6 +586,27 @@ impl Debugger {
         let generation = self.generation;
         let started = Instant::now();
         cx.spawn_in(window, async move |this, cx| {
+            let mut port = port;
+            if let Some(line) = command.as_mut().filter(|line| line.contains("${port}")) {
+                let free = match client.request(Request::FreePort).await {
+                    Ok(Response::Port(free)) => free,
+                    Ok(other) => {
+                        this.update(cx, |this, cx| this.fail(format!("unexpected response {other:?}"), cx)).ok();
+                        return;
+                    }
+                    Err(error) => {
+                        this.update(cx, |this, cx| this.fail(format!("No free port: {error:#}"), cx)).ok();
+                        return;
+                    }
+                };
+                port = free;
+                *line = line.replace("${port}", &free.to_string());
+            }
+            // Seen running in its terminal: once the terminal is idle again,
+            // the program ended without listening. Until a new terminal is
+            // known, `term` is the one before.
+            let mut seen_running = false;
+            let mut watched = None;
             loop {
                 let (tx, rx) = smol::channel::unbounded::<RelayUpdate>();
                 match client.connect_relay(port, move |update| {
@@ -594,20 +617,41 @@ impl Debugger {
                         return;
                     }
                     Err(error) => {
-                        let gone = this.update(cx, |this, _| this.generation != generation).unwrap_or(true);
+                        let Ok((gone, term)) = this.update(cx, |this, _| (this.generation != generation, this.term)) else {
+                            return;
+                        };
                         if gone {
                             return;
                         }
+                        let busy = match term {
+                            Some(term) => matches!(client.request(Request::TermBusy { term }).await, Ok(Response::Busy(true))),
+                            None => false,
+                        };
                         if let Some(command) = command.take() {
                             this.update(cx, |this, cx| {
                                 this.launched = true;
                                 this.info(format!("$ {command}"), cx);
                                 this.status = Status::Connecting("Starting the program…".into());
-                                cx.emit(DebugEvent::Run { term: this.term, line: command });
+                                // what still runs in its terminal would read the line as its input
+                                let term = if busy { None } else { this.term };
+                                cx.emit(DebugEvent::Run { term, line: command });
                                 cx.notify();
                             })
                             .ok();
                             continue;
+                        }
+                        if term != watched {
+                            watched = term;
+                            seen_running = false;
+                        }
+                        if busy {
+                            seen_running = true;
+                        } else if seen_running {
+                            this.update(cx, |this, cx| {
+                                this.fail(format!("The program ended without listening on port {port}: see its terminal"), cx)
+                            })
+                            .ok();
+                            return;
                         }
                         if started.elapsed() > CONNECT_TIMEOUT {
                             this.update(cx, |this, cx| {
