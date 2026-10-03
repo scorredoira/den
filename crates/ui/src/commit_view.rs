@@ -3,7 +3,7 @@
 //! the lines highlighted as the file's language. Read-only rows in one list;
 //! a file's name opens that file's diff in its own tab.
 
-use std::{ops::Range, rc::Rc};
+use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, highlighter::SyntaxHighlighter, input::Rope};
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -12,6 +12,7 @@ use crate::{
     config::{Config, TextArea, UiText as _},
     diff::{self, Kind},
     language,
+    workspace::{SIDE_BY_SIDE_WIDTH, measure_width},
 };
 
 /// Beyond this many rows a file's changes aren't drawn: its name opens them.
@@ -25,7 +26,10 @@ pub enum CommitViewEvent {
 
 pub struct CommitView {
     rows: Rc<Vec<Row>>,
+    /// The same in one column, for when there's no room for two sides.
+    inline: Rc<Vec<Row>>,
     scroll: UniformListScrollHandle,
+    width: Rc<Cell<Pixels>>,
 }
 
 impl EventEmitter<CommitViewEvent> for CommitView {}
@@ -40,8 +44,12 @@ enum Row {
     /// Lines skipped between two groups of changes.
     Skip,
     Line { old: Half, new: Half },
+    /// A line in one column: both numbers, and `kind` `Changed` with only
+    /// `old` (removed) or only `new` (added).
+    Single { old: Option<u32>, new: Option<u32>, half: Half },
 }
 
+#[derive(Clone)]
 struct Half {
     number: Option<u32>,
     kind: Kind,
@@ -52,8 +60,50 @@ struct Half {
 impl CommitView {
     /// From `git show --format=fuller --patch` of the commit.
     pub fn new(show: &str, cx: &mut Context<Self>) -> Self {
-        Self { rows: Rc::new(rows(show, cx)), scroll: UniformListScrollHandle::new() }
+        let rows = rows(show, cx);
+        let inline = inline(&rows);
+        Self {
+            rows: Rc::new(rows),
+            inline: Rc::new(inline),
+            scroll: UniformListScrollHandle::new(),
+            width: Rc::new(Cell::new(px(f32::MAX))),
+        }
     }
+}
+
+/// The rows in one column, as VS Code's inline diff: in each block of
+/// changes the removed lines, then the added ones.
+fn inline(rows: &[Row]) -> Vec<Row> {
+    let mut out = Vec::new();
+    let mut added = Vec::new();
+    for row in rows {
+        match row {
+            Row::Line { old, new } if old.kind != Kind::Same || new.kind != Kind::Same => {
+                if old.kind == Kind::Changed {
+                    out.push(Row::Single { old: old.number, new: None, half: old.clone() });
+                }
+                if new.kind == Kind::Changed {
+                    added.push(Row::Single { old: None, new: new.number, half: new.clone() });
+                }
+            }
+            _ => {
+                out.append(&mut added);
+                out.push(match row {
+                    Row::Line { old, new } => Row::Single { old: old.number, new: new.number, half: new.clone() },
+                    Row::Subject(text) => Row::Subject(text.clone()),
+                    Row::Body(text) => Row::Body(text.clone()),
+                    Row::Meta(text) => Row::Meta(text.clone()),
+                    Row::Blank => Row::Blank,
+                    Row::File { path, added, removed } => Row::File { path: path.clone(), added: *added, removed: *removed },
+                    Row::Note(text) => Row::Note(text.clone()),
+                    Row::Skip => Row::Skip,
+                    Row::Single { .. } => unreachable!("only in the inline rows"),
+                });
+            }
+        }
+    }
+    out.append(&mut added);
+    out
 }
 
 fn rows(show: &str, cx: &App) -> Vec<Row> {
@@ -182,7 +232,9 @@ fn halves(side: &diff::Side, language: &str, word: Hsla, cx: &App) -> Vec<Half> 
 
 impl Render for CommitView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.rows.clone();
+        // No room for two sides: one column.
+        let narrow = self.width.get() < px(SIDE_BY_SIDE_WIDTH);
+        let rows = if narrow { self.inline.clone() } else { self.rows.clone() };
         let view = cx.entity().downgrade();
         let size = Config::get(cx).font_size(TextArea::Editor);
         let height = px((size * 1.6).round());
@@ -191,6 +243,7 @@ impl Render for CommitView {
             .iter()
             .filter_map(|row| match row {
                 Row::Line { old, new } => old.number.max(new.number),
+                Row::Single { old, new, .. } => (*old).max(*new),
                 _ => None,
             })
             .max()
@@ -199,7 +252,7 @@ impl Render for CommitView {
             .len();
         let gutter = px(size * 0.62 * (digits + 2) as f32);
         let (removed, added) = (theme.danger.opacity(0.14), theme.success.opacity(0.14));
-        uniform_list("commit-view", rows.len(), move |range, _, cx| {
+        let list = uniform_list("commit-view", rows.len(), move |range, _, cx| {
             let theme = cx.theme();
             let half = |half: &Half, background: Hsla, marker: &str| {
                 let changed = half.kind == Kind::Changed;
@@ -266,13 +319,35 @@ impl Render for CommitView {
                             .child(half(old, removed, "−"))
                             .child(div().flex_none().w(px(1.)).h_full().bg(theme.border))
                             .child(half(new, added, "+")),
+                        Row::Single { old, new, half } => {
+                            let (background, marker) = match (old, new) {
+                                (Some(_), None) => (Some(removed), "−"),
+                                (None, Some(_)) => (Some(added), "+"),
+                                _ => (None, " "),
+                            };
+                            let number = |number: &Option<u32>| number.map(|number| number.to_string()).unwrap_or_default();
+                            let column = || div().flex_none().w(gutter).pr_2().text_right().text_color(theme.muted_foreground);
+                            row.font_family(theme.mono_font_family.clone())
+                                .text_size(px(size))
+                                .when_some(background, |el, background| el.bg(background))
+                                .child(column().child(number(old)))
+                                .child(column().child(format!("{}{marker}", number(new))))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .child(StyledText::new(half.text.clone()).with_highlights(half.highlights.clone())),
+                                )
+                        }
                     }
                     .into_any_element()
                 })
                 .collect()
         })
         .track_scroll(&self.scroll)
-        .size_full()
+        .size_full();
+        div().size_full().relative().child(measure_width(&self.width)).child(list)
     }
 }
 

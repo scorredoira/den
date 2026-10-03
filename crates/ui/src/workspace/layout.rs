@@ -314,7 +314,7 @@ impl Workspace {
             self.history.update(cx, |history, cx| history.show_files(true, cx));
             self.show_panel(Panel::History, cx);
         } else {
-            self.history.update(cx, |history, cx| history.show_files(!history.files_open(), cx));
+            self.history.update(cx, |history, cx| history.show_files(!history.files_open(cx), cx));
         }
     }
 
