@@ -127,9 +127,10 @@ impl Host {
     }
 }
 
-/// A window opened with `den -s`, on a server.
+/// A window opened with `den -s`, on a server, or with `den -n`, on a
+/// server or this machine.
 struct ServerWindow {
-    /// The server.
+    /// The server, or `LOCAL`.
     name: SharedString,
     /// What to open once it connects: a folder (or a file) or, with no
     /// path, a folder to pick; taken then.
@@ -182,8 +183,8 @@ impl Global for Main {}
 struct OpenWindow {
     handle: AnyWindowHandle,
     den: WeakEntity<Den>,
-    /// The server of a window opened with `den -s`; none in the main one,
-    /// whose workspaces are remembered.
+    /// The server of a window opened with `den -s` or `den -n` (`LOCAL` on
+    /// this machine); none in the main one, whose workspaces are remembered.
     server: Option<SharedString>,
 }
 
@@ -263,6 +264,43 @@ pub fn open_server_window(destination: String, path: Option<PathBuf>, cx: &mut A
         cx.activate(true);
         return;
     }
+    open_host_window(name, cx, |window, cx| Den::for_server(destination, path, window, cx));
+}
+
+/// `den -n <path>` from a terminal of `host`: `root`, with `file` open in
+/// it, in a window of its own; in the window it's open in, if it is.
+pub fn open_new_window(host: SharedString, destination: Option<String>, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
+    let open = windows(cx).into_iter().find(|(_, den)| {
+        let den = den.read(cx);
+        let key = TaskKey { host: host.clone(), path: den.workspace_containing(&host, &root) };
+        den.workspaces.contains_key(&key)
+    });
+    if let Some((handle, den)) = open {
+        handle
+            .update(cx, |_, window, cx| {
+                den.update(cx, |den, cx| den.open_from_terminal(host, root, file, window, cx));
+                window.activate_window();
+            })
+            .ok();
+        cx.activate(true);
+        return;
+    }
+    let path = file.unwrap_or(root);
+    match destination {
+        Some(destination) => {
+            let name = server_name(&destination, cx);
+            open_host_window(name, cx, |window, cx| Den::for_server(destination, Some(path), window, cx));
+        }
+        None => open_host_window(LOCAL.into(), cx, |window, cx| Den::for_local(path, window, cx)),
+    }
+}
+
+/// Opens a window of `den -s` or `den -n`, on the server called `name`.
+fn open_host_window(name: SharedString, cx: &mut App, build: impl FnOnce(&mut Window, &mut Context<Den>) -> Den) {
+    let title = match name.as_ref() {
+        LOCAL => "den".into(),
+        _ => name.clone(),
+    };
     // Over the main window, a little down and to the right.
     let bounds = match window_bounds(cx) {
         WindowBounds::Windowed(bounds) => WindowBounds::Windowed(Bounds::new(bounds.origin + point(px(28.), px(28.)), bounds.size)),
@@ -270,13 +308,13 @@ pub fn open_server_window(destination: String, path: Option<PathBuf>, cx: &mut A
     };
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions {
-            title: Some(name.clone()),
+            title: Some(title),
             ..TitleBar::title_bar_options()
         }),
         window_bounds: Some(bounds),
         ..TitleBar::window_options()
     };
-    let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Den::for_server(destination, path, window, cx)));
+    let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| build(window, cx)));
     match opened {
         Ok((handle, den)) => {
             let windows = &mut cx.default_global::<Main>().windows;
@@ -550,7 +588,7 @@ impl Den {
         let window_id = window.window_handle().window_id();
         cx.on_release(move |this, cx| {
             crate::workspace::drop_panels(window_id, cx);
-            for host in this.hosts.iter().filter(|host| host.destination.is_some()) {
+            for host in this.hosts.iter().filter(|host| host.destination.is_some() || this.server.is_some()) {
                 if let Some(client) = &host.client {
                     client.disconnect();
                 }
@@ -558,7 +596,10 @@ impl Den {
         })
         .detach();
 
-        for name in this.hosts.iter().filter(|host| host.destination.is_some()).map(|host| host.name.clone()).collect::<Vec<_>>() {
+        // A window of `den -n` on this machine has its own connection to the
+        // agent: the `den` commands of its terminals come to it.
+        let own = |host: &Host| host.destination.is_some() || this.server.is_some();
+        for name in this.hosts.iter().filter(|host| own(host)).map(|host| host.name.clone()).collect::<Vec<_>>() {
             this.connect(name, window, cx);
         }
 
@@ -582,6 +623,25 @@ impl Den {
         let name = server_name(&destination, cx);
         let host = Host::remote(name.clone(), destination);
         let server = ServerWindow { name, start: Some(path) };
+        let this = Self::with_hosts(vec![host], Some(server), None, window, cx);
+        this.focus_handle.focus(window, cx);
+        this
+    }
+
+    /// `den -n <path>` on this machine: like `for_server`, a window with only
+    /// this machine that opens `path` once connected.
+    pub fn for_local(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let host = Host {
+            name: LOCAL.into(),
+            destination: None,
+            client: None,
+            status: HostStatus::Connecting(CONNECTING),
+            tasks: Vec::new(),
+            loose: Vec::new(),
+            repos: Vec::new(),
+            generation: 0,
+        };
+        let server = ServerWindow { name: LOCAL.into(), start: Some(Some(path)) };
         let this = Self::with_hosts(vec![host], Some(server), None, window, cx);
         this.focus_handle.focus(window, cx);
         this
@@ -682,8 +742,8 @@ impl Den {
     /// The window's title with no workspace open.
     fn title(&self) -> String {
         match &self.server {
-            Some(server) => server.name.to_string(),
-            None => "den".to_string(),
+            Some(server) if server.name != LOCAL => server.name.to_string(),
+            _ => "den".to_string(),
         }
     }
 
@@ -1069,7 +1129,9 @@ impl Den {
             return false;
         }
         let hosts = &Config::get(cx).hosts;
-        self.hosts.iter().any(|host| !hosts.iter().any(|saved| saved.name == host.name.as_ref()))
+        self.hosts
+            .iter()
+            .any(|host| host.destination.is_some() && !hosts.iter().any(|saved| saved.name == host.name.as_ref()))
             || self.workspaces.keys().any(|key| self.is_loose(key))
     }
 
@@ -1631,7 +1693,9 @@ impl Den {
     /// Cmd-O: a local folder, with the system's dialog. In a window opened
     /// with `den -s`, a folder on its server.
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(server) = &self.server {
+        if let Some(server) = &self.server
+            && server.name != LOCAL
+        {
             let name = server.name.clone();
             self.open_folder_picker(name, window, cx);
             return;

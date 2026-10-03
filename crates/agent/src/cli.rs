@@ -15,6 +15,8 @@ Usage:
   den <path>          opens a folder, or a file in its repo, in den. Over
                       SSH, in the app connected to this server; in den's
                       terminals, in the terminal's window.
+  den -n <path>       opens it in a window of its own, even in den's
+                      terminals; in the window it's open in, if it is.
   den -s <server> [<path>]
                       opens a window on the server (a name from
                       ~/.ssh/config or user@host) with the path there,
@@ -137,6 +139,33 @@ pub fn open(arg: &str) -> Result<()> {
         bail!("no den app is connected to this server: add it in den's Settings → Servers");
     }
     platform::launch_app(&[path.as_os_str()])
+}
+
+/// `den -n <path>`: asks the app to open it in a window of its own. With
+/// no app connected, it starts one on this machine (its first window is
+/// one of its own); over SSH, there's no app to start.
+pub fn open_new(args: &[String]) -> Result<()> {
+    let [arg] = args else {
+        eprint!("{USAGE}");
+        std::process::exit(2);
+    };
+    let path = std::path::absolute(arg)?;
+    let path = path.canonicalize().with_context(|| format!("{arg}: no such file or folder"))?;
+    let (root, file) = proto::open_target(&path);
+    let mut command = vec!["window".to_string(), root.to_string_lossy().into_owned()];
+    command.extend(file.map(|file| file.to_string_lossy().into_owned()));
+    let asked = connect().and_then(|client| {
+        smol::block_on(client.request(Request::Command {
+            args: command,
+            cwd: std::env::current_dir()?,
+            term: own_term(),
+        }))
+    });
+    match asked {
+        Ok(_) => Ok(()),
+        Err(_) if std::env::var_os("SSH_CONNECTION").is_none() => platform::launch_app(&[path.as_os_str()]),
+        Err(err) => Err(err).with_context(|| format!("could not open {arg}")),
+    }
 }
 
 /// `den -s <server> [<path>]`: asks the app to open a window on `server`,

@@ -86,6 +86,13 @@ impl Den {
                 cx.defer(move |cx| open_server_window(server, path, cx));
                 Ok(String::new())
             }
+            // `den -n <path>`: in a window of its own.
+            ["window", root, file @ ..] if file.len() <= 1 => {
+                let destination = self.host(&host).and_then(|host| host.destination.clone());
+                let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
+                cx.defer(move |cx| open_new_window(host, destination, root, file, cx));
+                Ok(String::new())
+            }
             // `den <path>` and `den worktree` in a terminal of this window.
             ["open", root, file @ ..] if file.len() <= 1 => {
                 let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));

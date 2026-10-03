@@ -242,6 +242,11 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
                                 cx.update(|cx| app::handle_open(root, file, cx));
                                 Ok(String::new())
                             }
+                            [window, root, file @ ..] if window == "window" && file.len() <= 1 => {
+                                let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
+                                cx.update(|cx| app::open_new_window(app::LOCAL.into(), None, root, file, cx));
+                                Ok(String::new())
+                            }
                             [server, name, path @ ..] if server == "-s" && path.len() <= 1 => {
                                 let (name, path) = (name.clone(), path.first().map(PathBuf::from));
                                 cx.update(|cx| app::open_server_window(name, path, cx));
