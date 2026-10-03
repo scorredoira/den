@@ -166,6 +166,14 @@ pub async fn reattach(client: Arc<Client>, term: TermId, terminal: &Entity<Termi
     Ok(())
 }
 
+/// The directory a terminal's shell (or what runs in it) is in.
+pub async fn cwd(client: &Client, term: TermId) -> Result<Option<PathBuf>> {
+    match client.request(Request::TermCwd { term }).await? {
+        Response::Path(path) => Ok(path),
+        other => bail!("unexpected response from the agent: {other:?}"),
+    }
+}
+
 /// Live terminals in a group.
 pub async fn list(client: &Client, group: String) -> Result<Vec<TermId>> {
     match client.request(Request::TermList { group }).await? {

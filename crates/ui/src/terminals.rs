@@ -270,8 +270,24 @@ impl TerminalArea {
             };
             grid_for(size, window, cx)
         });
+        // A split opens where the terminal it splits is; a new tab, in the task's folder.
+        let beside = match place {
+            Place::Split(_) => self.tabs.get(self.active).map(|tab| tab.active),
+            Place::NewTab => None,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let result = agent::create(client, group, cwd, size, cx).await;
+            let inherited = match beside {
+                Some(term) => agent::cwd(&client, term).await.ok().flatten().filter(|dir| *dir != cwd),
+                None => None,
+            };
+            let result = match inherited {
+                // The directory may be gone: then the task's folder.
+                Some(dir) => match agent::create(client.clone(), group.clone(), dir, size, cx).await {
+                    Ok(created) => Ok(created),
+                    Err(_) => agent::create(client, group, cwd, size, cx).await,
+                },
+                None => agent::create(client, group, cwd, size, cx).await,
+            };
             this.update_in(cx, |this, window, cx| {
                 let (term, terminal) = match result {
                     Ok(created) => created,
