@@ -169,6 +169,49 @@ pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+/// A variable of a process's environment, via `sysctl(KERN_PROCARGS2)`:
+/// `argc`, the executable's path and its padding, the arguments, then the
+/// environment, each ending in NUL.
+#[cfg(target_os = "macos")]
+pub fn process_env(pid: u32, name: &str) -> Option<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let null = std::ptr::null_mut();
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, null, &mut size, null, 0) } != 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; size];
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buffer.as_mut_ptr().cast(), &mut size, null, 0) } != 0 {
+        return None;
+    }
+    buffer.truncate(size);
+    let argc = i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?);
+    let strings = buffer[4..].split(|byte| *byte == 0).filter(|string| !string.is_empty());
+    env_value(strings.skip(1 + argc.max(0) as usize), name)
+}
+
+/// A variable of a process's environment.
+#[cfg(target_os = "linux")]
+pub fn process_env(pid: u32, name: &str) -> Option<String> {
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    env_value(environ.split(|byte| *byte == 0), name)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn process_env(_pid: u32, _name: &str) -> Option<String> {
+    None
+}
+
+/// The value of `name` among `NAME=value` entries.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn env_value<'a>(entries: impl Iterator<Item = &'a [u8]>, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    entries
+        .filter_map(|entry| entry.strip_prefix(prefix.as_bytes()))
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+        .next()
+}
+
 /// Command line of a process (program and arguments, separated by spaces).
 #[cfg(unix)]
 pub fn process_args(pid: u32) -> Option<String> {
