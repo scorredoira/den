@@ -14,7 +14,7 @@ use std::{
 };
 use sum_tree::Bias;
 use tree_sitter::{
-    InputEdit, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator, Tree,
+    InputEdit, Node, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator, Tree,
 };
 
 const MAX_INJECTION_RANGES: usize = 4096;
@@ -1090,9 +1090,22 @@ impl SyntaxHighlighter {
                 let Some(highlight_name) = query.capture_names().get(cap.index as usize) else {
                     continue;
                 };
+                // (den) The locals query precedes the highlights, so its captures
+                // would otherwise shadow them (a parameter's
+                // `local.definition` over `variable.parameter`).
+                if highlight_name.starts_with("local.") {
+                    continue;
+                }
 
                 let node_range: Range<usize> = node.start_byte()..node.end_byte();
-                let highlight_name = SharedString::from(highlight_name.to_string());
+                let highlight_name = if *highlight_name == "punctuation.bracket"
+                    && is_bracket(node.kind())
+                {
+                    // (den) Colored by nesting depth, like VS Code.
+                    SharedString::from(BRACKET_LEVELS[bracket_depth(node) % BRACKET_LEVELS.len()])
+                } else {
+                    SharedString::from(highlight_name.to_string())
+                };
 
                 // Merge near range and same highlight name
                 let last_item = highlights.last();
@@ -1324,6 +1337,49 @@ fn merge_highlight_style(style: &mut HighlightStyle, other: &HighlightStyle) {
     if let Some(fade_out) = other.fade_out {
         style.fade_out = Some(fade_out);
     }
+}
+
+/// (den) Highlight names of the bracket pair colors, cycled by depth.
+const BRACKET_LEVELS: [&str; 3] = [
+    "punctuation.bracket.1",
+    "punctuation.bracket.2",
+    "punctuation.bracket.3",
+];
+
+fn is_bracket(kind: &str) -> bool {
+    matches!(kind, "(" | ")" | "[" | "]" | "{" | "}")
+}
+
+/// (den) How many bracket pairs enclose `node`, a bracket: the ancestors above
+/// its own pair's node with an opening bracket child before it and a closing
+/// one after it. Only the first and last children of a node with many (a
+/// file's top level) are looked at, so a deep file stays cheap.
+fn bracket_depth(node: Node) -> usize {
+    let (start, end) = (node.start_byte(), node.end_byte());
+    let encloses = |ancestor: Node| {
+        let count = ancestor.child_count();
+        let children: Vec<Node> = if count <= 8 {
+            (0..count).filter_map(|i| ancestor.child(i as _)).collect()
+        } else {
+            [ancestor.child(0), ancestor.child((count - 1) as _)].into_iter().flatten().collect()
+        };
+        let opens = children
+            .iter()
+            .any(|c| matches!(c.kind(), "(" | "[" | "{") && c.end_byte() <= start);
+        let closes = children
+            .iter()
+            .any(|c| matches!(c.kind(), ")" | "]" | "}") && c.start_byte() >= end);
+        opens && closes
+    };
+    let mut depth = 0;
+    let mut ancestor = node.parent().and_then(|parent| parent.parent());
+    while let Some(a) = ancestor {
+        if encloses(a) {
+            depth += 1;
+        }
+        ancestor = a.parent();
+    }
+    depth
 }
 
 #[cfg(test)]

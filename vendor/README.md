@@ -53,5 +53,15 @@ ranges were collected by recursing over the syntax tree, which overflowed a
 background thread's stack on a deeply nested file and killed the app. They
 are now walked with a tree cursor.
 
+And `(den)` for syntax colors like VS Code's: `SyntaxColors` in
+`src/highlighter/registry.rs` (and `wasm_stub.rs`) takes `constant.builtin`,
+`keyword.control`, `namespace` and `variable.parameter`; the TypeScript,
+JavaScript, Go and Rust `highlights.scm` capture control keywords as
+`keyword.control` and parameters as `variable.parameter` (Rust's numbers and
+booleans as `number` and `boolean`); and `src/highlighter/highlighter.rs`
+skips the `local.*` captures, which shadowed the highlights of the same node. Brackets are colored by nesting depth like VS Code's bracket pair colors
+(`bracket_depth` there, the `punctuation.bracket.1`–`3` colors, and Go's
+`highlights.scm` capturing its brackets).
+
 Updating: copy the new release over it, drop `benches/`, `tests/` and their
 `[[bench]]`/`[[test]]` entries, and reapply the `(den)` functions.

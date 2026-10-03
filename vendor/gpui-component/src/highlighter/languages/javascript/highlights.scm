@@ -1,3 +1,9 @@
+; (den) Parameters come first: the first capture of a node wins over the generic
+; `(identifier) @variable` below.
+
+(formal_parameters (identifier) @variable.parameter)
+(formal_parameters (assignment_pattern left: (identifier) @variable.parameter))
+
 ; Variables
 ;----------
 
@@ -163,45 +169,49 @@
   "}" @punctuation.special) @embedded
 
 [
-  "as"
   "async"
-  "await"
-  "break"
-  "case"
-  "catch"
   "class"
   "const"
-  "continue"
   "debugger"
-  "default"
   "delete"
-  "do"
-  "else"
-  "export"
   "extends"
-  "finally"
-  "for"
-  "from"
   "function"
   "get"
-  "if"
-  "import"
   "in"
   "instanceof"
   "let"
   "new"
   "of"
-  "return"
   "set"
   "static"
-  "switch"
   "target"
-  "throw"
-  "try"
   "typeof"
   "var"
   "void"
+] @keyword
+
+; (den) Control keywords, colored apart like VS Code does.
+[
+  "as"
+  "await"
+  "break"
+  "case"
+  "catch"
+  "continue"
+  "default"
+  "do"
+  "else"
+  "export"
+  "finally"
+  "for"
+  "from"
+  "if"
+  "import"
+  "return"
+  "switch"
+  "throw"
+  "try"
   "while"
   "with"
   "yield"
-] @keyword
+] @keyword.control

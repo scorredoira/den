@@ -103,31 +103,31 @@
 
 "as" @keyword
 "async" @keyword
-"await" @keyword
-"break" @keyword
+"await" @keyword.control
+"break" @keyword.control
 "const" @keyword
-"continue" @keyword
+"continue" @keyword.control
 "default" @keyword
 "dyn" @keyword
-"else" @keyword
+"else" @keyword.control
 "enum" @keyword
 "extern" @keyword
 "fn" @keyword
-"for" @keyword
+"for" @keyword.control
 "gen" @keyword
-"if" @keyword
+"if" @keyword.control
 "impl" @keyword
 "in" @keyword
 "let" @keyword
-"loop" @keyword
+"loop" @keyword.control
 "macro_rules!" @keyword
-"match" @keyword
+"match" @keyword.control
 "mod" @keyword
 "move" @keyword
 "pub" @keyword
 "raw" @keyword
 "ref" @keyword
-"return" @keyword
+"return" @keyword.control
 "static" @keyword
 "struct" @keyword
 "trait" @keyword
@@ -136,8 +136,8 @@
 "unsafe" @keyword
 "use" @keyword
 "where" @keyword
-"while" @keyword
-"yield" @keyword
+"while" @keyword.control
+"yield" @keyword.control
 (crate) @keyword
 (mutable_specifier) @keyword
 (use_list (self) @keyword)
@@ -151,9 +151,9 @@
 (string_literal) @string
 (raw_string_literal) @string
 
-(boolean_literal) @constant.builtin
-(integer_literal) @constant.builtin
-(float_literal) @constant.builtin
+(boolean_literal) @boolean
+(integer_literal) @number
+(float_literal) @number
 
 (escape_sequence) @escape
 

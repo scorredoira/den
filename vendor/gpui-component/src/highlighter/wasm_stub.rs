@@ -169,6 +169,11 @@ pub struct SyntaxColors {
     pub comment: Option<ThemeStyle>,
     pub comment_doc: Option<ThemeStyle>,
     pub constant: Option<ThemeStyle>,
+    // (den) `constant.builtin`, `keyword.control`, `namespace`,
+    // `variable.parameter` and the bracket levels, so code can be colored
+    // like VS Code.
+    #[serde(rename = "constant.builtin")]
+    pub constant_builtin: Option<ThemeStyle>,
     pub constructor: Option<ThemeStyle>,
     pub embedded: Option<ThemeStyle>,
     pub emphasis: Option<ThemeStyle>,
@@ -179,11 +184,14 @@ pub struct SyntaxColors {
     pub function: Option<ThemeStyle>,
     pub hint: Option<ThemeStyle>,
     pub keyword: Option<ThemeStyle>,
+    #[serde(rename = "keyword.control")]
+    pub keyword_control: Option<ThemeStyle>,
     pub label: Option<ThemeStyle>,
     #[serde(rename = "link_text")]
     pub link_text: Option<ThemeStyle>,
     #[serde(rename = "link_uri")]
     pub link_uri: Option<ThemeStyle>,
+    pub namespace: Option<ThemeStyle>,
     pub number: Option<ThemeStyle>,
     pub operator: Option<ThemeStyle>,
     pub predictive: Option<ThemeStyle>,
@@ -193,6 +201,13 @@ pub struct SyntaxColors {
     pub punctuation: Option<ThemeStyle>,
     #[serde(rename = "punctuation.bracket")]
     pub punctuation_bracket: Option<ThemeStyle>,
+    // (den) Bracket pair colors by nesting depth, cycled.
+    #[serde(rename = "punctuation.bracket.1")]
+    pub punctuation_bracket_1: Option<ThemeStyle>,
+    #[serde(rename = "punctuation.bracket.2")]
+    pub punctuation_bracket_2: Option<ThemeStyle>,
+    #[serde(rename = "punctuation.bracket.3")]
+    pub punctuation_bracket_3: Option<ThemeStyle>,
     #[serde(rename = "punctuation.delimiter")]
     pub punctuation_delimiter: Option<ThemeStyle>,
     #[serde(rename = "punctuation.list_marker")]
@@ -219,6 +234,8 @@ pub struct SyntaxColors {
     #[serde(rename = "type")]
     pub type_: Option<ThemeStyle>,
     pub variable: Option<ThemeStyle>,
+    #[serde(rename = "variable.parameter")]
+    pub variable_parameter: Option<ThemeStyle>,
     #[serde(rename = "variable.special")]
     pub variable_special: Option<ThemeStyle>,
     pub variant: Option<ThemeStyle>,
@@ -236,6 +253,7 @@ impl SyntaxColors {
             "comment" => self.comment,
             "comment.doc" => self.comment_doc,
             "constant" => self.constant,
+            "constant.builtin" => self.constant_builtin,
             "constructor" => self.constructor,
             "embedded" => self.embedded,
             "emphasis" => self.emphasis,
@@ -244,9 +262,11 @@ impl SyntaxColors {
             "function" => self.function,
             "hint" => self.hint,
             "keyword" => self.keyword,
+            "keyword.control" => self.keyword_control,
             "label" => self.label,
             "link_text" => self.link_text,
             "link_uri" => self.link_uri,
+            "namespace" => self.namespace,
             "number" => self.number,
             "operator" => self.operator,
             "predictive" => self.predictive,
@@ -255,6 +275,9 @@ impl SyntaxColors {
             "property" => self.property,
             "punctuation" => self.punctuation,
             "punctuation.bracket" => self.punctuation_bracket,
+            "punctuation.bracket.1" => self.punctuation_bracket_1.or(self.punctuation_bracket),
+            "punctuation.bracket.2" => self.punctuation_bracket_2.or(self.punctuation_bracket),
+            "punctuation.bracket.3" => self.punctuation_bracket_3.or(self.punctuation_bracket),
             "punctuation.delimiter" => self.punctuation_delimiter,
             "punctuation.list_marker" => self.punctuation_list_marker,
             "punctuation.special" => self.punctuation_special,
@@ -270,6 +293,7 @@ impl SyntaxColors {
             "title" => self.title,
             "type" => self.type_,
             "variable" => self.variable,
+            "variable.parameter" => self.variable_parameter,
             "variable.special" => self.variable_special,
             "variant" => self.variant,
             _ => None,
@@ -286,12 +310,13 @@ impl SyntaxColors {
     }
 
     pub fn style_for_index(&self, index: usize) -> Option<HighlightStyle> {
-        const HIGHLIGHT_NAMES: [&str; 41] = [
+        const HIGHLIGHT_NAMES: [&str; 48] = [
             "attribute",
             "boolean",
             "comment",
             "comment.doc",
             "constant",
+            "constant.builtin",
             "constructor",
             "embedded",
             "emphasis",
@@ -300,9 +325,11 @@ impl SyntaxColors {
             "function",
             "hint",
             "keyword",
+            "keyword.control",
             "label",
             "link_text",
             "link_uri",
+            "namespace",
             "number",
             "operator",
             "predictive",
@@ -311,6 +338,9 @@ impl SyntaxColors {
             "property",
             "punctuation",
             "punctuation.bracket",
+            "punctuation.bracket.1",
+            "punctuation.bracket.2",
+            "punctuation.bracket.3",
             "punctuation.delimiter",
             "punctuation.list_marker",
             "punctuation.special",
@@ -326,6 +356,7 @@ impl SyntaxColors {
             "title",
             "type",
             "variable",
+            "variable.parameter",
             "variable.special",
             "variant",
         ];

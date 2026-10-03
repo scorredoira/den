@@ -1,3 +1,10 @@
+; (den) Parameters and namespaces come first: the first capture of a node wins
+; over the generic `(identifier) @variable` below.
+
+(required_parameter (identifier) @variable.parameter)
+(optional_parameter (identifier) @variable.parameter)
+(nested_type_identifier module: (identifier) @namespace)
+
 ; Types
 ; Variables
 ;----------
@@ -164,47 +171,25 @@
   "}" @punctuation.special) @embedded
 
 [
-  "as"
   "async"
-  "await"
-  "break"
-  "case"
-  "catch"
   "class"
   "const"
-  "continue"
   "debugger"
-  "default"
   "delete"
-  "do"
-  "else"
-  "export"
   "extends"
-  "finally"
-  "for"
-  "from"
   "function"
   "get"
-  "if"
-  "import"
   "in"
   "instanceof"
   "let"
   "new"
   "of"
-  "return"
   "set"
   "static"
-  "switch"
   "target"
-  "throw"
-  "try"
   "typeof"
   "var"
   "void"
-  "while"
-  "with"
-  "yield"
 ] @keyword
 
 
@@ -218,17 +203,12 @@
   "<" @punctuation.bracket
   ">" @punctuation.bracket)
 
-; Variables
-
-(required_parameter (identifier) @variable.parameter)
-(optional_parameter (identifier) @variable.parameter)
 
 ; Keywords
 
 [ "abstract"
   "declare"
   "enum"
-  "export"
   "implements"
   "interface"
   "keyof"
@@ -241,3 +221,29 @@
   "override"
   "satisfies"
 ] @keyword
+
+; (den) Control keywords, colored apart like VS Code does.
+[
+  "as"
+  "await"
+  "break"
+  "case"
+  "catch"
+  "continue"
+  "default"
+  "do"
+  "else"
+  "export"
+  "finally"
+  "for"
+  "from"
+  "if"
+  "import"
+  "return"
+  "switch"
+  "throw"
+  "try"
+  "while"
+  "with"
+  "yield"
+] @keyword.control
