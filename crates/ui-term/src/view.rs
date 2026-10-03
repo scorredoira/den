@@ -138,8 +138,22 @@ impl TerminalView {
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        // App shortcuts (Cmd on Mac) don't go to the terminal.
+        // App shortcuts (Cmd on Mac) don't go to the terminal, except the line
+        // editing ones of a Mac terminal: Cmd+Backspace deletes to the start of
+        // the line (Ctrl+U) and Cmd+←/→ go to its start and end (Ctrl+A/E).
         if keystroke.modifiers.platform {
+            let modifiers = &keystroke.modifiers;
+            let only_cmd = !modifiers.alt && !modifiers.control && !modifiers.shift && !modifiers.function;
+            let line_edit = match keystroke.key.as_str() {
+                "backspace" => Some(b"\x15"),
+                "left" => Some(b"\x01"),
+                "right" => Some(b"\x05"),
+                _ => None,
+            };
+            if let Some(bytes) = line_edit.filter(|_| only_cmd && cfg!(target_os = "macos")) {
+                self.send(bytes, cx);
+                cx.stop_propagation();
+            }
             return;
         }
         // Regular text arrives through the input handler, with accents already composed.
