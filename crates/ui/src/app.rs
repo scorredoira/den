@@ -2868,8 +2868,9 @@ impl Den {
 
 /// How much a task's dot (see `Den::status`) asks to be looked at: waiting
 /// for an answer, working, finished unseen, or nothing.
-/// Turning while something takes a while: a worktree made or deleted.
-fn spinner(color: Hsla) -> impl IntoElement {
+/// Turning while something takes a while: a worktree made or deleted, a test
+/// starting to be debugged.
+pub(crate) fn spinner(color: Hsla) -> impl IntoElement {
     svg()
         .path("icons/loader.svg")
         .size(px(12.))

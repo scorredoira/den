@@ -3218,6 +3218,7 @@ impl Workspace {
                         // The debugger stopped: run to a line of any file; set the next
                         // statement only in the function stopped at.
                         let stopped = execution.is_some() && !readonly;
+                        let debugging = self.debugger.read(cx).is_active() && !readonly;
                         let jumpable = execution.as_ref().is_some_and(|(at, _, top)| *at == tab.path && *top);
                         let blame = file
                             .filter(|file| !file.dirty && tab.diff.is_none() && !stopped_here)
@@ -3249,7 +3250,7 @@ impl Workspace {
                                     .menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition))
                                     .menu_with_disabled("Find References", readonly, Box::new(FindReferences))
                                     .menu_with_disabled("Format Document", readonly, Box::new(FormatDocument));
-                                let menu = if readonly {
+                                let menu = if !debugging {
                                     menu
                                 } else {
                                     menu.separator()
@@ -3616,6 +3617,7 @@ impl Workspace {
         let text = state.text();
         let area = state.input_bounds();
         let theme = cx.theme();
+        let debugger = self.debugger.read(cx);
         let mut lenses = Vec::new();
         for row in visible.start..visible.end.min(text.lines_len()) {
             let line = text.slice_line(row).to_string();
@@ -3630,6 +3632,8 @@ impl Workspace {
             if bounds.origin.y < area.top() || bounds.bottom() > area.bottom() || area.right() - origin.x < px(120.) {
                 continue;
             }
+            // Debugging it: the bug turns until its program connects.
+            let launching = debugger.is_launching(path, &test);
             let lens = |icon: &'static str, tip: &'static str, debug: bool| {
                 let test = test.clone();
                 let path = path.to_path_buf();
@@ -3644,7 +3648,13 @@ impl Workspace {
                     .rounded(theme.radius)
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.secondary))
-                    .child(svg().path(icon).size(px(13.)).text_color(theme.muted_foreground))
+                    .map(|el| {
+                        if debug && launching {
+                            el.child(crate::app::spinner(theme.muted_foreground))
+                        } else {
+                            el.child(svg().path(icon).size(px(13.)).text_color(theme.muted_foreground))
+                        }
+                    })
                     .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                     .on_click(move |_, window, cx| {
                         this.update(cx, |this, cx| this.run_test(&path, &test, debug, window, cx)).ok();
@@ -3684,7 +3694,9 @@ impl Workspace {
             }
         };
         if debug {
-            self.debugger.update(cx, |debugger, cx| debugger.launch_command(line, tests.port, window, cx));
+            self.debugger.update(cx, |debugger, cx| {
+                debugger.launch_command(line, tests.port, path.to_path_buf(), test.to_string(), window, cx)
+            });
             return;
         }
         self.show_panel(Panel::Terminals, cx);
