@@ -163,7 +163,9 @@ impl TerminalArea {
     }
 
     /// Switches to a new connection with the agent (after reconnecting): each
-    /// terminal reattaches to its process; those that no longer exist are removed.
+    /// terminal reattaches to its process; those that no longer exist are
+    /// removed, and those the agent has that aren't here (an agent restarted
+    /// took them from one of an older protocol) open each in its own tab.
     pub fn set_client(&mut self, client: Arc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         self.client = Some(client.clone());
         let group = self.group.clone();
@@ -180,10 +182,29 @@ impl TerminalArea {
                     gone.push(term);
                 }
             }
+            // Read now: one opened here meanwhile is already in `views`.
+            let known: HashSet<TermId> = this.update(cx, |this, _| this.views.keys().copied().collect()).unwrap_or_default();
+            let mut new: Vec<TermId> = alive.difference(&known).copied().collect();
+            new.sort();
+            let mut added = Vec::new();
+            for term in new {
+                if let Ok(terminal) = agent::attach(client.clone(), term, cx).await {
+                    added.push((term, terminal));
+                }
+            }
             this.update_in(cx, |this, window, cx| {
                 for term in gone {
                     this.remove(term, window, cx);
                 }
+                for (term, terminal) in added {
+                    if this.views.contains_key(&term) {
+                        continue;
+                    }
+                    this.add_view(term, terminal, window, cx);
+                    let id = this.next_tab_id();
+                    this.tabs.push(TerminalTab { id, tree: Tree::Leaf(term), active: term });
+                }
+                this.save();
                 if this.tabs.is_empty() {
                     this.open(Place::NewTab, window, cx);
                 }
