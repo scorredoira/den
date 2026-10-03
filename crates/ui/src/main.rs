@@ -212,14 +212,14 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
     cx.spawn(async move |cx| {
         while let Ok(received) = rx.recv().await {
             match received {
-                Received::Open(root, file) => cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx)),
+                Received::Open(root, file) => cx.update(|cx| app::handle_open(root, file, cx)),
                 Received::Command(command, args) => {
                     if !cx.update(|cx| app::has_window(cx)) {
                         let result = match args.as_slice() {
                             // `den <path>` in a terminal: the window opens with it.
                             [open, root, file @ ..] if open == "open" && file.len() <= 1 => {
                                 let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
-                                cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx));
+                                cx.update(|cx| app::handle_open(root, file, cx));
                                 Ok(String::new())
                             }
                             _ => Err("den's window is closed".to_string()),

@@ -143,25 +143,50 @@ impl Render for DragPreview {
     }
 }
 
-/// The window, and the local agent it talks to (kept for opening it again
-/// after it's closed: the app goes on without it on macOS).
+/// The windows, and the local agent the main one talks to (kept for opening
+/// it again after it's closed: the app goes on without it on macOS).
 #[derive(Default)]
 struct Main {
-    window: Option<(AnyWindowHandle, WeakEntity<Den>)>,
+    /// The main window first.
+    windows: Vec<OpenWindow>,
     agent: Option<Arc<Client>>,
 }
 
 impl Global for Main {}
 
-/// The local agent, for the window.
+struct OpenWindow {
+    handle: AnyWindowHandle,
+    den: WeakEntity<Den>,
+    /// Whether it's the main window, whose workspaces are remembered.
+    main: bool,
+}
+
+/// The local agent, for the main window.
 pub fn set_agent(agent: Option<Arc<Client>>, cx: &mut App) {
     cx.default_global::<Main>().agent = agent;
 }
 
-/// The window, while it's open.
+/// The open windows, the main one first.
+fn windows(cx: &App) -> Vec<(AnyWindowHandle, Entity<Den>)> {
+    let Some(main) = cx.try_global::<Main>() else {
+        return Vec::new();
+    };
+    main.windows.iter().filter_map(|open| Some((open.handle, open.den.upgrade()?))).collect()
+}
+
+/// The main window, while it's open.
 fn main_window(cx: &App) -> Option<(AnyWindowHandle, Entity<Den>)> {
-    let (handle, den) = cx.try_global::<Main>()?.window.as_ref()?;
-    Some((*handle, den.upgrade()?))
+    let main = cx.try_global::<Main>()?.windows.iter().find(|open| open.main)?;
+    Some((main.handle, main.den.upgrade()?))
+}
+
+/// Where `den <path>` from a terminal on `host` outside den opens, when
+/// several windows hear it: the first window connected to `host`.
+fn opens_from_host(host: &str, den: &WeakEntity<Den>, cx: &App) -> bool {
+    windows(cx)
+        .into_iter()
+        .find(|(_, other)| other.read(cx).client(host).is_some())
+        .is_some_and(|(_, other)| other.entity_id() == den.entity_id())
 }
 
 /// Opens the window with `root` and `file` in it; with no `root`, the last
@@ -185,55 +210,57 @@ pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, c
         cx.new(|cx| Den::new(root.clone(), file.clone(), resume, agent, window, cx))
     });
     match opened {
-        Ok((handle, den)) => cx.default_global::<Main>().window = Some((handle, den.downgrade())),
+        Ok((handle, den)) => {
+            let main = &mut cx.default_global::<Main>().windows;
+            main.retain(|open| open.den.upgrade().is_some());
+            main.insert(0, OpenWindow { handle, den: den.downgrade(), main: true });
+        }
         Err(err) => eprintln!("could not open the window: {err:#}"),
     }
 }
 
-/// Clicking the Dock icon with the window closed opens it again.
+/// Clicking the Dock icon with every window closed opens the main one again.
 pub fn reopen(cx: &mut App) {
-    if main_window(cx).is_none() {
+    if windows(cx).is_empty() {
         open_window(None, None, true, cx);
     }
 }
 
-/// Whether the window is open: the `den` commands run in it.
+/// Whether the main window is open: this machine's `den` commands run in it.
 pub fn has_window(cx: &App) -> bool {
     main_window(cx).is_some()
 }
 
-/// `den <path>` in a terminal of `host`: `root` as a workspace, with `file`
-/// open in it, and the window to the front (opened if it was closed).
-pub fn handle_open(host: SharedString, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
+/// `den <path>` in a terminal of this machine: `root` as a workspace, with
+/// `file` open in it, and the main window to the front (opened if it was
+/// closed).
+pub fn handle_open(root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
     match main_window(cx) {
         Some((handle, den)) => {
             handle
                 .update(cx, |_, window, cx| {
-                    den.update(cx, |den, cx| den.open_from_terminal(host, root, file, window, cx));
+                    den.update(cx, |den, cx| den.open_from_terminal(LOCAL.into(), root, file, window, cx));
                     window.activate_window();
                 })
                 .ok();
         }
-        None if host == LOCAL => open_window(Some(root), file, false, cx),
-        None => {
-            open_window(None, None, false, cx);
-            if let Some((handle, den)) = main_window(cx) {
-                handle
-                    .update(cx, |_, window, cx| {
-                        den.update(cx, |den, cx| den.open_from_terminal(host, root, file, window, cx))
-                    })
-                    .ok();
-            }
-        }
+        None => open_window(Some(root), file, false, cx),
     }
     cx.activate(true);
 }
 
-/// Cmd-Q: quits once there are no unsaved files, or they're saved.
+/// Cmd-Q: quits once there are no unsaved files in any window, or they're
+/// saved. A window with some asks; once it's done, the next one.
 pub fn quit(cx: &mut App) {
-    if let Some((handle, den)) = main_window(cx) {
+    for (handle, den) in windows(cx) {
         let ready = handle
-            .update(cx, |_, window, cx| den.update(cx, |den, cx| den.confirm_quit(window, cx)))
+            .update(cx, |_, window, cx| {
+                let ready = den.update(cx, |den, cx| den.confirm_quit(Closing::App, window, cx));
+                if !ready {
+                    window.activate_window();
+                }
+                ready
+            })
             .unwrap_or(true);
         if !ready {
             return;
@@ -241,6 +268,15 @@ pub fn quit(cx: &mut App) {
     }
     crate::update::relaunch_if_restarting(cx);
     cx.quit();
+}
+
+/// What the dialog about unsaved files is about to do.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Closing {
+    /// Quit den (Cmd-Q).
+    App,
+    /// Close the window: the app goes on.
+    Window,
 }
 
 /// The window opens where it was closed; the first time, covering almost
@@ -298,8 +334,13 @@ pub struct Den {
     host_picker: Option<(Entity<Picker>, Subscription)>,
     /// A folder on a server, to open (or to make one there).
     folder_picker: Option<(Entity<FolderPicker>, Subscription)>,
-    /// Quit dialog with unsaved files (its focus, for Esc and Enter).
-    quit_confirm: Option<FocusHandle>,
+    /// Quit dialog with unsaved files (its focus, for Esc and Enter), and
+    /// whether it closes the window or quits.
+    quit_confirm: Option<(FocusHandle, Closing)>,
+    /// Closing anyway, without saving: the window doesn't ask again.
+    discarded: bool,
+    /// The window it's in.
+    handle: AnyWindowHandle,
     /// Saving everything before quitting.
     quit_saving: bool,
     /// About, if open (its focus, for Esc).
@@ -388,6 +429,8 @@ impl Den {
             host_picker: None,
             folder_picker: None,
             quit_confirm: None,
+            discarded: false,
+            handle: window.window_handle(),
             quit_saving: false,
             about: None,
             guide: None,
@@ -420,8 +463,11 @@ impl Den {
 
         let den = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
-            den.update(cx, |den, cx| den.confirm_quit(window, cx)).unwrap_or(true)
+            den.update(cx, |den, cx| den.discarded || den.confirm_quit(Closing::Window, window, cx)).unwrap_or(true)
         });
+        // Its panels go with it.
+        let window_id = window.window_handle().window_id();
+        cx.on_release(move |_, cx| crate::workspace::drop_panels(window_id, cx)).detach();
 
         for name in this.hosts.iter().skip(1).map(|host| host.name.clone()).collect::<Vec<_>>() {
             this.connect(name, window, cx);
@@ -696,9 +742,17 @@ impl Den {
             while let Ok(event) = rx.recv().await {
                 let alive = match event {
                     Event::Agents { agents } => this.update(cx, |this, cx| this.set_agents(name.clone(), agents, cx)).is_ok(),
+                    // From a terminal outside den: only one window opens it.
                     Event::Open { root, file } => {
-                        let host = name.clone();
-                        this.update(cx, |_, cx| cx.defer(move |cx| handle_open(host, root, file, cx))).is_ok()
+                        if cx.update(|_, cx| opens_from_host(&name, &this, cx)).unwrap_or(false) {
+                            this.update_in(cx, |this, window, cx| {
+                                this.open_from_terminal(name.clone(), root, file, window, cx);
+                                window.activate_window();
+                                cx.activate(true);
+                            })
+                            .ok();
+                        }
+                        this.upgrade().is_some()
                     }
                     Event::Command { command, args, cwd, term, group } => this
                         .update_in(cx, |this, window, cx| {
@@ -707,6 +761,9 @@ impl Den {
                         })
                         .is_ok(),
                     Event::OpenTask { path } => {
+                        if !cx.update(|_, cx| opens_from_host(&name, &this, cx)).unwrap_or(false) {
+                            continue;
+                        }
                         let tasks = list_tasks(&client).await;
                         this.update_in(cx, |this, window, cx| {
                             if let (Ok(tasks), Some(host)) = (tasks, this.host_mut(&name)) {
@@ -931,20 +988,40 @@ impl Den {
         unsaved
     }
 
-    /// Before quitting (Cmd-Q or closing the window): if any task has unsaved
-    /// files, asks and only quits if confirmed. Returns whether it can quit
-    /// right away.
-    pub fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// Before quitting (Cmd-Q) or closing the window: if any task has unsaved
+    /// files, asks and only goes on if confirmed. Returns whether it can go
+    /// on right away.
+    pub fn confirm_quit(&mut self, closing: Closing, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.unsaved(cx).is_empty() {
             return true;
         }
-        if self.quit_confirm.is_none() {
-            let focus = cx.focus_handle();
-            focus.focus(window, cx);
-            self.quit_confirm = Some(focus);
-            cx.notify();
+        match &mut self.quit_confirm {
+            Some((_, asked)) => *asked = closing,
+            None => {
+                let focus = cx.focus_handle();
+                focus.focus(window, cx);
+                self.quit_confirm = Some((focus, closing));
+            }
         }
+        cx.notify();
         false
+    }
+
+    /// The dialog's Quit (or Close) Without Saving.
+    fn discard_and_close(&mut self, cx: &mut Context<Self>) {
+        match self.quit_confirm.take() {
+            Some((_, Closing::Window)) => self.close_window(cx),
+            _ => cx.quit(),
+        }
+    }
+
+    /// Closes its window, unsaved files and all.
+    fn close_window(&mut self, cx: &mut Context<Self>) {
+        self.discarded = true;
+        let handle = self.handle;
+        cx.defer(move |cx| {
+            handle.update(cx, |_, window, _| window.remove_window()).ok();
+        });
     }
 
     fn cancel_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -975,8 +1052,11 @@ impl Den {
             this.update(cx, |this, cx| {
                 this.quit_saving = false;
                 if ok && this.unsaved(cx).is_empty() {
-                    crate::update::relaunch_if_restarting(cx);
-                    cx.quit();
+                    match this.quit_confirm.take() {
+                        Some((_, Closing::Window)) => this.close_window(cx),
+                        // The other windows may have some too.
+                        _ => cx.defer(quit),
+                    }
                 }
                 cx.notify();
             })
@@ -995,7 +1075,7 @@ impl Den {
         }
     }
 
-    fn render_quit_confirm(&self, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_quit_confirm(&self, focus: &FocusHandle, closing: Closing, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let unsaved = self.unsaved(cx);
         let title = match unsaved.len() {
@@ -1066,9 +1146,13 @@ impl Den {
                             .justify_end()
                             .child(dialog_button("quit-cancel", "Cancel", cx).on_click(cx.listener(|this, _, window, cx| this.cancel_quit(window, cx))))
                             .child(
-                                dialog_button("quit-discard", "Quit Without Saving", cx)
-                                    .text_color(theme.danger)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.quit())),
+                                dialog_button(
+                                    "quit-discard",
+                                    if closing == Closing::App { "Quit Without Saving" } else { "Close Without Saving" },
+                                    cx,
+                                )
+                                .text_color(theme.danger)
+                                .on_click(cx.listener(|this, _, _, cx| this.discard_and_close(cx))),
                             )
                             .child(
                                 div()
@@ -1079,7 +1163,11 @@ impl Den {
                                     .bg(theme.primary)
                                     .text_color(theme.primary_foreground)
                                     .hover(|style| style.bg(theme.primary_hover))
-                                    .child(if self.quit_saving { "Saving…" } else { "Save All and Quit" })
+                                    .child(match (self.quit_saving, closing) {
+                                        (true, _) => "Saving…",
+                                        (false, Closing::App) => "Save All and Quit",
+                                        (false, Closing::Window) => "Save All and Close",
+                                    })
                                     .on_click(cx.listener(|this, _, _, cx| this.save_and_quit(cx))),
                             ),
                     ),
@@ -2524,7 +2612,7 @@ impl Render for Den {
             .children(self.confirm_remove.as_ref().map(|(key, focus, at_risk)| self.render_confirm_remove(key, focus, at_risk.as_ref(), cx)))
             .children(self.confirm_restart.as_ref().map(|(name, focus)| self.render_confirm_restart(name, focus, cx)))
             .children(self.confirm_update.as_ref().map(|(version, focus)| self.render_confirm_update(version, focus, cx)))
-            .children(self.quit_confirm.as_ref().map(|focus| self.render_quit_confirm(focus, cx)))
+            .children(self.quit_confirm.as_ref().map(|(focus, closing)| self.render_quit_confirm(focus, *closing, cx)))
     }
 }
 

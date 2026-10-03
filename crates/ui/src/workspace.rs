@@ -57,7 +57,7 @@ pub(crate) mod autosave_tests;
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::{WorkspacesPanel, reset_panels, title as panel_title};
+pub(crate) use layout::{WorkspacesPanel, drop_panels, reset_panels, title as panel_title};
 pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar, toggle_activity_icon};
 
 enum Content {
@@ -227,6 +227,8 @@ impl DiffOf {
 
 pub struct Workspace {
     root: PathBuf,
+    /// Its window, whose panels it shows (see `layout::Panels`).
+    window_id: WindowId,
     /// The task's key in `config.json`, to remember what was open.
     session_key: String,
     /// Last session's tabs were already reopened (nothing is saved before that).
@@ -306,7 +308,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Panels::init(cx);
+        let window_id = window.window_handle().window_id();
+        Panels::init(window_id, cx);
         let file_tree = cx.new(|cx| FileTree::new(root.clone(), agent.clone(), local, cx));
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
@@ -321,7 +324,7 @@ impl Workspace {
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         // A git panel that shows from the start reads now, not when shown.
         for (panel, entity) in [(Panel::Changes, &changes), (Panel::History, &history)] {
-            if has_agent && Panels::get(cx).is_shown(&Config::get(cx).layout, panel) {
+            if has_agent && Panels::of(window_id, cx).is_shown(&Config::get(cx).layout, panel) {
                 entity.update(cx, |entity, cx| entity.shown(cx));
             }
         }
@@ -413,6 +416,7 @@ impl Workspace {
         }
         Self {
             root,
+            window_id,
             session_key,
             restored: false,
             focus_handle,
@@ -1660,7 +1664,7 @@ impl Workspace {
     }
 
     fn step_result(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let references = Panels::get(cx).stamp(Panel::References) > Panels::get(cx).stamp(Panel::Search);
+        let references = Panels::of(self.window_id, cx).stamp(Panel::References) > Panels::of(self.window_id, cx).stamp(Panel::Search);
         let panel = if references { &self.references } else { &self.search };
         panel.update(cx, |panel, cx| panel.step(delta, cx));
     }
