@@ -244,6 +244,8 @@ pub fn markdown_symbols(path: &Path, text: &str) -> Vec<LspSymbol> {
             container: open.last().map(|(_, name)| name.clone()),
             line: line as u32,
             column: (text.chars().count() - trimmed.chars().count()) as u32,
+            depth: open.len() as u32,
+            local: false,
         });
         open.push((level, name));
     }
@@ -251,7 +253,7 @@ pub fn markdown_symbols(path: &Path, text: &str) -> Vec<LspSymbol> {
 }
 
 /// The icon and color of an LSP `SymbolKind`, after VS Code's.
-fn kind_icon(kind: u32, cx: &App) -> (&'static str, Hsla) {
+pub(crate) fn kind_icon(kind: u32, cx: &App) -> (&'static str, Hsla) {
     let theme = cx.theme();
     match kind {
         // Method, Constructor, Function.
@@ -422,7 +424,7 @@ mod tests {
     use super::{char_ranges, filter, markdown_symbols};
 
     fn symbol(name: &str) -> LspSymbol {
-        LspSymbol { path: "main.ts".into(), name: name.into(), kind: 12, container: None, line: 0, column: 0 }
+        LspSymbol { path: "main.ts".into(), name: name.into(), kind: 12, container: None, line: 0, column: 0, depth: 0, local: false }
     }
 
     #[test]
@@ -448,14 +450,14 @@ mod tests {
     fn markdown_headings_nest_and_skip_code() {
         let text = "# Title\n\nintro\n\n## One ##\n```\n# not a heading\n```\n### Deep\n## Two\n#hashtag\n";
         let found: Vec<_> =
-            markdown_symbols(Path::new("README.md"), text).into_iter().map(|s| (s.name, s.container, s.line)).collect();
+            markdown_symbols(Path::new("README.md"), text).into_iter().map(|s| (s.name, s.container, s.line, s.depth)).collect();
         assert_eq!(
             found,
             [
-                ("Title".to_string(), None, 0),
-                ("One".to_string(), Some("Title".to_string()), 4),
-                ("Deep".to_string(), Some("One".to_string()), 8),
-                ("Two".to_string(), Some("Title".to_string()), 9),
+                ("Title".to_string(), None, 0, 0),
+                ("One".to_string(), Some("Title".to_string()), 4, 1),
+                ("Deep".to_string(), Some("One".to_string()), 8, 2),
+                ("Two".to_string(), Some("Title".to_string()), 9, 1),
             ],
         );
     }

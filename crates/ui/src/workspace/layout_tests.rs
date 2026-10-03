@@ -161,7 +161,7 @@ fn the_code_shares_a_place_like_any_panel(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("activity-Code").is_none());
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Code).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Code, Panel::Search, Panel::References]);
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Code, Panel::Search, Panel::References, Panel::Outline]);
     bounds(cx, "editor-body-0");
     // Another panel there hides it; hiding that one brings it back, its place
     // never closes.

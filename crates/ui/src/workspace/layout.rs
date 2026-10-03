@@ -38,6 +38,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Commit => "icons/git-commit.svg",
         Panel::Search => "icons/search.svg",
         Panel::References => "icons/references.svg",
+        Panel::Outline => "icons/list-tree.svg",
         Panel::Code => "icons/code.svg",
         Panel::Terminals => "icons/terminal.svg",
         Panel::Debugger => "icons/bug.svg",
@@ -54,6 +55,7 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Commit => "Commit Files",
         Panel::Search => "Search",
         Panel::References => "References",
+        Panel::Outline => "Outline",
         Panel::Code => "Code",
         Panel::Terminals => "Terminals",
         Panel::Debugger => "Debugger",
@@ -66,7 +68,7 @@ const BAR_HEIGHT: f32 = 34.;
 /// The panels with no bar of their own, which their stack's header gives
 /// them: their title.
 fn has_header(panel: Panel) -> bool {
-    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References)
+    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References | Panel::Outline)
 }
 
 /// Which panel each stack shows and the stacks closed: the same for every
@@ -483,6 +485,7 @@ impl Workspace {
             Panel::Commit => self.commit.clone().into_any_element(),
             Panel::Search => self.search.clone().into_any_element(),
             Panel::References => self.references.clone().into_any_element(),
+            Panel::Outline => self.outline.clone().into_any_element(),
             Panel::Code => self.render_editor_area(cx).into_any_element(),
             Panel::Terminals => self.terminals.clone().into_any_element(),
             // A tab of the terminals', when it's in their place.

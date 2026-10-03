@@ -19,6 +19,7 @@ mod menu;
 mod folder_picker;
 mod guide;
 mod picker;
+mod outline;
 mod search;
 mod shortcuts;
 mod signature;
@@ -51,6 +52,7 @@ actions!(
         ToggleCommitFiles,
         ShowSearch,
         ShowReferences,
+        ShowOutline,
         GoToDefinition,
         GoToLine,
         GoToSymbol,

@@ -14,7 +14,7 @@
 </p>
 
 - **Native, in Rust.** GPU-rendered with GPUI, no Electron. On macOS, Linux and Windows.
-- **Code editor.** Tree-sitter highlighting, language servers (go to definition, references, completions, signatures, formatting), project search, go to file by name, split editors, Markdown and images. Cmd-click a `file:line` in a terminal to open it.
+- **Code editor.** Tree-sitter highlighting, language servers (go to definition, references, completions, signatures, formatting), project search, go to file by name, an outline of the file (its classes, functions and constants, not what's inside them), split editors, Markdown and images. Cmd-click a `file:line` in a terminal to open it.
 - **Persistent sessions.** A terminal multiplexer per workspace, with tabs and splits. Every terminal lives in `den-agent`, not in the app, like in tmux. Close Den, update it or lose the connection and Claude keeps working; reopening reattaches each terminal with its screen and history.
 - **Remote like local.** A server is a name from `~/.ssh/config`. Den uploads its agent, which runs the terminals, search, git and language servers next to the files; only terminal output and results travel. On Windows, WSL distros work the same way.
 - **Git built in.** Every workspace is a folder, a checkout or a worktree, and New Worktree (Cmd-N) starts one per task. Uncommitted changes, the history of the repo or of a file, side-by-side diffs (in one column when there's no room for two), commits with all their files, and the blame of the current line. Den only reads: commit and push from a terminal.
