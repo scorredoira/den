@@ -10,12 +10,14 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-/// Bumped only for an incompatible change. Adding requests, responses or
-/// events isn't one: they are ALWAYS ADDED AT THE END of their enum, and
-/// whoever receives something unknown rejects it without dropping the
-/// connection (see `Decoded`). Each version has its own socket, so an agent of
+/// Bumped for every incompatible change: a field added, removed or changed in
+/// any message or type it carries, a variant changed or moved. Adding requests,
+/// responses or events isn't one: they are ALWAYS ADDED AT THE END of their
+/// enum, and whoever receives something unknown rejects it without dropping
+/// the connection (see `Decoded`). The `wire_changes_bump_the_protocol` test
+/// holds it against `wire.txt`. Each version has its own socket, so an agent of
 /// another version is never shut down: it keeps its terminals until they're gone.
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 /// Maximum frame size, so garbage input can't make us allocate without limit.
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -674,6 +676,175 @@ pub const AGENT_BIN: &str = if cfg!(windows) { "den-agent.exe" } else { "den-age
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A serde type of this file as it goes on the wire: its attributes and
+    /// declaration line, then its fields or variants, without comments.
+    #[derive(Debug, PartialEq)]
+    struct WireItem {
+        name: String,
+        head: String,
+        members: Vec<String>,
+        is_enum: bool,
+    }
+
+    /// The serde types and type aliases declared above the tests.
+    fn wire_items(source: &str) -> Vec<WireItem> {
+        let code = source.split("\n#[cfg(test)]").next().unwrap();
+        let lines: Vec<&str> = code
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect();
+        let mut items = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i];
+            if line.starts_with("pub type ") {
+                items.push(WireItem { name: item_name(line), head: line.to_string(), members: Vec::new(), is_enum: false });
+                i += 1;
+                continue;
+            }
+            if !(line.starts_with("#[derive(") && (line.contains("Serialize") || line.contains("Deserialize"))) {
+                i += 1;
+                continue;
+            }
+            let mut head = vec![line.trim().to_string()];
+            i += 1;
+            while lines[i].starts_with("#[") {
+                head.push(lines[i].trim().to_string());
+                i += 1;
+            }
+            let declaration = lines[i];
+            head.push(declaration.trim().to_string());
+            let is_enum = declaration.contains("enum ");
+            let name = item_name(declaration);
+            i += 1;
+            let mut body = String::new();
+            if declaration.ends_with('{') {
+                while lines[i] != "}" {
+                    body.push_str(lines[i].trim());
+                    body.push(' ');
+                    i += 1;
+                }
+                i += 1;
+            }
+            items.push(WireItem { name, head: head.join(" "), members: split_members(&body), is_enum });
+        }
+        items
+    }
+
+    /// The name after `struct`, `enum` or `type` in a declaration.
+    fn item_name(declaration: &str) -> String {
+        let name = declaration
+            .split_whitespace()
+            .skip_while(|word| !["struct", "enum", "type"].contains(word))
+            .nth(1)
+            .unwrap();
+        name.trim_end_matches(['{', ';', '(']).to_string()
+    }
+
+    /// Splits at the commas outside brackets, spaces and trailing commas collapsed.
+    fn split_members(body: &str) -> Vec<String> {
+        let collapse = |member: &str| {
+            let words = member.split_whitespace().collect::<Vec<_>>().join(" ");
+            words.replace(", }", " }").replace(", )", ")")
+        };
+        let mut members = Vec::new();
+        let mut depth = 0i32;
+        let mut current = String::new();
+        for c in body.chars() {
+            match c {
+                '{' | '(' | '[' | '<' => depth += 1,
+                '}' | ')' | ']' | '>' => depth -= 1,
+                _ => {}
+            }
+            if c == ',' && depth == 0 {
+                members.push(collapse(&current));
+                current.clear();
+            } else {
+                current.push(c);
+            }
+        }
+        members.push(collapse(&current));
+        members.retain(|member| !member.is_empty());
+        members
+    }
+
+    fn wire_text(protocol: u32, items: &[WireItem]) -> String {
+        let mut text = format!("protocol {protocol}\n");
+        for item in items {
+            text.push('\n');
+            text.push_str(&item.head);
+            text.push('\n');
+            for member in &item.members {
+                text.push_str("    ");
+                text.push_str(member);
+                text.push('\n');
+            }
+        }
+        text
+    }
+
+    /// What changed in `old` that a side built with it can't read: anything
+    /// but types added and variants added at the end of an enum.
+    fn incompatible(old: &[WireItem], new: &[WireItem]) -> Vec<String> {
+        old.iter()
+            .filter(|before| {
+                let Some(after) = new.iter().find(|after| after.name == before.name) else { return true };
+                let members_kept = if before.is_enum {
+                    after.members.starts_with(&before.members)
+                } else {
+                    after.members == before.members
+                };
+                after.head != before.head || !members_kept
+            })
+            .map(|item| item.name.clone())
+            .collect()
+    }
+
+    fn parse_wire_text(text: &str) -> (u32, Vec<WireItem>) {
+        let mut lines = text.lines();
+        let protocol = lines.next().unwrap().strip_prefix("protocol ").unwrap().parse().unwrap();
+        let mut items: Vec<WireItem> = Vec::new();
+        for line in lines.filter(|line| !line.is_empty()) {
+            if let Some(member) = line.strip_prefix("    ") {
+                items.last_mut().unwrap().members.push(member.to_string());
+                continue;
+            }
+            let name = item_name(line);
+            let is_enum = line.contains(" enum ");
+            items.push(WireItem { name, head: line.to_string(), members: Vec::new(), is_enum });
+        }
+        (protocol, items)
+    }
+
+    /// `wire.txt` is the wire of `PROTOCOL` as last recorded. A change a side
+    /// of the old version can't read must come with a new `PROTOCOL`; any
+    /// change is recorded with `UPDATE_WIRE=1 cargo test -p proto wire`.
+    #[test]
+    fn wire_changes_bump_the_protocol() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wire.txt");
+        let current = wire_items(include_str!("lib.rs"));
+        let recorded = std::fs::read_to_string(&path).unwrap();
+        let (recorded_protocol, recorded_items) = parse_wire_text(&recorded);
+        let text = wire_text(PROTOCOL, &current);
+        if text == recorded {
+            return;
+        }
+        assert!(PROTOCOL >= recorded_protocol, "PROTOCOL went back from {recorded_protocol} to {PROTOCOL}");
+        let broken = incompatible(&recorded_items, &current);
+        assert!(
+            PROTOCOL > recorded_protocol || broken.is_empty(),
+            "{} changed in a way protocol {PROTOCOL} can't read: bump PROTOCOL to {}, then \
+             UPDATE_WIRE=1 cargo test -p proto wire",
+            broken.join(", "),
+            PROTOCOL + 1,
+        );
+        if std::env::var("UPDATE_WIRE").is_ok() {
+            std::fs::write(&path, text).unwrap();
+            return;
+        }
+        panic!("the wire changed: record it with UPDATE_WIRE=1 cargo test -p proto wire");
+    }
 
     #[test]
     fn binary_payloads_are_compatible_with_legacy_byte_arrays() {
