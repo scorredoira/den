@@ -483,6 +483,10 @@ pub struct Config {
     /// The worktrees made from the workspaces column (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub own_worktrees: Vec<String>,
+    /// The history without the selected commit's files under its commits
+    /// (Hide Files, Cmd-Alt-Shift-H).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub history_files_hidden: bool,
 }
 
 /// Text sizes chosen in Settings; unset, the default.

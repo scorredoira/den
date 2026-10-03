@@ -71,8 +71,6 @@ pub struct ChangesPanel {
     more: bool,
     /// Selected commit, and the files of those already read.
     commit: Option<String>,
-    /// The selected commit's files shown below the commits.
-    files_open: bool,
     commit_files: HashMap<String, Vec<ChangedFile>>,
     /// History search: hash, message or author.
     query: Option<Entity<InputState>>,
@@ -101,7 +99,6 @@ impl ChangesPanel {
             file: None,
             more: false,
             commit: None,
-            files_open: true,
             commit_files: HashMap::new(),
             query: None,
             selected: None,
@@ -507,6 +504,8 @@ impl ChangesPanel {
         }
         // In a file's history a commit is that file's changes, not a list of files.
         let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
+        // With the files under the commits: Hide Files or Show Files.
+        let files_item = self.has_commit_files(cx).then(|| self.files_open(cx));
         for (ix, commit) in self.commits.iter().enumerate() {
             let key = format!("h:{}", commit.hash);
             let selected = match file {
@@ -590,6 +589,7 @@ impl ChangesPanel {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy_subject.clone()))
                         }))
                         .separator()
+                        .when_some(files_item, |menu, open| menu.item(Self::files_item(open, &panel)))
                         .item(menu::hide_panel())
                     })
                     .into_any_element(),
@@ -614,21 +614,25 @@ impl ChangesPanel {
         self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir) && Config::get(cx).layout.commit_in_history()
     }
 
-    /// Shows or hides the selected commit's files under the commits.
+    /// Shows or hides the selected commit's files under the commits: hidden,
+    /// the history is the commits alone.
     pub fn show_files(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.files_open = open;
+        Config::update(cx, |config| config.history_files_hidden = !open);
         cx.notify();
     }
 
-    pub fn files_open(&self) -> bool {
-        self.files_open
+    pub fn files_open(&self, cx: &App) -> bool {
+        !Config::get(cx).history_files_hidden
     }
 
-    /// The bar over the selected commit's files: click, or its menu, to hide
-    /// or show them.
+    /// Hide Files or Show Files, in the history's right-click menus.
+    fn files_item(open: bool, panel: &WeakEntity<Self>) -> menu::PopupMenuItem {
+        menu::item(if open { "Hide Files" } else { "Show Files" }, panel, move |this, _, cx| this.show_files(!open, cx))
+    }
+
+    /// The bar over the selected commit's files.
     fn render_files_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = cx.entity().downgrade();
-        let label = if self.files_open { "Hide Files" } else { "Show Files" };
         let theme = cx.theme();
         let commit = self.commit.as_ref().and_then(|hash| self.commits.iter().find(|commit| commit.hash == *hash));
         let count = self.commit.as_ref().and_then(|hash| self.commit_files.get(hash)).map(Vec::len);
@@ -642,17 +646,12 @@ impl ChangesPanel {
             .border_color(theme.sidebar_border)
             .text_ui_small(cx)
             .text_color(theme.muted_foreground)
-            .hover(|style| style.text_color(theme.sidebar_foreground))
-            .child(div().w(px(10.)).flex_none().child(if self.files_open { "▾" } else { "▸" }))
             .child(div().font_weight(FontWeight::SEMIBOLD).child("FILES"))
             .when_some(commit, |el, commit| el.child(commit.short.clone()))
             .when_some(count, |el, count| el.child(format!("({count})")))
-            .on_click(cx.listener(|this, _, _, cx| this.show_files(!this.files_open, cx)))
-            .context_menu(move |menu, _, _| {
-                menu.item(menu::item(label, &panel, |this, _, cx| this.show_files(!this.files_open, cx)))
-                .separator()
-                .item(menu::hide_panel())
-            })
+            .child(div().flex_1())
+            .child(link("hide-commit-files", "✕", cx).on_click(cx.listener(|this, _, _, cx| this.show_files(false, cx))))
+            .context_menu(move |menu, _, _| menu.item(Self::files_item(true, &panel)).separator().item(menu::hide_panel()))
     }
 
     fn render_commit_files(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -701,7 +700,11 @@ impl Render for ChangesPanel {
             ),
             View::History => (self.render_history(cx), self.commits.is_empty().then_some("No commits")),
         };
-        let files = self.has_commit_files(cx).then(|| (self.render_files_bar(cx).into_any_element(), self.render_commit_files(cx)));
+        let has_files = self.has_commit_files(cx);
+        let files_open = has_files && self.files_open(cx);
+        let files = files_open.then(|| (self.render_files_bar(cx).into_any_element(), self.render_commit_files(cx)));
+        // Right-click on the commits' empty space: show or hide the files.
+        let list_menu = has_files.then(|| cx.entity().downgrade());
         let theme = cx.theme();
         let list = v_flex()
             .id("changes-list")
@@ -711,25 +714,18 @@ impl Render for ChangesPanel {
             .when_some(empty.filter(|_| !self.loading && self.error.is_none()), |el, empty| {
                 el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
             });
-        let body = match files {
+        let list = match list_menu {
+            Some(panel) => list
+                .context_menu(move |menu, _, _| menu.item(Self::files_item(files_open, &panel)).separator().item(menu::hide_panel()))
+                .into_any_element(),
             None => list.into_any_element(),
-            Some((bar, files)) => {
-                // Hidden, the files keep their place in the split, for its size; their bar goes below.
-                let (inside, below) = if self.files_open { (Some(bar), None) } else { (None, Some(bar)) };
-                v_flex()
-                    .size_full()
-                    .child(
-                        div().flex_1().min_h_0().child(
-                            v_resizable("history-split").child(resizable_panel().child(list)).child(
-                                resizable_panel()
-                                    .visible(self.files_open)
-                                    .child(v_flex().size_full().children(inside).child(div().flex_1().min_h_0().child(files))),
-                            ),
-                        ),
-                    )
-                    .children(below)
-                    .into_any_element()
-            }
+        };
+        let body = match files {
+            None => list,
+            Some((bar, files)) => v_resizable("history-split")
+                .child(resizable_panel().child(list))
+                .child(resizable_panel().child(v_flex().size_full().child(bar).child(div().flex_1().min_h_0().child(files))))
+                .into_any_element(),
         };
         v_flex()
             .size_full()

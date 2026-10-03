@@ -182,7 +182,7 @@ struct OldSide {
 }
 
 /// Narrower than this, a diff shows in one column.
-const SIDE_BY_SIDE_WIDTH: f32 = 1200.;
+pub(crate) const SIDE_BY_SIDE_WIDTH: f32 = 1200.;
 
 /// `git blame` of a file: `lines[i]` indexes `commits`, `None` if uncommitted.
 struct Blame {
@@ -3819,7 +3819,7 @@ fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut 
 
 /// Keeps in `width` how wide the diff is, and redraws when that changes
 /// whether its sides fit.
-fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
+pub(crate) fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
     let width = width.clone();
     canvas(
         move |bounds, window, _| {
