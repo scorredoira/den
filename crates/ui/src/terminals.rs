@@ -34,6 +34,7 @@ use crate::{
 };
 
 pub enum TerminalAreaEvent {
+    Hide,
     OpenPath {
         path: PathBuf,
         line: Option<u32>,
@@ -507,6 +508,8 @@ impl TerminalArea {
             menu::item("Close Terminal", &area, move |this, window, cx| this.close_term(term, window, cx))
                 .action(Box::new(CloseTab)),
         )
+        .separator()
+        .item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide)))
     }
 
     fn select(&mut self, term: TermId, cx: &mut Context<Self>) {
@@ -669,7 +672,7 @@ impl TerminalArea {
                                     this.close_tab(ix, window, cx)
                                 }))
                                 .separator()
-                                .item(menu::reset_layout())
+                                .item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide)))
                         }
                     })
             }))
@@ -693,7 +696,12 @@ impl TerminalArea {
                     .min_w(px(24.))
                     .when(cfg!(test), |el| el.debug_selector(|| "terminal-tab-end".into()))
                     .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
-                    .context_menu(|menu, _, _| menu.item(menu::reset_layout())),
+                    .context_menu({
+                        let area = self.weak.clone();
+                        move |menu, _, _| {
+                            menu.item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide)))
+                        }
+                    }),
             )
     }
 

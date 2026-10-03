@@ -358,6 +358,7 @@ impl Workspace {
                 &terminals,
                 window,
                 |this, _, event: &TerminalAreaEvent, window, cx| match event {
+                    TerminalAreaEvent::Hide => this.set_terminals_visible(false, window, cx),
                     TerminalAreaEvent::OpenPath { path, line, column } => {
                         let goto = Position::new(
                             line.unwrap_or(1).saturating_sub(1),

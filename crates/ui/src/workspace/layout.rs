@@ -461,8 +461,7 @@ impl Workspace {
                     // As the workspaces column's.
                     .child(title(active).to_uppercase())
                     .context_menu(move |menu, _, _| {
-                        menu.item(menu::item("Hide", &workspace, move |this, _, cx| this.hide_panel(active, cx)))
-                            .item(menu::reset_layout())
+                        menu.item(menu::item("Hide Panel", &workspace, move |this, _, cx| this.hide_panel(active, cx)))
                     }),
             )
             .into_any_element()
@@ -475,4 +474,3 @@ impl Workspace {
         self.debugger.update(cx, |debugger, _| debugger.tall = tall);
     }
 }
-

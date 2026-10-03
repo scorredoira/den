@@ -230,7 +230,12 @@ impl Debugger {
                     .text_ui_small(cx)
                     .text_color(if stopped { theme.warning } else { theme.muted_foreground })
                     .child(status)
-                    .context_menu(|menu, _, _| menu.item(menu::reset_layout())),
+                    .context_menu({
+                        let debugger = cx.entity().downgrade();
+                        move |menu, _, _| {
+                            menu.item(menu::item("Hide Panel", &debugger, |_, _, cx| cx.emit(DebugEvent::Hide)))
+                        }
+                    }),
             )
             .child(
                 div()

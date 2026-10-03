@@ -2538,8 +2538,7 @@ fn add_menu_items(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
 fn column_menu(menu: PopupMenu, sik: &WeakEntity<Sik>) -> PopupMenu {
     add_menu_items(menu, sik)
         .separator()
-        .item(menu::item("Hide Workspaces Column", sik, |this, _, cx| this.show_tasks_column(false, cx)))
-        .item(menu::reset_layout())
+        .item(menu::item("Hide Panel", sik, |this, _, cx| this.show_tasks_column(false, cx)))
 }
 
 /// Right-click on a server's name in the tasks column.
