@@ -41,7 +41,9 @@ Den says so instead of waiting. A command is never typed into a terminal that
 still runs something: it gets a new one. A program held before running
 (`waiting` in `hello`) is released with `entry`, so it stops at its entry, as
 Visual Studio's debugger does: where the program says (sim: the first line of
-`main`, or of the function `-de` names). Stop (Shift-F5) interrupts a program it
+`main`, or of the function `-de` names). A launch with `open` is a server:
+it is released without `entry`, so it runs and its page opens as soon as it
+listens. Stop (Shift-F5) interrupts a program it
 started and leaves one it attached to running.
 
 A file from when there were several `configurations` starts the first one.
