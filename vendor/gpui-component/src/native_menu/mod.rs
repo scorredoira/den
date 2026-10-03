@@ -30,7 +30,7 @@ use crate::icon::IconSource;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gpui::AssetSource;
-use gpui::{Action, App, Pixels, Point, SharedString, Window};
+use gpui::{Action, App, AsKeystroke as _, FocusHandle, Keystroke, Pixels, Point, SharedString, Window};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gpui::{Image, ImageFormat};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -56,6 +56,8 @@ enum NativeMenuItem {
         icon: Option<Box<Icon>>,
         /// Action dispatched when the item is selected.
         action: Option<Box<dyn Action>>,
+        /// The action's shortcut, shown beside the label; filled in by [`NativeMenu::show`].
+        key: Option<Keystroke>,
     },
     Submenu {
         label: SharedString,
@@ -168,6 +170,7 @@ impl NativeMenu {
             checked,
             icon: icon.map(Box::new),
             action,
+            key: None,
         });
         self
     }
@@ -202,15 +205,18 @@ impl NativeMenu {
         if self.items.is_empty() {
             return;
         }
+        let mut items = self.items;
+        let focused = window.focused(cx);
+        resolve_keys(&mut items, focused.as_ref(), window);
 
         #[cfg(target_os = "macos")]
         {
-            macos::show(self.items, cx.asset_source().clone(), position, window, cx);
+            macos::show(items, cx.asset_source().clone(), position, window, cx);
         }
         #[cfg(target_os = "windows")]
         {
             windows::show(
-                self.items,
+                items,
                 cx.asset_source().clone(),
                 position,
                 cx.theme().is_dark(),
@@ -219,7 +225,39 @@ impl NativeMenu {
             );
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        fallback::show(self.items, position, window, cx);
+        fallback::show(items, position, window, cx);
+    }
+}
+
+/// Fills in each item's shortcut: the binding its action has where the focus
+/// is (the menu dispatches there), else one registered without a key context.
+/// Only single keystrokes: a native menu can't show a sequence.
+fn resolve_keys(items: &mut [NativeMenuItem], focused: Option<&FocusHandle>, window: &Window) {
+    for item in items {
+        match item {
+            NativeMenuItem::Item {
+                action: Some(action),
+                key,
+                ..
+            } => {
+                let binding = focused
+                    .and_then(|handle| {
+                        window.highest_precedence_binding_for_action_in(action.as_ref(), handle)
+                    })
+                    .or_else(|| {
+                        window.highest_precedence_binding_for_action_in_context(
+                            action.as_ref(),
+                            Default::default(),
+                        )
+                    });
+                *key = binding.and_then(|binding| match binding.keystrokes() {
+                    [keystroke] => Some(keystroke.as_keystroke().clone()),
+                    _ => None,
+                });
+            }
+            NativeMenuItem::Submenu { items, .. } => resolve_keys(items, focused, window),
+            _ => {}
+        }
     }
 }
 
@@ -341,6 +379,7 @@ impl From<gpui::Menu> for NativeMenu {
                     checked,
                     icon: None,
                     action: Some(action),
+                    key: None,
                 }),
                 gpui::MenuItem::Submenu(submenu) => native.items.push(NativeMenuItem::Submenu {
                     label: submenu.name.clone(),
@@ -376,6 +415,7 @@ mod tests {
             checked,
             icon: Some(icon),
             action: Some(_),
+            ..
         } = &menu.items[0]
         else {
             panic!("expected an actionable item with an icon");
@@ -403,6 +443,7 @@ mod tests {
             checked,
             icon: Some(icon),
             action: Some(_),
+            ..
         } = &menu.items[0]
         else {
             panic!("expected a disabled actionable item with an icon");

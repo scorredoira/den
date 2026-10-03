@@ -2,11 +2,11 @@
 
 use std::{cell::Cell, sync::Arc};
 
-use gpui::{Action, App, AssetSource, Pixels, Point, Window};
+use gpui::{Action, App, AssetSource, Keystroke, Pixels, Point, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send, sel};
-use objc2_app_kit::{NSImage, NSMenu, NSMenuItem, NSView};
+use objc2_app_kit::{NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSView};
 use objc2_foundation::{NSData, NSPoint, NSSize, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -139,10 +139,14 @@ fn build_menu<'a>(
                 checked,
                 icon,
                 action,
+                key,
             } => {
                 let ns_item = NSMenuItem::new(mtm);
                 unsafe {
                     ns_item.setTitle(&NSString::from_str(label));
+                    if let Some(key) = key {
+                        set_key_equivalent(&ns_item, key);
+                    }
                     ns_item.setEnabled(!*disabled);
                     if let Some(icon) = icon {
                         if let Some(ns_image) = ns_image_for_icon(icon, asset_source) {
@@ -183,6 +187,51 @@ fn build_menu<'a>(
     }
 
     menu
+}
+
+/// Shows `key` at the right of the item, as the menu bar does.
+fn set_key_equivalent(item: &NSMenuItem, key: &Keystroke) {
+    let modifiers = key.modifiers;
+    let mut mask = NSEventModifierFlags::empty();
+    for (on, flag) in [
+        (modifiers.platform, NSEventModifierFlags::Command),
+        (modifiers.control, NSEventModifierFlags::Control),
+        (modifiers.alt, NSEventModifierFlags::Option),
+        (modifiers.shift, NSEventModifierFlags::Shift),
+    ] {
+        if on {
+            mask |= flag;
+        }
+    }
+    item.setKeyEquivalent(&NSString::from_str(&key_to_native(&key.key)));
+    item.setKeyEquivalentModifierMask(mask);
+}
+
+/// The character AppKit uses for `key` (the function keys have their own).
+fn key_to_native(key: &str) -> String {
+    let code: u16 = match key {
+        "space" => return " ".into(),
+        "tab" => 0x09,
+        "enter" => 0x0d,
+        "backspace" => 0x08,
+        "escape" => 0x1b,
+        "up" => 0xf700,
+        "down" => 0xf701,
+        "left" => 0xf702,
+        "right" => 0xf703,
+        "insert" => 0xf727,
+        "delete" => 0xf728,
+        "home" => 0xf729,
+        "end" => 0xf72b,
+        "pageup" => 0xf72c,
+        "pagedown" => 0xf72d,
+        _ => match key.strip_prefix('f').and_then(|n| n.parse::<u16>().ok()) {
+            // NSF1FunctionKey is 0xF704, and the rest follow it.
+            Some(n @ 1..=35) => 0xf703 + n,
+            _ => return key.into(),
+        },
+    };
+    String::from_utf16_lossy(&[code])
 }
 
 fn ns_image_for_icon(
