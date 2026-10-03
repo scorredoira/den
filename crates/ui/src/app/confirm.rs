@@ -1,5 +1,5 @@
-//! Confirming in a dialog what can't be undone: deleting a worktree,
-//! restarting a server's agent and restarting into an update. Enter confirms, Esc or a click outside cancels.
+//! Confirming in a dialog what can't be undone: deleting a worktree (and
+//! forcing it if git refuses), restarting a server's agent and restarting into an update. Enter confirms, Esc or a click outside cancels.
 
 use super::*;
 
@@ -66,7 +66,7 @@ impl Den {
 
     /// The dialog's focus, given once whatever opened it is done: a menu
     /// gives the focus back to where it was when it closes.
-    fn confirm_focus(&self, window: &mut Window, cx: &mut Context<Self>) -> FocusHandle {
+    pub(super) fn confirm_focus(&self, window: &mut Window, cx: &mut Context<Self>) -> FocusHandle {
         let focus = cx.focus_handle();
         cx.defer_in(window, {
             let focus = focus.clone();
@@ -77,6 +77,7 @@ impl Den {
 
     pub(super) fn cancel_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm_remove = None;
+        self.confirm_force_remove = None;
         self.confirm_restart = None;
         self.confirm_update = None;
         self.focus_active(window, cx);
@@ -107,10 +108,25 @@ impl Den {
         // Not before git has said what it would lose.
         let confirm = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
             if this.confirm_remove.as_ref().is_some_and(|(_, _, at_risk)| at_risk.is_some()) {
-                this.remove_task(key.clone(), window, cx)
+                this.remove_task(key.clone(), false, window, cx)
             }
         };
         self.render_confirm(focus, title, warning, detail, action, true, confirm, cx)
+    }
+
+    /// Git refused to delete it (`reason`, its words): with --force?
+    pub(super) fn render_confirm_force_remove(
+        &self,
+        key: &TaskKey,
+        focus: &FocusHandle,
+        reason: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let key = key.clone();
+        let title = format!("Force delete {}?", self.label(&key));
+        let detail = "git worktree remove --force deletes it along with its uncommitted changes and untracked files, without the repo's .den/remove.";
+        let confirm = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| this.remove_task(key.clone(), true, window, cx);
+        self.render_confirm(focus, title, Some((true, reason.to_string())), detail, "Force Delete", true, confirm, cx)
     }
 
     pub(super) fn render_confirm_restart(&self, name: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {

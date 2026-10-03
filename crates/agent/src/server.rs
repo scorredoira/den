@@ -4,7 +4,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io::Read as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc, atomic::{AtomicBool, AtomicUsize, Ordering}},
     time::{Duration, Instant},
 };
@@ -646,6 +646,7 @@ fn own_separators(request: &mut Request) {
         | Request::RepoRemove { path }
         | Request::TaskCreate { repo: path, .. }
         | Request::TaskRemove { path }
+        | Request::TaskForceRemove { path }
         | Request::GitChanges { path, .. }
         | Request::GitDiff { path, .. }
         | Request::FindFiles { path }
@@ -715,6 +716,7 @@ fn is_slow(request: &Request) -> bool {
         Request::TaskCreate { .. }
             | Request::TaskList
             | Request::TaskRemove { .. }
+            | Request::TaskForceRemove { .. }
             | Request::GitChanges { .. }
             | Request::GitDiff { .. }
             | Request::FindFiles { .. }
@@ -764,24 +766,8 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
             }
             Ok(Response::Task(task))
         }
-        Request::TaskRemove { path } => {
-            tasks::remove(&path)?;
-            // Its terminals close with it.
-            let group = path.to_string_lossy().into_owned();
-            let mut state = state.lock().unwrap();
-            let terms: Vec<TermId> = state
-                .terms
-                .iter()
-                .filter(|(_, entry)| entry.group == group)
-                .map(|(term, _)| *term)
-                .collect();
-            for term in terms {
-                state.broadcast(term, || Event::TermExit { term });
-                state.terms.remove(&term);
-            }
-            state.update_idle();
-            Ok(Response::Ok)
-        }
+        Request::TaskRemove { path } => remove_task(state, &path, false),
+        Request::TaskForceRemove { path } => remove_task(state, &path, true),
         Request::GitChanges { path, uncommitted } => {
             let (base, files) = git::changes(&path, uncommitted)?;
             Ok(Response::Changes { base, files })
@@ -830,6 +816,26 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
         }
         _ => unreachable!("not a slow request"),
     }
+}
+
+/// Removes the task at `path` (with `force`, along with its uncommitted
+/// changes); its terminals close with it.
+fn remove_task(state: &Shared, path: &Path, force: bool) -> Result<Response> {
+    tasks::remove(path, force)?;
+    let group = path.to_string_lossy().into_owned();
+    let mut state = state.lock().unwrap();
+    let terms: Vec<TermId> = state
+        .terms
+        .iter()
+        .filter(|(_, entry)| entry.group == group)
+        .map(|(term, _)| *term)
+        .collect();
+    for term in terms {
+        state.broadcast(term, || Event::TermExit { term });
+        state.terms.remove(&term);
+    }
+    state.update_idle();
+    Ok(Response::Ok)
 }
 
 fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
@@ -932,6 +938,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         Request::TaskCreate { .. }
         | Request::TaskList
         | Request::TaskRemove { .. }
+        | Request::TaskForceRemove { .. }
         | Request::GitChanges { .. }
         | Request::GitDiff { .. }
         | Request::FindFiles { .. }
