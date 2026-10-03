@@ -112,9 +112,10 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{CollapseFileTree}} | Collapse all the folders |
 | {{ShowChanges}} | Changes: what isn't committed |
 | {{ShowHistory}} | History: the commits, searchable by hash, message or author |
+| {{ToggleCommitFiles}} | The selected commit's files, under the commits or in their own panel |
 | {{ShowReferences}} | References |
 
-Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there. Right-click the bar, or go to View > Activity Bar, to take an icon off it; View > Reset Layout puts every panel back where it starts.
+Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there. Right-click anywhere in a panel to hide it. Right-click the bar, or go to View > Activity Bar, to take an icon off it; View > Reset Layout puts every panel back where it starts.
 
 ## Terminals
 

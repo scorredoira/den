@@ -22,7 +22,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory,
+    CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
@@ -3391,6 +3391,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.toggle_panel(Panel::Files, cx)))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.toggle_panel(Panel::Changes, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.toggle_panel(Panel::History, cx)))
+            .on_action(cx.listener(Self::toggle_commit_files))
             .on_action(cx.listener(Self::show_search))
             .on_action(cx.listener(Self::open_file_finder))
             // F4 steps through the visible panel's results: References or Search.

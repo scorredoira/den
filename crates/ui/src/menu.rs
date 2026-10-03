@@ -1,8 +1,10 @@
 //! Helper for right-click menus: an item that acts on an entity (if it is
 //! still alive).
 
-use gpui_kit::component::menu::PopupMenuItem;
-use gpui_kit::{App, Context, WeakEntity, Window};
+use std::rc::Rc;
+
+pub use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::{App, Context, Global, WeakEntity, Window};
 
 use crate::config::{Config, Layout};
 
@@ -14,6 +16,25 @@ pub fn item<T: 'static>(
     let target = target.clone();
     PopupMenuItem::new(label).on_click(move |_, window, cx| {
         target.update(cx, |this, cx| action(this, window, cx)).ok();
+    })
+}
+
+/// How to hide the panel the last right-click landed in, set by its place
+/// before any menu in it opens; none in the code's, which is never hidden.
+struct PanelUnder(Option<Rc<dyn Fn(&mut App)>>);
+
+impl Global for PanelUnder {}
+
+pub fn set_panel_under(hide: Option<Rc<dyn Fn(&mut App)>>, cx: &mut App) {
+    cx.set_global(PanelUnder(hide));
+}
+
+/// The panel right-clicked: every menu in a panel ends with this item.
+pub fn hide_panel() -> PopupMenuItem {
+    PopupMenuItem::new("Hide Panel").on_click(|_, _, cx| {
+        if let Some(hide) = cx.try_global::<PanelUnder>().and_then(|under| under.0.clone()) {
+            hide(cx);
+        }
     })
 }
 

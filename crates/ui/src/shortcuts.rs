@@ -46,6 +46,7 @@ shortcuts![
     (CollapseFileTree, "Collapse All Folders", "secondary-alt-c"),
     (ShowChanges, "Panel: Changes", "secondary-shift-g"),
     (ShowHistory, "Panel: History", "secondary-shift-h"),
+    (ToggleCommitFiles, "Panel: Commit Files", "secondary-alt-shift-h"),
     (ShowSearch, "Panel: Search", "secondary-shift-f"),
     (ShowReferences, "Panel: References", "secondary-shift-r"),
     (NextResult, "Next Result", "f4"),

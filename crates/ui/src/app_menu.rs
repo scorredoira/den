@@ -93,6 +93,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Files", ShowFiles),
             MenuItem::action("Changes", ShowChanges),
             MenuItem::action("History", ShowHistory),
+            MenuItem::action("Commit Files", ToggleCommitFiles),
             MenuItem::action("Search", ShowSearch),
             MenuItem::action("References", ShowReferences),
             MenuItem::action("Toggle Side Panel", ToggleSidePanel),

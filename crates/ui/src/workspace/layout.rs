@@ -2,6 +2,7 @@
 //! (see `config::Layout`), changed by dragging a panel's icon in the activity
 //! bar, and which panel each stack shows.
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use super::*;
 use crate::config::{Layout, Panel, Side, Stack};
@@ -301,6 +302,20 @@ impl Workspace {
         }
     }
 
+    /// The selected commit's files: under the commits while they share the
+    /// history's place, else their own panel. With the history hidden, it
+    /// shows with them.
+    pub(super) fn toggle_commit_files(&mut self, _: &ToggleCommitFiles, _: &mut Window, cx: &mut Context<Self>) {
+        if !Config::get(cx).layout.commit_in_history() {
+            self.toggle_panel(Panel::Commit, cx);
+        } else if !self.is_shown(Panel::History, cx) {
+            self.history.update(cx, |history, cx| history.show_files(true, cx));
+            self.show_panel(Panel::History, cx);
+        } else {
+            self.history.update(cx, |history, cx| history.show_files(!history.files_open(), cx));
+        }
+    }
+
     /// Cmd-B: the stack with the files, whichever panel it shows.
     pub(super) fn toggle_side_panel(&mut self, _: &ToggleSidePanel, _: &mut Window, cx: &mut Context<Self>) {
         let layout = &Config::get(cx).layout;
@@ -476,6 +491,14 @@ impl Workspace {
         };
         let drop = self.panel_drop.filter(|(target, _)| *target == active && cx.has_active_drag());
         let header = has_header(active).then(|| self.render_stack_header(active, cx));
+        let content = div().id("panel-stack-content").flex_1().min_h_0().child(content);
+        // Its own menus end with Hide Panel; elsewhere in it, that alone.
+        let content = if has_header(active) {
+            content.context_menu(|menu, _, _| menu.item(menu::hide_panel())).into_any_element()
+        } else {
+            content.into_any_element()
+        };
+        let workspace = cx.entity().downgrade();
         let sidebar = cx.theme().sidebar;
         v_flex()
             .id(("panel-stack", active as usize))
@@ -483,7 +506,18 @@ impl Workspace {
             .relative()
             .size_full()
             .when_some(header, |el, header| el.bg(sidebar).child(header))
-            .child(div().flex_1().min_h_0().child(content))
+            .child(content)
+            .capture_any_mouse_down(move |event: &MouseDownEvent, _, cx| {
+                if event.button == MouseButton::Right {
+                    let workspace = workspace.clone();
+                    let hide = (active != Panel::Code).then(|| -> Rc<dyn Fn(&mut App)> {
+                        Rc::new(move |cx| {
+                            workspace.update(cx, |this, cx| this.hide_panel(active, cx)).ok();
+                        })
+                    });
+                    menu::set_panel_under(hide, cx);
+                }
+            })
             .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<PanelDrag>, _, cx| {
                 this.track_panel_drop(active, event, cx);
             }))
