@@ -49,6 +49,7 @@ shortcuts![
     (ToggleCommitFiles, "Panel: Commit Files", "secondary-alt-shift-h"),
     (ShowSearch, "Panel: Search", "secondary-shift-f"),
     (ShowReferences, "Panel: References", "secondary-shift-r"),
+    (ShowOutline, "Panel: Outline", "secondary-shift-l"),
     (NextResult, "Next Result", "f4"),
     (PrevResult, "Previous Result", "shift-f4"),
     (GoToDefinition, "Go to Definition", "f12"),

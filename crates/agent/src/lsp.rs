@@ -871,18 +871,27 @@ impl Server {
     /// `DocumentSymbol` or a list of `SymbolInformation`, flattened in the
     /// order of the file.
     fn symbols(&self, result: &Value, path: &Path, text: &str) -> Vec<LspSymbol> {
-        fn walk(server: &Server, items: &[Value], container: Option<&str>, path: &Path, text: &str, out: &mut Vec<LspSymbol>) {
+        fn walk(server: &Server, items: &[Value], container: Option<&str>, depth: u32, local: bool, path: &Path, text: &str, out: &mut Vec<LspSymbol>) {
             for item in items {
                 // `DocumentSymbol` has where the name is; `SymbolInformation`, the whole thing.
                 let range = item.get("selectionRange").or_else(|| item.get("range")).unwrap_or(&item["location"]["range"]);
-                out.extend(server.symbol(item, path, range, container, Some(text)));
+                out.extend(server.symbol(item, path, range, container, Some(text)).map(|symbol| LspSymbol { depth, local, ..symbol }));
                 if let (Some(name), Some(children)) = (item["name"].as_str(), item["children"].as_array()) {
-                    walk(server, children, Some(name), path, text, out);
+                    let local = local || !holds_members(item["kind"].as_u64().unwrap_or(0));
+                    walk(server, children, Some(name), depth + 1, local, path, text, out);
                 }
             }
         }
+        let items = result.as_array().map(Vec::as_slice).unwrap_or_default();
+        let nested;
+        let items = if items.iter().any(|item| item.get("location").is_some()) {
+            nested = nest(items);
+            &nested
+        } else {
+            items
+        };
         let mut symbols = Vec::new();
-        walk(self, result.as_array().map(Vec::as_slice).unwrap_or_default(), None, path, text, &mut symbols);
+        walk(self, items, None, 0, false, path, text, &mut symbols);
         // Stable: a parent stays before the children that start on its line.
         symbols.sort_by_key(|symbol| (symbol.line, symbol.column));
         symbols
@@ -924,6 +933,8 @@ impl Server {
             container: container.map(str::to_string),
             line,
             column,
+            depth: 0,
+            local: false,
         })
     }
 
@@ -1122,6 +1133,49 @@ fn uri(path: &Path) -> String {
     url::Url::from_file_path(path).map_or_else(|()| format!("file://{}", path.display()), Into::into)
 }
 
+/// Whether what's inside a symbol of LSP `SymbolKind` `kind` are its
+/// members (a class's methods, a module's functions…) rather than the locals
+/// of its body or value: a file, module, namespace, package, class, enum,
+/// interface, object (Rust's `impl`) or struct.
+fn holds_members(kind: u64) -> bool {
+    matches!(kind, 1..=5 | 10 | 11 | 19 | 23)
+}
+
+/// A list of `SymbolInformation`, which only say what they're in by name,
+/// as a tree like that of `DocumentSymbol`: each among the `children` of the
+/// smallest symbol whose range holds its own.
+fn nest(items: &[Value]) -> Vec<Value> {
+    let at = |item: &Value, end: &str| {
+        let position = &item["location"]["range"][end];
+        (position["line"].as_u64().unwrap_or(0), position["character"].as_u64().unwrap_or(0))
+    };
+    let mut items: Vec<&Value> = items.iter().collect();
+    // Of two that start together, the longer holds the other.
+    items.sort_by_key(|item| (at(item, "start"), std::cmp::Reverse(at(item, "end"))));
+    // The symbols that may hold the next one, outermost first, with their
+    // children so far.
+    let mut open: Vec<(Value, Vec<Value>)> = Vec::new();
+    let mut roots = Vec::new();
+    let close = |open: &mut Vec<(Value, Vec<Value>)>, roots: &mut Vec<Value>| {
+        let (mut item, children) = open.pop().expect("one is open");
+        item["children"] = Value::Array(children);
+        match open.last_mut() {
+            Some((_, siblings)) => siblings.push(item),
+            None => roots.push(item),
+        }
+    };
+    for item in items {
+        while open.last().is_some_and(|(parent, _)| at(parent, "end") < at(item, "end")) {
+            close(&mut open, &mut roots);
+        }
+        open.push((item.clone(), Vec::new()));
+    }
+    while !open.is_empty() {
+        close(&mut open, &mut roots);
+    }
+    roots
+}
+
 fn path_from_uri(uri: &str) -> Option<PathBuf> {
     url::Url::parse(uri).ok()?.to_file_path().ok()
 }
@@ -1154,6 +1208,33 @@ mod tests {
         let expected = if cfg!(windows) { "file:///C:/tmp/with%20space/%C3%B1%25.rs" } else { "file:///tmp/with%20space/%C3%B1%25.rs" };
         assert_eq!(uri(path), expected);
         assert_eq!(path_from_uri(&uri(path)).as_deref(), Some(path));
+    }
+
+    #[test]
+    fn symbol_information_nests_by_range() {
+        let symbol = |name: &str, start: (u32, u32), end: (u32, u32)| {
+            json!({ "name": name, "location": { "range": {
+                "start": { "line": start.0, "character": start.1 },
+                "end": { "line": end.0, "character": end.1 },
+            } } })
+        };
+        let tree = nest(&[
+            symbol("helper", (8, 0), (9, 1)),
+            symbol("cancel", (1, 2), (4, 3)),
+            symbol("Sale", (0, 0), (5, 1)),
+            symbol("total", (2, 4), (2, 20)),
+        ]);
+        fn names(items: &[Value]) -> Vec<String> {
+            items
+                .iter()
+                .map(|item| {
+                    let children = names(item["children"].as_array().unwrap());
+                    let name = item["name"].as_str().unwrap();
+                    if children.is_empty() { name.to_string() } else { format!("{name}({})", children.join(", ")) }
+                })
+                .collect()
+        }
+        assert_eq!(names(&tree), ["Sale(cancel(total))", "helper"]);
     }
 
     /// With real servers: `cargo test -p agent lsp -- --ignored`.
@@ -1245,15 +1326,23 @@ mod tests {
         let (start, end) = signature.active.expect("active parameter");
         let active: String = signature.label.chars().skip(start as usize).take((end - start) as usize).collect();
         assert_eq!(active, "x: number", "{signature:?}");
-        let text = "export class Sale {\n  cancel() {}\n}\nexport function onCronTick() {}\n";
+        let text = "export class Sale {\n  cancel() {\n    const total = 1;\n  }\n}\nexport function onCronTick() {}\n";
         let Response::Symbols { symbols, .. } = request(&ts, &ts.join("main.ts"), text, 0, 0, LspOp::Symbols).unwrap() else {
             panic!()
         };
-        let found: Vec<_> =
-            symbols.iter().map(|s| (s.name.as_str(), s.kind, s.container.as_deref(), s.line, s.column)).collect();
+        let found: Vec<_> = symbols
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind, s.container.as_deref(), s.line, s.column, s.depth, s.local))
+            .collect();
         assert_eq!(
             found,
-            [("Sale", 5, None, 0, 13), ("cancel", 6, Some("Sale"), 1, 2), ("onCronTick", 12, None, 3, 16)],
+            [
+                ("Sale", 5, None, 0, 13, 0, false),
+                ("cancel", 6, Some("Sale"), 1, 2, 1, false),
+                // Inside the method: not in the outline.
+                ("total", 13, Some("cancel"), 2, 10, 2, true),
+                ("onCronTick", 12, None, 5, 16, 0, false),
+            ],
         );
         // Of the whole project: util.ts from disk, main.ts as the editor has it.
         let Response::Symbols { symbols, server } = workspace_symbols(&ts, Some(&ts.join("main.ts")), text, "o").unwrap() else {
@@ -1261,7 +1350,7 @@ mod tests {
         };
         assert_eq!(server.as_deref(), Some("typescript"));
         let found = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| (s.path.file_name().unwrap().to_owned(), s.line, s.column));
-        assert_eq!(found("onCronTick"), Some(("main.ts".into(), 3, 16)), "{symbols:?}");
+        assert_eq!(found("onCronTick"), Some(("main.ts".into(), 5, 16)), "{symbols:?}");
         let Response::Symbols { symbols, .. } = workspace_symbols(&ts, None, "", "twice").unwrap() else { panic!() };
         assert!(symbols.iter().any(|s| s.name == "twice" && s.path.ends_with("util.ts") && s.column == 16), "{symbols:?}");
         let _ = std::fs::remove_dir_all(&dir);

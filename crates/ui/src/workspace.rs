@@ -23,7 +23,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
     CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
-    FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowReferences, ShowSearch,
+    FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
@@ -39,6 +39,7 @@ use crate::{
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
     signature::{self, SignatureHint},
+    outline::{OutlineEvent, OutlinePanel},
     symbol_picker::{self, SymbolPicker, SymbolPickerEvent},
     file_tree::{FileTree, FileTreeEvent},
     language, menu,
@@ -259,6 +260,13 @@ pub struct Workspace {
     search: Entity<SearchPanel>,
     /// References panel: the latest F12 (with several targets) or Shift-F12.
     references: Entity<SearchPanel>,
+    outline: Entity<OutlinePanel>,
+    /// What the outline's symbols were last asked for: the editor, its
+    /// `revision` and length (which a load changes).
+    outline_of: Option<(EntityId, u64, usize)>,
+    outline_task: Task<()>,
+    /// Counts the edits of every tab, for the outline to know it's out of date.
+    revision: u64,
     finder: Option<(Entity<Picker>, Subscription)>,
     /// Cmd-Shift-O or Cmd-Shift-T, while open.
     symbols: Option<SymbolSearch>,
@@ -318,6 +326,7 @@ impl Workspace {
         let commit = cx.new(|cx| changes::CommitFilesPanel::new(history.clone(), cx));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
+        let outline = cx.new(|_| OutlinePanel::new());
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
         // The tests' Run and Debug come from the launch file.
@@ -330,6 +339,7 @@ impl Workspace {
         }
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
+            cx.subscribe_in(&outline, window, Self::on_outline),
             cx.observe(&debugger, |_, _, cx| cx.notify()),
             // The count on the changes' icon.
             cx.observe(&changes, {
@@ -437,6 +447,10 @@ impl Workspace {
             commit,
             search,
             references,
+            outline,
+            outline_of: None,
+            outline_task: Task::ready(()),
+            revision: 0,
             finder: None,
             symbols: None,
             back: Vec::new(),
@@ -1352,6 +1366,60 @@ impl Workspace {
         }
     }
 
+    /// Keeps the outline on the file in front and its cursor: its symbols are
+    /// asked again a moment after it's edited, at once for another file.
+    fn sync_outline(&mut self, cx: &mut Context<Self>) {
+        let tab = self
+            .active
+            .map(|ix| &self.tabs[ix])
+            .filter(|tab| tab.diff.is_none() && tab.image.is_none() && matches!(tab.content, Content::Ready));
+        let Some(tab) = tab else {
+            self.outline_of = None;
+            self.outline_task = Task::ready(());
+            self.outline.update(cx, |outline, cx| outline.clear(cx));
+            return;
+        };
+        let (path, editor, markdown, doc) = (tab.path.clone(), tab.editor.clone(), tab.markdown.is_some(), tab.doc);
+        let state = editor.read(cx);
+        let (cursor, length) = (state.cursor_position().line, state.text().len());
+        let key = (editor.entity_id(), self.revision, length);
+        self.outline.update(cx, |outline, cx| outline.set_cursor(Some(cursor), cx));
+        if self.outline_of == Some(key) {
+            return;
+        }
+        let edited = self.outline_of.is_some_and(|(id, ..)| id == key.0);
+        self.outline_of = Some(key);
+        self.outline.update(cx, |outline, cx| outline.loading(&path, cx));
+        let client = self.client.clone();
+        if markdown || doc || client.is_none() {
+            let symbols = match client {
+                _ if markdown => Ok(symbol_picker::markdown_symbols(&path, &editor.read(cx).text().to_string())),
+                // Shown with `den doc`: no file for a server to read.
+                _ if doc => Ok(Vec::new()),
+                _ => Err("Not connected to the agent".into()),
+            };
+            self.outline_task = Task::ready(());
+            self.outline.update(cx, |outline, cx| outline.set_symbols(&path, symbols, cx));
+            return;
+        }
+        let (client, root, outline) = (client.expect("checked"), self.root.clone(), self.outline.downgrade());
+        self.outline_task = cx.spawn(async move |_, cx| {
+            if edited {
+                cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
+            }
+            let text = editor.read_with(cx, |state, _| state.text().to_string());
+            let request = Request::Lsp { root, path: path.clone(), text, line: 0, column: 0, op: LspOp::Symbols };
+            let symbols = symbols_of(client.request(request).await, "No language server for this file");
+            outline.update(cx, |outline, cx| outline.set_symbols(&path, symbols, cx)).ok();
+        });
+    }
+
+    fn on_outline(&mut self, _: &Entity<OutlinePanel>, event: &OutlineEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            OutlineEvent::Pick(symbol) => self.open_at(symbol.path.clone(), Position::new(symbol.line, symbol.column), window, cx),
+        }
+    }
+
     /// Opens the symbol picker: of the workspace at `workspace`, or of the
     /// file in front, which shows each one as it's selected.
     fn open_symbols(&mut self, workspace: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Entity<SymbolPicker> {
@@ -2202,6 +2270,7 @@ impl Workspace {
         if !matches!(self.tabs[ix].content, Content::Ready) || self.tabs[ix].diff.is_some() {
             return;
         }
+        self.revision += 1;
         let path = self.tabs[ix].path.clone();
         let text = editor.read(cx).value();
         if editor.read(cx).focus_handle(cx).is_focused(window) {
@@ -3362,6 +3431,9 @@ fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_word_wrap(window, cx);
+        if self.is_shown(Panel::Outline, cx) {
+            self.sync_outline(cx);
+        }
         if !cx.has_active_drag() {
             self.editor_drop = None;
             self.panel_drop = None;
@@ -3407,6 +3479,7 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &ShowReferences, _, cx| this.toggle_panel(Panel::References, cx)),
             )
+            .on_action(cx.listener(|this, _: &ShowOutline, _, cx| this.toggle_panel(Panel::Outline, cx)))
             .on_action(cx.listener(Self::toggle_markdown_source))
             .on_action(cx.listener(Self::open_preview_to_side))
             .on_action(cx.listener(Self::toggle_word_wrap))

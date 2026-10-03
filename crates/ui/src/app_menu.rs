@@ -96,6 +96,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Commit Files", ToggleCommitFiles),
             MenuItem::action("Search", ShowSearch),
             MenuItem::action("References", ShowReferences),
+            MenuItem::action("Outline", ShowOutline),
             MenuItem::action("Toggle Side Panel", ToggleSidePanel),
             MenuItem::separator(),
             MenuItem::action("Toggle Workspaces Column", ToggleTasks),

@@ -262,6 +262,12 @@ pub struct LspSymbol {
     /// Where its name is: 0-based, the column in characters.
     pub line: u32,
     pub column: u32,
+    /// How many symbols it's inside of (of the file's: 0 for those of the
+    /// workspace).
+    pub depth: u32,
+    /// Inside a function or a variable (a local, a closure, a field of an
+    /// object literal…): not part of the file's outline.
+    pub local: bool,
 }
 
 /// Git operations of the Changes mode. Files are relative to the task
