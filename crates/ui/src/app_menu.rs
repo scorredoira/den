@@ -141,8 +141,12 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Step Out", StepOut),
             MenuItem::action("Run to Cursor", RunToCursor),
             MenuItem::action("Set Next Statement", SetNextStatement),
+            MenuItem::action("Add to Watch", AddToWatch),
+            MenuItem::action("Evaluate in Console", EvaluateInConsole),
             MenuItem::separator(),
             MenuItem::action("Toggle Breakpoint", ToggleBreakpoint),
+            MenuItem::action("Add Conditional Breakpoint", AddConditionalBreakpoint),
+            MenuItem::action("Add Logpoint", AddLogpoint),
             MenuItem::action("Toggle Debug Panel", ToggleDebugPanel),
         ]),
         Menu::new("Terminal").items([

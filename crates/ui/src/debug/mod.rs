@@ -1210,6 +1210,11 @@ impl Debugger {
         self.history.retain(|old| *old != expr);
         self.history.push(expr.clone());
         self.history_at = None;
+        self.evaluate_in_console(expr, cx);
+    }
+
+    /// Writes `expr` and its value in the console.
+    pub fn evaluate_in_console(&mut self, expr: String, cx: &mut Context<Self>) {
         self.console.push(ConsoleLine::Input(expr.clone()));
         if !self.is_stopped() {
             self.console.push(ConsoleLine::Error("Nothing is stopped to evaluate in".into()));
@@ -1326,6 +1331,18 @@ impl Debugger {
     pub fn remove_breakpoint(&mut self, path: &Path, line: u32, cx: &mut Context<Self>) {
         if self.breakpoints.remove(path, line).is_some() {
             self.breakpoints_changed(path, cx);
+        }
+    }
+
+    /// Enables or disables every breakpoint.
+    pub fn enable_all_breakpoints(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let files: Vec<PathBuf> = self.breakpoints.files().map(|(path, _)| path.to_path_buf()).collect();
+        for path in files {
+            for mut bp in self.breakpoints.of(&path).to_vec() {
+                bp.enabled = enabled;
+                self.breakpoints.put(&path, bp);
+            }
+            self.breakpoints_changed(&path, cx);
         }
     }
 

@@ -322,7 +322,16 @@ impl Debugger {
                 )
                 .child(div().flex_1())
                 .when(self.breakpoints.files().next().is_some(), |el| {
+                    let any_enabled = self.breakpoints.files().any(|(_, bps)| bps.iter().any(|bp| bp.enabled));
                     el.child(
+                        div()
+                            .id("bp-enable-all")
+                            .text_color(theme.muted_foreground)
+                            .hover(|style| style.text_color(theme.foreground))
+                            .child(if any_enabled { "Disable all" } else { "Enable all" })
+                            .on_click(cx.listener(move |this, _, _, cx| this.enable_all_breakpoints(!any_enabled, cx))),
+                    )
+                    .child(
                         div()
                             .id("bp-remove-all")
                             .text_color(theme.muted_foreground)

@@ -34,7 +34,7 @@ use crate::{
     config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, Debugger, EditKind},
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
-    ToggleBreakpoint, ToggleDebugPanel,
+    AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel,
     diff,
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
@@ -1992,6 +1992,43 @@ impl Workspace {
         }
     }
 
+    /// The breakpoint editor at the cursor's line, with its condition or message.
+    fn edit_breakpoint_at_cursor(&mut self, kind: EditKind, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((path, line)) = self.cursor_place(cx) {
+            self.debugger.update(cx, |debugger, cx| debugger.edit_breakpoint(path, line, kind, window, cx));
+        }
+    }
+
+    /// The editor's selection, else the name or member chain (`a.b.c`) at the cursor.
+    fn expression_at_cursor(&self, cx: &App) -> Option<String> {
+        let state = self.tabs[self.active?].editor.read(cx);
+        let selected = state.selected_text().to_string().trim().to_string();
+        if !selected.is_empty() {
+            return (!selected.contains('\n')).then_some(selected);
+        }
+        let cursor = state.cursor_position();
+        let line = state.text().to_string().lines().nth(cursor.line as usize)?.to_string();
+        let offset = line.char_indices().nth(cursor.character as usize).map_or(line.len(), |(byte, _)| byte);
+        // A cursor just past the name counts too.
+        let span = debug::expression_span(&line, offset)
+            .or_else(|| offset.checked_sub(1).and_then(|before| debug::expression_span(&line, before)))?;
+        Some(line[span].to_string())
+    }
+
+    fn add_to_watch(&mut self, _: &AddToWatch, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(expr) = self.expression_at_cursor(cx) {
+            self.debugger.update(cx, |debugger, cx| debugger.add_watch(expr, cx));
+            self.show_panel(Panel::Debugger, cx);
+        }
+    }
+
+    fn evaluate_in_console(&mut self, _: &EvaluateInConsole, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(expr) = self.expression_at_cursor(cx) {
+            self.debugger.update(cx, |debugger, cx| debugger.evaluate_in_console(expr, cx));
+            self.show_panel(Panel::Debugger, cx);
+        }
+    }
+
     fn run_to_cursor(&mut self, _: &RunToCursor, _: &mut Window, cx: &mut Context<Self>) {
         if let Some((path, line)) = self.cursor_place(cx) {
             self.debugger.update(cx, |debugger, _| debugger.run_to(&path, line));
@@ -3176,7 +3213,12 @@ impl Workspace {
                         let markdown = tab.markdown.is_some() && !readonly;
                         let file = self.tabs.iter().find(|file| file.path == tab.path && file.is_file());
                         // Stopped here, the ends of the lines show the debugger's values.
-                        let stopped_here = self.debugger.read(cx).execution().is_some_and(|(at, _, _)| at == tab.path);
+                        let execution = self.debugger.read(cx).execution();
+                        let stopped_here = execution.as_ref().is_some_and(|(at, _, _)| *at == tab.path);
+                        // The debugger stopped: run to a line of any file; set the next
+                        // statement only in the function stopped at.
+                        let stopped = execution.is_some() && !readonly;
+                        let jumpable = execution.as_ref().is_some_and(|(at, _, top)| *at == tab.path && *top);
                         let blame = file
                             .filter(|file| !file.dirty && tab.diff.is_none() && !stopped_here)
                             .and_then(|file| file.blame.clone());
@@ -3194,10 +3236,28 @@ impl Workspace {
                                 } else {
                                     menu
                                 };
-                                menu.menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition))
+                                let menu = if stopped {
+                                    menu.menu("Run to Cursor", Box::new(RunToCursor))
+                                        .menu_with_disabled("Set Next Statement", !jumpable, Box::new(SetNextStatement))
+                                        .menu("Add to Watch", Box::new(AddToWatch))
+                                        .menu("Evaluate in Console", Box::new(EvaluateInConsole))
+                                        .separator()
+                                } else {
+                                    menu
+                                };
+                                let menu = menu
+                                    .menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition))
                                     .menu_with_disabled("Find References", readonly, Box::new(FindReferences))
-                                    .menu_with_disabled("Format Document", readonly, Box::new(FormatDocument))
-                                    .separator()
+                                    .menu_with_disabled("Format Document", readonly, Box::new(FormatDocument));
+                                let menu = if readonly {
+                                    menu
+                                } else {
+                                    menu.separator()
+                                        .menu("Toggle Breakpoint", Box::new(ToggleBreakpoint))
+                                        .menu("Add Conditional Breakpoint…", Box::new(AddConditionalBreakpoint))
+                                        .menu("Add Logpoint…", Box::new(AddLogpoint))
+                                };
+                                menu.separator()
                                     .menu_with_disabled("Cut", readonly, Box::new(input::Cut))
                                     .menu("Copy", Box::new(input::Copy))
                                     .menu_with_disabled("Paste", readonly, Box::new(input::Paste))
@@ -3497,6 +3557,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::maximize_terminals))
             .on_action(cx.listener(Self::toggle_breakpoint))
             .on_action(cx.listener(Self::run_to_cursor))
+            .on_action(cx.listener(|this, _: &AddConditionalBreakpoint, window, cx| {
+                this.edit_breakpoint_at_cursor(EditKind::Condition, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddLogpoint, window, cx| this.edit_breakpoint_at_cursor(EditKind::Log, window, cx)))
+            .on_action(cx.listener(Self::add_to_watch))
+            .on_action(cx.listener(Self::evaluate_in_console))
             .on_action(cx.listener(Self::set_next_statement))
             .on_action(cx.listener(Self::toggle_debug_panel))
             .on_action(cx.listener(|this, _: &DebugContinue, window, cx| {
