@@ -60,7 +60,6 @@ fn terminals_come_back_after_a_restart() {
         panic!("no list");
     };
     assert_eq!(terms.iter().map(|info| info.term).collect::<Vec<_>>(), vec![term]);
-    assert!(!saved.exists(), "the restart file is used once");
     let Response::TermSnapshot { cols, rows, .. } = smol::block_on(client.request(Request::TermAttach { term })).unwrap()
     else {
         panic!("no snapshot");

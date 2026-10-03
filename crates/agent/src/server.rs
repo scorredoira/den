@@ -132,9 +132,10 @@ struct AgentTerm {
     blocked: bool,
     checked: Instant,
     /// Its foreground process when last looked at, and the coding agent it
-    /// is (`claude`, `codex`…), if one.
+    /// is (`claude`, `codex`…), if one, with its command line.
     foreground: Option<u32>,
     agent: Option<String>,
+    agent_args: Option<String>,
 }
 
 #[derive(Default)]
@@ -325,22 +326,27 @@ pub fn run(listener: Listener) -> Result<()> {
 
     std::thread::spawn({
         let state = state.clone();
-        move || loop {
+        let mut saved = Vec::new();
+        move || for tick in 0u64.. {
             std::thread::sleep(Duration::from_millis(500));
             let changed = state.lock().unwrap().foregrounds_changed();
             // Reading a command line runs `ps`: not while holding the lock.
             let agents: Vec<(TermId, Option<String>)> = changed
                 .into_iter()
-                .map(|(term, pid)| (term, pid.and_then(platform::process_args).and_then(|args| agent_name(&args))))
+                .map(|(term, pid)| (term, pid.and_then(platform::process_args).filter(|args| agent_name(args).is_some())))
                 .collect();
             let mut state = state.lock().unwrap();
-            for (term, agent) in agents {
+            for (term, args) in agents {
                 if let Some(entry) = state.terms.get_mut(&term) {
-                    entry.agent = agent;
+                    entry.agent = args.as_deref().and_then(agent_name);
+                    entry.agent_args = args;
                 }
             }
             state.expire_activity();
             state.send_agents();
+            if tick % SAVE_TICKS == 0 {
+                save_if_changed(&state, &mut saved);
+            }
         }
     });
 
@@ -1188,17 +1194,55 @@ fn shut_down_older_agents() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Every so many ticks of the foreground check (5 s), the terminals are saved
+/// as for a restart, so that an agent that dies without one (the Mac is
+/// restarted, it's killed) leaves them for the next to restore.
+const SAVE_TICKS: u64 = 10;
+
+/// Saves the terminals for a restart if they changed since `saved`, with the
+/// command lines last read: no `ps` every few seconds. Under the lock, so it
+/// never overwrites what a shutdown saved.
+fn save_if_changed(state: &State, saved: &mut Vec<u8>) {
+    let Ok(bytes) = serde_json::to_vec(&restart_terms(state, false)) else {
+        return;
+    };
+    if bytes != *saved {
+        write_restart_file(&bytes);
+        *saved = bytes;
+    }
+}
+
 /// Before shutting down to restart: notes each terminal's folder and whether
-/// Claude Code was running in it. The processes die; their place doesn't.
+/// Claude Code is running in it. The processes die; their place doesn't.
 fn save_for_restart(state: &State) {
-    let terms: Vec<Restarted> = state
+    if let Ok(bytes) = serde_json::to_vec(&restart_terms(state, true)) {
+        write_restart_file(&bytes);
+    }
+}
+
+/// Written beside it and renamed, so dying while writing leaves the last one.
+fn write_restart_file(bytes: &[u8]) {
+    let saved = restart_file().and_then(|path| {
+        let partial = path.with_extension("partial");
+        std::fs::write(&partial, bytes)?;
+        Ok(std::fs::rename(partial, path)?)
+    });
+    if let Err(err) = saved {
+        eprintln!("could not save the terminals for the restart: {err:#}");
+    }
+}
+
+/// The terminals as a restart reopens them. `fresh` reads each one's command
+/// line now; otherwise the one read when its foreground process last changed
+/// (on Windows, where that's the shell, a Claude started later is missed).
+fn restart_terms(state: &State, fresh: bool) -> Vec<Restarted> {
+    state
         .terms
         .iter()
         .map(|(term, entry)| {
-            let foreground = entry.pty.foreground_pid();
-            let args = foreground
-                .and_then(platform::process_args)
-                .filter(|args| agent_name(args).as_deref() == Some("claude"));
+            let foreground = if fresh { entry.pty.foreground_pid() } else { entry.foreground };
+            let args = if fresh { foreground.and_then(platform::process_args) } else { entry.agent_args.clone() };
+            let args = args.filter(|args| agent_name(args).as_deref() == Some("claude"));
             let session = foreground.filter(|_| args.is_some()).and_then(claude_session);
             // `--resume <id>` finds the session only from the folder it began in.
             let cwd = session.as_ref().and_then(|session| session.cwd.clone());
@@ -1213,15 +1257,12 @@ fn save_for_restart(state: &State) {
                 claude: args.and_then(|args| resume_command(&args, session.as_ref())),
             }
         })
-        .collect();
-    let saved = restart_file().and_then(|path| Ok(std::fs::write(path, serde_json::to_vec(&terms)?)?));
-    if let Err(err) = saved {
-        eprintln!("could not save the terminals for the restart: {err:#}");
-    }
+        .collect()
 }
 
-/// On startup after a restart: opens the terminals the previous agent had,
-/// with the same ids, and resumes Claude Code where it was running.
+/// On startup after a restart, or after an agent that died: opens the
+/// terminals the previous agent had, with the same ids, and resumes Claude
+/// Code where it was running.
 fn restore_after_restart(state: &Shared, path: &Path) {
     let Ok(bytes) = std::fs::read(path) else {
         return;
@@ -1404,6 +1445,7 @@ fn create(
                 checked: Instant::now(),
                 foreground: None,
                 agent: None,
+                agent_args: None,
             },
         );
         state.update_idle();
