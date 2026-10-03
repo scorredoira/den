@@ -1628,15 +1628,16 @@ impl Den {
             .unwrap_or_else(|| path.to_path_buf())
     }
 
-    /// Cmd-O: a local folder, with the system's dialog. A window opened with
-    /// `den -s` has only its server: it opens in the main window.
+    /// Cmd-O: a local folder, with the system's dialog. In a window opened
+    /// with `den -s`, a folder on its server.
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(server) = &self.server {
+            let name = server.name.clone();
+            self.open_folder_picker(name, window, cx);
+            return;
+        }
         self.pick_local_folder("Open", window, cx, |this, path, window, cx| {
-            if this.host(LOCAL).is_some() {
-                this.open_path(LOCAL.into(), path, window, cx)
-            } else {
-                cx.defer(move |cx| handle_open(path, None, cx));
-            }
+            this.open_path(LOCAL.into(), path, window, cx)
         });
     }
 
