@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// responses or events isn't one: they are ALWAYS ADDED AT THE END of their
 /// enum, and whoever receives something unknown rejects it without dropping
 /// the connection (see `Decoded`). The `wire_changes_bump_the_protocol` test
-/// holds it against `wire.txt`. Each version has its own socket, so an agent of
-/// another version is never shut down: it keeps its terminals until they're gone.
+/// holds it against `wire.txt`. Each version has its own socket; an agent of a
+/// newer one, on starting, shuts down those of older ones and takes their
+/// terminals, so `Hello` and `Shutdown` stay the first requests of every version.
 pub const PROTOCOL: u32 = 7;
 
 /// Maximum frame size, so garbage input can't make us allocate without limit.
@@ -647,6 +648,16 @@ pub fn socket_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
     Ok(state_dir()?.join(format!("agent-{PROTOCOL}.sock")))
+}
+
+/// The sockets of the agents of earlier protocols, which may still be
+/// running. None with `DEN_AGENT_SOCKET`: that agent stands alone.
+pub fn older_socket_paths() -> Result<Vec<PathBuf>> {
+    if std::env::var_os("DEN_AGENT_SOCKET").is_some() {
+        return Ok(Vec::new());
+    }
+    let dir = state_dir()?;
+    Ok((1..PROTOCOL).map(|protocol| dir.join(format!("agent-{protocol}.sock"))).collect())
 }
 
 /// App name: paths and binaries derive from it.
