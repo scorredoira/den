@@ -320,4 +320,41 @@ mod tests {
         assert_eq!(parent_pid("2255059 (sim) S 1937967 2255059 1937967 0"), Some(1937967));
         assert_eq!(parent_pid("42 (a) b (c) R 7 42 42"), Some(7));
     }
+
+    /// A program that a terminal's shell started, a child of it, listens: its
+    /// port is found with the shell's group, and not without that shell.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_the_port_of_a_child_of_a_shell() {
+        use std::collections::HashMap;
+        use std::time::{Duration, Instant};
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        // `; true` keeps sh from exec'ing nc: nc is a child, not the shell.
+        let mut shell = std::process::Command::new("sh")
+            .args(["-c", &format!("nc -l 127.0.0.1 {port}; true")])
+            .spawn()
+            .unwrap();
+        let shell_pid = shell.id();
+        let shells = HashMap::from([(shell_pid, "task".to_string())]);
+        let started = Instant::now();
+        let found = loop {
+            let ports = super::listening(&shells);
+            if let Some(info) = ports.into_iter().find(|info| info.port == port) {
+                break Some(info);
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let others = super::listening(&HashMap::from([(1, "launchd".to_string())]));
+        let _ = std::process::Command::new("pkill").args(["-P", &shell_pid.to_string()]).status();
+        let _ = shell.kill();
+        let _ = shell.wait();
+
+        let found = found.expect("the port of nc was not found");
+        assert_eq!((found.group.as_str(), found.process.as_str()), ("task", "nc"));
+        assert!(others.iter().all(|info| info.port != port));
+    }
 }
