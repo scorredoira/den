@@ -1019,6 +1019,72 @@ impl Den {
         self.server.is_none()
     }
 
+    /// In a window opened with `den -s`, whether something in it would be
+    /// forgotten: its server, or a folder open in it.
+    fn unkept(&self, cx: &App) -> bool {
+        if self.remembers() {
+            return false;
+        }
+        let hosts = &Config::get(cx).hosts;
+        self.hosts.iter().any(|host| !hosts.iter().any(|saved| saved.name == host.name.as_ref()))
+            || self.workspaces.keys().any(|key| self.is_loose(key))
+    }
+
+    /// A folder open on its own that its server doesn't keep (nor the repo
+    /// it's in: that's what keeping it adds).
+    fn is_loose(&self, key: &TaskKey) -> bool {
+        self.host(&key.host).is_some_and(|host| !host.tasks.iter().any(|task| key.path.starts_with(&task.path)))
+    }
+
+    /// Keep in Workspaces, in a window opened with `den -s`: its servers and
+    /// the folders open in it (or only `folder`) are remembered, and the main
+    /// window lists them.
+    fn keep(&mut self, folder: Option<TaskKey>, window: &mut Window, cx: &mut Context<Self>) {
+        let servers: Vec<HostConfig> = self
+            .hosts
+            .iter()
+            .filter(|host| folder.as_ref().is_none_or(|folder| folder.host == host.name))
+            .filter_map(|host| {
+                Some(HostConfig { name: host.name.to_string(), destination: host.destination.clone()? })
+            })
+            .collect();
+        Config::update(cx, |config| {
+            for server in &servers {
+                if !config.hosts.iter().any(|saved| saved.name == server.name) {
+                    config.hosts.push(server.clone());
+                }
+            }
+        });
+        let folders: Vec<TaskKey> = match folder {
+            Some(folder) => vec![folder],
+            None => self.workspaces.keys().filter(|key| self.is_loose(key)).cloned().collect(),
+        };
+        for key in folders {
+            self.add_folder(key.host, key.path, window, cx);
+        }
+        cx.defer(move |cx| {
+            if let Some((handle, den)) = main_window(cx) {
+                handle
+                    .update(cx, |_, window, cx| den.update(cx, |den, cx| den.add_kept(servers, window, cx)))
+                    .ok();
+            }
+        });
+        cx.notify();
+    }
+
+    /// Servers kept in a window opened with `den -s`: listed here too, with
+    /// their folders.
+    fn add_kept(&mut self, servers: Vec<HostConfig>, window: &mut Window, cx: &mut Context<Self>) {
+        for server in servers {
+            let name: SharedString = server.name.into();
+            if self.host(&name).is_none() {
+                self.hosts.push(Host::remote(name.clone(), server.destination));
+                self.connect(name, window, cx);
+            }
+        }
+        self.refresh_repos(window, cx);
+    }
+
     /// Whether the tasks column shows: as last chosen or, if never chosen,
     /// once there's more than folders to it (a server or a worktree). In a
     /// window opened with `den -s`, hidden until shown.
@@ -2160,6 +2226,7 @@ impl Den {
         let outdated = host.client.as_ref().is_some_and(|client| client.outdated());
         let restart = name.clone();
         let connected = host.client.is_some();
+        let keep = self.unkept(cx);
         let weak = cx.entity().downgrade();
         let menu_name = name.clone();
         v_flex()
@@ -2215,7 +2282,7 @@ impl Den {
                         )
                         .on_click(cx.listener(move |this, _, window, cx| this.ask_restart(restart.clone(), window, cx)))
                     })
-                    .context_menu(move |menu, _, _| host_menu(menu, &menu_name, connected, &weak)),
+                    .context_menu(move |menu, _, _| host_menu(menu, &menu_name, connected, keep, &weak)),
             )
             .children(detail.map(|detail| {
                 div()
@@ -2602,7 +2669,11 @@ impl Den {
                     .when(!known, |menu| {
                         menu.item(
                             menu::item("Add to Workspaces", &weak, move |this, window, cx| {
-                                this.add_folder(add.host.clone(), add.path.clone(), window, cx)
+                                if this.remembers() {
+                                    this.add_folder(add.host.clone(), add.path.clone(), window, cx)
+                                } else {
+                                    this.keep(Some(add.clone()), window, cx)
+                                }
                             })
                             .disabled(!connected),
                         )
@@ -2738,6 +2809,26 @@ impl Render for Den {
                             .text_color(cx.theme().muted_foreground)
                             .child(title),
                     )
+                    .when(self.unkept(cx), |bar| {
+                        bar.child(
+                            div()
+                                .id("keep-in-workspaces")
+                                .flex_none()
+                                .mr_2()
+                                .px_2()
+                                .rounded(cx.theme().radius)
+                                .text_ui_small(cx)
+                                .text_color(cx.theme().muted_foreground)
+                                .hover(|style| style.bg(cx.theme().secondary_hover).text_color(cx.theme().foreground))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child("Keep in Workspaces")
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Opened with den -s, this window is forgotten when it closes: keep its server and folders in the workspaces column.")
+                                        .build(window, cx)
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| this.keep(None, window, cx))),
+                        )
+                    })
                     .children(cx.try_global::<crate::update::Updates>().and_then(|updates| updates.ready().map(str::to_string)).map(|version| {
                         div()
                             .id("restart-to-update")
@@ -2856,12 +2947,18 @@ fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
 }
 
 /// Right-click on a server's name in the tasks column.
-fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, den: &WeakEntity<Den>) -> PopupMenu {
+/// With `keep`, the window's server and folders aren't remembered yet (see
+/// `Den::keep`).
+fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, den: &WeakEntity<Den>) -> PopupMenu {
     if name == LOCAL {
         return menu.item(menu::item("Open Folder…", den, |this, window, cx| this.open_folder(&OpenFolder, window, cx)));
     }
     let (open, reconnect, remove) = (name.clone(), name.clone(), name.clone());
-    menu.item(
+    menu.when(keep, |menu| {
+        menu.item(menu::item("Keep in Workspaces", den, |this, window, cx| this.keep(None, window, cx)))
+            .separator()
+    })
+    .item(
         menu::item(format!("Open Folder on {name}…"), den, move |this, window, cx| {
             this.open_folder_picker(open.clone(), window, cx)
         })
