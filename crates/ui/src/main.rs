@@ -201,7 +201,7 @@ fn main() {
 fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
     enum Received {
         Open(PathBuf, Option<PathBuf>),
-        Command(u64, Vec<String>),
+        Command { command: u64, args: Vec<String>, cwd: PathBuf, term: Option<proto::TermId>, group: Option<String> },
         Lost,
     }
     // This machine's `den` commands come here too, with the main window
@@ -216,8 +216,14 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
         proto::Event::Open { root, file } => {
             let _ = tx.try_send(Received::Open(root.clone(), file.clone()));
         }
-        proto::Event::Command { command, args, .. } => {
-            let _ = tx.try_send(Received::Command(*command, args.clone()));
+        proto::Event::Command { command, args, cwd, term, group } => {
+            let _ = tx.try_send(Received::Command {
+                command: *command,
+                args: args.clone(),
+                cwd: cwd.clone(),
+                term: *term,
+                group: group.clone(),
+            });
         }
         _ => {}
     });
@@ -226,8 +232,9 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
         while let Ok(received) = rx.recv().await {
             match received {
                 Received::Open(root, file) => cx.update(|cx| app::handle_open(root, file, cx)),
-                Received::Command(command, args) => {
-                    if !cx.update(|cx| app::has_window(cx)) {
+                Received::Command { command, args, cwd, term, group } => {
+                    let ran = cx.update(|cx| app::run_local_command(&agent, command, args.clone(), cwd, term, group, cx));
+                    if !ran {
                         let result = match args.as_slice() {
                             // `den <path>` in a terminal: the window opens with it.
                             [open, root, file @ ..] if open == "open" && file.len() <= 1 => {

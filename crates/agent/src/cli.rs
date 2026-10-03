@@ -110,14 +110,15 @@ pub fn invoked_as_den() -> bool {
 }
 
 /// `den <path>`: asks the app to open it. In den's terminals, the window
-/// showing the terminal does. With no app connected, it starts one on this
-/// machine; over SSH, there's no app to start.
+/// showing the terminal does (if no app answers, as outside them). With no
+/// app connected, it starts one on this machine; over SSH, there's no app to
+/// start.
 pub fn open(arg: &str) -> Result<()> {
     let path = std::path::absolute(arg)?;
     let path = path.canonicalize().with_context(|| format!("{arg}: no such file or folder"))?;
     let (root, file) = proto::open_target(&path);
-    if own_term().is_some() {
-        return open_here(root, file);
+    if own_term().is_some() && open_here(root.clone(), file.clone()).is_ok() {
+        return Ok(());
     }
     let exe = std::env::current_exe()?;
     let client = Client::connect_local(&exe).context("could not talk to the agent")?;

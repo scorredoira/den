@@ -131,7 +131,8 @@ impl Den {
         self.focus_active(window, cx);
         cx.notify();
         // Once this click is done: quitting may open the unsaved files dialog.
-        cx.defer_in(window, |_, _, cx| crate::update::restart(cx));
+        // Outside this window's update: quitting goes through every window.
+        cx.defer(crate::update::restart);
     }
 
     /// The dialog: what's about to happen and its button, red if it

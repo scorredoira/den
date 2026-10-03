@@ -299,16 +299,42 @@ fn server_name(destination: &str, cx: &App) -> SharedString {
         .into()
 }
 
-/// Clicking the Dock icon with every window closed opens the main one again.
+/// Clicking the Dock icon with the main window closed opens it again.
 pub fn reopen(cx: &mut App) {
-    if windows(cx).is_empty() {
+    if main_window(cx).is_none() {
         open_window(None, None, true, cx);
     }
 }
 
-/// Whether the main window is open: this machine's `den` commands run in it.
-pub fn has_window(cx: &App) -> bool {
-    main_window(cx).is_some()
+/// A `den` command from this machine, heard by the app on `agent`: the main
+/// window runs it. Its own connection to the agent is another after the
+/// agent restarts, and hears its own: this one's it's handed. Returns
+/// whether the main window is open.
+pub fn run_local_command(
+    agent: &Arc<Client>,
+    id: u64,
+    args: Vec<String>,
+    cwd: PathBuf,
+    term: Option<proto::TermId>,
+    group: Option<String>,
+    cx: &mut App,
+) -> bool {
+    let Some((handle, den)) = main_window(cx) else {
+        return false;
+    };
+    let own = den.read(cx).client(LOCAL).is_some_and(|client| Arc::ptr_eq(&client, agent));
+    if !own {
+        let agent = agent.clone();
+        handle
+            .update(cx, |_, window, cx| {
+                den.update(cx, |den, cx| {
+                    let command = commands::Command { id, args, cwd, term, group };
+                    den.run_command(LOCAL.into(), agent, command, window, cx)
+                })
+            })
+            .ok();
+    }
+    true
 }
 
 /// `den <path>` in a terminal of this machine: `root` as a workspace, with
@@ -518,9 +544,19 @@ impl Den {
         window.on_window_should_close(cx, move |window, cx| {
             den.update(cx, |den, cx| den.discarded || den.confirm_quit(Closing::Window, window, cx)).unwrap_or(true)
         });
-        // Its panels go with it.
+        // Its panels and its connections to servers go with it (this
+        // machine's is the app's): a closed window's must not be sent the
+        // servers' `den` commands.
         let window_id = window.window_handle().window_id();
-        cx.on_release(move |_, cx| crate::workspace::drop_panels(window_id, cx)).detach();
+        cx.on_release(move |this, cx| {
+            crate::workspace::drop_panels(window_id, cx);
+            for host in this.hosts.iter().filter(|host| host.destination.is_some()) {
+                if let Some(client) = &host.client {
+                    client.disconnect();
+                }
+            }
+        })
+        .detach();
 
         for name in this.hosts.iter().filter(|host| host.destination.is_some()).map(|host| host.name.clone()).collect::<Vec<_>>() {
             this.connect(name, window, cx);
@@ -872,12 +908,19 @@ impl Den {
                         }
                         this.upgrade().is_some()
                     }
-                    Event::Command { command, args, cwd, term, group } => this
-                        .update_in(cx, |this, window, cx| {
-                            let command = commands::Command { id: command, args, cwd, term, group };
-                            this.run_command(name.clone(), client.clone(), command, window, cx)
-                        })
-                        .is_ok(),
+                    Event::Command { command, args, cwd, term, group } => {
+                        let ran = this
+                            .update_in(cx, |this, window, cx| {
+                                let command = commands::Command { id: command, args, cwd, term, group };
+                                this.run_command(name.clone(), client.clone(), command, window, cx)
+                            })
+                            .is_ok();
+                        if !ran {
+                            let result = Err("den's window is closed".to_string());
+                            client.notify(Request::CommandDone { command, result });
+                        }
+                        ran
+                    }
                     Event::OpenTask { path } => {
                         if !cx.update(|_, cx| opens_from_host(&name, &this, cx)).unwrap_or(false) {
                             continue;
@@ -1059,16 +1102,26 @@ impl Den {
             Some(folder) => vec![folder],
             None => self.workspaces.keys().filter(|key| self.is_loose(key)).cloned().collect(),
         };
-        for key in folders {
-            self.add_folder(key.host, key.path, window, cx);
-        }
-        cx.defer(move |cx| {
-            if let Some((handle, den)) = main_window(cx) {
-                handle
-                    .update(cx, |_, window, cx| den.update(cx, |den, cx| den.add_kept(servers, window, cx)))
-                    .ok();
+        let adds: Vec<_> = folders
+            .into_iter()
+            .filter_map(|key| Some(self.client(&key.host)?.request(Request::RepoAdd { path: key.path })))
+            .collect();
+        // Once the servers have them: the main window reads them then.
+        cx.spawn_in(window, async move |this, cx| {
+            for add in adds {
+                let _ = add.await;
             }
-        });
+            this.update_in(cx, |this, window, cx| this.refresh_repos(window, cx)).ok();
+            cx.update(|_, cx| {
+                if let Some((handle, den)) = main_window(cx) {
+                    handle
+                        .update(cx, |_, window, cx| den.update(cx, |den, cx| den.add_kept(servers, window, cx)))
+                        .ok();
+                }
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1192,7 +1245,7 @@ impl Den {
     /// files, asks and only goes on if confirmed. Returns whether it can go
     /// on right away.
     pub fn confirm_quit(&mut self, closing: Closing, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.unsaved(cx).is_empty() {
+        if self.discarded || self.unsaved(cx).is_empty() {
             return true;
         }
         match &mut self.quit_confirm {
@@ -1207,11 +1260,15 @@ impl Den {
         false
     }
 
-    /// The dialog's Quit (or Close) Without Saving.
+    /// The dialog's Quit (or Close) Without Saving. Quitting, the other
+    /// windows with unsaved files still ask.
     fn discard_and_close(&mut self, cx: &mut Context<Self>) {
         match self.quit_confirm.take() {
             Some((_, Closing::Window)) => self.close_window(cx),
-            _ => cx.quit(),
+            _ => {
+                self.discarded = true;
+                cx.defer(quit);
+            }
         }
     }
 
