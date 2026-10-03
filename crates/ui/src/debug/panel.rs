@@ -117,11 +117,6 @@ impl Debugger {
         let theme = cx.theme();
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
         let active = self.status != Status::Idle;
-        let launch_name = self
-            .launch
-            .clone()
-            .or_else(|| self.launches.first().map(|launch| launch.name.clone()))
-            .unwrap_or_else(|| "Debug".into());
 
         let status: SharedString = match &self.status {
             Status::Idle => "Not running".into(),
@@ -147,8 +142,6 @@ impl Debugger {
             },
         };
 
-        let entity = cx.entity().downgrade();
-        let launches = self.launches.clone();
         h_flex()
             .h(px(34.))
             .px_2()
@@ -156,32 +149,6 @@ impl Debugger {
             .flex_none()
             .border_b_1()
             .border_color(theme.border)
-            .child(
-                h_flex()
-                    .id("debug-launch")
-                    .px_2()
-                    .h(px(24.))
-                    .gap_1()
-                    .rounded(theme.radius)
-                    .hover(|style| style.bg(theme.secondary))
-                    .child(svg().path("icons/bug.svg").size(px(14.)).text_color(theme.muted_foreground))
-                    .child(launch_name)
-                    .child(svg().path("icons/tree-chevron-down.svg").size(px(12.)).text_color(theme.muted_foreground))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.refresh_launches(cx)))
-                    .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| this.refresh_launches(cx)))
-                    .tooltip(|window, cx| Tooltip::new("Launch configuration (.sik/debug.json): right-click to choose").build(window, cx))
-                    .context_menu(move |menu, _, _| {
-                        let mut menu = menu;
-                        for launch in &launches {
-                            let name = launch.name.clone();
-                            menu = menu.item(menu::item(launch.name.clone(), &entity, move |this, _, cx| {
-                                this.select_launch(name.clone(), cx)
-                            }));
-                        }
-                        menu
-                    }),
-            )
-            .child(div().w(px(6.)))
             .child(if stopped {
                 tool("debug-continue", "icons/play.svg", "Continue (F5)", true, theme.success, cx)
                     .on_click(cx.listener(|this, _, _, cx| this.continue_(cx)))
@@ -237,7 +204,7 @@ impl Debugger {
                         }
                     }),
             )
-            .child(
+            .when(!self.tab, |el| el.child(
                 div()
                     .id("debug-close")
                     .size(px(22.))
@@ -249,7 +216,7 @@ impl Debugger {
                     .child(svg().path("icons/tab-close.svg").size(px(14.)).text_color(theme.muted_foreground))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(DebugEvent::Hide)))
                     .tooltip(|window, cx| Tooltip::new("Hide (Cmd-Shift-Y)").build(window, cx)),
-            )
+            ))
             .into_any_element()
     }
 

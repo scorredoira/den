@@ -2187,9 +2187,49 @@ impl Sik {
         let removable = known && !task.main;
         let local = key.host == LOCAL;
         let weak = cx.entity().downgrade();
+        let connected = self.client(&key.host).is_some();
+        let repo_name = folder_name(&task.repo);
+        // Only a repo makes worktrees: one with a branch, or with worktrees
+        // of its own.
+        let git = known
+            && (task.branch.is_some()
+                || !task.main
+                || self.host(&key.host).is_some_and(|host| {
+                    host.tasks.iter().any(|other| other.repo == task.repo && !other.main)
+                }));
+        // On hover, as in its menu: a repo makes a worktree, a worktree is
+        // deleted.
+        let action = if git && task.main && connected {
+            let (host, repo) = (key.host.clone(), task.repo.clone());
+            Some(row_action(
+                format!("task-new-{}", key.config()),
+                "icons/plus.svg",
+                format!("New Worktree in {repo_name}…"),
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.start_new_task(host.clone(), repo.clone(), window, cx)
+                }),
+                cx,
+            ))
+        } else if removable && !self.removing.contains(key) {
+            let remove = key.clone();
+            Some(row_action(
+                format!("task-delete-{}", key.config()),
+                "icons/trash.svg",
+                "Delete Worktree…".into(),
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.ask_remove(remove.clone(), window, cx)
+                }),
+                cx,
+            ))
+        } else {
+            None
+        };
 
         let row = h_flex()
             .id(SharedString::from(format!("task-{}", key.config())))
+            .group("task")
             // On its way out.
             .when(self.removing.contains(key), |row| row.opacity(0.5))
             .h(px(26.))
@@ -2235,6 +2275,7 @@ impl Sik {
                     .text_color(theme.muted_foreground)
                     .child(branch)
             }))
+            .children(action)
             .when_some(fold.flatten(), |row, (fold_key, collapsed)| {
                 row.child(
                     div()
@@ -2269,16 +2310,7 @@ impl Sik {
             .context_menu({
                 let key = key.clone();
                 let repo = task.repo.clone();
-                let repo_name = folder_name(&task.repo);
-                let connected = self.client(&key.host).is_some();
-                // Only a repo makes worktrees: one with a branch, or with
-                // worktrees of its own.
-                let git = known
-                    && (task.branch.is_some()
-                        || !task.main
-                        || self.host(&key.host).is_some_and(|host| {
-                            host.tasks.iter().any(|other| other.repo == task.repo && !other.main)
-                        }));
+                let repo_name = repo_name.clone();
                 let main = task.main;
                 // Closing would lose unsaved changes: save them first.
                 let unsaved = self
@@ -2609,6 +2641,32 @@ fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
                 }),
         )
         .children(form.error.clone().map(|error| div().px_3().pb_1().child(error_text(error, cx))))
+        .into_any_element()
+}
+
+/// A button at the end of a workspace's row, shown while it's hovered.
+fn row_action(
+    id: String,
+    icon: &'static str,
+    tip: String,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    div()
+        .id(SharedString::from(id))
+        .flex_none()
+        .size(px(18.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .invisible()
+        .group_hover("task", |style| style.visible())
+        .rounded(theme.radius)
+        .hover(|style| style.bg(theme.sidebar_accent))
+        .child(svg().path(icon).size(px(13.)).text_color(theme.muted_foreground))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(on_click)
         .into_any_element()
 }
 

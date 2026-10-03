@@ -2,9 +2,10 @@
 //! that speaks the debug protocol (`protocol`), reached through the agent so
 //! a program on a server is debugged like a local one.
 //!
-//! Nothing here knows the language or VM of the program. A launch
-//! configuration (`.sik/debug.json`) says which command starts it and on
-//! which port it listens.
+//! Nothing here knows the language or VM of the program. The launch file
+//! (`.sik/debug.json`) says which command starts it, given the open file,
+//! and on which port it listens: the program decides what debugging that
+//! file means.
 
 mod breakpoints;
 pub mod hover;
@@ -30,21 +31,12 @@ use protocol::{Event, Message, Stop, Var};
 
 use crate::config::{Config, DebugSaved};
 
-/// Where the launch configurations are, relative to the workspace.
+/// Where the launch file is, relative to the workspace.
 pub const LAUNCH_FILE: &str = ".sik/debug.json";
 
 const LAUNCH_TEMPLATE: &str = r#"{
-    "configurations": [
-        {
-            "name": "Debug",
-            "command": "sim -d ${file}",
-            "port": 4444
-        },
-        {
-            "name": "Attach",
-            "port": 4444
-        }
-    ]
+    "command": "sim -d ${file}",
+    "port": 4444
 }
 "#;
 
@@ -59,9 +51,9 @@ const RESUME_GRACE: Duration = Duration::from_millis(250);
 /// Children of a value asked for at a time.
 const PAGE: u64 = 200;
 
+/// How the program is started and reached.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Launch {
-    pub name: String,
     /// A shell command line that starts the program, run in a terminal.
     /// Without it, the debugger attaches to a program already running.
     #[serde(default)]
@@ -76,10 +68,14 @@ fn default_port() -> u16 {
 
 #[derive(Deserialize)]
 pub struct LaunchFile {
-    pub configurations: Vec<Launch>,
+    #[serde(flatten)]
+    pub launch: Launch,
     /// How the project runs a test, for the Run and Debug on each one's line.
     #[serde(default)]
     pub tests: Option<Tests>,
+    /// Files from when there were several to choose from: the first one.
+    #[serde(default)]
+    configurations: Vec<Launch>,
 }
 
 /// `match` finds a test's declaration on a line, its first group being the
@@ -115,7 +111,11 @@ fn regex_field<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<rege
 }
 
 pub fn parse_launch_file(text: &str) -> Result<LaunchFile, String> {
-    serde_json::from_str(text).map_err(|err| format!("{LAUNCH_FILE}: {err}"))
+    let mut file: LaunchFile = serde_json::from_str(text).map_err(|err| format!("{LAUNCH_FILE}: {err}"))?;
+    if file.launch.command.is_none() && !file.configurations.is_empty() {
+        file.launch = file.configurations.remove(0);
+    }
+    Ok(file)
 }
 
 /// A configuration's `command` as it is run: `${file}` is the open file,
@@ -255,8 +255,6 @@ pub struct Debugger {
     watches: Vec<Watch>,
     uncaught: bool,
     all: bool,
-    launches: Vec<Launch>,
-    launch: Option<String>,
     launch_error: Option<String>,
     /// How the project runs a test (`tests` in the launch file).
     pub tests: Option<Tests>,
@@ -268,6 +266,9 @@ pub struct Debugger {
     /// The terminal the launch command runs in, reused by the next launch.
     term: Option<TermId>,
     launched: bool,
+    /// Released a program held before running, paused: its first stop is
+    /// its entry.
+    entry: bool,
     running: u64,
     stops: BTreeMap<u64, VmStop>,
     serial: u64,
@@ -294,6 +295,8 @@ pub struct Debugger {
     pub edit: Option<BreakpointEdit>,
     /// Its column is narrow and tall: its parts go one above the other.
     pub tall: bool,
+    /// A tab of the terminals': their bar closes it.
+    pub tab: bool,
     /// The value shown by hovering its name in the code.
     pub hover: Option<HoverValue>,
     _subscriptions: Vec<Subscription>,
@@ -331,17 +334,16 @@ impl Debugger {
             watches: saved.watches.into_iter().map(|expr| Watch { expr, result: None }).collect(),
             uncaught: saved.uncaught,
             all: saved.all,
-            launch: saved.launch,
             term: saved.terminal,
             root,
             session_key,
             client,
-            launches: Vec::new(),
             launch_error: None,
             status: Status::Idle,
             conn: None,
             generation: 0,
             launched: false,
+            entry: false,
             running: 0,
             stops: BTreeMap::new(),
             serial: 0,
@@ -363,6 +365,7 @@ impl Debugger {
             value_edit: None,
             edit: None,
             tall: false,
+            tab: false,
             hover: None,
             tests: None,
             _subscriptions: subscriptions,
@@ -381,7 +384,6 @@ impl Debugger {
             watches: self.watches.iter().map(|watch| watch.expr.clone()).collect(),
             uncaught: self.uncaught,
             all: self.all,
-            launch: self.launch.clone(),
             terminal: self.term,
         };
         let key = self.session_key.clone();
@@ -462,7 +464,7 @@ impl Debugger {
             return;
         };
         cx.emit(DebugEvent::Reveal);
-        self.status = Status::Connecting("Reading the launch configuration…".into());
+        self.status = Status::Connecting("Reading the launch file…".into());
         self.generation += 1;
         let generation = self.generation;
         let path = self.root.join(LAUNCH_FILE);
@@ -473,25 +475,17 @@ impl Debugger {
                 if this.generation != generation {
                     return;
                 }
-                let launches = match read {
+                let file = match read {
                     Ok(Response::Bytes(bytes)) => parse_launch_file(&String::from_utf8_lossy(&bytes)),
                     Ok(other) => Err(format!("unexpected response {other:?}")),
                     Err(_) => Err(format!("There is no {LAUNCH_FILE}: create it to say how to start the program.")),
                 };
-                match launches {
-                    Ok(file) if !file.configurations.is_empty() => {
-                        this.launches = file.configurations;
+                match file {
+                    Ok(file) => {
                         this.tests = file.tests;
                         this.launch_error = None;
-                        let launch = this
-                            .launch
-                            .as_ref()
-                            .and_then(|name| this.launches.iter().find(|launch| &launch.name == name))
-                            .unwrap_or(&this.launches[0])
-                            .clone();
-                        this.begin(launch, window, cx);
+                        this.begin(file.launch, window, cx);
                     }
-                    Ok(_) => this.fail(format!("{LAUNCH_FILE} has no configurations"), cx),
                     Err(error) => {
                         this.launch_error = Some(error.clone());
                         this.fail(error, cx);
@@ -515,10 +509,11 @@ impl Debugger {
             return;
         }
         self.generation += 1;
-        self.begin(Launch { name: "Test".into(), command: Some(command), port }, window, cx);
+        self.begin(Launch { command: Some(command), port }, window, cx);
     }
 
-    /// Reads the launch configurations again, for the panel's menu.
+    /// Reads the launch file again: its problems show in the panel, its
+    /// tests in the code.
     pub fn refresh_launches(&mut self, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
             return;
@@ -532,7 +527,6 @@ impl Debugger {
                     _ => None,
                 }) {
                     Some(Ok(file)) => {
-                        this.launches = file.configurations;
                         this.tests = file.tests;
                         this.launch_error = None;
                     }
@@ -541,7 +535,6 @@ impl Debugger {
                         this.launch_error = Some(error);
                     }
                     None => {
-                        this.launches.clear();
                         this.tests = None;
                         this.launch_error = Some(format!("There is no {LAUNCH_FILE}."));
                     }
@@ -568,12 +561,6 @@ impl Debugger {
             .detach();
         }
         path
-    }
-
-    pub fn select_launch(&mut self, name: String, cx: &mut Context<Self>) {
-        self.launch = Some(name);
-        self.save(cx);
-        cx.notify();
     }
 
     fn begin(&mut self, launch: Launch, window: &mut Window, cx: &mut Context<Self>) {
@@ -694,7 +681,11 @@ impl Debugger {
             self.send_breakpoints(&path, cx);
         }
         self.send_exceptions();
+        // As Visual Studio does, a program that starts stops at its first
+        // line: the next VM that runs code.
         if body.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
+            self.entry = true;
+            self.send("pause", json!({}), |_, _, _| {});
             self.send("run", json!({}), |_, _, _| {});
         }
         let stops: Vec<Stop> = protocol::field(&body, "stopped").unwrap_or_default();
@@ -743,6 +734,7 @@ impl Debugger {
             conn.client.close_relay(conn.relay);
         }
         self.status = Status::Idle;
+        self.entry = false;
         self.stops.clear();
         self.focus = None;
         self.locals.clear();
@@ -810,7 +802,10 @@ impl Debugger {
         }
     }
 
-    fn on_stop(&mut self, stop: Stop, cx: &mut Context<Self>) {
+    fn on_stop(&mut self, mut stop: Stop, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.entry) && stop.reason == "pause" {
+            stop.reason = "entry".into();
+        }
         self.serial += 1;
         let vm = stop.vm;
         if let Some(exc) = &stop.exception {
@@ -1601,7 +1596,7 @@ mod tests {
     #[test]
     fn tests_are_found_by_the_project_pattern() {
         let file = parse_launch_file(
-            r#"{"configurations":[],"tests":{"match":"^export function (test\\w+)\\(","run":"sim test ${file} ${test} -x","debug":"sim -d test ${file} ${test} -x","port":4445}}"#,
+            r#"{"command":"sim -d ${file}","tests":{"match":"^export function (test\\w+)\\(","run":"sim test ${file} ${test} -x","debug":"sim -d test ${file} ${test} -x","port":4445}}"#,
         )
         .unwrap();
         let tests = file.tests.unwrap();
@@ -1611,16 +1606,20 @@ mod tests {
         assert_eq!(tests.name_in("    // export function testOld() {"), None);
         assert_eq!(tests.command(false, "testRefund"), "sim test ${file} testRefund -x");
         assert_eq!(tests.command(true, "testRefund"), "sim -d test ${file} testRefund -x");
-        assert!(parse_launch_file(r#"{"configurations":[],"tests":{"match":"(","run":"","debug":""}}"#).is_err());
+        assert!(parse_launch_file(r#"{"tests":{"match":"(","run":"","debug":""}}"#).is_err());
     }
 
     #[test]
-    fn launches_parse_with_a_default_port() {
-        let launches = parse_launch_file(r#"{"configurations":[{"name":"server","command":"sim -d server"},{"name":"attach","port":5000}]}"#).unwrap().configurations;
-        assert_eq!(launches[0].port, 4444);
-        assert_eq!(launches[0].command.as_deref(), Some("sim -d server"));
-        assert_eq!(launches[1].command, None);
-        assert_eq!(launches[1].port, 5000);
+    fn a_launch_parses_with_a_default_port() {
+        let launch = parse_launch_file(r#"{"command":"sim -d ${file}"}"#).unwrap().launch;
+        assert_eq!(launch.command.as_deref(), Some("sim -d ${file}"));
+        assert_eq!(launch.port, 4444);
+        // Only a port: it attaches.
+        let launch = parse_launch_file(r#"{"port":5000}"#).unwrap().launch;
+        assert_eq!((launch.command, launch.port), (None, 5000));
+        // A file with several configurations starts the first.
+        let launch = parse_launch_file(r#"{"configurations":[{"name":"Debug","command":"sim -d server"},{"name":"Attach"}]}"#).unwrap().launch;
+        assert_eq!(launch.command.as_deref(), Some("sim -d server"));
     }
 
     #[test]

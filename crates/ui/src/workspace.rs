@@ -370,6 +370,9 @@ impl Workspace {
                         this.message = Some(message.clone());
                         cx.notify();
                     }
+                    TerminalAreaEvent::ShowDebugger(true) => this.show_panel(Panel::Debugger, cx),
+                    TerminalAreaEvent::ShowDebugger(false) => this.show_panel(Panel::Terminals, cx),
+                    TerminalAreaEvent::CloseDebugger => this.hide_panel(Panel::Debugger, cx),
                 },
             ),
             cx.subscribe_in(&changes, window, Self::on_git_event),
@@ -1811,7 +1814,10 @@ impl Workspace {
                         return;
                     }
                 };
-                self.show_panel(Panel::Terminals, cx);
+                // A tab with the terminals, the debugger stays in front.
+                if !self.debugger_with_terminals(cx) {
+                    self.show_panel(Panel::Terminals, cx);
+                }
                 let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line, window, cx));
                 let debugger = debugger.downgrade();
                 cx.spawn(async move |_, cx| {
@@ -2147,7 +2153,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The launch configurations changed: the debugger's menu shows them.
+        // The launch file changed: its problems and tests show.
         let sik = self.root.join(".sik");
         if paths.iter().any(|path| path.starts_with(&sik)) {
             self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
@@ -3480,16 +3486,22 @@ impl Workspace {
             if bounds.origin.y < area.top() || bounds.bottom() > area.bottom() || area.right() - origin.x < px(120.) {
                 continue;
             }
-            let lens = |label: &'static str, debug: bool| {
+            let lens = |icon: &'static str, tip: &'static str, debug: bool| {
                 let test = test.clone();
                 let path = path.to_path_buf();
                 let this = this.clone();
                 div()
-                    .id(SharedString::from(format!("test-{label}-{row}")))
+                    .id(SharedString::from(format!("test-{debug}-{row}")))
                     .when(cfg!(test), |el| el.debug_selector(move || format!("test-lens-{row}-{debug}")))
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme.radius)
                     .cursor_pointer()
-                    .hover(|style| style.text_color(theme.foreground))
-                    .child(label)
+                    .hover(|style| style.bg(theme.secondary))
+                    .child(svg().path(icon).size(px(13.)).text_color(theme.muted_foreground))
+                    .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                     .on_click(move |_, window, cx| {
                         this.update(cx, |this, cx| this.run_test(&path, &test, debug, window, cx)).ok();
                     })
@@ -3500,12 +3512,11 @@ impl Workspace {
                     .child(
                         h_flex()
                             .h(bounds.size.height)
-                            .gap_3()
+                            .gap_1()
+                            .items_center()
                             .occlude()
-                            .text_ui_small(cx)
-                            .text_color(theme.muted_foreground)
-                            .child(lens("▶ Run", false))
-                            .child(lens("▶ Debug", true)),
+                            .child(lens("icons/play.svg", "Run Test", false))
+                            .child(lens("icons/bug.svg", "Debug Test", true)),
                     )
                     .into_any_element(),
             );

@@ -2,8 +2,9 @@ use super::*;
 use crate::config::Side;
 use core::prelude::v1::test;
 
-/// Draws a workspace with a file, the terminals and the debugger shown,
-/// the panels where `layout` says.
+/// Draws a workspace with a file, the terminals and the debugger open (in
+/// front of its place, unless it's the terminals'), the panels where
+/// `layout` says.
 fn draw(cx: &mut TestAppContext, layout: impl FnOnce(&mut config::Layout)) -> (Entity<Workspace>, &mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
@@ -20,6 +21,7 @@ fn draw(cx: &mut TestAppContext, layout: impl FnOnce(&mut config::Layout)) -> (E
         workspace.tabs.push(tab);
         workspace.activate(0, window, cx);
         workspace.show_panel(Panel::Debugger, cx);
+        workspace.show_panel(Panel::Terminals, cx);
         workspace
     });
     cx.run_until_parked();
@@ -37,16 +39,33 @@ fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> 
 }
 
 #[gpui_kit::test]
-fn files_code_with_the_debugger_under_it_and_terminals_on_the_right(cx: &mut TestAppContext) {
-    let (_, cx) = draw(cx, |_| {});
+fn files_code_and_terminals_with_the_debugger_as_their_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
     let files = bounds(cx, "stack-Files");
     let code = bounds(cx, "editor-body-0");
     let terminals = bounds(cx, "terminals");
-    let debugger = bounds(cx, "debugger");
     assert!(files.right() <= code.left(), "{files:?} {code:?}");
     assert!(terminals.left() >= code.right(), "{terminals:?} {code:?}");
-    assert!(debugger.top() >= code.bottom(), "{debugger:?} {code:?}");
-    assert!(debugger.right() <= terminals.left(), "{debugger:?} {terminals:?}");
+    // Behind its tab; in front, under the terminals' bar.
+    assert!(cx.debug_bounds("debugger").is_none());
+    let tab = bounds(cx, "debug-tab");
+    click(cx, "debug-tab");
+    let debugger = bounds(cx, "debugger");
+    assert!(debugger.left() >= code.right() && debugger.top() >= tab.bottom(), "{debugger:?} {tab:?}");
+    // Closing its tab, the terminals show again and the tab goes; showing
+    // it (debugging) brings it back in front.
+    click(cx, "debug-tab-close");
+    assert!(cx.debug_bounds("debugger").is_none());
+    assert!(cx.debug_bounds("debug-tab").is_none());
+    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
+    workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Debugger, cx));
+    cx.run_until_parked();
+    bounds(cx, "debugger");
+    // The same key hides it, as its tab's close does.
+    workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Debugger, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("debug-tab").is_none());
+    bounds(cx, "terminals");
 }
 
 #[gpui_kit::test]
@@ -107,7 +126,7 @@ fn dropping_the_changes_on_the_terminals_bar_puts_them_together(cx: &mut TestApp
     cx.run_until_parked();
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Terminals).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Terminals, Panel::Changes]);
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Terminals, Panel::Debugger, Panel::Changes]);
     // The panel dropped shows; the terminals are behind it.
     cx.update(|_, cx| {
         assert!(workspace.read(cx).is_shown(Panel::Changes, cx));
@@ -253,7 +272,7 @@ fn the_tests_get_run_and_debug(cx: &mut TestAppContext) {
         workspace.hide_panel(Panel::Files, cx);
         workspace.hide_panel(Panel::Terminals, cx);
         let file = crate::debug::parse_launch_file(
-            r#"{"configurations":[],"tests":{"match":"^export function (test\\w+)\\(","run":"run ${test}","debug":"debug ${test}"}}"#,
+            r#"{"tests":{"match":"^export function (test\\w+)\\(","run":"run ${test}","debug":"debug ${test}"}}"#,
         )
         .unwrap();
         workspace.debugger.update(cx, |debugger, _| debugger.tests = file.tests);

@@ -4,36 +4,34 @@ Sik debugs any program that speaks the protocol below: Sik doesn't know its
 language or its VM. The program listens on a TCP port; Sik reaches it through
 the agent, so a program on a server is debugged like a local one.
 
-## Launch configurations
+## The launch file
 
 `.sik/debug.json` in the workspace:
 
 ```json
-{
-    "configurations": [
-        { "name": "Debug", "command": "sim -d ${file}", "port": 4444 },
-        { "name": "Attach", "port": 4444 }
-    ]
-}
+{ "command": "sim -d ${file}", "port": 4444 }
 ```
 
 - `command`: a shell line run in a terminal of the workspace (its output stays
-  there). `${file}` is the open file, relative to the workspace: one
-  configuration debugs whatever is open, and the program decides what that
-  means. Without `command`, the configuration attaches to a program already
-  running.
+  there). `${file}` is the open file, relative to the workspace: there is one
+  command, which debugs whatever is open, and the program decides what that
+  means (a script, a test file, the server it is part of). Without `command`,
+  F5 attaches to a program already running.
 - `port`: where the program listens, on the loopback of the agent's machine.
   4444 when missing.
 
-F5 starts the configuration chosen in the panel (right-click its name to
-choose). If something already answers on the port, it attaches to it instead
-of starting the command again. Stop (Shift-F5) interrupts a program it
+F5 runs the command. If something already answers on the port, it attaches to
+it instead of starting the command again. A program held before running
+(`waiting` in `hello`) is released paused, so it stops at its first line, as
+Visual Studio's debugger does. Stop (Shift-F5) interrupts a program it
 started and leaves one it attached to running.
+
+A file from when there were several `configurations` starts the first one.
 
 ### Tests
 
-With a `tests` section, every line that declares a test gets Run and Debug
-at its end. Run starts `run` in a terminal; Debug starts `debug` under the
+With a `tests` section, every line that declares a test gets Run (▷) and
+Debug (the bug) at its end. Run starts `run` in a terminal; Debug starts `debug` under the
 debugger. `${file}` is the open file and `${test}` the name `match` captured
 (its first group). `port` (4444 when missing) is where `debug` listens: one
 apart from the program's lets a test be debugged while it runs.
@@ -64,8 +62,9 @@ apart from the program's lets a test be debugged while it runs.
 
 All of them can be changed in Settings.
 
-Like every panel, it goes wherever its tab (the bug at the start of its
-toolbar) is dragged: see Layout in the README.
+It is a tab after the terminals' (closing the tab hides it; F5 or Cmd-Shift-Y
+bring it back). Like every panel, it goes wherever its icon in the activity
+bar is dragged: see Layout in the README.
 
 When a VM stops, its line is marked, the values of the variables are written
 at the end of the lines of its function, and hovering a name shows its value

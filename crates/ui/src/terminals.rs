@@ -42,6 +42,10 @@ pub enum TerminalAreaEvent {
     },
     /// A message for the status bar.
     Message(SharedString),
+    /// Its tab, the debugger's: show it (true) or go back to the terminals.
+    ShowDebugger(bool),
+    /// The debugger's tab closed.
+    CloseDebugger,
 }
 
 struct TerminalTab {
@@ -75,6 +79,9 @@ pub struct TerminalArea {
     body_size: Rc<Cell<Option<Size<Pixels>>>>,
     /// Terminals on this machine (not on a server).
     local: bool,
+    /// The debugger, when it's in the terminals' place: a tab after
+    /// theirs, and whether it's the one showing.
+    debug_tab: Option<(AnyView, bool)>,
     /// For right-click menus.
     weak: WeakEntity<Self>,
     _subscriptions: Vec<Subscription>,
@@ -96,6 +103,7 @@ impl TerminalArea {
             drag_origin: None,
             body_size: Rc::default(),
             local,
+            debug_tab: None,
             weak: cx.entity().downgrade(),
             _subscriptions: Vec::new(),
         }
@@ -375,6 +383,18 @@ impl TerminalArea {
         }
     }
 
+    pub fn set_debug_tab(&mut self, tab: Option<(AnyView, bool)>, cx: &mut Context<Self>) {
+        let key = |tab: &Option<(AnyView, bool)>| tab.as_ref().map(|(view, showing)| (view.entity_id(), *showing));
+        if key(&tab) != key(&self.debug_tab) {
+            self.debug_tab = tab;
+            cx.notify();
+        }
+    }
+
+    fn debugger_showing(&self) -> bool {
+        self.debug_tab.as_ref().is_some_and(|(_, showing)| *showing)
+    }
+
     /// Opens a terminal in a new tab and focuses it.
     pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(Place::NewTab, window, cx);
@@ -576,6 +596,7 @@ impl TerminalArea {
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let debug_tab = self.debug_tab.as_ref().map(|(_, showing)| self.render_debug_tab(*showing, cx));
         let theme = cx.theme();
         h_flex()
             .id("terminal-tabs")
@@ -587,7 +608,7 @@ impl TerminalArea {
             .overflow_x_scroll()
             .on_drop(cx.listener(|this, drag: &TerminalDrag, window, cx| this.drop_on_bar(drag, None, window, cx)))
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
-                let active = ix == self.active;
+                let active = ix == self.active && !self.debugger_showing();
                 let title = self
                     .views
                     .get(&tab.active)
@@ -645,7 +666,12 @@ impl TerminalArea {
                                 this.close_tab(ix, window, cx);
                             })),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.debugger_showing() {
+                            cx.emit(TerminalAreaEvent::ShowDebugger(false));
+                        }
+                        this.activate_tab(ix, window, cx)
+                    }))
                     .context_menu({
                         let area = self.weak.clone();
                         move |menu, _, _| {
@@ -676,6 +702,7 @@ impl TerminalArea {
                         }
                     })
             }))
+            .children(debug_tab)
             .child(
                 div()
                     .id("new-terminal")
@@ -686,7 +713,12 @@ impl TerminalArea {
                     .text_color(theme.muted_foreground)
                     .hover(|style| style.text_color(theme.foreground))
                     .child("+")
-                    .on_click(cx.listener(|this, _, window, cx| this.new_terminal(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.debugger_showing() {
+                            cx.emit(TerminalAreaEvent::ShowDebugger(false));
+                        }
+                        this.new_terminal(window, cx)
+                    })),
             )
             .child(
                 div()
@@ -703,6 +735,58 @@ impl TerminalArea {
                         }
                     }),
             )
+    }
+
+    /// The debugger's tab, after the terminals'.
+    fn render_debug_tab(&self, showing: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        h_flex()
+            .id("debug-tab")
+            .when(cfg!(test), |el| el.debug_selector(|| "debug-tab".into()))
+            .group("debug-tab")
+            .h_full()
+            .flex_none()
+            .pl_3()
+            .pr_1()
+            .gap_1()
+            .text_ui(cx)
+            .border_r_1()
+            .border_color(theme.border)
+            .when(showing, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
+            .when(!showing, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
+            .child(svg().path("icons/bug.svg").size(px(14.)).text_color(theme.muted_foreground))
+            .child("Debug")
+            .child(
+                div()
+                    .id("debug-tab-close")
+                    .when(cfg!(test), |el| el.debug_selector(|| "debug-tab-close".into()))
+                    .flex_none()
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(theme.radius)
+                    .hover(|style| style.bg(theme.muted))
+                    .child(
+                        svg()
+                            .path("icons/tab-close.svg")
+                            .size(px(14.))
+                            .text_color(theme.muted_foreground)
+                            .when(!showing, |el| el.invisible().group_hover("debug-tab", |s| s.visible())),
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.emit(TerminalAreaEvent::CloseDebugger);
+                    })),
+            )
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalAreaEvent::ShowDebugger(true))))
+            .context_menu({
+                let area = self.weak.clone();
+                move |menu, _, _| {
+                    menu.item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::CloseDebugger)))
+                }
+            })
+            .into_any_element()
     }
 
     /// Renders a branch of the tree; `path` makes each split's ids unique.
@@ -786,6 +870,7 @@ impl Render for TerminalArea {
             self.cancel_drag(window, cx);
         }
         let body = match self.tabs.get(self.active) {
+            _ if self.debugger_showing() => self.debug_tab.as_ref().map(|(view, _)| view.clone().into_any_element()).unwrap_or_else(|| div().into_any_element()),
             None => {
                 let theme = cx.theme();
                 div()

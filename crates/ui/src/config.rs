@@ -178,15 +178,20 @@ impl Layout {
                 Some(self.side.unwrap_or(260.)),
                 vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Search, Panel::References])],
             )];
+            // The debugger, a tab of the terminals' unless it was placed.
+            let terminals = match self.debug_at {
+                None => vec![Panel::Terminals, Panel::Debugger],
+                Some(_) => vec![Panel::Terminals],
+            };
             if self.terminals_at == Some(PanelAt::Bottom) {
-                code.push(Stack { height: Some(self.terminals_height.unwrap_or(280.)), panels: vec![Panel::Terminals] });
+                code.push(Stack { height: Some(self.terminals_height.unwrap_or(280.)), panels: terminals.clone() });
             }
-            if self.debug_at != Some(PanelAt::Right) {
+            if self.debug_at == Some(PanelAt::Bottom) {
                 code.push(Stack { height: Some(self.debug.unwrap_or(260.)), panels: vec![Panel::Debugger] });
             }
             columns.push(Column::of(None, code));
             if self.terminals_at != Some(PanelAt::Bottom) {
-                columns.push(Column::of(self.terminals, vec![Stack::of(&[Panel::Terminals])]));
+                columns.push(Column::of(self.terminals, vec![Stack { height: None, panels: terminals }]));
             }
             if self.debug_at == Some(PanelAt::Right) {
                 columns.push(Column::of(Some(self.debug_width.unwrap_or(420.)), vec![Stack::of(&[Panel::Debugger])]));
@@ -380,9 +385,6 @@ pub struct DebugSaved {
     /// Stop at exceptions nothing catches, and at every exception.
     pub uncaught: bool,
     pub all: bool,
-    /// The launch configuration last started.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub launch: Option<String>,
     /// The terminal the launch command ran in: the next launch reuses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal: Option<u64>,
@@ -390,7 +392,7 @@ pub struct DebugSaved {
 
 impl Default for DebugSaved {
     fn default() -> Self {
-        Self { breakpoints: Vec::new(), watches: Vec::new(), uncaught: true, all: false, launch: None, terminal: None }
+        Self { breakpoints: Vec::new(), watches: Vec::new(), uncaught: true, all: false, terminal: None }
     }
 }
 
@@ -841,7 +843,7 @@ mod layout_tests {
         let mut layout = Layout::default();
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References]], vec![vec![Code], vec![Debugger]], vec![vec![Terminals]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References]], vec![vec![Code]], vec![vec![Terminals, Debugger]]]
         );
         // The changes, a column of their own after the files.
         assert!(layout.move_panel(Changes, Files, Side::Right));
@@ -858,7 +860,7 @@ mod layout_tests {
         assert!(layout.move_panel(Terminals, Files, Side::Left));
         assert_eq!(places(&layout)[1], [vec![Terminals]]);
         assert_eq!(layout.columns[1].width, None, "the terminals, half of what's left");
-        assert_eq!(places(&layout)[3], [vec![Code], vec![Debugger]]);
+        assert_eq!(places(&layout)[4], [vec![Debugger]]);
         // The code and the workspaces go anywhere too: tabs with the files,
         // and the workspaces under the terminals.
         assert!(layout.move_panel(Code, Files, Side::Tab(None)));
@@ -880,7 +882,7 @@ mod layout_tests {
         assert!(layout.commit_in_history());
         // The history takes them along.
         assert!(layout.move_panel(History, Terminals, Side::Bottom));
-        assert_eq!(places(&layout)[3], [vec![Terminals], vec![History, Commit]]);
+        assert_eq!(places(&layout)[3], [vec![Terminals, Debugger], vec![History, Commit]]);
     }
 
     #[test]
@@ -888,9 +890,9 @@ mod layout_tests {
         let mut layout = Layout::default();
         let before = places(&layout);
         // Alone in its column, beside itself or on itself.
-        assert!(!layout.move_panel(Terminals, Terminals, Side::Left));
-        assert!(!layout.move_panel(Terminals, Terminals, Side::Top));
-        assert!(!layout.move_panel(Terminals, Terminals, Side::Tab(None)));
+        assert!(!layout.move_panel(Code, Code, Side::Left));
+        assert!(!layout.move_panel(Code, Code, Side::Top));
+        assert!(!layout.move_panel(Code, Code, Side::Tab(None)));
         // On its own tab, or as the last tab when it is.
         assert!(!layout.move_panel(Changes, Changes, Side::Tab(Some(Changes))));
         assert!(!layout.move_panel(References, Files, Side::Tab(None)));

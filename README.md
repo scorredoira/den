@@ -73,7 +73,7 @@ They are meant for coding agents: when `~/.claude` exists, the agent installs a 
 
 ## Workspaces
 
-The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees (named by their branch) folded under its checkout. Drag to reorder: a checkout moves along with its worktrees. Its + adds a folder or a server (any name from `~/.ssh/config` or `user@host`), and the + beside a server opens a folder there, or creates one by typing a new name; right-click removes them, and a folder that isn't a repo yet can be made one (Initialize Git Repository). With only folders open it stays hidden until toggled (Cmd-Shift-B); it shows by itself once there's a server or a worktree.
+The workspaces column lists, per server, the folders opened and the known repos, each repo's worktrees (named by their branch) folded under its checkout. Drag to reorder: a checkout moves along with its worktrees. Its + adds a folder or a server (any name from `~/.ssh/config` or `user@host`), and the + beside a server opens a folder there, or creates one by typing a new name. Hovering a repo's checkout shows a + that makes a new worktree of it, and hovering a worktree, a bin that deletes it. Right-click removes them, and a folder that isn't a repo yet can be made one (Initialize Git Repository). With only folders open it stays hidden until toggled (Cmd-Shift-B); it shows by itself once there's a server or a worktree.
 
 New Worktree (Cmd-N) creates one with the repo's executable `.sik/create <name>` if it has one, or `git worktree add` otherwise. From a Sik terminal: `cd "$(sik worktree <name>)"`. To leave out the worktrees agents make on their own, turn on Only My Worktrees in Settings: the column then lists only those made with New Worktree.
 
@@ -98,15 +98,10 @@ Drag an icon onto a panel's bar to put them in the same place, one showing at a 
 A workspace says how to start its program in `.sik/debug.json`:
 
 ```json
-{
-    "configurations": [
-        { "name": "Server", "command": "sim -d server", "port": 4444 },
-        { "name": "Attach", "port": 4444 }
-    ]
-}
+{ "command": "sim -d ${file}", "port": 4444 }
 ```
 
-F5 runs the command in a terminal and connects to the port; a configuration without a command attaches to a program already running, and so does F5 when something already answers on the port. F9 toggles a breakpoint (or click the gutter; right-click it for a condition, a hit count or a log message), F10 steps over, F11 into, Shift-F11 out, Ctrl-F10 runs to the cursor, Ctrl-Shift-F10 makes the cursor's line the next statement, F6 pauses, Shift-F5 stops and Cmd-Shift-Y shows or hides the panel. See [docs/debugger.md](docs/debugger.md).
+`${file}` is the open file: the program decides what debugging it means (a script, a test, the server it belongs to). F5 runs the command in a terminal and connects to the port; it attaches instead when something already answers on the port, or when there's no command. A program started this way stops at its first line, as Visual Studio does: F5 goes on. The debugger is a tab after the terminals' (drag its icon elsewhere to move it). F9 toggles a breakpoint (or click the gutter; right-click it for a condition, a hit count or a log message), F10 steps over, F11 into, Shift-F11 out, Ctrl-F10 runs to the cursor, Ctrl-Shift-F10 makes the cursor's line the next statement, F6 pauses, Shift-F5 stops and Cmd-Shift-Y shows or hides the panel. See [docs/debugger.md](docs/debugger.md).
 
 ## Updates
 
