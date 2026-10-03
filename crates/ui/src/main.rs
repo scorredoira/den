@@ -48,6 +48,7 @@ actions!(
         ShowFiles,
         ShowChanges,
         ShowHistory,
+        ToggleCommitFiles,
         ShowSearch,
         ShowReferences,
         GoToDefinition,

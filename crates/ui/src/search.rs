@@ -444,6 +444,8 @@ impl Render for SearchPanel {
                                         .item(menu::item("Copy Relative Path", &panel, move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                                         }))
+                                        .separator()
+                                        .item(menu::hide_panel())
                                     }
                                 })
                                 .into_any_element(),

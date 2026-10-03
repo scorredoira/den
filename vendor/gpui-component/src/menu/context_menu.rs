@@ -407,6 +407,10 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                             }
                         });
 
+                        // The innermost menu is the one shown: not those of
+                        // the elements around it.
+                        cx.stop_propagation();
+
                         {
                             let mut shared_state = shared_state.borrow_mut();
                             // Clear any existing menu view to allow immediate replacement

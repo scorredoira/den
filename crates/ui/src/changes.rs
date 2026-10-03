@@ -399,6 +399,8 @@ impl ChangesPanel {
                 menu::item("Reveal in Finder", &panel, move |_, _, cx| cx.reveal_path(&absolute))
                     .disabled(deleted || !local),
             )
+            .separator()
+            .item(menu::hide_panel())
         }
     }
 
@@ -453,6 +455,8 @@ impl ChangesPanel {
             .item(menu::item("Copy Relative Path", &panel, move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
             }))
+            .separator()
+            .item(menu::hide_panel())
         }
     }
 
@@ -585,6 +589,8 @@ impl ChangesPanel {
                         .item(menu::item("Copy Message", &panel, move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy_subject.clone()))
                         }))
+                        .separator()
+                        .item(menu::hide_panel())
                     })
                     .into_any_element(),
             );
@@ -608,8 +614,21 @@ impl ChangesPanel {
         self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir) && Config::get(cx).layout.commit_in_history()
     }
 
-    /// The bar over the selected commit's files: click to hide or show them.
+    /// Shows or hides the selected commit's files under the commits.
+    pub fn show_files(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.files_open = open;
+        cx.notify();
+    }
+
+    pub fn files_open(&self) -> bool {
+        self.files_open
+    }
+
+    /// The bar over the selected commit's files: click, or its menu, to hide
+    /// or show them.
     fn render_files_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel = cx.entity().downgrade();
+        let label = if self.files_open { "Hide Files" } else { "Show Files" };
         let theme = cx.theme();
         let commit = self.commit.as_ref().and_then(|hash| self.commits.iter().find(|commit| commit.hash == *hash));
         let count = self.commit.as_ref().and_then(|hash| self.commit_files.get(hash)).map(Vec::len);
@@ -628,10 +647,12 @@ impl ChangesPanel {
             .child(div().font_weight(FontWeight::SEMIBOLD).child("FILES"))
             .when_some(commit, |el, commit| el.child(commit.short.clone()))
             .when_some(count, |el, count| el.child(format!("({count})")))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.files_open = !this.files_open;
-                cx.notify();
-            }))
+            .on_click(cx.listener(|this, _, _, cx| this.show_files(!this.files_open, cx)))
+            .context_menu(move |menu, _, _| {
+                menu.item(menu::item(label, &panel, |this, _, cx| this.show_files(!this.files_open, cx)))
+                .separator()
+                .item(menu::hide_panel())
+            })
     }
 
     fn render_commit_files(&self, cx: &mut Context<Self>) -> AnyElement {

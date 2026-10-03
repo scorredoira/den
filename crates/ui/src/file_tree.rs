@@ -743,7 +743,7 @@ impl Render for FileTree {
                     };
                     let this = this.read(cx);
                     let path = this.menu_target.clone().unwrap_or_else(|| this.root.clone());
-                    this.context_menu(path, menu, tree.clone())
+                    this.context_menu(path, menu, tree.clone()).separator().item(crate::menu::hide_panel())
                 }
             })
             .child(list)

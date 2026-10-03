@@ -2837,6 +2837,8 @@ impl Den {
                             this.ask_remove(remove.clone(), window, cx)
                         }))
                     })
+                    .separator()
+                    .item(hide_column(&weak))
                 }
             });
 
@@ -3074,7 +3076,7 @@ fn add_menu_items(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
 fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
     add_menu_items(menu, den)
         .separator()
-        .item(menu::item("Hide Panel", den, |this, _, cx| this.show_tasks_column(false, cx)))
+        .item(hide_column(den))
 }
 
 /// Right-click on a server's name in the tasks column.
@@ -3082,7 +3084,10 @@ fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
 /// `Den::keep`).
 fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, den: &WeakEntity<Den>) -> PopupMenu {
     if name == LOCAL {
-        return menu.item(menu::item("Open Folder…", den, |this, window, cx| this.open_folder(&OpenFolder, window, cx)));
+        return menu
+            .item(menu::item("Open Folder…", den, |this, window, cx| this.open_folder(&OpenFolder, window, cx)))
+            .separator()
+            .item(hide_column(den));
     }
     let (open, reconnect, remove) = (name.clone(), name.clone(), name.clone());
     menu.when(keep, |menu| {
@@ -3098,6 +3103,13 @@ fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, 
     .separator()
     .item(menu::item("Reconnect", den, move |this, window, cx| this.connect(reconnect.clone(), window, cx)))
     .item(menu::item("Remove Server", den, move |this, window, cx| this.remove_host(remove.clone(), window, cx)))
+    .separator()
+    .item(hide_column(den))
+}
+
+/// Hide Panel, at the end of every menu in the tasks column.
+fn hide_column(den: &WeakEntity<Den>) -> menu::PopupMenuItem {
+    menu::item("Hide Panel", den, |this, _, cx| this.show_tasks_column(false, cx))
 }
 
 /// In Open Recent: the path (`~/…` locally) and, on a server, its name.
