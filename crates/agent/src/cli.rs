@@ -103,12 +103,16 @@ pub fn invoked_as_den() -> bool {
         .unwrap_or(false)
 }
 
-/// `den <path>`: asks the app to open it. With no app connected, it starts
-/// one on this machine; over SSH, there's no app to start.
+/// `den <path>`: asks the app to open it. In den's terminals, the window
+/// showing the terminal does. With no app connected, it starts one on this
+/// machine; over SSH, there's no app to start.
 pub fn open(arg: &str) -> Result<()> {
     let path = std::path::absolute(arg)?;
     let path = path.canonicalize().with_context(|| format!("{arg}: no such file or folder"))?;
     let (root, file) = proto::open_target(&path);
+    if own_term().is_some() {
+        return open_here(root, file);
+    }
     let exe = std::env::current_exe()?;
     let client = Client::connect_local(&exe).context("could not talk to the agent")?;
     let response = smol::block_on(client.request(Request::Open { root, file }))?;
@@ -132,19 +136,38 @@ pub fn task(args: &[String]) -> Result<()> {
         std::process::exit(2);
     };
     let cwd = std::env::current_dir()?;
-    let inside_den = std::env::var_os("DEN_TERMINAL").is_some();
     let client = Client::connect_local(&std::env::current_exe()?).context("could not talk to the agent")?;
     eprintln!("creating worktree {name}…");
     let response = smol::block_on(client.request(Request::TaskCreate {
         repo: cwd,
         name: name.clone(),
-        open: inside_den,
+        open: false,
     }))?;
     let Response::Task(task) = response else {
         bail!("unexpected response from the agent: {response:?}");
     };
+    if own_term().is_some()
+        && let Err(err) = open_here(task.path.clone(), None)
+    {
+        eprintln!("could not open it: {err:#}");
+    }
     println!("{}", task.path.display());
     Ok(())
+}
+
+/// Opens `root`, with `file` in it, in the window showing this terminal.
+fn open_here(root: PathBuf, file: Option<PathBuf>) -> Result<()> {
+    let mut args = vec!["open".to_string(), root.to_string_lossy().into_owned()];
+    args.extend(file.map(|file| file.to_string_lossy().into_owned()));
+    let response = smol::block_on(connect()?.request(Request::Command {
+        args,
+        cwd: std::env::current_dir()?,
+        term: own_term(),
+    }))?;
+    match response {
+        Response::Text(_) => Ok(()),
+        other => bail!("unexpected response from the agent: {other:?}"),
+    }
 }
 
 /// The terminal of den this runs in, if any.

@@ -153,7 +153,8 @@ struct State {
     /// The relays each connection opened.
     relays: HashMap<ConnId, HashMap<u64, crate::relay::Relay>>,
     next_relay: u64,
-    /// Connections of apps, which run `den` commands: the last one runs them.
+    /// Connections of apps, which run `den` commands: the one showing the
+    /// terminal a command ran in or, if none does, the last.
     apps: Vec<ConnId>,
     /// `den` commands an app is running: the app, and who asked (its
     /// connection and request).
@@ -459,8 +460,9 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     result
 }
 
-/// Sends a `den` command to the app that last said it runs them, with the
-/// workspace of the terminal it ran in.
+/// Sends a `den` command, with the workspace of the terminal it ran in, to
+/// the app showing that terminal (an app can have several windows, each
+/// with its own connection) or else to the one that last said it runs them.
 fn send_command(
     state: &Shared,
     conn: ConnId,
@@ -470,11 +472,15 @@ fn send_command(
     term: Option<TermId>,
 ) -> Result<()> {
     let mut state = state.lock().unwrap();
+    let entry = term.and_then(|term| state.terms.get(&term));
     let app = *state
         .apps
-        .last()
+        .iter()
+        .rev()
+        .find(|app| entry.is_some_and(|entry| entry.subscribers.contains(app)))
+        .or(state.apps.last())
         .ok_or_else(|| anyhow::anyhow!("no den app is connected to this machine"))?;
-    let group = term.and_then(|term| state.terms.get(&term)).map(|entry| entry.group.clone());
+    let group = entry.map(|entry| entry.group.clone());
     let term = term.filter(|_| group.is_some());
     state.next_command += 1;
     let command = state.next_command;

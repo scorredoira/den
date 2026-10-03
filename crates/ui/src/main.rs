@@ -191,7 +191,7 @@ fn main() {
 fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
     enum Received {
         Open(PathBuf, Option<PathBuf>),
-        Command(u64),
+        Command(u64, Vec<String>),
         Lost,
     }
     let (tx, rx) = smol::channel::unbounded::<Received>();
@@ -203,8 +203,8 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
         proto::Event::Open { root, file } => {
             let _ = tx.try_send(Received::Open(root.clone(), file.clone()));
         }
-        proto::Event::Command { command, .. } => {
-            let _ = tx.try_send(Received::Command(*command));
+        proto::Event::Command { command, args, .. } => {
+            let _ = tx.try_send(Received::Command(*command, args.clone()));
         }
         _ => {}
     });
@@ -213,9 +213,17 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
         while let Ok(received) = rx.recv().await {
             match received {
                 Received::Open(root, file) => cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx)),
-                Received::Command(command) => {
+                Received::Command(command, args) => {
                     if !cx.update(|cx| app::has_window(cx)) {
-                        let result = Err("den's window is closed".to_string());
+                        let result = match args.as_slice() {
+                            // `den <path>` in a terminal: the window opens with it.
+                            [open, root, file @ ..] if open == "open" && file.len() <= 1 => {
+                                let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
+                                cx.update(|cx| app::handle_open(app::LOCAL.into(), root, file, cx));
+                                Ok(String::new())
+                            }
+                            _ => Err("den's window is closed".to_string()),
+                        };
                         agent.notify(proto::Request::CommandDone { command, result });
                     }
                 }

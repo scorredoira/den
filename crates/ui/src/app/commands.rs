@@ -80,6 +80,11 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
+            // `den <path>` and `den worktree` in a terminal of this window.
+            ["open", root, file @ ..] if file.len() <= 1 => {
+                let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
+                return self.open_command(host, root, file, window, cx);
+            }
             ["term", "list"] => here(self, false, window, cx).map(|(_, workspace)| {
                 let mut out = String::new();
                 for (term, title, active) in workspace.read(cx).terminal_list(cx) {
@@ -118,6 +123,38 @@ impl Den {
             _ => Err(format!("den {}: unknown command; see den --help", args.join(" "))),
         };
         Task::ready(answer)
+    }
+
+    /// Opens `root` with `file` in it, once the server's worktrees are read
+    /// again (`den worktree` has just made one), and brings the window up.
+    fn open_command(
+        &mut self,
+        host: SharedString,
+        root: PathBuf,
+        file: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Answer> {
+        let client = self.client(&host);
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(client) = client
+                && let Ok(tasks) = list_tasks(&client).await
+            {
+                this.update(cx, |this, _| {
+                    if let Some(host) = this.host_mut(&host) {
+                        host.tasks = tasks;
+                    }
+                })
+                .ok();
+            }
+            this.update_in(cx, |this, window, cx| {
+                this.open_from_terminal(host, root, file, window, cx);
+                window.activate_window();
+                cx.activate(true);
+            })
+            .map_err(|_| "den's window is closed".to_string())?;
+            Ok(String::new())
+        })
     }
 
     /// The workspace a command acts on, and its root: that of the terminal

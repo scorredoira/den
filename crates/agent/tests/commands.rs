@@ -1,7 +1,7 @@
 //! End-to-end test: a `den` command from a terminal goes to the app that
-//! serves them, with the terminal's workspace, and the app's answer comes
-//! back to it. Its own file, so it runs in its own process (the socket is
-//! chosen with an environment variable).
+//! serves them (the window showing the terminal), with its workspace, and
+//! the app's answer comes back to it. Its own file, so it runs in its own
+//! process (the socket is chosen with an environment variable).
 
 use std::{path::Path, sync::mpsc, time::Duration};
 
@@ -87,6 +87,27 @@ fn the_app_answers_commands_from_its_terminals() {
     app.notify(Request::CommandDone { command: id, result: Err("no file is open".into()) });
     let err = smol::block_on(pending).unwrap_err();
     assert!(err.to_string().contains("no file is open"), "{err:#}");
+
+    // another window of the app, serving last: commands from the terminal
+    // still go to the window showing it, the others to the last
+    let other = Client::connect_local(agent).unwrap();
+    let (other_tx, other_commands) = mpsc::channel();
+    other.watch(move |event| {
+        if let Event::Command { command, .. } = event {
+            let _ = other_tx.send(*command);
+        }
+    });
+    request(&other, Request::Serve).unwrap();
+    request(&app, Request::TermAttach { term }).unwrap();
+    let pending = cli.request(command(Some(term)));
+    let (id, ..) = commands.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.notify(Request::CommandDone { command: id, result: Ok(String::new()) });
+    smol::block_on(pending).unwrap();
+    let pending = cli.request(command(None));
+    let id = other_commands.recv_timeout(Duration::from_secs(5)).unwrap();
+    other.notify(Request::CommandDone { command: id, result: Ok(String::new()) });
+    smol::block_on(pending).unwrap();
+    assert!(commands.try_recv().is_err());
 
     request(&app, Request::Shutdown).ok();
 }
