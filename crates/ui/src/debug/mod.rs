@@ -266,9 +266,6 @@ pub struct Debugger {
     /// The terminal the launch command runs in, reused by the next launch.
     term: Option<TermId>,
     launched: bool,
-    /// Released a program held before running, paused: its first stop is
-    /// its entry.
-    entry: bool,
     running: u64,
     stops: BTreeMap<u64, VmStop>,
     serial: u64,
@@ -343,7 +340,6 @@ impl Debugger {
             conn: None,
             generation: 0,
             launched: false,
-            entry: false,
             running: 0,
             stops: BTreeMap::new(),
             serial: 0,
@@ -681,12 +677,10 @@ impl Debugger {
             self.send_breakpoints(&path, cx);
         }
         self.send_exceptions();
-        // As Visual Studio does, a program that starts stops at its first
-        // line: the next VM that runs code.
+        // As Visual Studio does, a program that starts stops at its entry,
+        // wherever the program says that is.
         if body.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
-            self.entry = true;
-            self.send("pause", json!({}), |_, _, _| {});
-            self.send("run", json!({}), |_, _, _| {});
+            self.send("run", json!({ "entry": true }), |_, _, _| {});
         }
         let stops: Vec<Stop> = protocol::field(&body, "stopped").unwrap_or_default();
         for stop in stops {
@@ -734,7 +728,6 @@ impl Debugger {
             conn.client.close_relay(conn.relay);
         }
         self.status = Status::Idle;
-        self.entry = false;
         self.stops.clear();
         self.focus = None;
         self.locals.clear();
@@ -802,10 +795,7 @@ impl Debugger {
         }
     }
 
-    fn on_stop(&mut self, mut stop: Stop, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.entry) && stop.reason == "pause" {
-            stop.reason = "entry".into();
-        }
+    fn on_stop(&mut self, stop: Stop, cx: &mut Context<Self>) {
         self.serial += 1;
         let vm = stop.vm;
         if let Some(exc) = &stop.exception {

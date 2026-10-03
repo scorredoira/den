@@ -22,8 +22,9 @@ the agent, so a program on a server is debugged like a local one.
 
 F5 runs the command. If something already answers on the port, it attaches to
 it instead of starting the command again. A program held before running
-(`waiting` in `hello`) is released paused, so it stops at its first line, as
-Visual Studio's debugger does. Stop (Shift-F5) interrupts a program it
+(`waiting` in `hello`) is released with `entry`, so it stops at its entry, as
+Visual Studio's debugger does: where the program says (sim: the first line of
+`main`, or of the function `-de` names). Stop (Shift-F5) interrupts a program it
 started and leaves one it attached to running.
 
 A file from when there were several `configurations` starts the first one.
@@ -40,7 +41,7 @@ apart from the program's lets a test be debugged while it runs.
 "tests": {
     "match": "^export function (test\\w*)\\(",
     "run": "sim test ${file} ${test} -x",
-    "debug": "sim -d -dp 127.0.0.1:4445 test ${file} ${test} -x -c 1",
+    "debug": "sim -d -de ${test} -dp 127.0.0.1:4445 test ${file} ${test} -x -c 1",
     "port": 4445
 }
 ```
@@ -131,7 +132,7 @@ A stop carries everything needed to show it, so it costs no round trip.
 | cmd | arguments | result |
 |-----|-----------|--------|
 | `hello` | `version` | `version`, `cwd`, `waiting` (held before running), `running` (VMs running), `stopped: [Stop]` |
-| `run` | | Releases a program held before running. Idempotent. |
+| `run` | `entry?` | Releases a program held before running. Idempotent. With `entry`, the program stops at its entry (reason `entry`): the start of the code being debugged, which it decides, not the first code it runs. |
 | `setBreakpoints` | `file`, `breakpoints: [{line, condition?, hit?, log?}]` | `breakpoints: [{line, error?}]`: where each one went, and why it was ignored |
 | `setExceptions` | `uncaught`, `all` | |
 | `continue` | `vm` | |
