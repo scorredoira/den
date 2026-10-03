@@ -2866,8 +2866,6 @@ impl Den {
     }
 }
 
-/// How much a task's dot (see `Den::status`) asks to be looked at: waiting
-/// for an answer, working, finished unseen, or nothing.
 /// Turning while something takes a while: a worktree made or deleted, a test
 /// starting to be debugged.
 pub(crate) fn spinner(color: Hsla) -> impl IntoElement {
@@ -2881,6 +2879,8 @@ pub(crate) fn spinner(color: Hsla) -> impl IntoElement {
         })
 }
 
+/// How much a task's dot (see `Den::status`) asks to be looked at: waiting
+/// for an answer, working, finished unseen, or nothing.
 fn urgency(dot: &str, color: Hsla, cx: &App) -> u8 {
     match dot {
         "●" if color == cx.theme().danger => 3,
