@@ -42,7 +42,7 @@ const LAUNCH_TEMPLATE: &str = r#"{
 "#;
 
 /// How often to look whether the program listens on the port of `open`.
-const OPEN_POLL: Duration = Duration::from_millis(500);
+const OPEN_POLL: Duration = Duration::from_millis(100);
 
 /// How long to keep trying to reach a program that is starting.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
@@ -281,6 +281,9 @@ pub struct Debugger {
     /// The terminal the launch command runs in, reused by the next launch.
     term: Option<TermId>,
     launched: bool,
+    /// The program stops at its entry: a test or a script, not a server
+    /// (a launch with `open`), which runs and shows its page right away.
+    stop_at_entry: bool,
     running: u64,
     stops: BTreeMap<u64, VmStop>,
     serial: u64,
@@ -359,6 +362,7 @@ impl Debugger {
             conn: None,
             generation: 0,
             launched: false,
+            stop_at_entry: true,
             running: 0,
             stops: BTreeMap::new(),
             serial: 0,
@@ -599,6 +603,7 @@ impl Debugger {
     fn begin(&mut self, launch: Launch, open_page: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.console.clear();
         self.launched = false;
+        self.stop_at_entry = launch.open.is_none();
         self.status = Status::Connecting(format!("Connecting to port {}…", launch.port));
         let open = launch.open.filter(|_| open_page);
         self.connect(launch.port, launch.command, open, window, cx);
@@ -818,9 +823,9 @@ impl Debugger {
         }
         self.send_exceptions();
         // As Visual Studio does, a program that starts stops at its entry,
-        // wherever the program says that is.
+        // wherever the program says that is; a server just runs.
         if body.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
-            self.send("run", json!({ "entry": true }), |_, _, _| {});
+            self.send("run", json!({ "entry": self.stop_at_entry }), |_, _, _| {});
         }
         let stops: Vec<Stop> = protocol::field(&body, "stopped").unwrap_or_default();
         for stop in stops {
