@@ -487,6 +487,20 @@ pub struct Config {
     /// (Hide Files, Cmd-Alt-Shift-H).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_files_hidden: bool,
+    /// The groups of the Outline turned off with the icons at its top.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outline_hidden: Vec<OutlineGroup>,
+}
+
+/// What the icons at the top of the Outline show or hide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutlineGroup {
+    Constants,
+    Interfaces,
+    /// Classes and what's in them: their methods.
+    Classes,
+    Functions,
 }
 
 /// Text sizes chosen in Settings; unset, the default.

@@ -1,7 +1,8 @@
-//! The Outline panel: the classes, functions, methods, constants, enums and
-//! globals of the file in front, from its language server (in Markdown, its
-//! headings), each under what it's a member of. Nothing inside a function or
-//! a variable: no locals, closures or fields of an object literal. The
+//! The Outline panel: the constants, interfaces, classes with their methods
+//! and functions of the file in front, from its language server (in
+//! Markdown, its headings), each under what it's a member of. Never a field,
+//! nor anything inside a function or a variable: no locals or closures. The
+//! icons at the top show or hide each of the four groups. The
 //! workspace keeps it on the file in front (see `Workspace::sync_outline`);
 //! the symbol the cursor is in is highlighted, and a click goes to one. Those
 //! with members (a class, an `impl`…) collapse with their chevron.
@@ -15,11 +16,16 @@ use std::{
 use gpui_kit::component::{
     ActiveTheme as _, h_flex,
     menu::{ContextMenuExt as _, PopupMenuItem},
+    tooltip::Tooltip,
+    v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::LspSymbol;
 
-use crate::{config::UiText, symbol_picker::kind_icon};
+use crate::{
+    config::{Config, OutlineGroup as Group, UiText},
+    symbol_picker::kind_icon,
+};
 
 pub enum OutlineEvent {
     Pick(LspSymbol),
@@ -32,6 +38,40 @@ enum State {
     Ready(Rc<[LspSymbol]>),
     /// Why there are none: no server, or it failed.
     Failed(SharedString),
+}
+
+impl Group {
+    const ALL: [Self; 4] = [Group::Constants, Group::Interfaces, Group::Classes, Group::Functions];
+
+    /// The kind its icon is drawn as, and its tooltip.
+    fn icon(self) -> (u32, &'static str) {
+        match self {
+            Group::Constants => (14, "Constants"),
+            Group::Interfaces => (11, "Interfaces and Types"),
+            Group::Classes => (5, "Classes and Methods"),
+            Group::Functions => (12, "Functions"),
+        }
+    }
+
+    /// The group of a symbol of LSP `kind`: none for those always shown (a
+    /// module, a heading…).
+    fn of(kind: u32) -> Option<Self> {
+        match kind {
+            // Constant, Variable, Array.
+            13 | 14 | 18 => Some(Group::Constants),
+            // Interface, TypeParameter, Enum.
+            10 | 11 | 26 => Some(Group::Interfaces),
+            // Class, Struct, Object (a Rust `impl`), Method, Constructor.
+            5 | 23 | 19 | 6 | 9 => Some(Group::Classes),
+            12 => Some(Group::Functions),
+            _ => None,
+        }
+    }
+}
+
+/// Property, Field, Key, EnumMember: never in the outline.
+fn is_field(kind: u32) -> bool {
+    matches!(kind, 7 | 8 | 20 | 22)
 }
 
 /// A symbol shown: not inside a collapsed one.
@@ -128,6 +168,18 @@ impl OutlinePanel {
         self.rebuild(cx);
     }
 
+    /// Shows the symbols of `group`, or hides them.
+    fn toggle_group(&mut self, group: Group, cx: &mut Context<Self>) {
+        Config::update(cx, |config| {
+            let hidden = &mut config.outline_hidden;
+            match hidden.iter().position(|hidden| *hidden == group) {
+                Some(ix) => _ = hidden.remove(ix),
+                None => hidden.push(group),
+            }
+        });
+        self.rebuild(cx);
+    }
+
     /// Collapses every symbol with members, or expands them all.
     fn collapse_all(&mut self, collapse: bool, cx: &mut Context<Self>) {
         let Some(path) = self.path.clone() else {
@@ -136,7 +188,7 @@ impl OutlinePanel {
         let State::Ready(symbols) = &self.state else {
             return;
         };
-        let keys = collapse.then(|| rows(symbols, &HashSet::new()).into_iter().filter(|row| row.parent).map(|row| row.key));
+        let keys = collapse.then(|| rows(symbols, &HashSet::new(), &Config::get(cx).outline_hidden).into_iter().filter(|row| row.parent).map(|row| row.key));
         self.collapsed.insert(path, keys.into_iter().flatten().collect());
         self.rebuild(cx);
     }
@@ -145,7 +197,7 @@ impl OutlinePanel {
         self.rows = match &self.state {
             State::Ready(symbols) => {
                 let collapsed = self.path.as_ref().and_then(|path| self.collapsed.get(path)).cloned().unwrap_or_default();
-                rows(symbols, &collapsed).into()
+                rows(symbols, &collapsed, &Config::get(cx).outline_hidden).into()
             }
             _ => Rc::new([]),
         };
@@ -172,26 +224,68 @@ impl OutlinePanel {
 }
 
 /// The rows of `symbols` (in the order of the file, each after the one it's
-/// in) but those inside the symbols whose key is in `collapsed`.
-fn rows(symbols: &[LspSymbol], collapsed: &HashSet<Rc<str>>) -> Vec<Row> {
-    let mut rows = Vec::new();
-    // The names of the symbols the next one may be in, outermost first.
-    let mut path: Vec<&str> = Vec::new();
-    // Inside a collapsed symbol of this depth: hidden.
+/// in): no fields, nor those of a group in `hidden`, nor those inside the
+/// symbols whose key is in `collapsed`. A symbol inside one of a group is of
+/// that group: a class's methods come and go with it.
+fn rows(symbols: &[LspSymbol], collapsed: &HashSet<Rc<str>>, hidden: &[Group]) -> Vec<Row> {
+    // The symbols of the outline, with their keys.
+    let mut shown: Vec<(usize, Rc<str>)> = Vec::new();
+    // The names and groups of the symbols the next one may be in, outermost
+    // first.
+    let mut path: Vec<(&str, Option<Group>)> = Vec::new();
+    // Inside a hidden symbol of this depth: hidden.
     let mut hidden_below: Option<u32> = None;
     for (ix, symbol) in symbols.iter().enumerate() {
         path.truncate(symbol.depth as usize);
-        path.push(&symbol.name);
+        let group = path.iter().rev().find_map(|(_, group)| *group).or(Group::of(symbol.kind));
+        path.push((&symbol.name, group));
         if hidden_below.is_some_and(|depth| symbol.depth > depth) {
             continue;
         }
-        let key: Rc<str> = path.join("\u{1f}").into();
-        let parent = symbols.get(ix + 1).is_some_and(|next| next.depth > symbol.depth);
-        let is_collapsed = parent && collapsed.contains(&key);
-        hidden_below = is_collapsed.then_some(symbol.depth);
-        rows.push(Row { symbol: ix, parent, collapsed: is_collapsed, key });
+        hidden_below = None;
+        if is_field(symbol.kind) || group.is_some_and(|group| hidden.contains(&group)) {
+            hidden_below = Some(symbol.depth);
+            continue;
+        }
+        let names: Vec<&str> = path.iter().map(|(name, _)| *name).collect();
+        shown.push((ix, names.join("\u{1f}").into()));
+    }
+    let mut rows = Vec::new();
+    // Inside a collapsed symbol of this depth: hidden.
+    let mut collapsed_below: Option<u32> = None;
+    for (ix, (symbol, key)) in shown.iter().enumerate() {
+        let depth = symbols[*symbol].depth;
+        if collapsed_below.is_some_and(|below| depth > below) {
+            continue;
+        }
+        let parent = shown.get(ix + 1).is_some_and(|(next, _)| symbols[*next].depth > depth);
+        let is_collapsed = parent && collapsed.contains(key);
+        collapsed_below = is_collapsed.then_some(depth);
+        rows.push(Row { symbol: *symbol, parent, collapsed: is_collapsed, key: key.clone() });
     }
     rows
+}
+
+impl OutlinePanel {
+    /// The icons that show or hide each group.
+    fn render_groups(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let groups = Group::ALL.map(|group| {
+            let (kind, tip) = group.icon();
+            let (icon, color) = kind_icon(kind, cx);
+            let theme = cx.theme();
+            let on = !Config::get(cx).outline_hidden.contains(&group);
+            div()
+                .id(tip)
+                .p_1()
+                .rounded(theme.radius)
+                .when(on, |el| el.bg(theme.sidebar_accent))
+                .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
+                .child(svg().path(icon).size(px(14.)).text_color(if on { color } else { theme.muted_foreground }))
+                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+                .on_click(cx.listener(move |outline, _, _, cx| outline.toggle_group(group, cx)))
+        });
+        h_flex().px_2().py_1().gap_0p5().children(groups)
+    }
 }
 
 impl Render for OutlinePanel {
@@ -260,10 +354,12 @@ impl Render for OutlinePanel {
         })
         .track_scroll(&self.scroll)
         .size_full();
-        div()
+        let groups = self.render_groups(cx);
+        v_flex()
             .id("outline")
             .size_full()
-            .child(list)
+            .child(groups)
+            .child(div().flex_1().min_h_0().child(list))
             .context_menu({
             let outline = cx.entity().downgrade();
             move |menu, _, _| {
@@ -286,25 +382,52 @@ mod tests {
 
     use proto::LspSymbol;
 
-    use super::rows;
+    use super::{Group, rows};
+
+    fn symbol(name: &str, kind: u32, depth: u32) -> LspSymbol {
+        LspSymbol { path: "main.ts".into(), name: name.into(), kind, container: None, line: 0, column: 0, depth, local: false }
+    }
+
+    fn keys(symbols: &[LspSymbol], hidden: &[Group]) -> Vec<String> {
+        rows(symbols, &HashSet::new(), hidden).into_iter().map(|row| row.key.replace('\u{1f}', "/")).collect()
+    }
+
+    #[test]
+    fn fields_never_show_and_each_group_hides() {
+        let symbols = [
+            symbol("LIMIT", 14, 0),
+            symbol("TimedWindow", 11, 0),
+            symbol("start", 7, 1),
+            symbol("end", 7, 1),
+            symbol("Sale", 5, 0),
+            symbol("total", 8, 1),
+            symbol("cancel", 6, 1),
+            symbol("check", 12, 0),
+        ];
+        assert_eq!(keys(&symbols, &[]), ["LIMIT", "TimedWindow", "Sale", "Sale/cancel", "check"]);
+        assert_eq!(keys(&symbols, &[Group::Constants]), ["TimedWindow", "Sale", "Sale/cancel", "check"]);
+        assert_eq!(keys(&symbols, &[Group::Interfaces]), ["LIMIT", "Sale", "Sale/cancel", "check"]);
+        assert_eq!(keys(&symbols, &[Group::Classes]), ["LIMIT", "TimedWindow", "check"]);
+        // A method goes with its class, not with the functions.
+        assert_eq!(keys(&symbols, &[Group::Functions]), ["LIMIT", "TimedWindow", "Sale", "Sale/cancel"]);
+        // An interface with only fields has nothing to collapse.
+        let rows = rows(&symbols, &HashSet::new(), &[]);
+        assert!(!rows[1].parent);
+    }
 
     #[test]
     fn a_collapsed_symbol_hides_what_is_inside() {
-        let symbol = |name: &str, depth: u32| LspSymbol {
-            path: "main.ts".into(),
-            name: name.into(),
-            kind: 5,
-            container: None,
-            line: 0,
-            column: 0,
-            depth,
-            local: false,
-        };
-        let symbols =
-            [symbol("Sale", 0), symbol("cancel", 1), symbol("Line", 1), symbol("total", 2), symbol("Sale", 0), symbol("main", 0)];
+        let symbols = [
+            symbol("Sale", 5, 0),
+            symbol("cancel", 5, 1),
+            symbol("Line", 5, 1),
+            symbol("total", 5, 2),
+            symbol("Sale", 5, 0),
+            symbol("main", 5, 0),
+        ];
         let shown = |collapsed: &[&str]| {
             let collapsed: HashSet<Rc<str>> = collapsed.iter().map(|key| Rc::from(key.replace('/', "\u{1f}"))).collect();
-            rows(&symbols, &collapsed)
+            rows(&symbols, &collapsed, &[])
                 .into_iter()
                 .map(|row| format!("{}{}", if row.collapsed { "+" } else { "" }, &*row.key).replace('\u{1f}', "/"))
                 .collect::<Vec<_>>()
