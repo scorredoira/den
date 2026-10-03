@@ -1284,6 +1284,14 @@ impl Den {
     fn cancel_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.quit_confirm = None;
         crate::update::cancel_restart(cx);
+        // Not quitting after all: a window that went on without saving asks
+        // again.
+        self.discarded = false;
+        cx.defer(|cx| {
+            for (_, den) in windows(cx) {
+                den.update(cx, |den, _| den.discarded = false);
+            }
+        });
         self.focus_active(window, cx);
         cx.notify();
     }
