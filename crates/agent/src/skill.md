@@ -28,5 +28,13 @@ full list; the main ones:
   `den workspaces` lists the workspaces and whether their agents are
   working, waiting for an answer or finished.
 
+- `den debug ...` drives the debugger of the workspace and prints JSON:
+  `den debug break <file>:<line>`, `den debug start [<file>]`, then
+  `den debug wait` (until a VM stops; it prints the state: where, the
+  frames, the locals), `den debug eval <expr>`, `den debug next|in|out|continue`,
+  `den debug stop`. `den debug state` prints the state at any time. To test
+  a program, start it, trigger what reaches the breakpoint (a request, a
+  test) and wait.
+
 Lines and columns start at 1. A command that fails prints why and exits
 with an error.

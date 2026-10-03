@@ -55,6 +55,24 @@ keyboard stays in the terminal unless --focus.
                       types the text in it, and Enter.
   den term focus <id> shows it and gives it the keyboard.
   den term close <id> closes it, ending what runs in it.
+
+  den debug state     prints the debugger's state as JSON: the session, the
+                      stopped VMs, the focused stop with its frames and
+                      locals, the breakpoints and the end of the console.
+  den debug start [<file>]
+                      starts a session (F5) on the file, or the open one.
+  den debug stop | continue | next | in | out | pause
+                      Shift-F5, F5, F10, F11, Shift-F11 and F6.
+  den debug break <file>:<line>
+                      sets a breakpoint there.
+  den debug clear [<file>:<line>]
+                      removes that breakpoint, or all of them.
+  den debug eval <expr>...
+                      evaluates it in the focused frame: {value, type}.
+  den debug wait [stop | connected | idle] [<seconds>]
+                      waits for a VM to stop (or for the session to
+                      connect, or to end), 30 seconds at most, and prints
+                      the state. A session that fails ends the wait too.
 ";
 
 /// Folder holding the `den` link, which the agent puts in its terminals' PATH.

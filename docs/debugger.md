@@ -52,6 +52,28 @@ its own; without it, `port` (4444 when missing) is where `debug` listens.
 }
 ```
 
+## From a terminal
+
+`den debug` does what the keys do, from a terminal of the workspace, and
+prints JSON, so an agent can test with the debugger:
+
+```sh
+den debug break modules/billing/main.ts:120
+den debug start modules/billing/main.ts   # F5 on that file
+curl -s localhost:9092/api/billing/... &  # what reaches the breakpoint
+den debug wait                            # until a VM stops: the state
+den debug eval 'invoice.total'            # {"value": "120", "type": "int"}
+den debug next                            # then wait again
+den debug continue
+```
+
+`den debug state` is the session (`idle`, `connecting: …`, `connected`), the
+stopped VMs, the focused stop (file, line, frames, locals, exception), the
+breakpoints and the last lines of the console. `wait [stop|connected|idle]
+[<seconds>]` waits for that (30 seconds at most) and prints the state; a
+session that fails ends the wait too, and the console says why. `den
+--help` lists them all.
+
 ## Keys
 
 | Key | |

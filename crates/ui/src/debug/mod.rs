@@ -8,6 +8,7 @@
 //! file means.
 
 mod breakpoints;
+mod commands;
 pub mod hover;
 pub mod panel;
 pub mod protocol;
@@ -27,6 +28,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 pub use breakpoints::{Breakpoint, Breakpoints};
+pub use commands::WaitFor;
 use protocol::{Event, Message, Stop, Var};
 
 use crate::config::{Config, DebugSaved};

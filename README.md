@@ -72,6 +72,7 @@ In Den's terminals, more commands act on the workspace of the terminal they run 
 | `den workspaces` | Lists the workspaces and whether each is working, waiting for an answer or finished. |
 | `den term new [--right\|--down] [<command>]` | Opens a terminal, runs the command in its shell and prints its id. |
 | `den term list`, `read <id>`, `send <id> <text>`, `focus <id>`, `close <id>` | Lists, reads, types in, shows and closes terminals. |
+| `den debug state`, `start [<file>]`, `break <file>:<line>`, `wait`, `eval <expr>`, `next`, `continue`, `stop`… | Drives the debugger and prints its state as JSON: an agent sets a breakpoint, starts the program, triggers the code and waits for the stop. |
 
 They are meant for coding agents: when `~/.claude` exists, the agent installs a Claude Code skill (`~/.claude/skills/den`) that tells Claude about them. Other agents can read `den --help`. A path that is also a command's name opens with `./`, as in `den ./tabs`.
 
