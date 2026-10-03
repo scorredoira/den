@@ -314,7 +314,13 @@ impl State {
 
 pub fn run(listener: Listener) -> Result<()> {
     let state: Shared = Arc::default();
-    restore_after_restart(&state);
+    let older = shut_down_older_agents();
+    if let Ok(path) = restart_file() {
+        restore_after_restart(&state, &path);
+    }
+    for path in older {
+        restore_after_restart(&state, &path);
+    }
     state.lock().unwrap().update_idle();
 
     std::thread::spawn({
@@ -1151,9 +1157,35 @@ struct Restarted {
 }
 
 /// Next to the socket (`agent-6.restart.json`), so an agent on another
-/// socket (tests, another protocol) doesn't take it.
+/// socket (tests, another protocol) doesn't take it unless it shut that one
+/// down. Agents of later protocols read it: fields are only added, with a default.
 fn restart_file() -> Result<PathBuf> {
-    Ok(proto::socket_path()?.with_extension("restart.json"))
+    Ok(restart_file_of(&proto::socket_path()?))
+}
+
+fn restart_file_of(socket: &Path) -> PathBuf {
+    socket.with_extension("restart.json")
+}
+
+/// Agents of earlier protocols still running (Den was updated to a newer
+/// one): their terminals are where the UI left them, so each is shut down,
+/// which saves them as for a restart, and the files they leave are returned
+/// to be restored here. Every protocol reads `Shutdown` alike.
+fn shut_down_older_agents() -> Vec<PathBuf> {
+    let Ok(sockets) = proto::older_socket_paths() else {
+        return Vec::new();
+    };
+    sockets
+        .into_iter()
+        .filter_map(|socket| {
+            let mut stream = platform::connect(&socket).ok()?;
+            proto::write_frame(&mut stream, &ClientMessage { id: None, request: Request::Shutdown }).ok()?;
+            // It saves its terminals and exits, which closes the connection.
+            let _ = std::io::copy(&mut stream, &mut std::io::sink());
+            eprintln!("shut down the agent at {} to take its terminals", socket.display());
+            Some(restart_file_of(&socket))
+        })
+        .collect()
 }
 
 /// Before shutting down to restart: notes each terminal's folder and whether
@@ -1190,21 +1222,19 @@ fn save_for_restart(state: &State) {
 
 /// On startup after a restart: opens the terminals the previous agent had,
 /// with the same ids, and resumes Claude Code where it was running.
-fn restore_after_restart(state: &Shared) {
-    let Ok(path) = restart_file() else {
+fn restore_after_restart(state: &Shared, path: &Path) {
+    let Ok(bytes) = std::fs::read(path) else {
         return;
     };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return;
-    };
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path);
     let terms: Vec<Restarted> = match serde_json::from_slice(&bytes) {
         Ok(terms) => terms,
         Err(err) => return eprintln!("invalid {}: {err:#}", path.display()),
     };
     for saved in terms {
         // The folder may be gone (a removed task): the terminal goes with it.
-        if !saved.cwd.is_dir() {
+        // An id already taken is another agent's terminal, which the UI shows.
+        if !saved.cwd.is_dir() || state.lock().unwrap().terms.contains_key(&saved.term) {
             continue;
         }
         let command = saved.claude.map(|command| format!("{command}\r").into_bytes());
