@@ -58,6 +58,8 @@ EOF
 cat > "$demo/zdot/.zshrc" <<'EOF'
 export PATH="$HOME/.local/bin:$PATH"
 PROMPT='%F{blue}%1~%f %F{magenta}❯%f '
+# The question for Claude: typed in full, keystrokes get lost on the way.
+q='How does this branch find WSL distros? Read crates/client/src/wsl.rs and explain it briefly, with a small table. Do not edit anything.'
 EOF
 
 # The window id of a process, for screencapture.
@@ -96,7 +98,7 @@ done
 sleep 5
 
 echo "running Claude Code…"
-type_line "claude 'How does this branch find WSL distros? Read crates/client/src/wsl.rs and explain it briefly, with a small table. Do not edit anything.'"
+type_line 'claude \"$q\"'
 sleep 5
 # The new folder's trust dialog: "Yes, I trust this folder" is the second option.
 keys "key code 125
