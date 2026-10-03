@@ -316,11 +316,12 @@ impl State {
 pub fn run(listener: Listener) -> Result<()> {
     let state: Shared = Arc::default();
     let older = shut_down_older_agents();
+    let mut resumed = HashSet::new();
     if let Ok(path) = restart_file() {
-        restore_after_restart(&state, &path);
+        restore_after_restart(&state, &path, &mut resumed);
     }
     for path in older {
-        restore_after_restart(&state, &path);
+        restore_after_restart(&state, &path, &mut resumed);
     }
     state.lock().unwrap().update_idle();
 
@@ -1262,8 +1263,11 @@ fn restart_terms(state: &State, fresh: bool) -> Vec<Restarted> {
 
 /// On startup after a restart, or after an agent that died: opens the
 /// terminals the previous agent had, with the same ids, and resumes Claude
-/// Code where it was running.
-fn restore_after_restart(state: &Shared, path: &Path) {
+/// Code where it was running. `resumed`: the Claude sessions already
+/// resumed, by this file or an earlier one; a terminal that ran one of them
+/// again is left out, as the agents of two protocols may both have it (each
+/// one's UI opened it).
+fn restore_after_restart(state: &Shared, path: &Path, resumed: &mut HashSet<String>) {
     let Ok(bytes) = std::fs::read(path) else {
         return;
     };
@@ -1276,6 +1280,11 @@ fn restore_after_restart(state: &Shared, path: &Path) {
         // The folder may be gone (a removed task): the terminal goes with it.
         // An id already taken is another agent's terminal, which the UI shows.
         if !saved.cwd.is_dir() || state.lock().unwrap().terms.contains_key(&saved.term) {
+            continue;
+        }
+        if let Some(session) = saved.claude.as_deref().and_then(resumed_session)
+            && !resumed.insert(session.to_string())
+        {
             continue;
         }
         let command = saved.claude.map(|command| format!("{command}\r").into_bytes());
@@ -1291,6 +1300,14 @@ fn restore_after_restart(state: &Shared, path: &Path) {
             (Err(err), _) => eprintln!("could not reopen terminal {}: {err:#}", saved.term),
         }
     }
+}
+
+/// The session `--resume <id>` resumes in a command line; none for a bare
+/// `--resume`, which asks.
+fn resumed_session(command: &str) -> Option<&str> {
+    let mut words = command.split_whitespace();
+    words.by_ref().find(|word| *word == "--resume")?;
+    words.next().filter(|word| !word.starts_with('-'))
 }
 
 /// The coding agent a command line runs, by its program or its npm package
@@ -1549,7 +1566,7 @@ mod blocked_tests {
 
 #[cfg(test)]
 mod restart_tests {
-    use super::{ClaudeSession, agent_name, claude_title, resume_command};
+    use super::{ClaudeSession, agent_name, claude_title, resume_command, resumed_session};
 
     #[test]
     fn tells_the_agents_apart() {
@@ -1607,6 +1624,15 @@ mod restart_tests {
         );
         let unknown = ClaudeSession { id: None, cwd: None, config_dir: None };
         assert_eq!(resume_command("claude", Some(&unknown)).as_deref(), Some("claude --resume"));
+    }
+
+    #[test]
+    fn knows_the_session_a_restored_terminal_resumes() {
+        assert_eq!(
+            resumed_session("CLAUDE_CONFIG_DIR='/x' claude --model opus --resume d09e204f-44b6"),
+            Some("d09e204f-44b6")
+        );
+        assert_eq!(resumed_session("claude --model opus --resume"), None);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
