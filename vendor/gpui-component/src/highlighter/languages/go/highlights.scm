@@ -1,3 +1,9 @@
+; (den) Parameters come first: the first capture of a node wins over the generic
+; `(identifier) @variable` below.
+
+(parameter_declaration name: (identifier) @variable.parameter)
+(variadic_parameter_declaration name: (identifier) @variable.parameter)
+
 ; Function calls
 
 (call_expression
@@ -77,32 +83,28 @@
 ; Keywords
 
 [
-  "break"
-  "case"
   "chan"
   "const"
-  "continue"
-  "default"
-  "defer"
-  "else"
-  "fallthrough"
-  "for"
   "func"
-  "go"
-  "goto"
-  "if"
   "import"
   "interface"
   "map"
   "package"
-  "range"
-  "return"
-  "select"
   "struct"
-  "switch"
   "type"
   "var"
 ] @keyword
+
+; (den) Brackets, for the bracket pair colors.
+
+[
+  "("
+  ")"
+  "["
+  "]"
+  "{"
+  "}"
+] @punctuation.bracket
 
 ; Literals
 
@@ -134,3 +136,22 @@
 ] @constant.builtin
 
 (comment) @comment
+
+; (den) Control keywords, colored apart like VS Code does.
+[
+  "break"
+  "case"
+  "continue"
+  "default"
+  "defer"
+  "else"
+  "fallthrough"
+  "for"
+  "go"
+  "goto"
+  "if"
+  "range"
+  "return"
+  "select"
+  "switch"
+] @keyword.control
