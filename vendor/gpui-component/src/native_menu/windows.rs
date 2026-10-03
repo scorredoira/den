@@ -218,6 +218,7 @@ unsafe fn build_menu<'a>(
                 checked,
                 icon,
                 action,
+                key,
             } => {
                 let mut flags = MF_STRING;
                 if *disabled {
@@ -226,6 +227,11 @@ unsafe fn build_menu<'a>(
                 if *checked {
                     flags |= MF_CHECKED;
                 }
+                // After a tab, Windows aligns the shortcut to the right.
+                let label = match key {
+                    Some(key) => format!("{label}\t{}", crate::kbd::Kbd::format(key)),
+                    None => label.to_string(),
+                };
                 let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
                 // Actionable, enabled items get an id; others use 0.
                 let id = match action {
