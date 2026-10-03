@@ -291,6 +291,12 @@ impl Client {
     /// machine. On a server, a URL pointing at the server itself
     /// (`localhost:5173`) gets its port forwarded over SSH; other URLs come
     /// back unchanged. Blocks while `ssh` runs.
+    /// The port of an `http(s)` URL of the loopback (`localhost`,
+    /// `127.0.0.1`…); `None` for any other URL.
+    pub fn loopback_port(url: &str) -> Option<u16> {
+        ssh::LoopbackUrl::parse(url).map(|url| url.port)
+    }
+
     pub fn local_url(&self, url: &str) -> Result<String> {
         let Some(destination) = &self.destination else {
             return Ok(url.to_string());

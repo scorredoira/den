@@ -17,6 +17,16 @@ the agent, so a program on a server is debugged like a local one.
   command, which debugs whatever is open, and the program decides what that
   means (a script, a test file, the server it is part of). Without `command`,
   F5 attaches to a program already running.
+- `open`: a page of the program to open in the browser once something the
+  command started listens on its port, e.g.
+  `"http://localhost:9092/platform/tenants"`. Only URLs of localhost; on a
+  server the port is forwarded over SSH. A script run by the same command
+  doesn't listen there, so nothing opens; Restart doesn't open it again. On
+  macOS, a Google Chrome tab already showing that server (the same port on
+  `localhost`, a subdomain of it or `127.0.0.1`, whatever its page) comes to
+  the front as it is instead; the first time, macOS asks whether Den may
+  control Chrome. Elsewhere, or without such a tab, the page opens in the
+  default browser.
 - `port`: where the program listens, on the loopback of the agent's machine.
   4444 when missing. A command with `${port}` doesn't need it: Den asks the
   agent for a free port and puts it there, so every session has a port of its
