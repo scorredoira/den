@@ -298,6 +298,8 @@ pub struct Debugger {
     pub tab: bool,
     /// The value shown by hovering its name in the code.
     pub hover: Option<HoverValue>,
+    /// The test (its file and name) launched from the code, until it connects.
+    launching_test: Option<(PathBuf, String)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -365,6 +367,7 @@ impl Debugger {
             tall: false,
             tab: false,
             hover: None,
+            launching_test: None,
             tests: None,
             _subscriptions: subscriptions,
         }
@@ -398,6 +401,11 @@ impl Debugger {
 
     pub fn is_stopped(&self) -> bool {
         self.current().is_some()
+    }
+
+    /// The test `test` of `path` was launched and its program isn't connected yet.
+    pub fn is_launching(&self, path: &Path, test: &str) -> bool {
+        self.launching_test.as_ref().is_some_and(|(at, name)| at == path && name == test)
     }
 
     /// A session started or connected.
@@ -495,8 +503,16 @@ impl Debugger {
         .detach();
     }
 
-    /// Debugs `command`, which listens on `port`: a test, from the code.
-    pub fn launch_command(&mut self, command: String, port: u16, window: &mut Window, cx: &mut Context<Self>) {
+    /// Debugs `command`, which listens on `port`: the test `test` of `path`, from the code.
+    pub fn launch_command(
+        &mut self,
+        command: String,
+        port: u16,
+        path: PathBuf,
+        test: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.emit(DebugEvent::Reveal);
         if self.status != Status::Idle {
             self.info("A program is being debugged: stop it first (Shift-F5)".into(), cx);
@@ -507,6 +523,7 @@ impl Debugger {
             return;
         }
         self.generation += 1;
+        self.launching_test = Some((path, test));
         self.begin(Launch { command: Some(command), port }, window, cx);
     }
 
@@ -716,6 +733,7 @@ impl Debugger {
             conn.cwd = PathBuf::from(cwd);
         }
         self.status = Status::Connected;
+        self.launching_test = None;
         self.running = body.get("running").and_then(Value::as_u64).unwrap_or(0);
 
         let files: Vec<PathBuf> = self.breakpoints.files().map(|(path, _)| path.to_path_buf()).collect();
@@ -774,6 +792,7 @@ impl Debugger {
             conn.client.close_relay(conn.relay);
         }
         self.status = Status::Idle;
+        self.launching_test = None;
         self.stops.clear();
         self.focus = None;
         self.locals.clear();

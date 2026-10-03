@@ -87,7 +87,7 @@ session that fails ends the wait too, and the console says why. `den
 | F10 / F11 / Shift-F11 | Step over / into / out |
 | Ctrl-F10 | Run to the cursor |
 | Ctrl-Shift-F10 | Make the cursor's line the next statement |
-| right-click the code | Toggle Breakpoint, Add Conditional Breakpoint, Add Logpoint; while stopped also Run to Cursor, Set Next Statement, Add to Watch and Evaluate in Console (the selection, or the name under the cursor) |
+| right-click the code | While debugging: Toggle Breakpoint, Add Conditional Breakpoint, Add Logpoint; while stopped also Run to Cursor, Set Next Statement, Add to Watch and Evaluate in Console (the selection, or the name under the cursor) |
 | Cmd-Shift-Y | Show or hide the panel |
 
 All of them can be changed in Settings.
