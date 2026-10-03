@@ -4,6 +4,11 @@
 use super::*;
 
 impl Workspace {
+    /// `den debug`: the workspace's debugger.
+    pub fn debugger(&self) -> Entity<Debugger> {
+        self.debugger.clone()
+    }
+
     /// `den show`: `path` with the cursor at `from` or, with `to`, the range
     /// between them selected. Without `focus`, the keyboard stays where it was.
     pub fn show(&mut self, path: PathBuf, from: Position, to: Option<Position>, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -122,4 +127,54 @@ pub(super) fn select(state: &mut EditorState, from: Position, to: Position, cx: 
     let text = state.text();
     let (from, to) = (text.position_to_offset(&from), text.position_to_offset(&to));
     state.set_selections(&[(to, from)], cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::debug::WaitFor;
+    use core::prelude::v1::test;
+
+    /// `den debug break` sets a breakpoint once, and `den debug state` shows
+    /// it as the program names it: relative, 1-based. With no session there
+    /// is nothing to wait for.
+    #[gpui_kit::test]
+    fn debug_state_and_breakpoints(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            Workspace::new(PathBuf::from("/debug-test"), None, true, "debug-test".into(), window, cx)
+        });
+        let debugger = workspace.read_with(cx, |workspace, _| workspace.debugger());
+        let path = PathBuf::from("/debug-test/modules/a/main.ts");
+        debugger.update(cx, |debugger, cx| {
+            debugger.set_breakpoint(&path, 11, cx);
+            debugger.set_breakpoint(&path, 11, cx);
+        });
+
+        let state = debugger.read_with(cx, |debugger, _| debugger.state());
+        assert_eq!(state["status"], "idle");
+        assert_eq!(
+            state["breakpoints"],
+            serde_json::json!([{ "file": "modules/a/main.ts", "line": 12, "enabled": true }])
+        );
+        assert!(state.get("focus").is_none());
+        for what in [WaitFor::Stop, WaitFor::Connected, WaitFor::Idle] {
+            assert!(debugger.read_with(cx, |debugger, _| debugger.reached(what)));
+        }
+
+        debugger.update(cx, |debugger, cx| debugger.remove_breakpoint(&path, 11, cx));
+        let state = debugger.read_with(cx, |debugger, _| debugger.state());
+        assert_eq!(state["breakpoints"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn wait_words() {
+        assert!(WaitFor::parse("stop") == Some(WaitFor::Stop));
+        assert!(WaitFor::parse("connected") == Some(WaitFor::Connected));
+        assert!(WaitFor::parse("idle") == Some(WaitFor::Idle));
+        assert!(WaitFor::parse("30").is_none());
+    }
 }

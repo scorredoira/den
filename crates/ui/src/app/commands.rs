@@ -4,8 +4,12 @@
 
 use gpui_kit::component::input::Position;
 
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+
 use super::*;
-use crate::{splits::Axis, workspace::normalize};
+use crate::{debug::WaitFor, splits::Axis, workspace::normalize};
 
 type Answer = Result<String, String>;
 
@@ -80,6 +84,10 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
+            ["debug", rest @ ..] => match here(self, false, window, cx) {
+                Ok((_, workspace)) => return debug_command(rest, &cwd, workspace, window, cx),
+                Err(err) => Err(err),
+            },
             // `den -s <server> [<path>]`: in a window of its own.
             ["-s", server, path @ ..] if path.len() <= 1 => {
                 let (server, path) = (server.to_string(), path.first().map(PathBuf::from));
@@ -210,6 +218,127 @@ impl Den {
         }
         out
     }
+}
+
+const DEBUG_USAGE: &str = "den debug: state | start [<file>] | stop | continue | next | in | out | pause \
+    | break <file>:<line> | clear [<file>:<line>] | eval <expr> | wait [stop|connected|idle] [<seconds>]";
+
+/// How long `den debug wait` waits when not told.
+const DEBUG_WAIT: Duration = Duration::from_secs(30);
+
+/// `den debug …`: drives the workspace's debugger like the keys and the panel
+/// do, and answers with its state as JSON (`Debugger::state`).
+fn debug_command(
+    args: &[&str],
+    cwd: &Path,
+    workspace: Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut Context<Den>,
+) -> Task<Answer> {
+    let debugger = workspace.read(cx).debugger();
+    let stopped = |cx: &App| {
+        if debugger.read(cx).is_stopped() { Ok(()) } else { Err("no VM is stopped".to_string()) }
+    };
+    let answer = match args {
+        ["state"] => Ok(debugger.read(cx).state().to_string()),
+        ["start", file @ ..] if file.len() <= 1 => {
+            if debugger.read(cx).is_active() {
+                Err("a session is active: den debug stop first".to_string())
+            } else {
+                // the launch command's ${file} is the open file
+                if let Some(file) = file.first() {
+                    let path = normalize(&cwd.join(file));
+                    workspace.update(cx, |workspace, cx| workspace.show(path, Position::new(0, 0), None, false, window, cx));
+                }
+                debugger.update(cx, |debugger, cx| debugger.start(window, cx));
+                Ok(String::new())
+            }
+        }
+        ["stop"] => {
+            debugger.update(cx, |debugger, cx| debugger.stop(cx));
+            Ok(String::new())
+        }
+        [step @ ("continue" | "next" | "in" | "out")] => stopped(cx).map(|()| {
+            debugger.update(cx, |debugger, cx| match *step {
+                "continue" => debugger.continue_(cx),
+                "next" => debugger.step_over(cx),
+                "in" => debugger.step_in(cx),
+                _ => debugger.step_out(cx),
+            });
+            String::new()
+        }),
+        ["pause"] => {
+            debugger.update(cx, |debugger, cx| debugger.pause(cx));
+            Ok(String::new())
+        }
+        ["break", target] => parse_target(target, cwd).map(|(path, from, _)| {
+            debugger.update(cx, |debugger, cx| debugger.set_breakpoint(&path, from.line, cx));
+            String::new()
+        }),
+        ["clear"] => {
+            debugger.update(cx, |debugger, cx| debugger.remove_all_breakpoints(cx));
+            Ok(String::new())
+        }
+        ["clear", target] => parse_target(target, cwd).map(|(path, from, _)| {
+            debugger.update(cx, |debugger, cx| debugger.remove_breakpoint(&path, from.line, cx));
+            String::new()
+        }),
+        ["eval", expr @ ..] if !expr.is_empty() => {
+            if let Err(err) = stopped(cx) {
+                return Task::ready(Err(err));
+            }
+            let (tx, rx) = smol::channel::bounded(1);
+            let expr = expr.join(" ");
+            debugger.update(cx, |debugger, _| {
+                debugger.evaluate(expr, move |_, result, _| {
+                    // nobody waits for it once the command gave up
+                    tx.try_send(result).ok();
+                })
+            });
+            return cx.spawn(async move |_, _| match rx.recv().await {
+                Ok(Ok(var)) => Ok(json!({ "value": var.value, "type": var.kind }).to_string()),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err("the session ended before the answer".to_string()),
+            });
+        }
+        ["wait", rest @ ..] if rest.len() <= 2 => {
+            let mut what = WaitFor::Stop;
+            let mut wait = DEBUG_WAIT;
+            for word in rest {
+                if let Some(parsed) = WaitFor::parse(word) {
+                    what = parsed;
+                } else if let Ok(seconds) = word.parse::<f64>().map(Duration::try_from_secs_f64) {
+                    match seconds {
+                        Ok(seconds) => wait = seconds,
+                        Err(_) => return Task::ready(Err(format!("{word}: not a number of seconds"))),
+                    }
+                } else {
+                    return Task::ready(Err(DEBUG_USAGE.to_string()));
+                }
+            }
+            let debugger = debugger.downgrade();
+            return cx.spawn(async move |_, cx| {
+                let deadline = Instant::now() + wait;
+                loop {
+                    let reached = debugger
+                        .read_with(cx, |debugger, _| debugger.reached(what).then(|| debugger.state().to_string()))
+                        .map_err(|_| "the workspace closed".to_string())?;
+                    if let Some(state) = reached {
+                        return Ok(state);
+                    }
+                    if Instant::now() >= deadline {
+                        let state = debugger
+                            .read_with(cx, |debugger, _| debugger.state().to_string())
+                            .map_err(|_| "the workspace closed".to_string())?;
+                        return Err(format!("timed out; the state: {state}"));
+                    }
+                    cx.background_executor().timer(Duration::from_millis(50)).await;
+                }
+            });
+        }
+        _ => Err(DEBUG_USAGE.to_string()),
+    };
+    Task::ready(answer)
 }
 
 /// `file[:line[:col]][-line[:col]]`, relative to `cwd`: the file, where the
