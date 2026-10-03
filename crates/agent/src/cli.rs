@@ -13,7 +13,13 @@ use crate::platform;
 pub const USAGE: &str = "\
 Usage:
   den <path>          opens a folder, or a file in its repo, in den. Over
-                      SSH, in the app connected to this server.
+                      SSH, in the app connected to this server; in den's
+                      terminals, in the terminal's window.
+  den -s <server> [<path>]
+                      opens a window on the server (a name from
+                      ~/.ssh/config or user@host) with the path there,
+                      relative to its home folder, or a folder to pick.
+                      What's open in it isn't remembered unless kept.
   den worktree <name> creates a worktree in the repo of the current folder,
                       running its .den/create if it has one, and prints its
                       path. Inside den, the app also opens it.
@@ -125,7 +131,33 @@ pub fn open(arg: &str) -> Result<()> {
     if std::env::var_os("SSH_CONNECTION").is_some() {
         bail!("no den app is connected to this server: add it in den's Settings → Servers");
     }
-    platform::launch_app(&path)
+    platform::launch_app(&[path.as_os_str()])
+}
+
+/// `den -s <server> [<path>]`: asks the app to open a window on `server`,
+/// with `path` there. With no app connected, it starts one on this machine.
+pub fn server(args: &[String]) -> Result<()> {
+    let ([server] | [server, _]) = args else {
+        eprint!("{USAGE}");
+        std::process::exit(2);
+    };
+    let mut command = vec!["-s".to_string()];
+    command.extend(args.iter().cloned());
+    let asked = connect().and_then(|client| {
+        smol::block_on(client.request(Request::Command {
+            args: command.clone(),
+            cwd: std::env::current_dir()?,
+            term: own_term(),
+        }))
+    });
+    match asked {
+        Ok(_) => Ok(()),
+        Err(_) if std::env::var_os("SSH_CONNECTION").is_none() => {
+            let command: Vec<&std::ffi::OsStr> = command.iter().map(|arg| arg.as_ref()).collect();
+            platform::launch_app(&command)
+        }
+        Err(err) => Err(err).with_context(|| format!("could not open {server}")),
+    }
 }
 
 /// `den worktree <name>`: prints only the path on stdout (messages go to

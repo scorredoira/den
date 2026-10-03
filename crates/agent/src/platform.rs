@@ -250,7 +250,7 @@ pub fn default_lang() -> Option<String> {
 
 /// Starts the app, opening `path`: the one that last ran on this machine;
 /// on macOS, through `open` if it's in a bundle, so it starts as an app.
-pub fn launch_app(path: &Path) -> Result<()> {
+pub fn launch_app(args: &[&std::ffi::OsStr]) -> Result<()> {
     let app = std::fs::read_to_string(proto::app_file()?)
         .map(|app| PathBuf::from(app.trim()))
         .ok()
@@ -267,7 +267,7 @@ pub fn launch_app(path: &Path) -> Result<()> {
     };
     configure_background(&mut command);
     command
-        .arg(path)
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

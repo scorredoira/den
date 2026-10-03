@@ -111,6 +111,31 @@ struct Host {
     generation: u64,
 }
 
+impl Host {
+    /// A server, not connected yet.
+    fn remote(name: SharedString, destination: String) -> Self {
+        Host {
+            name,
+            destination: Some(destination),
+            client: None,
+            status: HostStatus::Connecting(CONNECTING),
+            tasks: Vec::new(),
+            loose: Vec::new(),
+            repos: Vec::new(),
+            generation: 0,
+        }
+    }
+}
+
+/// A window opened with `den -s`, on a server.
+struct ServerWindow {
+    /// The server.
+    name: SharedString,
+    /// What to open once it connects: a folder (or a file) or, with no
+    /// path, a folder to pick; taken then.
+    start: Option<Option<PathBuf>>,
+}
+
 /// A new worktree being named, in a row under its repo.
 struct NewTaskInput {
     host: SharedString,
@@ -157,8 +182,9 @@ impl Global for Main {}
 struct OpenWindow {
     handle: AnyWindowHandle,
     den: WeakEntity<Den>,
-    /// Whether it's the main window, whose workspaces are remembered.
-    main: bool,
+    /// The server of a window opened with `den -s`; none in the main one,
+    /// whose workspaces are remembered.
+    server: Option<SharedString>,
 }
 
 /// The local agent, for the main window.
@@ -176,7 +202,7 @@ fn windows(cx: &App) -> Vec<(AnyWindowHandle, Entity<Den>)> {
 
 /// The main window, while it's open.
 fn main_window(cx: &App) -> Option<(AnyWindowHandle, Entity<Den>)> {
-    let main = cx.try_global::<Main>()?.windows.iter().find(|open| open.main)?;
+    let main = cx.try_global::<Main>()?.windows.iter().find(|open| open.server.is_none())?;
     Some((main.handle, main.den.upgrade()?))
 }
 
@@ -213,10 +239,64 @@ pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, c
         Ok((handle, den)) => {
             let main = &mut cx.default_global::<Main>().windows;
             main.retain(|open| open.den.upgrade().is_some());
-            main.insert(0, OpenWindow { handle, den: den.downgrade(), main: true });
+            main.insert(0, OpenWindow { handle, den: den.downgrade(), server: None });
         }
         Err(err) => eprintln!("could not open the window: {err:#}"),
     }
+}
+
+/// `den -s <server> [<path>]`: `path` on `server` in a window of its own
+/// (relative to the home folder there), or a folder to pick; in the window
+/// already open on that server, if there's one.
+pub fn open_server_window(destination: String, path: Option<PathBuf>, cx: &mut App) {
+    let name = server_name(&destination, cx);
+    let open = cx.try_global::<Main>().and_then(|main| {
+        main.windows.iter().find(|open| open.server.as_ref() == Some(&name)).and_then(|open| Some((open.handle, open.den.upgrade()?)))
+    });
+    if let Some((handle, den)) = open {
+        handle
+            .update(cx, |_, window, cx| {
+                den.update(cx, |den, cx| den.open_start(path, window, cx));
+                window.activate_window();
+            })
+            .ok();
+        cx.activate(true);
+        return;
+    }
+    // Over the main window, a little down and to the right.
+    let bounds = match window_bounds(cx) {
+        WindowBounds::Windowed(bounds) => WindowBounds::Windowed(Bounds::new(bounds.origin + point(px(28.), px(28.)), bounds.size)),
+        other => other,
+    };
+    let options = WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some(name.clone()),
+            ..TitleBar::title_bar_options()
+        }),
+        window_bounds: Some(bounds),
+        ..TitleBar::window_options()
+    };
+    let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Den::for_server(destination, path, window, cx)));
+    match opened {
+        Ok((handle, den)) => {
+            let windows = &mut cx.default_global::<Main>().windows;
+            windows.retain(|open| open.den.upgrade().is_some());
+            windows.push(OpenWindow { handle, den: den.downgrade(), server: Some(name) });
+        }
+        Err(err) => eprintln!("could not open the window: {err:#}"),
+    }
+    cx.activate(true);
+}
+
+/// What a server is called: the name it was added with, if it was.
+fn server_name(destination: &str, cx: &App) -> SharedString {
+    Config::get(cx)
+        .hosts
+        .iter()
+        .find(|host| host.destination == destination)
+        .map(|host| host.name.clone())
+        .unwrap_or_else(|| destination.to_string())
+        .into()
 }
 
 /// Clicking the Dock icon with every window closed opens the main one again.
@@ -294,6 +374,8 @@ fn window_bounds(cx: &App) -> WindowBounds {
 
 pub struct Den {
     hosts: Vec<Host>,
+    /// Opened with `den -s`: what's open in it isn't remembered.
+    server: Option<ServerWindow>,
     active: Option<TaskKey>,
     workspaces: HashMap<TaskKey, Entity<Workspace>>,
     /// The terminals running a coding agent on each server: what each
@@ -360,54 +442,25 @@ pub struct Den {
 }
 
 impl Den {
-    pub fn new(
-        root: Option<PathBuf>,
+    /// A window with `hosts`, connecting to the servers among them; with
+    /// `server`, one opened with `den -s` (see `for_server`).
+    fn with_hosts(
+        hosts: Vec<Host>,
+        server: Option<ServerWindow>,
         open_file: Option<PathBuf>,
-        resume: bool,
-        client: Option<Arc<Client>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let bounds = cx.observe_window_bounds(window, |_, window, cx| {
-            let saved = SavedWindow::from_bounds(window.window_bounds());
-            Config::update_quietly(cx, |config| config.window = saved);
-        });
+        crate::workspace::init_panels(window.window_handle().window_id(), server.is_none(), cx);
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             if Config::get(cx).theme == ThemeChoice::System {
                 Theme::sync_system_appearance(Some(window), cx);
                 Self::apply_font_sizes(cx);
             }
         });
-        let local = Host {
-            name: LOCAL.into(),
-            destination: None,
-            status: if client.is_some() {
-                HostStatus::Connected
-            } else {
-                HostStatus::Failed("no agent".into())
-            },
-            client: client.clone(),
-            tasks: Vec::new(),
-            loose: Vec::new(),
-            repos: Vec::new(),
-            generation: 0,
-        };
-        let remotes: Vec<Host> = Config::get(cx)
-            .hosts
-            .iter()
-            .map(|host| Host {
-                name: host.name.clone().into(),
-                destination: Some(host.destination.clone()),
-                client: None,
-                status: HostStatus::Connecting(CONNECTING),
-                tasks: Vec::new(),
-                loose: Vec::new(),
-                repos: Vec::new(),
-                generation: 0,
-            })
-            .collect();
         let mut this = Self {
-            hosts: std::iter::once(local).chain(remotes).collect(),
+            hosts,
+            server,
             active: None,
             workspaces: HashMap::new(),
             agents: HashMap::new(),
@@ -447,7 +500,7 @@ impl Den {
             settings: None,
             focus_handle: cx.focus_handle(),
             _tasks: Vec::new(),
-            _subscriptions: vec![appearance, bounds, {
+            _subscriptions: vec![appearance, {
                 // The switcher's keys come before any shortcut (Cmd-Shift-E
                 // is the files' too), wherever the focus is.
                 let den = cx.entity().downgrade();
@@ -469,7 +522,7 @@ impl Den {
         let window_id = window.window_handle().window_id();
         cx.on_release(move |_, cx| crate::workspace::drop_panels(window_id, cx)).detach();
 
-        for name in this.hosts.iter().skip(1).map(|host| host.name.clone()).collect::<Vec<_>>() {
+        for name in this.hosts.iter().filter(|host| host.destination.is_some()).map(|host| host.name.clone()).collect::<Vec<_>>() {
             this.connect(name, window, cx);
         }
 
@@ -482,6 +535,56 @@ impl Den {
             }
         });
         this._tasks.push(refresh);
+        this
+    }
+
+    /// `den -s <server> [<path>]`: a window with only that server, which
+    /// opens `path` (or asks for a folder) once connected. Nothing open in
+    /// it is remembered (see `keep`), and the workspaces column starts
+    /// hidden.
+    pub fn for_server(destination: String, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let name = server_name(&destination, cx);
+        let host = Host::remote(name.clone(), destination);
+        let server = ServerWindow { name, start: Some(path) };
+        let this = Self::with_hosts(vec![host], Some(server), None, window, cx);
+        this.focus_handle.focus(window, cx);
+        this
+    }
+
+    pub fn new(
+        root: Option<PathBuf>,
+        open_file: Option<PathBuf>,
+        resume: bool,
+        client: Option<Arc<Client>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let local = Host {
+            name: LOCAL.into(),
+            destination: None,
+            status: if client.is_some() {
+                HostStatus::Connected
+            } else {
+                HostStatus::Failed("no agent".into())
+            },
+            client: client.clone(),
+            tasks: Vec::new(),
+            loose: Vec::new(),
+            repos: Vec::new(),
+            generation: 0,
+        };
+        let remotes: Vec<Host> = Config::get(cx)
+            .hosts
+            .iter()
+            .map(|host| Host::remote(host.name.clone().into(), host.destination.clone()))
+            .collect();
+        let mut this = Self::with_hosts(std::iter::once(local).chain(remotes).collect(), None, open_file, window, cx);
+        // Where it is goes on to the next session.
+        let bounds = cx.observe_window_bounds(window, |_, window, cx| {
+            let saved = SavedWindow::from_bounds(window.window_bounds());
+            Config::update_quietly(cx, |config| config.window = saved);
+        });
+        this._subscriptions.push(bounds);
 
         let Some(client) = client else {
             match root {
@@ -538,6 +641,14 @@ impl Den {
         });
         this._tasks.push(startup);
         this
+    }
+
+    /// The window's title with no workspace open.
+    fn title(&self) -> String {
+        match &self.server {
+            Some(server) => server.name.to_string(),
+            None => "den".to_string(),
+        }
     }
 
     fn host(&self, name: &str) -> Option<&Host> {
@@ -663,6 +774,13 @@ impl Den {
             && let Some(key) = self.pending_last.take_if(|key| key.host == name)
         {
             self.activate(key, window, cx);
+        }
+        // `den -s`: what it was opened with.
+        if let Some(server) = &mut self.server
+            && server.name == name
+            && let Some(path) = server.start.take()
+        {
+            self.open_start(path, window, cx);
         }
         // Just added: a folder to open on it.
         if self.adding_host.as_ref() == Some(&name) {
@@ -895,9 +1013,19 @@ impl Den {
         host.tasks.iter().chain(&host.loose).find(|task| task.path == key.path)
     }
 
+    /// Whether what's open in the window is remembered: not in one opened
+    /// with `den -s`.
+    fn remembers(&self) -> bool {
+        self.server.is_none()
+    }
+
     /// Whether the tasks column shows: as last chosen or, if never chosen,
-    /// once there's more than folders to it (a server or a worktree).
+    /// once there's more than folders to it (a server or a worktree). In a
+    /// window opened with `den -s`, hidden until shown.
     fn tasks_visible(&self, cx: &App) -> bool {
+        if !self.remembers() {
+            return crate::workspace::column_shown(self.handle.window_id(), cx).unwrap_or(false);
+        }
         Config::get(cx)
             .tasks_column
             .unwrap_or_else(|| self.hosts.len() > 1 || self.hosts.iter().any(|host| host.tasks.iter().any(|task| !task.main)))
@@ -918,6 +1046,7 @@ impl Den {
                 true => workspace.show_panel(Panel::Workspaces, cx),
                 false => workspace.hide_panel(Panel::Workspaces, cx),
             }),
+            None if !self.remembers() => crate::workspace::set_column(self.handle.window_id(), visible, cx),
             None => Config::update(cx, |config| config.tasks_column = Some(visible)),
         }
         cx.notify();
@@ -939,7 +1068,9 @@ impl Den {
             && let Some(host) = self.host_mut(&key.host)
         {
             host.loose.push(loose_task(&key.path));
-            self.add_folder(key.host.clone(), key.path.clone(), window, cx);
+            if self.remembers() {
+                self.add_folder(key.host.clone(), key.path.clone(), window, cx);
+            }
         }
         self.agents_seen(&key);
         let workspace = match self.workspaces.get(&key) {
@@ -959,16 +1090,18 @@ impl Den {
         };
         workspace.update(cx, |workspace, cx| workspace.focus(window, cx));
         window.set_window_title(&format!("{} — den", self.label(&key)));
-        let last = SavedTask {
-            host: key.host.to_string(),
-            path: key.path.clone(),
-        };
-        Config::update(cx, |config| {
-            config.recent.retain(|recent| *recent != last);
-            config.recent.insert(0, last.clone());
-            config.recent.truncate(RECENT);
-            config.last = Some(last);
-        });
+        if self.remembers() {
+            let last = SavedTask {
+                host: key.host.to_string(),
+                path: key.path.clone(),
+            };
+            Config::update(cx, |config| {
+                config.recent.retain(|recent| *recent != last);
+                config.recent.insert(0, last.clone());
+                config.recent.truncate(RECENT);
+                config.last = Some(last);
+            });
+        }
         self.pending_last = None;
         if let Some(old) = self.active.take().filter(|old| *old != key) {
             self.previous = Some(old);
@@ -1317,6 +1450,39 @@ impl Den {
         }
     }
 
+    /// `den -s`: opens `path` on the window's server (a file in its repo),
+    /// relative to its home folder, or asks for a folder with none. Not
+    /// there, the folder picker starts at it. Before the server connects,
+    /// it waits.
+    fn open_start(&mut self, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.server.as_ref().map(|server| server.name.clone()) else {
+            return;
+        };
+        let Some(client) = self.client(&name) else {
+            if let Some(server) = &mut self.server {
+                server.start = Some(path);
+            }
+            return;
+        };
+        let Some(path) = path else {
+            self.open_folder_picker(name, window, cx);
+            return;
+        };
+        let path = if path.is_absolute() || path.starts_with("~") { path } else { Path::new("~").join(path) };
+        cx.spawn_in(window, async move |this, cx| {
+            let target = match client.request(Request::Resolve { path: path.clone() }).await {
+                Ok(Response::Path(Some(resolved))) => remote_target(&client, resolved).await,
+                _ => None,
+            };
+            this.update_in(cx, |this, window, cx| match target {
+                Some((root, file)) => this.open_from_terminal(name, root, file, window, cx),
+                None => this.open_folder_picker_at(name, path, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The worktree of `host` containing `path`, or `path` itself.
     fn workspace_containing(&self, host: &str, path: &Path) -> PathBuf {
         self.host(host)
@@ -1330,10 +1496,15 @@ impl Den {
             .unwrap_or_else(|| path.to_path_buf())
     }
 
-    /// Cmd-O: a local folder, with the system's dialog.
+    /// Cmd-O: a local folder, with the system's dialog. A window opened with
+    /// `den -s` has only its server: it opens in the main window.
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
         self.pick_local_folder("Open", window, cx, |this, path, window, cx| {
-            this.open_path(LOCAL.into(), path, window, cx)
+            if this.host(LOCAL).is_some() {
+                this.open_path(LOCAL.into(), path, window, cx)
+            } else {
+                cx.defer(move |cx| handle_open(path, None, cx));
+            }
         });
     }
 
@@ -1378,8 +1549,7 @@ impl Den {
         let hosts: Vec<String> = self
             .hosts
             .iter()
-            .skip(1)
-            .filter(|host| host.client.is_some())
+            .filter(|host| host.destination.is_some() && host.client.is_some())
             .map(|host| host.name.to_string())
             .collect();
         match hosts.as_slice() {
@@ -1471,8 +1641,10 @@ impl Den {
         }
         if self.active.as_ref() == Some(key) {
             self.active = None;
-            Config::update(cx, |config| config.last = None);
-            window.set_window_title("den");
+            if self.remembers() {
+                Config::update(cx, |config| config.last = None);
+            }
+            window.set_window_title(&self.title());
             match self.previous.clone().filter(|key| self.task(key).is_some()) {
                 Some(previous) => self.activate(previous, window, cx),
                 None => self.focus_handle.focus(window, cx),
@@ -1751,22 +1923,15 @@ impl Den {
         if self.host(&name).is_some() {
             return false;
         }
-        Config::update(cx, |c| {
-            c.hosts.push(HostConfig {
-                name: name.to_string(),
-                destination: destination.clone(),
-            })
-        });
-        self.hosts.push(Host {
-            name: name.clone(),
-            destination: Some(destination),
-            client: None,
-            status: HostStatus::Connecting(CONNECTING),
-            tasks: Vec::new(),
-            loose: Vec::new(),
-            repos: Vec::new(),
-            generation: 0,
-        });
+        if self.remembers() {
+            Config::update(cx, |c| {
+                c.hosts.push(HostConfig {
+                    name: name.to_string(),
+                    destination: destination.clone(),
+                })
+            });
+        }
+        self.hosts.push(Host::remote(name.clone(), destination));
         // It stays if a folder is opened on it once it connects.
         self.adding_host = Some(name.clone());
         self.connect(name, window, cx);
@@ -1816,15 +1981,19 @@ impl Den {
     /// Browse the server's folders, starting next to its known or open
     /// folders (or in its home folder), to open one or make a new one.
     fn open_folder_picker(&mut self, host: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(client) = self.client(&host) else {
-            return;
-        };
         let start = self
             .host(&host)
             .and_then(|host| host.repos.first().or(host.tasks.first().map(|task| &task.repo)))
             .and_then(|repo| repo.parent())
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("~"));
+        self.open_folder_picker_at(host, start, window, cx);
+    }
+
+    fn open_folder_picker_at(&mut self, host: SharedString, start: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self.client(&host) else {
+            return;
+        };
         let title = format!("OPEN FOLDER ON {}", host.to_uppercase());
         let picker = cx.new(|cx| FolderPicker::new(client.clone(), title, start, window, cx));
         let subscription = cx.subscribe_in(&picker, window, move |this, _, event: &FolderPickerEvent, window, cx| {
@@ -1885,7 +2054,9 @@ impl Den {
     fn forget_host(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.hosts.retain(|host| host.name != name);
         self.workspaces.retain(|key, _| key.host != name);
-        Config::update(cx, |c| c.hosts.retain(|host| host.name != name.as_ref()));
+        if self.remembers() {
+            Config::update(cx, |c| c.hosts.retain(|host| host.name != name.as_ref()));
+        }
         if self.active.as_ref().is_some_and(|key| key.host == name) {
             self.active = None;
             if let Some(next) = self.ordered(cx).first().map(|(key, _)| key.clone()) {
@@ -2516,7 +2687,7 @@ impl Render for Den {
             });
         }
         let tasks_visible = self.tasks_shown(cx);
-        let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| "den".into());
+        let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| self.title());
         v_flex()
             .id("den")
             .key_context("Den")
@@ -2636,6 +2807,28 @@ fn error_text(error: SharedString, cx: &App) -> impl IntoElement {
         .text_color(cx.theme().danger)
         .whitespace_normal()
         .child(error)
+}
+
+/// What `den -s` opens for `path` on a server (see `proto::open_target`):
+/// a folder as it is, a file in its repo. None if it isn't there.
+async fn remote_target(client: &Client, path: PathBuf) -> Option<(PathBuf, Option<PathBuf>)> {
+    let list = |dir: &Path| client.request(Request::ListDir { path: dir.to_path_buf() });
+    let entries = |response: anyhow::Result<Response>| match response {
+        Ok(Response::Dir(entries)) => Some(entries),
+        _ => None,
+    };
+    let parent = path.parent()?.to_path_buf();
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let entry = entries(list(&parent).await)?.into_iter().find(|entry| entry.name == name)?;
+    if entry.is_dir {
+        return Some((path, None));
+    }
+    for dir in parent.ancestors() {
+        if entries(list(dir).await).is_some_and(|entries| entries.iter().any(|entry| entry.name == ".git")) {
+            return Some((dir.to_path_buf(), Some(path)));
+        }
+    }
+    Some((parent, Some(path)))
 }
 
 async fn list_tasks(client: &Client) -> anyhow::Result<Vec<TaskInfo>> {

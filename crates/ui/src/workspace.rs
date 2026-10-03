@@ -57,7 +57,7 @@ pub(crate) mod autosave_tests;
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::{WorkspacesPanel, drop_panels, reset_panels, title as panel_title};
+pub(crate) use layout::{WorkspacesPanel, column_shown, drop_panels, init_panels, reset_panels, set_column, title as panel_title};
 pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar, toggle_activity_icon};
 
 enum Content {

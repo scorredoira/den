@@ -80,6 +80,12 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
+            // `den -s <server> [<path>]`: in a window of its own.
+            ["-s", server, path @ ..] if path.len() <= 1 => {
+                let (server, path) = (server.to_string(), path.first().map(PathBuf::from));
+                cx.defer(move |cx| open_server_window(server, path, cx));
+                Ok(String::new())
+            }
             // `den <path>` and `den worktree` in a terminal of this window.
             ["open", root, file @ ..] if file.len() <= 1 => {
                 let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));

@@ -157,6 +157,23 @@ impl Panels {
         self.closed.remove(&panel);
     }
 
+    /// The workspaces column as the app shows it: shown again, it's the
+    /// panel its stack shows. Returns whether it changed.
+    fn set_column(&mut self, visible: bool) -> bool {
+        if self.workspaces == Some(visible) {
+            return false;
+        }
+        if !visible {
+            self.closed.insert(Panel::Workspaces);
+        } else if self.workspaces.is_none() {
+            self.closed.remove(&Panel::Workspaces);
+        } else {
+            self.show(Panel::Workspaces);
+        }
+        self.workspaces = Some(visible);
+        true
+    }
+
     /// Closes its stack, if it's the panel the stack shows.
     pub fn hide(&mut self, layout: &Layout, panel: Panel) {
         let panel = part_of(layout, panel);
@@ -188,6 +205,23 @@ pub(crate) fn reset_panels(cx: &mut App) {
     for panels in cx.default_global::<WindowPanels>().0.values_mut() {
         *panels = Panels::new(panels.remember);
     }
+}
+
+/// The panels of a window the app opens: with `remember`, showing or hiding
+/// the workspaces column is saved.
+pub(crate) fn init_panels(window: WindowId, remember: bool, cx: &mut App) {
+    cx.default_global::<WindowPanels>().0.insert(window, Panels::new(remember));
+}
+
+/// The window's workspaces column, as last shown or hidden: unset if it
+/// never was.
+pub(crate) fn column_shown(window: WindowId, cx: &App) -> Option<bool> {
+    cx.try_global::<WindowPanels>()?.0.get(&window)?.workspaces
+}
+
+/// Shows or hides the window's workspaces column while it has no task.
+pub(crate) fn set_column(window: WindowId, visible: bool, cx: &mut App) {
+    Panels::of_mut(window, cx).set_column(visible);
 }
 
 /// Forgets a closed window's panels.
@@ -262,19 +296,9 @@ impl Workspace {
         if self.workspaces.is_none() {
             self.workspaces = Some(view.clone());
         }
-        let panels = Panels::of_mut(self.window_id, cx);
-        if panels.workspaces == Some(visible) {
-            return;
+        if Panels::of_mut(self.window_id, cx).set_column(visible) {
+            cx.notify();
         }
-        if !visible {
-            panels.closed.insert(Panel::Workspaces);
-        } else if panels.workspaces.is_none() {
-            panels.closed.remove(&Panel::Workspaces);
-        } else {
-            panels.show(Panel::Workspaces);
-        }
-        panels.workspaces = Some(visible);
-        cx.notify();
     }
 
     /// Cmd-B: the stack with the files, whichever panel it shows.

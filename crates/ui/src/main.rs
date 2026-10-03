@@ -115,7 +115,8 @@ actions!(
 pub struct ToggleActivityIcon(pub config::Panel);
 
 /// `den [folder | file]`: given a file, opens it in its repo (see
-/// `proto::open_target`).
+/// `proto::open_target`). `den -s <server> [<path>]`: only a window on that
+/// server (see `app::open_server_window`).
 /// Opened from the Dock or the Finder with nothing to resume, there's no
 /// folder: the welcome screen offers to open one.
 fn main() {
@@ -130,10 +131,16 @@ fn main() {
         Some(home) if launched => home,
         _ => cwd,
     };
+    // `den -s <server> [<path>]`: only a window on that server.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let server = match args.as_slice() {
+        [flag, name, path @ ..] if flag == "-s" && path.len() <= 1 => Some((name.clone(), path.first().map(PathBuf::from))),
+        _ => None,
+    };
     // Old versions of macOS pass `-psn_…` to apps opened from the Finder.
     let arg = std::env::args_os()
         .nth(1)
-        .filter(|arg| !arg.to_string_lossy().starts_with("-psn"))
+        .filter(|arg| !arg.to_string_lossy().starts_with("-psn") && server.is_none())
         .map(PathBuf::from);
     let arg = arg.map(|path| cwd.join(&path).canonicalize().unwrap_or(path));
     // With nothing to open, go back to the last workspace.
@@ -175,7 +182,10 @@ fn main() {
         if let Some(agent) = &agent {
             listen_for_open(agent, cx);
         }
-        app::open_window(root.clone(), file.clone(), resume, cx);
+        match server.clone() {
+            Some((name, path)) => app::open_server_window(name, path, cx),
+            None => app::open_window(root.clone(), file.clone(), resume, cx),
+        }
         // With unsaved files, Cmd-Q asks before quitting. The action arrives
         // while a window is busy dispatching it, and it can't be entered
         // from there: ask right afterwards.
@@ -194,6 +204,9 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
         Command(u64, Vec<String>),
         Lost,
     }
+    // This machine's `den` commands come here too, with the main window
+    // closed (see below).
+    agent.notify(proto::Request::Serve);
     let (tx, rx) = smol::channel::unbounded::<Received>();
     let lost = tx.clone();
     agent.on_disconnect(move || {
@@ -220,6 +233,11 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
                             [open, root, file @ ..] if open == "open" && file.len() <= 1 => {
                                 let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
                                 cx.update(|cx| app::handle_open(root, file, cx));
+                                Ok(String::new())
+                            }
+                            [server, name, path @ ..] if server == "-s" && path.len() <= 1 => {
+                                let (name, path) = (name.clone(), path.first().map(PathBuf::from));
+                                cx.update(|cx| app::open_server_window(name, path, cx));
                                 Ok(String::new())
                             }
                             _ => Err("den's window is closed".to_string()),

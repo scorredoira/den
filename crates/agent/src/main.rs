@@ -42,6 +42,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("term") => cli::term(&args[1..]),
+        Some("-s" | "--server") if cli::invoked_as_den() => cli::server(&args[1..]),
         Some("show" | "diff" | "doc" | "selection" | "tabs" | "message" | "workspaces") => cli::command(&args),
         Some(path) if cli::invoked_as_den() && !path.starts_with('-') && args.len() == 1 => cli::open(path),
         _ => {
