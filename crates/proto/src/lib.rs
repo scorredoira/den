@@ -298,6 +298,9 @@ pub enum GitOp {
     FileLog { file: String, skip: usize, limit: usize },
     /// Makes the folder (not in a repo yet) a git repo.
     Init,
+    /// Responds `Commits`: those of `HEAD` that the main branch (the local
+    /// `master` or `main`) doesn't have, the newest first.
+    Unmerged { limit: usize },
 }
 
 /// Repo status for the Changes mode, uncommitted.

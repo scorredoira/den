@@ -266,8 +266,9 @@ pub struct Sik {
     /// Agents that finished while their workspace wasn't in front.
     agents_attention: HashSet<(SharedString, proto::TermId)>,
     new_task: Option<NewTaskInput>,
-    /// Worktree whose deletion is being confirmed, in a dialog.
-    confirm_remove: Option<(TaskKey, FocusHandle)>,
+    /// Worktree whose deletion is being confirmed, in a dialog, and what
+    /// it would lose (unset while git is asked).
+    confirm_remove: Option<(TaskKey, FocusHandle, Option<confirm::AtRisk>)>,
     /// Server whose agent is about to be restarted, confirming in a dialog.
     confirm_restart: Option<(SharedString, FocusHandle)>,
     /// The update about to be restarted into, confirming in a dialog.
@@ -2520,7 +2521,7 @@ impl Render for Sik {
                     .map(|picker| div().absolute().top(px(44.)).left_0().right_0().flex().justify_center().child(picker)),
             )
             .children(self.about.as_ref().map(|focus| self.render_about(focus, cx)))
-            .children(self.confirm_remove.as_ref().map(|(key, focus)| self.render_confirm_remove(key, focus, cx)))
+            .children(self.confirm_remove.as_ref().map(|(key, focus, at_risk)| self.render_confirm_remove(key, focus, at_risk.as_ref(), cx)))
             .children(self.confirm_restart.as_ref().map(|(name, focus)| self.render_confirm_restart(name, focus, cx)))
             .children(self.confirm_update.as_ref().map(|(version, focus)| self.render_confirm_update(version, focus, cx)))
             .children(self.quit_confirm.as_ref().map(|focus| self.render_quit_confirm(focus, cx)))

@@ -178,6 +178,7 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
         }
         GitOp::Log { skip, limit } => Ok(Response::Commits(log(dir, skip, limit, None)?)),
         GitOp::FileLog { file, skip, limit } => Ok(Response::Commits(log(dir, skip, limit, Some(&file))?)),
+        GitOp::Unmerged { limit } => Ok(Response::Commits(unmerged(dir, limit)?)),
         GitOp::CommitFiles { commit } => {
             let files = changed(dir, &["diff-tree", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames", &commit])?;
             Ok(Response::Changes { base: None, files })
@@ -284,6 +285,16 @@ fn status(dir: &Path) -> Result<GitStatus> {
 const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s%x1f%b%x1e";
 
 /// The history from `HEAD`, or only the commits that changed `file`.
+/// The commits of `HEAD` the main branch doesn't have: none without one.
+fn unmerged(dir: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
+    let Some(branch) = default_branch(dir) else {
+        return Ok(Vec::new());
+    };
+    let (limit, range) = (format!("--max-count={limit}"), format!("{branch}..HEAD"));
+    let raw = git(dir, &["log", LOG_FORMAT, &limit, &range])?;
+    Ok(commits(&raw).map(|(commit, _)| commit).collect())
+}
+
 fn log(dir: &Path, skip: usize, limit: usize, file: Option<&str>) -> Result<Vec<CommitInfo>> {
     // With no commits yet there's no history (and `git log` fails).
     if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
@@ -520,6 +531,26 @@ mod tests {
 
         assert!(diff(&dir, "a.txt", false).unwrap().contains("+three"));
         assert!(diff(&dir, "new.txt", false).unwrap().contains("+x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unmerged_commits_are_those_the_main_branch_lacks() {
+        let dir = repo();
+        let unmerged = |dir: &Path| match run_op(dir, GitOp::Unmerged { limit: 10 }) {
+            Response::Commits(commits) => commits.into_iter().map(|c| c.subject).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert!(unmerged(&dir).is_empty());
+        run(&dir, &["switch", "-q", "-c", "task"]);
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        commit(&dir, "on the branch");
+        assert_eq!(unmerged(&dir), ["on the branch"]);
+        // Merged into master, it's no longer pending.
+        run(&dir, &["switch", "-q", "master"]);
+        run(&dir, &["merge", "-q", "--ff-only", "task"]);
+        run(&dir, &["switch", "-q", "task"]);
+        assert!(unmerged(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

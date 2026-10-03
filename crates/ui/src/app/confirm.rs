@@ -3,12 +3,53 @@
 
 use super::*;
 
+/// What deleting a worktree would lose, as far as git knows.
+pub(crate) struct AtRisk {
+    /// Files changed and not committed, untracked ones included.
+    changes: usize,
+    /// Commits the main branch doesn't have, the newest first.
+    commits: Vec<proto::CommitInfo>,
+}
+
+/// Commits listed by name in the dialog; the rest, counted.
+const COMMITS_LISTED: usize = 3;
+
 impl Sik {
-    /// Delete Worktree…
+    /// Delete Worktree…: asks git what it would lose while the dialog is up.
     pub(super) fn ask_remove(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
         self.error = None;
-        self.confirm_remove = Some((key, self.confirm_focus(window, cx)));
+        self.confirm_remove = Some((key.clone(), self.confirm_focus(window, cx), None));
         cx.notify();
+        let Some(client) = self.client(&key.host) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let changes = client.request(Request::GitChanges { path: key.path.clone(), uncommitted: true }).await;
+            let commits = client
+                .request(Request::Git { path: key.path.clone(), op: GitOp::Unmerged { limit: 1000 } })
+                .await;
+            // What git couldn't answer (an older agent) isn't warned about.
+            let at_risk = AtRisk {
+                changes: match changes {
+                    Ok(Response::Changes { files, .. }) => files.len(),
+                    _ => 0,
+                },
+                commits: match commits {
+                    Ok(Response::Commits(commits)) => commits,
+                    _ => Vec::new(),
+                },
+            };
+            this.update(cx, |this, cx| {
+                if let Some((asked, _, pending)) = &mut this.confirm_remove
+                    && *asked == key
+                {
+                    *pending = Some(at_risk);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Outdated agent · restart.
@@ -42,28 +83,47 @@ impl Sik {
         cx.notify();
     }
 
-    pub(super) fn render_confirm_remove(&self, key: &TaskKey, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_confirm_remove(
+        &self,
+        key: &TaskKey,
+        focus: &FocusHandle,
+        at_risk: Option<&AtRisk>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let detail = if key.host == LOCAL && self.task(key).is_some_and(|task| task.repo.join(".sik/remove").is_file()) {
             "The repo's .sik/remove deletes it; depending on the repo, along with its uncommitted changes."
         } else {
             "With the repo's .sik/remove if it has one; otherwise git worktree remove, which won't delete with uncommitted changes."
         };
+        let (warning, action) = match at_risk {
+            None => (Some((false, "Looking for uncommitted changes and unmerged commits…".to_string())), "Delete"),
+            Some(at_risk) => match risk_text(at_risk) {
+                Some(text) => (Some((true, text)), "Delete Anyway"),
+                None => (None, "Delete"),
+            },
+        };
         let key = key.clone();
         let title = format!("Delete {}?", self.label(&key));
-        self.render_confirm(focus, title, detail, "Delete", true, move |this, window, cx| this.remove_task(key.clone(), window, cx), cx)
+        // Not before git has said what it would lose.
+        let confirm = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            if this.confirm_remove.as_ref().is_some_and(|(_, _, at_risk)| at_risk.is_some()) {
+                this.remove_task(key.clone(), window, cx)
+            }
+        };
+        self.render_confirm(focus, title, warning, detail, action, true, confirm, cx)
     }
 
     pub(super) fn render_confirm_restart(&self, name: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let name = name.clone();
         let title = format!("Restart the agent on {name}?");
         let detail = "A new version of the agent is available. Restarting it restarts its terminals: they reopen in place, without their scrollback, and Claude Code resumes its conversation.";
-        self.render_confirm(focus, title, detail, "Restart", false, move |this, window, cx| this.restart_agent(name.clone(), window, cx), cx)
+        self.render_confirm(focus, title, None, detail, "Restart", false, move |this, window, cx| this.restart_agent(name.clone(), window, cx), cx)
     }
 
     pub(super) fn render_confirm_update(&self, version: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let title = format!("Restart to update to Sik {version}?");
         let detail = "Workspaces, open files and terminals reopen as they are, and whatever runs in the terminals keeps running. Unsaved files are asked about first.";
-        self.render_confirm(focus, title, detail, "Restart", false, |this, window, cx| this.restart_to_update(window, cx), cx)
+        self.render_confirm(focus, title, None, detail, "Restart", false, |this, window, cx| this.restart_to_update(window, cx), cx)
     }
 
     fn restart_to_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -75,12 +135,14 @@ impl Sik {
     }
 
     /// The dialog: what's about to happen and its button, red if it
-    /// destroys something.
+    /// destroys something. `warning`, above it: what would be lost (`true`,
+    /// in the warning color) or a note.
     #[allow(clippy::too_many_arguments)]
     fn render_confirm(
         &self,
         focus: &FocusHandle,
         title: String,
+        warning: Option<(bool, String)>,
         detail: &'static str,
         action: &'static str,
         destructive: bool,
@@ -126,6 +188,12 @@ impl Sik {
                         cx.stop_propagation();
                     }))
                     .child(div().text_base().font_semibold().child(title))
+                    .children(warning.map(|(lost, text)| {
+                        div()
+                            .text_color(if lost { theme.warning } else { theme.muted_foreground })
+                            .whitespace_normal()
+                            .child(text)
+                    }))
                     .child(div().text_color(theme.muted_foreground).whitespace_normal().child(detail))
                     .child(
                         h_flex()
@@ -149,5 +217,58 @@ impl Sik {
                             ),
                     ),
             )
+    }
+}
+
+/// What a worktree would lose, in words; none if nothing.
+fn risk_text(at_risk: &AtRisk) -> Option<String> {
+    let plural = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+    let mut parts = Vec::new();
+    if at_risk.changes > 0 {
+        parts.push(plural(at_risk.changes, "file with uncommitted changes", "files with uncommitted changes"));
+    }
+    let commits = at_risk.commits.len();
+    if commits > 0 {
+        parts.push(plural(commits, "commit not merged into the main branch", "commits not merged into the main branch"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let mut text = format!("It has {}.", parts.join(" and "));
+    for commit in at_risk.commits.iter().take(COMMITS_LISTED) {
+        text.push_str(&format!("\n• {} {}", commit.short, commit.subject));
+    }
+    if commits > COMMITS_LISTED {
+        text.push_str(&format!("\n• …and {} more", commits - COMMITS_LISTED));
+    }
+    Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AtRisk, risk_text};
+
+    #[test]
+    fn what_a_worktree_would_lose() {
+        let commit = |subject: &str| proto::CommitInfo {
+            hash: String::new(),
+            short: "abc1234".into(),
+            author: String::new(),
+            time: 0,
+            refs: String::new(),
+            subject: subject.into(),
+        };
+        assert_eq!(risk_text(&AtRisk { changes: 0, commits: Vec::new() }), None);
+        assert_eq!(
+            risk_text(&AtRisk { changes: 1, commits: Vec::new() }).as_deref(),
+            Some("It has 1 file with uncommitted changes.")
+        );
+        let commits = ["a", "b", "c", "d", "e"].map(commit).to_vec();
+        assert_eq!(
+            risk_text(&AtRisk { changes: 2, commits }).as_deref(),
+            Some(
+                "It has 2 files with uncommitted changes and 5 commits not merged into the main branch.\n• abc1234 a\n• abc1234 b\n• abc1234 c\n• …and 2 more"
+            )
+        );
     }
 }
