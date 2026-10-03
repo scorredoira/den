@@ -309,15 +309,20 @@ mod tests {
     fn removes_with_git_and_refuses_dirty_and_main() {
         let repo = repo("remove");
         let task = create(&repo, "clean").unwrap();
-        remove(&task.path).unwrap();
+        remove(&task.path, false).unwrap();
         assert_eq!(worktrees(&repo).unwrap().len(), 1);
 
         let dirty = create(&repo, "dirty").unwrap();
         std::fs::write(dirty.path.join("change.txt"), "x").unwrap();
-        assert!(remove(&dirty.path).is_err());
+        assert!(remove(&dirty.path, false).is_err());
         assert!(dirty.path.exists());
 
-        assert!(remove(&repo).unwrap_err().to_string().contains("main checkout"));
+        // force deletes it, its changes too; never the main checkout
+        remove(&dirty.path, true).unwrap();
+        assert!(!dirty.path.exists());
+        assert!(remove(&repo, true).unwrap_err().to_string().contains("main checkout"));
+
+        assert!(remove(&repo, false).unwrap_err().to_string().contains("main checkout"));
     }
 
     #[test]
@@ -330,8 +335,11 @@ mod tests {
         std::fs::write(&script, "#!/bin/sh\necho \"doing nothing with $1 in $2\"\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let err = remove(&task.path).unwrap_err().to_string();
+        let err = remove(&task.path, false).unwrap_err().to_string();
         assert!(err.contains("still there") && err.contains("doing nothing with x in"), "{err}");
+        // force doesn't run the script: git removes it
+        remove(&task.path, true).unwrap();
+        assert!(!task.path.exists());
     }
 
     #[test]
