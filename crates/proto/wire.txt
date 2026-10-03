@@ -1,0 +1,234 @@
+protocol 7
+
+pub type TermId = u64;
+
+#[derive(Debug, Serialize, Deserialize)] pub struct ClientMessage {
+    pub id: Option<u64>
+    pub request: Request
+
+#[derive(Debug, Serialize, Deserialize)] pub enum Request {
+    Hello { protocol: u32 }
+    Shutdown
+    TermCreate { group: String, cwd: PathBuf, command: Option<Vec<String>>, cols: u16, rows: u16 }
+    TermList { group: String }
+    TermAttach { term: TermId }
+    TermDetach { term: TermId }
+    TermInput { term: TermId, #[serde(with = "serde_bytes")] data: Vec<u8> }
+    TermResize { term: TermId, cols: u16, rows: u16 }
+    TermKill { term: TermId }
+    TermCwd { term: TermId }
+    SavePastedImage { extension: String, #[serde(with = "serde_bytes")] data: Vec<u8> }
+    RepoAdd { path: PathBuf }
+    RepoRemove { path: PathBuf }
+    RepoList
+    TaskList
+    TaskCreate { repo: PathBuf, name: String, open: bool }
+    TaskRemove { path: PathBuf }
+    GitChanges { path: PathBuf, uncommitted: bool }
+    GitDiff { path: PathBuf, file: String, uncommitted: bool }
+    FindFiles { path: PathBuf }
+    Search { path: PathBuf, query: String, regex: bool, case_sensitive: bool, max_hits: usize }
+    ReadFile { path: PathBuf }
+    WriteFile { path: PathBuf, #[serde(with = "serde_bytes")] data: Vec<u8> }
+    ListDir { path: PathBuf }
+    Rename { from: PathBuf, to: PathBuf }
+    CreateFile { path: PathBuf }
+    CreateDir { path: PathBuf }
+    Trash { path: PathBuf }
+    Watch { path: PathBuf }
+    Unwatch { path: PathBuf }
+    Version
+    Git { path: PathBuf, op: GitOp }
+    Lsp { root: PathBuf, path: PathBuf, text: String, line: u32, column: u32, op: LspOp }
+    BlockedList
+    Replace { path: PathBuf, files: Vec<String>, query: String, regex: bool, case_sensitive: bool, replacement: String, preserve_case: bool }
+    Ports
+    LspResolve { root: PathBuf, path: PathBuf, list: u64, item: u32 }
+    Format { root: PathBuf, path: PathBuf, text: String }
+    Open { root: PathBuf, file: Option<PathBuf> }
+    RelayConnect { port: u16 }
+    FreePort
+    RelaySend { relay: u64, line: String }
+    RelayClose { relay: u64 }
+    Serve
+    Command { args: Vec<String>, cwd: PathBuf, term: Option<TermId> }
+    CommandDone { command: u64, result: Result<String, String> }
+    TermRead { term: TermId, lines: u32 }
+    TermBusy { term: TermId }
+    Resolve { path: PathBuf }
+    LspWorkspaceSymbols { root: PathBuf, path: Option<PathBuf>, text: String, query: String }
+    AgentList
+    TaskForceRemove { path: PathBuf }
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)] pub enum LspOp {
+    Definition
+    References
+    Completion
+    SignatureHelp
+    Symbols
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct LspSignature {
+    pub label: String
+    pub active: Option<(u32, u32)>
+    pub documentation: Option<String>
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct LspCompletion {
+    pub label: String
+    pub kind: Option<u32>
+    pub detail: Option<String>
+    pub documentation: Option<String>
+    pub text: String
+    pub start: u32
+    pub filter: String
+    pub sort: String
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct LspLocation {
+    pub path: PathBuf
+    pub line: u32
+    pub column: u32
+    pub length: u32
+    pub text: String
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct LspSymbol {
+    pub path: PathBuf
+    pub name: String
+    pub kind: u32
+    pub container: Option<String>
+    pub line: u32
+    pub column: u32
+    pub depth: u32
+    pub local: bool
+
+#[derive(Debug, Clone, Serialize, Deserialize)] pub enum GitOp {
+    Status
+    Stage { files: Vec<String> }
+    Unstage { files: Vec<String> }
+    Discard { files: Vec<String> }
+    Commit { message: String, all: bool }
+    Branches
+    Switch { branch: String }
+    Log { skip: usize, limit: usize }
+    CommitFiles { commit: String }
+    CommitDiff { commit: String, file: String }
+    Show { commit: String }
+    FileAt { commit: String, file: String }
+    Search { query: String, skip: usize, limit: usize }
+    Blame { file: String }
+    WholeDiff { file: String, commit: Option<String>, uncommitted: bool }
+    FileLog { file: String, skip: usize, limit: usize }
+    Init
+    Unmerged { limit: usize }
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)] pub struct GitStatus {
+    pub branch: Option<String>
+    pub staged: Vec<ChangedFile>
+    pub unstaged: Vec<ChangedFile>
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct CommitInfo {
+    pub hash: String
+    pub short: String
+    pub author: String
+    pub time: i64
+    pub refs: String
+    pub subject: String
+
+#[derive(Debug, Serialize, Deserialize)] pub enum ServerMessage {
+    Response { id: u64, result: Result<Response, String> }
+    Event(Event)
+
+#[derive(Debug, Serialize, Deserialize)] pub enum Response {
+    Hello { protocol: u32, pid: u32 }
+    Ok
+    TermCreated { term: TermId }
+    TermList(Vec<TermInfo>)
+    TermSnapshot { cols: u16, rows: u16, #[serde(with = "serde_bytes")] data: Vec<u8> }
+    Path(Option<PathBuf>)
+    Tasks(Vec<TaskInfo>)
+    Repos(Vec<PathBuf>)
+    Task(TaskInfo)
+    Changes { base: Option<String>, files: Vec<ChangedFile> }
+    Text(String)
+    Files(Vec<String>)
+    SearchResults { hits: Vec<SearchHit>, truncated: bool }
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>)
+    Dir(Vec<DirEntryInfo>)
+    GitStatus(GitStatus)
+    Branches { current: Option<String>, branches: Vec<String> }
+    Commits(Vec<CommitInfo>)
+    Lsp { server: Option<String>, locations: Vec<LspLocation> }
+    Blame { commits: Vec<CommitInfo>, lines: Vec<Option<u32>> }
+    Replaced { files: usize, replacements: usize }
+    Ports(Vec<PortInfo>)
+    Completions { server: Option<String>, list: u64, items: Vec<LspCompletion>, incomplete: bool }
+    Resolved { detail: Option<String>, documentation: Option<String> }
+    Signature(Option<LspSignature>)
+    Formatted { text: Option<String>, by: Option<String> }
+    Count(usize)
+    Relay(u64)
+    Port(u16)
+    Busy(bool)
+    Symbols { server: Option<String>, symbols: Vec<LspSymbol> }
+    Agents(Vec<AgentInfo>)
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)] pub struct PortInfo {
+    pub port: u16
+    pub group: String
+    pub process: String
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct DirEntryInfo {
+    pub name: String
+    pub is_dir: bool
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct ChangedFile {
+    pub path: String
+    pub status: char
+    pub added: u32
+    pub removed: u32
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct SearchHit {
+    pub path: String
+    pub line: u32
+    pub column: u32
+    pub length: u32
+    pub text: String
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct TaskInfo {
+    pub repo: PathBuf
+    pub path: PathBuf
+    pub branch: Option<String>
+    pub main: bool
+    pub working: bool
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct AgentInfo {
+    pub term: TermId
+    pub group: String
+    pub name: String
+    pub title: Option<String>
+    pub working: bool
+    pub blocked: bool
+
+#[derive(Debug, Clone, Serialize, Deserialize)] pub struct TermInfo {
+    pub term: TermId
+    pub title: Option<String>
+
+#[derive(Debug, Serialize, Deserialize)] pub enum Event {
+    TermOutput { term: TermId, #[serde(with = "serde_bytes")] data: Vec<u8> }
+    TermTitle { term: TermId, title: Option<String> }
+    TermExit { term: TermId }
+    Activity { group: String, working: bool }
+    OpenTask { path: PathBuf }
+    FsChanged { root: PathBuf, paths: Vec<PathBuf> }
+    Blocked { group: String, blocked: bool }
+    Open { root: PathBuf, file: Option<PathBuf> }
+    RelayLine { relay: u64, line: String }
+    RelayClosed { relay: u64 }
+    Command { command: u64, args: Vec<String>, cwd: PathBuf, term: Option<TermId>, group: Option<String> }
+    Agents { agents: Vec<AgentInfo> }
+
+#[derive(Deserialize)] pub struct ClientEnvelope {
+    id: Option<u64>
+    #[allow(dead_code)] request: serde::de::IgnoredAny
+
+#[derive(Deserialize)] pub enum ServerEnvelope {
+    Response { id: u64, #[allow(dead_code)] result: serde::de::IgnoredAny }
+    Event(serde::de::IgnoredAny)
