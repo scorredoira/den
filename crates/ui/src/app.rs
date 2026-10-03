@@ -451,6 +451,8 @@ pub struct Den {
     /// Worktree whose deletion is being confirmed, in a dialog, and what
     /// it would lose (unset while git is asked).
     confirm_remove: Option<(TaskKey, FocusHandle, Option<confirm::AtRisk>)>,
+    /// Worktree git refused to delete, with why, asking whether to force it.
+    confirm_force_remove: Option<(TaskKey, FocusHandle, SharedString)>,
     /// Server whose agent is about to be restarted, confirming in a dialog.
     confirm_restart: Option<(SharedString, FocusHandle)>,
     /// The update about to be restarted into, confirming in a dialog.
@@ -531,6 +533,7 @@ impl Den {
             agents_attention: HashSet::new(),
             new_task: None,
             confirm_remove: None,
+            confirm_force_remove: None,
             confirm_restart: None,
             confirm_update: None,
             removing: HashSet::new(),
@@ -1963,23 +1966,28 @@ impl Den {
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_task = None;
         self.confirm_remove = None;
+        self.confirm_force_remove = None;
         self.error = None;
         self.focus_active(window, cx);
         cx.notify();
     }
 
-    fn remove_task(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
+    /// With `force`, along with what git won't delete: uncommitted changes.
+    fn remove_task(&mut self, key: TaskKey, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client(&key.host) else {
             return;
         };
-        if self.confirm_remove.take().is_some() {
+        let asked = self.confirm_remove.take().is_some();
+        if self.confirm_force_remove.take().is_some() || asked {
             self.focus_active(window, cx);
         }
         self.error = None;
         self.removing.insert(key.clone());
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = client.request(Request::TaskRemove { path: key.path.clone() }).await;
+            let path = key.path.clone();
+            let request = if force { Request::TaskForceRemove { path } } else { Request::TaskRemove { path } };
+            let result = client.request(request).await;
             let tasks = list_tasks(&client).await;
             this.update_in(cx, |this, window, cx| {
                 this.removing.remove(&key);
@@ -2001,6 +2009,11 @@ impl Den {
                                 this.activate(next, window, cx);
                             }
                         }
+                    }
+                    // Git says what --force would delete: asked again instead.
+                    Err(err) if !force && format!("{err:#}").contains("--force") => {
+                        let focus = this.confirm_focus(window, cx);
+                        this.confirm_force_remove = Some((key, focus, format!("{err:#}").into()));
                     }
                     Err(err) => this.error = Some((key, format!("{err:#}").into())),
                 }
@@ -3005,6 +3018,11 @@ impl Render for Den {
             )
             .children(self.about.as_ref().map(|focus| self.render_about(focus, cx)))
             .children(self.confirm_remove.as_ref().map(|(key, focus, at_risk)| self.render_confirm_remove(key, focus, at_risk.as_ref(), cx)))
+            .children(
+                self.confirm_force_remove
+                    .as_ref()
+                    .map(|(key, focus, reason)| self.render_confirm_force_remove(key, focus, reason, cx)),
+            )
             .children(self.confirm_restart.as_ref().map(|(name, focus)| self.render_confirm_restart(name, focus, cx)))
             .children(self.confirm_update.as_ref().map(|(version, focus)| self.render_confirm_update(version, focus, cx)))
             .children(self.quit_confirm.as_ref().map(|(focus, closing)| self.render_quit_confirm(focus, *closing, cx)))

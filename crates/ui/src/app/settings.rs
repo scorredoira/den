@@ -43,6 +43,7 @@ impl Den {
     pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_task = None;
         self.confirm_remove = None;
+        self.confirm_force_remove = None;
         self.error = None;
         if self.settings.is_none() {
             let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));

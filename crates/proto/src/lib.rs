@@ -192,6 +192,10 @@ pub enum Request {
     /// The terminals running a coding agent right now. Responds `Agents`;
     /// `Event::Agents` says when they change.
     AgentList,
+    /// `TaskRemove` with `git worktree remove --force`, the repo's
+    /// `.den/remove` or not: what git refused to delete with uncommitted
+    /// changes, deleted along with them.
+    TaskForceRemove { path: PathBuf },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

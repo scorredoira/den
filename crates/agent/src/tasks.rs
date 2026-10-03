@@ -168,7 +168,9 @@ pub fn create(path: &Path, name: &str) -> Result<TaskInfo> {
 }
 
 /// Removes the task (the worktree) at `path`. Never the main checkout.
-pub fn remove(path: &Path) -> Result<()> {
+/// With `force`, `git worktree remove --force` deletes it along with its
+/// uncommitted changes, without the repo's script.
+pub fn remove(path: &Path, force: bool) -> Result<()> {
     let repo = main_checkout(path)?;
     let task = worktrees(&repo)?
         .into_iter()
@@ -178,12 +180,15 @@ pub fn remove(path: &Path) -> Result<()> {
         bail!("the main checkout cannot be removed");
     }
     let name = task.branch.clone().unwrap_or_default();
-    let script = crate::platform::repo_hook(&repo, REMOVE_SCRIPT);
+    let script = crate::platform::repo_hook(&repo, REMOVE_SCRIPT).filter(|_| !force);
     let output = if let Some(script) = script {
         run_script(&repo, &script, &[&name, &dunce::simplified(path).to_string_lossy()])?
     } else {
+        let force = if force { &["--force"][..] } else { &[] };
         crate::platform::command("git")
-            .args(["worktree", "remove", &dunce::simplified(path).to_string_lossy()])
+            .args(["worktree", "remove"])
+            .args(force)
+            .arg(dunce::simplified(path))
             .current_dir(&repo)
             .output()?
     };
