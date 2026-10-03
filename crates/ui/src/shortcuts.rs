@@ -66,8 +66,8 @@ shortcuts![
     (SplitEditorRight, "Split Editor Right", "secondary-alt-s"),
     (SplitEditorDown, "Split Editor Down", "secondary-alt-shift-s"),
     (NewTerminal, "New Terminal", mac_or("cmd-t", "ctrl-shift-`")),
-    (SplitRight, "Split Terminal Right", mac_or("cmd-d", "ctrl-shift-5")),
-    (SplitDown, "Split Terminal Down", "secondary-shift-d"),
+    (SplitRight, "Split Terminal Right", mac_or("cmd-alt-d", "ctrl-shift-5")),
+    (SplitDown, "Split Terminal Down", mac_or("cmd-d", "ctrl-alt-d")),
     (FocusPaneLeft, "Focus Terminal Left", "secondary-alt-left"),
     (FocusPaneRight, "Focus Terminal Right", "secondary-alt-right"),
     (FocusPaneUp, "Focus Terminal Above", "secondary-alt-up"),
@@ -91,7 +91,7 @@ shortcuts![
     (ToggleBreakpoint, "Debug: Toggle Breakpoint", "f9"),
     (RunToCursor, "Debug: Run to Cursor", "ctrl-f10"),
     (SetNextStatement, "Debug: Set Next Statement", "ctrl-shift-f10"),
-    (ToggleDebugPanel, "Debug: Toggle Panel", "secondary-shift-y"),
+    (ToggleDebugPanel, "Debug: Toggle Panel", "secondary-shift-d"),
 ];
 
 /// `mac` on the Mac; `other` on Linux and Windows, for the shortcuts used from

@@ -215,7 +215,7 @@ impl Debugger {
                     .hover(|style| style.bg(theme.secondary))
                     .child(svg().path("icons/tab-close.svg").size(px(14.)).text_color(theme.muted_foreground))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(DebugEvent::Hide)))
-                    .tooltip(|window, cx| Tooltip::new("Hide (Cmd-Shift-Y)").build(window, cx)),
+                    .tooltip(|window, cx| Tooltip::new("Hide (Cmd-Shift-D)").build(window, cx)),
             ))
             .into_any_element()
     }
