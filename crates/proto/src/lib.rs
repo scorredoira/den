@@ -824,7 +824,8 @@ mod tests {
     fn wire_changes_bump_the_protocol() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wire.txt");
         let current = wire_items(include_str!("lib.rs"));
-        let recorded = std::fs::read_to_string(&path).unwrap();
+        // a Windows checkout may have CRLF line ends
+        let recorded = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
         let (recorded_protocol, recorded_items) = parse_wire_text(&recorded);
         let text = wire_text(PROTOCOL, &current);
         if text == recorded {
