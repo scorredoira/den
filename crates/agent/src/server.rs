@@ -1138,8 +1138,8 @@ struct Restarted {
     cwd: PathBuf,
     cols: u16,
     rows: u16,
-    /// Claude Code was running in it: the command that resumes it (the
-    /// same options, plus `--continue`).
+    /// Claude Code was running in it: the command that resumes its session
+    /// (the same options and config folder, plus `--resume <id>`).
     claude: Option<String>,
 }
 
@@ -1157,15 +1157,21 @@ fn save_for_restart(state: &State) {
         .iter()
         .map(|(term, entry)| {
             let foreground = entry.pty.foreground_pid();
+            let args = foreground
+                .and_then(platform::process_args)
+                .filter(|args| agent_name(args).as_deref() == Some("claude"));
+            let session = foreground.filter(|_| args.is_some()).and_then(claude_session);
+            // `--resume <id>` finds the session only from the folder it began in.
+            let cwd = session.as_ref().and_then(|session| session.cwd.clone());
             Restarted {
                 term: *term,
                 group: entry.group.clone(),
-                cwd: foreground
-                    .and_then(platform::process_cwd)
+                cwd: cwd
+                    .or_else(|| foreground.and_then(platform::process_cwd))
                     .unwrap_or_else(|| entry.cwd.path.clone()),
                 cols: entry.emulator.columns() as u16,
                 rows: entry.emulator.screen_lines() as u16,
-                claude: foreground.and_then(platform::process_args).and_then(|args| resume_command(&args)),
+                claude: args.and_then(|args| resume_command(&args, session.as_ref())),
             }
         })
         .collect();
@@ -1243,22 +1249,79 @@ fn claude_title(title: &str) -> bool {
     title.chars().next().is_some_and(|ch| ch == '✳' || ('\u{2800}'..='\u{28FF}').contains(&ch))
 }
 
+/// The Claude Code session a process runs: Claude Code writes it to
+/// `sessions/<pid>.json` in its config folder, `CLAUDE_CONFIG_DIR` or `~/.claude`.
+struct ClaudeSession {
+    id: Option<String>,
+    cwd: Option<PathBuf>,
+    /// `CLAUDE_CONFIG_DIR` if the process had it: the new shell may not.
+    config_dir: Option<String>,
+}
+
+fn claude_session(pid: u32) -> Option<ClaudeSession> {
+    let config_dir = platform::process_env(pid, "CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty());
+    let dir = match &config_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => dirs::home_dir()?.join(".claude"),
+    };
+    let file = std::fs::read(dir.join("sessions").join(format!("{pid}.json"))).ok();
+    let json: Option<serde_json::Value> = file.and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let field = |name: &str| json.as_ref()?.get(name)?.as_str().map(str::to_string);
+    Some(ClaudeSession {
+        id: field("sessionId").filter(|id| session_id(id)),
+        cwd: field("cwd").map(PathBuf::from).filter(|cwd| cwd.is_dir()),
+        config_dir,
+    })
+}
+
+/// Typed into a shell as is, so only letters, digits and `-` (a UUID).
+fn session_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
 /// If a command line is Claude Code's (the native `claude` binary or the npm
-/// package run by node), the command that resumes it: the same options plus
-/// `--continue`, unless it already resumes a given session.
-fn resume_command(args: &str) -> Option<String> {
+/// package run by node), the command that resumes its session: the same
+/// options and config folder plus `--resume <id>`. With no id known, a bare
+/// `--resume` lets the user pick the session, rather than `--continue`
+/// guessing one: two terminals in the same folder would get the same.
+fn resume_command(args: &str, session: Option<&ClaudeSession>) -> Option<String> {
     let words: Vec<&str> = args.split_whitespace().collect();
     let start = words.iter().position(|word| {
         let word = word.trim_matches('"');
         matches!(word.rsplit(['/', '\\']).next(), Some("claude" | "claude.exe" | "claude.cmd"))
             || word.replace('\\', "/").contains("@anthropic-ai/claude-code")
     })?;
-    let mut command = vec!["claude"];
-    command.extend(words[start + 1..].iter().filter(|word| !matches!(**word, "-c" | "--continue")));
-    if !command.iter().any(|word| matches!(*word, "-r" | "--resume") || word.starts_with("--resume=")) {
-        command.push("--continue");
+    let mut command = Vec::new();
+    if let Some(dir) = session.and_then(|session| session.config_dir.as_deref()) {
+        command.push(format!("CLAUDE_CONFIG_DIR={}", shell_quote(dir)));
     }
+    command.push("claude".to_string());
+    // The session it resumed, if it was started with one.
+    let mut resumed = None;
+    let mut rest = words[start + 1..].iter().peekable();
+    while let Some(word) = rest.next() {
+        match *word {
+            "-c" | "--continue" | "--fork-session" => {}
+            "-r" | "--resume" | "--session-id" => {
+                if let Some(value) = rest.next_if(|value| !value.starts_with('-')) {
+                    resumed = Some(value.to_string());
+                }
+            }
+            _ => match word.strip_prefix("--resume=").or_else(|| word.strip_prefix("--session-id=")) {
+                Some(value) => resumed = Some(value.to_string()),
+                None => command.push(word.to_string()),
+            },
+        }
+    }
+    let id = session.and_then(|session| session.id.clone()).or(resumed.filter(|id| session_id(id)));
+    command.push("--resume".to_string());
+    command.extend(id);
     Some(command.join(" "))
+}
+
+/// `value` as one word for a POSIX shell.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn create(
@@ -1407,7 +1470,7 @@ mod blocked_tests {
 
 #[cfg(test)]
 mod restart_tests {
-    use super::{agent_name, claude_title, resume_command};
+    use super::{ClaudeSession, agent_name, claude_title, resume_command};
 
     #[test]
     fn tells_the_agents_apart() {
@@ -1425,22 +1488,56 @@ mod restart_tests {
 
     #[test]
     fn resumes_claude_code_with_its_options() {
-        let resume = resume_command;
-        assert_eq!(resume("claude").as_deref(), Some("claude --continue"));
+        let resume = |args| resume_command(args, None);
+        assert_eq!(resume("claude").as_deref(), Some("claude --resume"));
         assert_eq!(
             resume("claude --dangerously-skip-permissions").as_deref(),
-            Some("claude --dangerously-skip-permissions --continue")
+            Some("claude --dangerously-skip-permissions --resume")
         );
-        assert_eq!(resume("/Users/me/.local/bin/claude -c").as_deref(), Some("claude --continue"));
+        assert_eq!(resume("/Users/me/.local/bin/claude -c").as_deref(), Some("claude --resume"));
         assert_eq!(resume("claude --resume abc123").as_deref(), Some("claude --resume abc123"));
+        assert_eq!(resume("claude -r abc123 --model opus").as_deref(), Some("claude --model opus --resume abc123"));
+        assert_eq!(resume("claude --resume --model opus").as_deref(), Some("claude --model opus --resume"));
         assert_eq!(
             resume("node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js --model opus").as_deref(),
-            Some("claude --model opus --continue")
+            Some("claude --model opus --resume")
         );
-        assert_eq!(resume(r#""C:\Users\me\.local\bin\claude.exe" --model opus"#).as_deref(), Some("claude --model opus --continue"));
-        assert_eq!(resume(r"node C:\npm\@anthropic-ai\claude-code\cli.js -c").as_deref(), Some("claude --continue"));
+        assert_eq!(resume(r#""C:\Users\me\.local\bin\claude.exe" --model opus"#).as_deref(), Some("claude --model opus --resume"));
+        assert_eq!(resume(r"node C:\npm\@anthropic-ai\claude-code\cli.js -c").as_deref(), Some("claude --resume"));
         assert_eq!(resume("-zsh"), None);
         assert_eq!(resume("vim claude.md"), None);
+        // An id that isn't one isn't typed into the shell.
+        assert_eq!(resume("claude --resume=x;rm").as_deref(), Some("claude --resume"));
+    }
+
+    #[test]
+    fn resumes_the_session_the_process_ran_in_its_config_folder() {
+        let session = ClaudeSession {
+            id: Some("d09e204f-44b6-45ed-8293-f4bf208351c4".to_string()),
+            cwd: None,
+            config_dir: Some("/Users/me/my claude's".to_string()),
+        };
+        assert_eq!(
+            resume_command("claude --dangerously-skip-permissions -c", Some(&session)).as_deref(),
+            Some(r"CLAUDE_CONFIG_DIR='/Users/me/my claude'\''s' claude --dangerously-skip-permissions --resume d09e204f-44b6-45ed-8293-f4bf208351c4")
+        );
+        // The session file wins over the id it was started with (`--fork-session` makes another).
+        assert_eq!(
+            resume_command("claude --resume abc --fork-session", Some(&session)).as_deref(),
+            Some(r"CLAUDE_CONFIG_DIR='/Users/me/my claude'\''s' claude --resume d09e204f-44b6-45ed-8293-f4bf208351c4")
+        );
+        let unknown = ClaudeSession { id: None, cwd: None, config_dir: None };
+        assert_eq!(resume_command("claude", Some(&unknown)).as_deref(), Some("claude --resume"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn reads_a_process_environment() {
+        // Its own: macOS hides the environment of the system's binaries.
+        let pid = std::process::id();
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(crate::platform::process_env(pid, "HOME"), Some(home));
+        assert_eq!(crate::platform::process_env(pid, "DEN_TEST_MISSING"), None);
     }
 }
 
@@ -1490,3 +1587,4 @@ mod path_tests {
         assert!(matches!(response, Response::Path(Some(path)) if path == home));
     }
 }
+
