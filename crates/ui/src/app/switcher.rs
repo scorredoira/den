@@ -1,7 +1,8 @@
-//! Cmd-E, as macOS's Cmd-Tab: the workspaces being worked on (the previous
-//! one and those with a coding agent, the ones waiting for an answer first),
-//! with the previous one selected; each E (or ↓) selects the next, Shift-E
-//! (or ↑) the one before, letting go of Cmd enters it and Esc stays.
+//! Cmd-E (Ctrl-Tab on Linux and Windows), as macOS's Cmd-Tab: the workspaces
+//! being worked on (the previous one and those with a coding agent, the ones
+//! waiting for an answer first), with the previous one selected; each E (or ↓)
+//! selects the next, Shift-E (or ↑) the one before, letting go of Cmd enters
+//! it and Esc stays.
 
 use super::*;
 
@@ -41,15 +42,22 @@ impl Sik {
         }
     }
 
-    /// While it's open, its keys: E and Shift-E with Cmd, the arrows, Esc.
-    /// True if the key was its.
+    /// While it's open, its keys: its shortcut's key (E, or Tab off the Mac)
+    /// and that with Shift, Tab and Shift-Tab, the arrows, Esc. True if the
+    /// key was its.
     pub(super) fn switcher_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
         if self.switcher.is_none() {
             return false;
         }
+        let own = SHORTCUTS
+            .iter()
+            .find(|shortcut| shortcut.id == "PreviousTask")
+            .and_then(|shortcut| shortcuts::keys(shortcut, cx))
+            .is_some_and(|keys| keys.key == keystroke.key);
         match keystroke.key.as_str() {
-            "e" if keystroke.modifiers.shift => self.move_switcher(-1, cx),
-            "e" => self.move_switcher(1, cx),
+            _ if own && keystroke.modifiers.shift => self.move_switcher(-1, cx),
+            _ if own => self.move_switcher(1, cx),
+            "tab" if keystroke.modifiers.shift => self.move_switcher(-1, cx),
             "down" | "right" | "tab" => self.move_switcher(1, cx),
             "up" | "left" => self.move_switcher(-1, cx),
             "escape" => self.close_switcher(cx),

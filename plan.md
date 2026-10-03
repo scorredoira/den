@@ -162,7 +162,7 @@ The main unit is the task; the server is an attribute of the task, not a level t
 
 **Shortcuts:** the app's shortcuts use Cmd on Mac and Ctrl on Windows and Linux (GPUI's `secondary` modifier).
 
-**Shortcuts in terminals:** terminals get every key except the app's shortcuts. On Mac the shortcuts use Cmd, so Ctrl is left entirely to the shell, vim and agents. On Windows and Linux, inside a terminal the app's shortcuts become Ctrl-Shift (Ctrl-Shift-W, Ctrl-Shift-B…), as in Windows Terminal and VS Code, and plain Ctrl still goes to the shell.
+**Shortcuts in terminals:** terminals get every key except the app's shortcuts. On Mac the shortcuts use Cmd, so Ctrl is left entirely to the shell, vim and agents. On Windows and Linux, Ctrl plus a letter (Ctrl-D, Ctrl-W, Ctrl-E…) always goes to the shell inside a terminal, even when it's an app shortcut, user-defined ones included (`shortcuts::for_the_shell`). The shortcuts used from the terminal have other defaults there, as in Windows Terminal and VS Code: Close Tab Ctrl-Shift-W, New Terminal Ctrl-Shift-`, Split Right Ctrl-Shift-5, Toggle Terminals Ctrl-`, Find Workspace Ctrl-Shift-K and Switch Workspace Ctrl-Tab. The rest keep Ctrl and work outside the terminal.
 
 ## Viewer
 
@@ -217,7 +217,7 @@ The desktop builds and tests run in GitHub Actions on macOS (Apple Silicon and I
 | --- | --- | --- | --- |
 | Rendering (GPUI) | Metal | wgpu, Wayland and X11 | GPUI's own backend; should just work |
 | App modifier | Cmd | Ctrl | Ctrl |
-| App shortcuts inside the terminal | Cmd | Ctrl-Shift | Ctrl-Shift |
+| App shortcuts inside the terminal | Cmd | not Ctrl plus a letter (see Shortcuts in terminals) | the same as Linux |
 | Transport to the local agent | Unix socket | Unix socket | Named pipe with owner-only permissions |
 | Daemon startup | `fork` and `setsid` | `fork` and `setsid` | Process without an inherited console |
 | Pty | `portable-pty` | `portable-pty` | `portable-pty` (ConPTY) |
@@ -342,5 +342,5 @@ From here on sik is developed inside sik (Claude Code in a terminal of the `sik/
 - [x] Project name: **sik** (binary `sik`, agent `sik-agent`, folders `sik`). From the sid family (the TUI), without clobbering its binary or its folders.
 - [x] Is sid abandoned once phase 4 lands, or do they coexist? They coexist: sik is a different tool, not its replacement.
 - [x] Is an "agents" view like herdr's needed? No: Claude Code's state goes in the task list.
-- [x] Default shortcuts: VS Code's, sid's, or sid's with Cmd on Mac? VS Code's. (The modifier is settled: Cmd on Mac, Ctrl on Windows and Linux, Ctrl-Shift inside the terminal.)
+- [x] Default shortcuts: VS Code's, sid's, or sid's with Cmd on Mac? VS Code's. (The modifier is settled: Cmd on Mac, Ctrl on Windows and Linux, never Ctrl plus a letter inside the terminal.)
 

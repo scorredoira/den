@@ -3,7 +3,7 @@
 //! applied immediately, without touching the components' own (the editor, the
 //! terminal).
 
-use gpui_kit::{Action, App, KeyBinding, Keystroke};
+use gpui_kit::{Action, App, KeyBinding, Keystroke, Modifiers, NoAction, is_no_action};
 
 use crate::{config::Config, *};
 
@@ -36,7 +36,7 @@ shortcuts![
     (OpenSettings, "Settings", "secondary-,"),
     (Quit, "Quit", "secondary-q"),
     (Save, "Save", "secondary-s"),
-    (CloseTab, "Close Tab or Terminal", "secondary-w"),
+    (CloseTab, "Close Tab or Terminal", mac_or("cmd-w", "ctrl-shift-w")),
     (CloseAllTabs, "Close All Tabs", "secondary-alt-w"),
     (NextTab, "Next Tab", "secondary-shift-]"),
     (PrevTab, "Previous Tab", "secondary-shift-["),
@@ -63,18 +63,18 @@ shortcuts![
     (FormatDocument, "Format Document", "shift-alt-f"),
     (SplitEditorRight, "Split Editor Right", "secondary-alt-s"),
     (SplitEditorDown, "Split Editor Down", "secondary-alt-shift-s"),
-    (NewTerminal, "New Terminal", "secondary-t"),
-    (SplitRight, "Split Terminal Right", "secondary-d"),
+    (NewTerminal, "New Terminal", mac_or("cmd-t", "ctrl-shift-`")),
+    (SplitRight, "Split Terminal Right", mac_or("cmd-d", "ctrl-shift-5")),
     (SplitDown, "Split Terminal Down", "secondary-shift-d"),
     (FocusPaneLeft, "Focus Terminal Left", "secondary-alt-left"),
     (FocusPaneRight, "Focus Terminal Right", "secondary-alt-right"),
     (FocusPaneUp, "Focus Terminal Above", "secondary-alt-up"),
     (FocusPaneDown, "Focus Terminal Below", "secondary-alt-down"),
-    (ToggleTerminals, "Toggle Terminals", "secondary-j"),
+    (ToggleTerminals, "Toggle Terminals", mac_or("cmd-j", "ctrl-`")),
     (MaximizeTerminals, "Maximize Terminals", "secondary-shift-j"),
     (NewTask, "New Worktree", "secondary-n"),
-    (OpenTaskPicker, "Find Workspace", "secondary-k"),
-    (PreviousTask, "Switch Workspace", "secondary-e"),
+    (OpenTaskPicker, "Find Workspace", mac_or("cmd-k", "ctrl-shift-k")),
+    (PreviousTask, "Switch Workspace", mac_or("cmd-e", "ctrl-tab")),
     (ToggleTasks, "Toggle Workspaces Column", "secondary-shift-b"),
     (OpenFolder, "Open Folder", "secondary-o"),
     (OpenRemoteFolder, "Open Folder on Server", "secondary-alt-o"),
@@ -91,6 +91,12 @@ shortcuts![
     (SetNextStatement, "Debug: Set Next Statement", "ctrl-shift-f10"),
     (ToggleDebugPanel, "Debug: Toggle Panel", "secondary-shift-y"),
 ];
+
+/// `mac` on the Mac; `other` on Linux and Windows, for the shortcuts used from
+/// the terminal, where Ctrl plus a letter is the shell's (see `for_the_shell`).
+const fn mac_or(mac: &'static str, other: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") { mac } else { other }
+}
 
 impl Shortcut {
     pub fn action(&self) -> Box<dyn Action> {
@@ -127,9 +133,10 @@ pub fn apply(cx: &mut App) {
         .key_bindings()
         .borrow()
         .bindings()
-        .filter(|binding| !ours(binding.action().name()))
+        .filter(|binding| !ours(binding.action().name()) && !is_no_action(binding.action()))
         .cloned()
         .collect();
+    let keystrokes: Vec<Keystroke> = SHORTCUTS.iter().filter_map(|shortcut| keys(shortcut, cx)).collect();
     let bindings: Vec<KeyBinding> = SHORTCUTS
         .iter()
         .filter_map(|shortcut| Some((shortcut.bind)(&keys(shortcut, cx)?.unparse())))
@@ -139,6 +146,26 @@ pub fn apply(cx: &mut App) {
     cx.bind_keys(bindings);
     // After the app's, so they win inside the editor (see `editing::keymap`).
     cx.bind_keys(crate::editing::keymap());
+    // Also after the app's: a binding without context and one in the focused
+    // terminal are equally deep, and the later one wins.
+    if !cfg!(target_os = "macos") {
+        cx.bind_keys(
+            keystrokes
+                .iter()
+                .filter(|keystroke| for_the_shell(keystroke))
+                .map(|keystroke| KeyBinding::new(&keystroke.unparse(), NoAction, Some("Terminal"))),
+        );
+    }
+}
+
+/// Whether, inside the terminal, `keystroke` goes to the shell rather than to
+/// the app's shortcut. Off the Mac the app's shortcuts use Ctrl, and Ctrl plus
+/// a letter is the shell's (EOF, delete word, history, readline); with Shift
+/// or Alt they stay the app's, as copy and paste do (see `ui-term`'s platform).
+fn for_the_shell(keystroke: &Keystroke) -> bool {
+    keystroke.modifiers == Modifiers::control()
+        && keystroke.key.len() == 1
+        && keystroke.key.chars().all(|c| c.is_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -158,5 +185,17 @@ mod tests {
         }
         let ids: HashSet<&str> = SHORTCUTS.iter().map(|shortcut| shortcut.id).collect();
         assert_eq!(ids.len(), SHORTCUTS.len());
+    }
+
+    #[test]
+    fn only_ctrl_and_a_letter_goes_to_the_shell() {
+        let shell = |keys: &str| super::for_the_shell(&Keystroke::parse(keys).unwrap());
+        assert!(shell("ctrl-d"));
+        assert!(shell("ctrl-w"));
+        assert!(!shell("ctrl-shift-d"));
+        assert!(!shell("ctrl-alt-w"));
+        assert!(!shell("ctrl-,"));
+        assert!(!shell("ctrl-f10"));
+        assert!(!shell("cmd-d"));
     }
 }
