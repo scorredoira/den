@@ -4,6 +4,7 @@ mod agent;
 mod app;
 mod app_menu;
 mod assets;
+mod browser;
 mod config;
 mod crash;
 mod debug;

@@ -28,5 +28,7 @@
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Den brings to the front the Google Chrome tab already showing the program being debugged, instead of opening another one.</string>
 </dict>
 </plist>
