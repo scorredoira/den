@@ -1,9 +1,9 @@
 //! The Notes panel: what's next in a workspace, as plain Markdown that Den
 //! keeps (in `notes.json` in its config folder, by workspace), never in the
-//! repo. By default a tab of the terminals'; while it has something, its
-//! tab's note has lines and its icon a dot. Cmd-E's notice shows its first
-//! line, and removing the worktree forgets it. `den notes` reads and writes
-//! them from a terminal.
+//! repo. They open over the window, from the activity bar or Cmd-Alt-N;
+//! while they have something, their icon has a dot. Cmd-E's notice shows
+//! their first line, and removing the worktree forgets them. `den notes`
+//! reads and writes them from a terminal.
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
