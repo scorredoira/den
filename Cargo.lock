@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "2.5.2"
+version = "2.5.3"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "2.5.2"
+version = "2.5.3"
 dependencies = [
  "anyhow",
  "flate2",
@@ -5364,7 +5364,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "2.5.2"
+version = "2.5.3"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -7657,7 +7657,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "2.5.2"
+version = "2.5.3"
 dependencies = [
  "anyhow",
  "client",
@@ -7679,7 +7679,7 @@ dependencies = [
 
 [[package]]
 name = "ui-term"
-version = "2.5.2"
+version = "2.5.3"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
