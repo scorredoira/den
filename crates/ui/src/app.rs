@@ -2691,7 +2691,9 @@ impl Den {
         };
 
         let row = h_flex()
-            .id(SharedString::from(format!("task-{}", key.config())))
+            // The repo's name and its checkout's row are the same workspace:
+            // each its own id, or neither gets its clicks.
+            .id(SharedString::from(format!("{}-{}", if header { "repo" } else { "task" }, key.config())))
             .group("task")
             // On its way out.
             .when(self.removing.contains(key), |row| row.opacity(0.5))
