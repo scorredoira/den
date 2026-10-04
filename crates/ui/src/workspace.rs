@@ -62,8 +62,7 @@ mod layout_tests;
 mod new_file_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::PanelDrag;
-pub(crate) use layout::{WorkspacesPanel, column_shown, drop_panels, init_panels, set_column, title as panel_title};
+pub(crate) use layout::{WorkspacesPanel, column_shown, drags_panel, drop_panels, init_panels, set_column, title as panel_title};
 pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar, toggle_activity_icon};
 
 enum Content {

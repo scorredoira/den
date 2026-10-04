@@ -21,6 +21,7 @@ use gpui_kit::component::{
     v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
+use crate::menu::PanelItems as _;
 use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, Request, Response};
 
 use crate::{
@@ -435,7 +436,7 @@ impl ChangesPanel {
         // Untracked or just added: no history yet.
         let new = matches!(file.status, '?' | 'A');
         let local = self.local;
-        move |menu, _, _| {
+        move |menu, window, cx| {
             let (diff, open, copy, history) = (path.clone(), path.clone(), path.clone(), path.clone());
             let absolute = absolute.clone();
             menu.item(menu::item("Open Changes", &panel, move |_, _, cx| {
@@ -458,7 +459,7 @@ impl ChangesPanel {
                     .disabled(deleted || !local),
             )
             .separator()
-            .item(menu::hide_panel())
+            .panel_items(menu::hide_panel(), window, cx)
         }
     }
 
@@ -494,7 +495,7 @@ impl ChangesPanel {
         files_shown: bool,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
-        move |menu, _, _| {
+        move |menu, window, cx| {
             let (diff_hash, diff_short, diff_path) = (hash.clone(), short.clone(), path.clone());
             let (at_hash, at_short, at_path) = (hash.clone(), short.clone(), path.clone());
             let (open, copy) = (path.clone(), path.clone());
@@ -516,7 +517,7 @@ impl ChangesPanel {
             }))
             .separator()
             .item(Self::files_item(files_shown, &panel))
-            .item(menu::hide_panel())
+            .panel_items(menu::hide_panel(), window, cx)
         }
     }
 
@@ -622,7 +623,7 @@ impl ChangesPanel {
                         this.select_commit(hash.clone(), cx);
                         cx.emit(ChangesEvent::OpenCommit { commit: hash.clone(), short: short.clone(), pin });
                     }))
-                    .context_menu(move |menu, _, _| {
+                    .context_menu(move |menu, window, cx| {
                         let (copy_hash, copy_subject) = (copy_hash.clone(), copy_subject.clone());
                         let (show, short) = (copy_hash.clone(), commit_short.clone());
                         menu.when_some(menu_file.clone(), |menu, file| {
@@ -653,7 +654,7 @@ impl ChangesPanel {
                         }))
                         .separator()
                         .when_some(files_item, |menu, open| menu.item(Self::files_item(open, &panel)))
-                        .item(menu::hide_panel())
+                        .panel_items(menu::hide_panel(), window, cx)
                     })
                     .into_any_element(),
             );
@@ -740,7 +741,9 @@ impl ChangesPanel {
             .when_some(count, |el, count| el.child(format!("({count})")))
             .child(div().flex_1())
             .child(link("hide-commit-files", "✕", cx).on_click(cx.listener(|this, _, _, cx| this.show_files(false, cx))))
-            .context_menu(move |menu, _, _| menu.item(Self::files_item(true, &panel)).separator().item(menu::hide_panel()))
+            .context_menu(move |menu, window, cx| {
+                menu.item(Self::files_item(true, &panel)).separator().panel_items(menu::hide_panel(), window, cx)
+            })
     }
 
     fn render_commit_files(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -807,7 +810,9 @@ impl Render for ChangesPanel {
             });
         let list = match list_menu {
             Some((panel, shown)) => list
-                .context_menu(move |menu, _, _| menu.item(Self::files_item(shown, &panel)).separator().item(menu::hide_panel()))
+                .context_menu(move |menu, window, cx| {
+                    menu.item(Self::files_item(shown, &panel)).separator().panel_items(menu::hide_panel(), window, cx)
+                })
                 .into_any_element(),
             None => list.into_any_element(),
         };

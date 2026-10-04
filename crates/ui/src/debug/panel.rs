@@ -13,6 +13,7 @@ use gpui_kit::component::{
 };
 use gpui_base::SelectableText;
 use gpui_kit::{prelude::FluentBuilder as _, *};
+use crate::menu::PanelItems as _;
 
 use super::{ConsoleLine, DebugEvent, Debugger, EditKind, Status, Var, child_path};
 use crate::{
@@ -122,7 +123,7 @@ impl Debugger {
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
         let active = self.status != Status::Idle;
         let connected = self.status == Status::Connected;
-        move |menu, _, _| {
+        move |menu, window, cx| {
             let menu = if stopped {
                 menu.item(menu::item("Continue", &debugger, |this, _, cx| this.continue_(cx)).action(Box::new(DebugContinue)))
             } else if active {
@@ -140,7 +141,7 @@ impl Debugger {
                 .item(menu::item("Restart", &debugger, |this, window, cx| this.restart(window, cx)).action(Box::new(DebugRestart)))
                 .item(menu::item("Stop", &debugger, |this, _, cx| this.stop(cx)).action(Box::new(DebugStop)).disabled(!active))
                 .separator()
-                .item(hide_item(&debugger))
+                .panel_items(hide_item(&debugger), window, cx)
         }
     }
 
@@ -228,6 +229,7 @@ impl Debugger {
                     .text_ui_small(cx)
                     .text_color(if stopped { theme.warning } else { theme.muted_foreground })
                     .child(status)
+                    .map(|el| crate::workspace::drags_panel(el, crate::config::Panel::Debugger))
                     .context_menu(self.panel_menu(cx)),
             )
             .when(!self.tab, |el| el.child(
@@ -440,7 +442,7 @@ impl Debugger {
                         .on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(super::DebugEvent::Show { path: show.clone(), line, focus: true })
                         }))
-                        .context_menu(move |menu, _, _| {
+                        .context_menu(move |menu, window, cx| {
                             let (go, toggle, remove) = (menu_path.clone(), menu_path.clone(), menu_path.clone());
                             menu.item(menu::item("Go to Breakpoint", &debugger, move |_, _, cx| {
                                 cx.emit(super::DebugEvent::Show { path: go.clone(), line, focus: true })
@@ -454,7 +456,7 @@ impl Debugger {
                             .item(menu::item("Disable All Breakpoints", &debugger, |this, _, cx| this.enable_all_breakpoints(false, cx)))
                             .item(menu::item("Remove All Breakpoints", &debugger, |this, _, cx| this.remove_all_breakpoints(cx)))
                             .separator()
-                            .item(hide_item(&debugger))
+                            .panel_items(hide_item(&debugger), window, cx)
                         }),
                 );
             }
@@ -570,7 +572,7 @@ impl Debugger {
                     }))
                     .context_menu({
                         let entity = entity.clone();
-                        move |menu, _, _| {
+                        move |menu, window, cx| {
                         let value = menu_value.clone();
                         let mut menu = menu.item(menu::item("Copy Value", &entity, move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
@@ -587,7 +589,7 @@ impl Debugger {
                         if let Some(ix) = watch {
                             menu = menu.item(menu::item("Remove Watch", &entity, move |this, _, cx| this.remove_watch(ix, cx)));
                         }
-                        menu.separator().item(hide_item(&entity))
+                        menu.separator().panel_items(hide_item(&entity), window, cx)
                     }}),
             );
         }

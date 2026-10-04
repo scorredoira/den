@@ -27,6 +27,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::*;
+use crate::menu::PanelItems as _;
 use protocol::{Event, Listed, Modifiers, Screen, Touch};
 use serde::Deserialize;
 
@@ -606,18 +607,24 @@ impl Device {
                 tool("device-rotate-right", "icons/rotate-cw.svg", "Rotate Right", running, theme.foreground, cx)
                     .on_click(cx.listener(|this, _, _, _| this.send(protocol::rotate(true)))),
             )
-            .child(
+            // Past the buttons, the bar moves the panel.
+            .child(crate::workspace::drags_panel(
                 div()
+                    .id("device-status")
                     .ml_2()
                     .flex_1()
                     .min_w_0()
+                    .h_full()
+                    .flex()
+                    .items_center()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
                     .children(status),
-            )
+                crate::config::Panel::Device,
+            ))
             .into_any_element()
     }
 
@@ -643,7 +650,7 @@ impl Device {
             let this = this.clone();
             menu.submenu("Device", window, cx, move |menu, _, _| pick_menu(menu, &devices, &this))
                 .separator()
-                .item(crate::menu::hide_panel())
+                .panel_items(crate::menu::hide_panel(), window, cx)
         }
     }
 

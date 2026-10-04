@@ -5,8 +5,9 @@
 mod drag;
 
 use drag::{Source, TerminalDrag};
-use crate::drag_drop::{DropPlacement, TabDragPreview};
-use crate::workspace::PanelDrag;
+use crate::drag_drop::DropPlacement;
+use crate::menu::PanelItems as _;
+use crate::workspace::drags_panel;
 
 use std::{
     cell::Cell,
@@ -585,7 +586,6 @@ impl TerminalArea {
                 .action(Box::new(CloseTab)),
         )
         .separator()
-        .item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide)))
     }
 
     fn select(&mut self, term: TermId, cx: &mut Context<Self>) {
@@ -734,7 +734,7 @@ impl TerminalArea {
                     }))
                     .context_menu({
                         let area = self.weak.clone();
-                        move |menu, _, _| {
+                        move |menu, window, cx| {
                             menu.item(
                                 menu::item("New Terminal", &area, |this, window, cx| this.new_terminal(window, cx))
                                     .action(Box::new(NewTerminal)),
@@ -758,7 +758,7 @@ impl TerminalArea {
                                     this.close_tab(ix, window, cx)
                                 }))
                                 .separator()
-                                .item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide)))
+                                .panel_items(hide_item(&area), window, cx)
                         }
                     })
             }))
@@ -788,11 +788,11 @@ impl TerminalArea {
                     .min_w(px(24.))
                     .when(cfg!(test), |el| el.debug_selector(|| "terminal-tab-end".into()))
                     .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
+                    // Past the tabs, the bar moves the panel.
+                    .map(|el| drags_panel(el, Panel::Terminals))
                     .context_menu({
                         let area = self.weak.clone();
-                        move |menu, _, _| {
-                            menu.item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide)))
-                        }
+                        move |menu, window, cx| menu.panel_items(hide_item(&area), window, cx)
                     }),
             )
             .children(fixed)
@@ -853,15 +853,16 @@ impl TerminalArea {
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(panel)))))
             // Dragged, the panel moves as by its icon: below the terminals,
             // say, or to a column of its own.
-            .on_drag(PanelDrag(panel), |drag: &PanelDrag, _, _, cx| {
-                cx.new(|_| TabDragPreview(crate::workspace::panel_title(drag.0).into()))
-            })
+            .map(|el| drags_panel(el, panel))
             .context_menu({
                 let (area, closable) = (self.weak.clone(), tab.closable);
                 // The notes' tab stays: Hide Panel hides the terminals' place.
-                move |menu, _, _| match closable {
-                    true => menu.item(menu::item("Hide Panel", &area, move |_, _, cx| cx.emit(TerminalAreaEvent::ClosePanel(panel)))),
-                    false => menu.item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide))),
+                move |menu, window, cx| {
+                    let hide = match closable {
+                        true => menu::item("Hide Panel", &area, move |_, _, cx| cx.emit(TerminalAreaEvent::ClosePanel(panel))),
+                        false => hide_item(&area),
+                    };
+                    menu.panel_items(hide, window, cx)
                 }
             })
             .into_any_element()
@@ -919,8 +920,8 @@ impl TerminalArea {
                     .when_some(self.terminal_drop.filter(|(target, _)| *target == term && cx.has_active_drag()), |el, (_, placement)| {
                         el.child(placement.indicator(cx))
                     })
-                    .context_menu(move |menu, _, cx| match this.upgrade() {
-                        Some(area) => area.read(cx).pane_menu(term, menu, cx),
+                    .context_menu(move |menu, window, cx| match this.upgrade() {
+                        Some(area) => area.read(cx).pane_menu(term, menu, cx).panel_items(hide_item(&this), window, cx),
                         None => menu,
                     })
                     .into_any_element()
@@ -1052,4 +1053,9 @@ impl SavedLayouts {
         std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
         Ok(())
     }
+}
+
+/// Hide Panel: the terminals' place.
+fn hide_item(area: &WeakEntity<TerminalArea>) -> menu::PopupMenuItem {
+    menu::item("Hide Panel", area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide))
 }
