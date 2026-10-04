@@ -522,7 +522,7 @@ mod tests {
     fn panels_by_name() {
         assert_eq!(parse_panel("files"), Ok(Panel::Files));
         assert_eq!(parse_panel("Device"), Ok(Panel::Device));
-        assert!(parse_panel("agents").is_err());
+        assert_eq!(parse_panel("agents"), Ok(Panel::Agents));
         assert!(parse_panel("nothing").unwrap_err().contains("terminals"));
     }
 
