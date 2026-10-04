@@ -176,6 +176,7 @@ impl Workspace {
     fn badge(&self, panel: Panel, cx: &App) -> Option<Badge> {
         match panel {
             Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
+            Panel::Agents => self.badges.agents.map(Badge::Dot),
             Panel::Terminals => self.badges.terminals.map(Badge::Dot),
             Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
             Panel::Notes => self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary)),
@@ -218,4 +219,6 @@ impl Workspace {
 pub struct TaskBadges {
     pub terminals: Option<Hsla>,
     pub workspaces: Option<Hsla>,
+    /// The most urgent of the agents.
+    pub agents: Option<Hsla>,
 }

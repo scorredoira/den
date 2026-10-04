@@ -1,8 +1,8 @@
 //! The coding agents (Claude Code, Codex…) running in the terminals of every
 //! server, as the agent reports them (see `Event::Agents`). They're the one
-//! source of what each workspace is doing: in the workspaces column, each
-//! has a row under its workspace with its state, and a workspace's dot is
-//! the most urgent of its agents'. A click on one goes to its terminal.
+//! source of what each workspace is doing: a workspace's dot in the column
+//! is the most urgent of its agents'. The Agents panel lists them all, under
+//! their workspaces; a click on one goes to its terminal.
 
 use proto::{AgentInfo, TermId};
 
@@ -82,34 +82,124 @@ impl Den {
         .detach();
     }
 
-    /// The rows of workspace `key`'s agents, `indent` from the left: what
-    /// each is on and its state.
-    pub(super) fn render_agents_of(&self, key: &TaskKey, indent: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let agents: Vec<AgentInfo> = self.workspace_agents(key).into_iter().cloned().collect();
-        agents.iter().map(|agent| self.render_agent(&key.host, agent, indent, cx)).collect()
+    /// The most urgent of the agents, for the panel's icon.
+    pub(super) fn agents_badge(&self, cx: &App) -> Option<Hsla> {
+        self.agents
+            .iter()
+            .flat_map(|(host, agents)| agents.iter().map(move |agent| (host, agent)))
+            .map(|(host, agent)| self.agent_status(host, agent, cx))
+            .filter(|(dot, color, _)| urgency(dot, *color, cx) > 0)
+            .max_by_key(|(dot, color, _)| urgency(dot, *color, cx))
+            .map(|(_, color, _)| color)
     }
 
-    fn render_agent(&self, host: &SharedString, agent: &AgentInfo, indent: f32, cx: &mut Context<Self>) -> AnyElement {
-        // The dot's color says it all; the word is for `den workspaces`.
-        let (dot, color, _) = self.agent_status(host, agent, cx);
+    /// The Agents panel: every agent, on every server, under its workspace
+    /// (in the column's order), with what it's on and its state.
+    pub(super) fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let several = self.agents.values().filter(|agents| !agents.is_empty()).count() > 1;
+        let ordered: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
+        for host in &self.hosts {
+            let Some(agents) = self.agents.get(&host.name).filter(|agents| !agents.is_empty()).cloned() else {
+                continue;
+            };
+            if several {
+                rows.push(
+                    div()
+                        .px_3()
+                        .pt_2()
+                        .text_ui_small(cx)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(host.name.clone())
+                        .into_any_element(),
+                );
+            }
+            // By workspace, in the column's order; those it doesn't list, last.
+            let mut groups: Vec<&str> = agents.iter().map(|agent| agent.group.as_str()).collect();
+            groups.sort();
+            groups.dedup();
+            groups.sort_by_key(|group| {
+                ordered
+                    .iter()
+                    .position(|key| key.host == host.name && key.path == Path::new(group))
+                    .unwrap_or(usize::MAX)
+            });
+            for group in groups {
+                let key = TaskKey { host: host.name.clone(), path: PathBuf::from(group) };
+                rows.push(self.render_agents_workspace(&key, cx));
+                for agent in agents.iter().filter(|agent| agent.group == group) {
+                    rows.push(self.render_agent(&host.name, agent, cx));
+                }
+            }
+        }
+        let theme = cx.theme();
+        let empty = rows.is_empty().then(|| {
+            div()
+                .px_3()
+                .py_2()
+                .text_ui_small(cx)
+                .text_color(theme.muted_foreground)
+                .whitespace_normal()
+                .child("No agents running. Claude Code, Codex and the like show here while they run in a terminal.")
+        });
+        v_flex()
+            .id("agents")
+            .size_full()
+            .py_1()
+            .overflow_y_scroll()
+            .bg(theme.sidebar)
+            .text_color(theme.sidebar_foreground)
+            .children(rows)
+            .children(empty)
+    }
+
+    /// A workspace's name above its agents; a click goes to it.
+    fn render_agents_workspace(&self, key: &TaskKey, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let task = self.task(key);
+        let label = task.map(column_label).unwrap_or_else(|| folder_name(&key.path).into());
+        let icon = task.map(kind_icon).unwrap_or("icons/folder.svg");
+        let active = self.active.as_ref() == Some(key);
+        let target = key.clone();
+        h_flex()
+            .id(SharedString::from(format!("agents-workspace-{}", key.config())))
+            .h(px(26.))
+            .mt_1()
+            .px_3()
+            .gap_2()
+            .text_ui(cx)
+            .when(active, |el| el.bg(theme.sidebar_accent))
+            .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
+            .child(svg().path(icon).size(px(14.)).flex_none().text_color(workspace_color(key)))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
+            .tooltip({
+                let path = key.path.display().to_string();
+                move |window, cx| Tooltip::new(path.clone()).build(window, cx)
+            })
+            .on_click(cx.listener(move |this, _, window, cx| this.activate(target.clone(), window, cx)))
+            .into_any_element()
+    }
+
+    fn render_agent(&self, host: &SharedString, agent: &AgentInfo, cx: &mut Context<Self>) -> AnyElement {
+        let (dot, color, state) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);
         let (host, group, term) = (host.clone(), agent.group.clone(), agent.term);
         h_flex()
             .id(SharedString::from(format!("agent-{host}-{term}")))
             .h(px(24.))
-            .pl(px(indent))
+            .pl(px(ROW_INDENT + 10.))
             .pr_3()
             .gap_2()
             .text_ui_small(cx)
             .text_color(theme.muted_foreground)
             .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
             .child(div().flex_none().w(px(12.)).text_color(color).child(dot))
-            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                this.open_agent(host.clone(), group.clone(), term, window, cx)
-            }))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title.clone()))
+            .child(div().flex_1())
+            .child(div().flex_none().text_color(color).child(state))
+            .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
+            .on_click(cx.listener(move |this, _, window, cx| this.open_agent(host.clone(), group.clone(), term, window, cx)))
             .into_any_element()
     }
 }

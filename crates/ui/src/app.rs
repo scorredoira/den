@@ -60,10 +60,6 @@ const FOLD_WIDTH: f32 = 12.;
 /// The last choice of Open Folder on Server: a server not connected yet.
 const ADD_SERVER: &str = "Add Server…";
 const ROW_INDENT: f32 = 24.;
-/// Where an agent's row starts, under a workspace of the column's own and
-/// under a repo's worktree: past its workspace's icon.
-const AGENT_INDENT: f32 = ROW_INDENT + 20.;
-const WORKTREE_AGENT_INDENT: f32 = 12. + 20.;
 
 /// What a server shows while connecting, unless it's doing something longer.
 const CONNECTING: &str = "connecting…";
@@ -502,6 +498,8 @@ pub struct Den {
     split: config::Split,
     /// The tasks column, drawn by the workspace where its panel is placed.
     workspaces_panel: Entity<WorkspacesPanel>,
+    /// The agents panel, drawn by the workspace where it's placed.
+    agents_panel: Entity<WorkspacesPanel>,
     /// Settings, if open.
     settings: Option<settings::Settings>,
     focus_handle: FocusHandle,
@@ -563,6 +561,15 @@ impl Den {
                 cx.new(|_| {
                     WorkspacesPanel::new(move |_, cx| {
                         den.update(cx, |den, cx| den.render_column(cx).into_any_element())
+                            .unwrap_or_else(|_| div().into_any_element())
+                    })
+                })
+            },
+            agents_panel: {
+                let den = cx.entity().downgrade();
+                cx.new(|_| {
+                    WorkspacesPanel::new(move |_, cx| {
+                        den.update(cx, |den, cx| den.render_agents(cx).into_any_element())
                             .unwrap_or_else(|_| div().into_any_element())
                     })
                 })
@@ -1618,7 +1625,7 @@ impl Den {
             .filter(|(key, _)| self.active.as_ref() != Some(key))
             .map(|(key, task)| self.status(&key, task, cx))
             .max_by_key(|(dot, color)| urgency(dot, *color, cx));
-        TaskBadges { terminals: active.and_then(dot), workspaces: others.and_then(dot) }
+        TaskBadges { terminals: active.and_then(dot), workspaces: others.and_then(dot), agents: self.agents_badge(cx) }
     }
 
     /// Opens `path` on `host`: the task it is, or the folder on its own.
@@ -2532,19 +2539,15 @@ impl Den {
             .filter(|form| form.host == first.host && form.repo == first_task.repo)
             .map(|form| render_new_task(form, cx));
         if worktrees.is_empty() && new_task.is_none() {
-            return self.render_task_and_agents(first, first_task, Some(None), AGENT_INDENT, cx);
+            return self.render_task(first, first_task, Some(None), &[], cx);
         }
         let fold_key = TaskKey { host: first.host.clone(), path: first_task.repo.clone() }.config();
         let collapsed = Config::get(cx).collapsed.contains(&fold_key);
         let header = match head {
             // Only its new worktree under it: nothing to fold yet.
-            Some((key, task)) if worktrees.is_empty() => self.render_task_and_agents(key, task, Some(None), AGENT_INDENT, cx),
-            // Folded, its agents too: its dot sums them up.
-            Some((key, task)) if collapsed => self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx),
-            Some((key, task)) => {
-                let row = self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx);
-                v_flex().child(row).children(self.render_agents_of(key, AGENT_INDENT, cx)).into_any_element()
-            }
+            Some((key, task)) if worktrees.is_empty() => self.render_task(key, task, Some(None), &[], cx),
+            // Folded, its dot sums up its worktrees' too.
+            Some((key, task)) => self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx),
             // Its checkout isn't among them: the repo's name, which only folds.
             None => {
                 let theme = cx.theme();
@@ -2568,7 +2571,7 @@ impl Den {
         } else {
             worktrees
                 .iter()
-                .map(|(key, task)| self.render_task_and_agents(key, task, None, WORKTREE_AGENT_INDENT, cx))
+                .map(|(key, task)| self.render_task(key, task, None, &[], cx))
                 .chain(new_task)
                 .collect()
         };
@@ -2578,23 +2581,6 @@ impl Den {
             .child(header)
             .when(!collapsed, |el| el.child(v_flex().ml(px(ROW_INDENT + 7.)).border_l_1().border_color(line).children(rows)))
             .into_any_element()
-    }
-
-    /// A workspace's row with its agents' under it, `indent` from the left.
-    fn render_task_and_agents(
-        &self,
-        key: &TaskKey,
-        task: &TaskInfo,
-        fold: Option<Option<(String, bool)>>,
-        indent: f32,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let row = self.render_task(key, task, fold, &[], cx);
-        let agents = self.render_agents_of(key, indent, cx);
-        if agents.is_empty() {
-            return row;
-        }
-        v_flex().child(row).children(agents).into_any_element()
     }
 
     fn toggle_fold(&mut self, fold_key: &str, cx: &mut Context<Self>) {
@@ -2723,13 +2709,12 @@ impl Den {
                     .text_ellipsis()
                     .child(label.clone()),
             )
-            // Claude's state, only when there's one: working, waiting for an
-            // answer or finished unseen.
-            .when(dot == "…", |row| row.child(spinner(color)))
-            // Its agents' state shows on their rows; folded, they don't, and
-            // its dot sums them up.
-            .when(dot != "○" && dot != "…" && matches!(fold, Some(Some((_, true)))), |row| {
-                row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot))
+            // Its agents' state: one waiting for an answer, red; one working,
+            // yellow; done unseen, green; none or all idle, an empty circle.
+            .map(|row| match dot {
+                "…" => row.child(spinner(color)),
+                "○" => row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)),
+                _ => row.child(div().flex_none().text_ui_small(cx).text_color(color).child("●")),
             })
             .child(div().flex_1())
             .children(branch.map(|branch| {
@@ -2893,11 +2878,13 @@ impl Render for Den {
             let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let (panel, visible) = (self.workspaces_panel.clone(), self.tasks_visible(cx));
+            let agents = self.agents_panel.clone();
             let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
                 workspace.set_workspaces(&panel, visible, cx);
+                workspace.set_agents(&agents);
                 workspace.set_badges(badges, cx);
             });
         }
