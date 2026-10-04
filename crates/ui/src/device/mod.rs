@@ -23,7 +23,7 @@ use std::{
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
-    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::*;
@@ -31,6 +31,7 @@ use protocol::{Event, Listed, Modifiers, Screen, Touch};
 use serde::Deserialize;
 
 use crate::{
+    DebugContinue, DebugStop,
     config::UiText as _,
     debug::panel::tool,
     shortcuts,
@@ -577,6 +578,32 @@ impl Device {
             .into_any_element()
     }
 
+    /// The panel's right-click menu: its toolbar's buttons, the devices to
+    /// pick, and Hide Panel.
+    fn panel_menu(&self, cx: &Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let this = cx.entity().downgrade();
+        let (running, debugging) = (self.serving.is_some(), self.debugging);
+        let devices = self.devices.clone().unwrap_or_default();
+        move |menu, window, cx| {
+            let menu = if debugging {
+                menu.item(crate::menu::item("Stop Debugging", &this, |_, _, cx| cx.emit(DeviceEvent::Stop)).action(Box::new(DebugStop)))
+            } else {
+                menu.item(crate::menu::item("Debug", &this, |_, _, cx| cx.emit(DeviceEvent::Debug)).action(Box::new(DebugContinue)))
+            };
+            let menu = menu
+                .item(crate::menu::item("Home", &this, |this, _, _| this.send(protocol::home())).disabled(!running))
+                .item(crate::menu::item("Inspect", &this, |_, _, cx| cx.emit(DeviceEvent::Inspect)).disabled(!running))
+                .item(crate::menu::item("Rotate Left", &this, |this, _, _| this.send(protocol::rotate(false))).disabled(!running))
+                .item(crate::menu::item("Rotate Right", &this, |this, _, _| this.send(protocol::rotate(true))).disabled(!running))
+                .separator();
+            let devices = devices.clone();
+            let this = this.clone();
+            menu.submenu("Device", window, cx, move |menu, _, _| pick_menu(menu, &devices, &this))
+                .separator()
+                .item(crate::menu::hide_panel())
+        }
+    }
+
     /// What there is instead of a screen.
     fn render_message(&self, cx: &App) -> Option<AnyElement> {
         let text = match (&self.status, &self.devices) {
@@ -665,9 +692,12 @@ impl Render for Device {
         let bounds = self.bounds.clone();
         let phone = self.render_phone(focused, cx);
         let message = self.render_message(cx);
+        let menu = self.panel_menu(cx);
         v_flex()
+            .id("device")
             .size_full()
             .bg(theme.background)
+            .context_menu(menu)
             .child(toolbar)
             .child(
                 div()

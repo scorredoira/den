@@ -851,9 +851,10 @@ impl TerminalArea {
             })
             .context_menu({
                 let (area, closable) = (self.weak.clone(), tab.closable);
+                // The notes' tab stays: Hide Panel hides the terminals' place.
                 move |menu, _, _| match closable {
                     true => menu.item(menu::item("Hide Panel", &area, move |_, _, cx| cx.emit(TerminalAreaEvent::ClosePanel(panel)))),
-                    false => menu,
+                    false => menu.item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide))),
                 }
             })
             .into_any_element()

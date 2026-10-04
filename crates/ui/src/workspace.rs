@@ -13,7 +13,7 @@ use proto::{CommitInfo, GitOp, LspLocation, LspOp, PortInfo, Request, Response, 
 use gpui_kit::component::{
     ActiveTheme as _, h_flex, h_resizable, v_resizable,
     input::{self, Editor, EditorState, InputEvent, Position, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _},
-    menu::ContextMenuExt as _,
+    menu::{ContextMenuExt as _, PopupMenu},
     resizable_panel,
     text::{TextView, TextViewState},
     tooltip::Tooltip,
@@ -3106,112 +3106,7 @@ impl Workspace {
                         }
                         this.activate(ix, window, cx);
                     }))
-                    .context_menu({
-                        let workspace = cx.entity().downgrade();
-                        let path = tab.path.clone();
-                        let editor = tab.editor.clone();
-                        let diff = tab.diff.is_some();
-                        let markdown = tab.markdown.is_some() && tab.is_file();
-                        let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
-                        let local = self.local;
-                        let relative = tab
-                            .path
-                            .strip_prefix(&self.root)
-                            .unwrap_or(&tab.path)
-                            .to_string_lossy()
-                            .into_owned();
-                        move |menu, _, _| {
-                            let relative = relative.clone();
-                            let (close, others, moved, right, down, preview) =
-                                (editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone());
-                            menu.item(
-                                menu::item("Close", &workspace, move |this, window, cx| {
-                                    if let Some(ix) = this.tab_index(&close) {
-                                        this.close(ix, window, cx);
-                                    }
-                                })
-                                .action(Box::new(CloseTab)),
-                            )
-                            .item(menu::item("Close Others", &workspace, move |this, window, cx| {
-                                this.close_others(this.tab_index(&others), window, cx)
-                            }))
-                            .item(
-                                menu::item("Close All", &workspace, |this, window, cx| this.close_others(None, window, cx))
-                                    .action(Box::new(CloseAllTabs)),
-                            )
-                            .separator()
-                            .when(!split, |menu| {
-                                menu.item(
-                                    menu::item("Split Right", &workspace, move |this, window, cx| {
-                                        if let Some(ix) = this.tab_index(&right) {
-                                            this.activate(ix, window, cx);
-                                            this.split_editor(Axis::Row, window, cx);
-                                        }
-                                    })
-                                    .action(Box::new(SplitEditorRight)),
-                                )
-                                .item(
-                                    menu::item("Split Down", &workspace, move |this, window, cx| {
-                                        if let Some(ix) = this.tab_index(&down) {
-                                            this.activate(ix, window, cx);
-                                            this.split_editor(Axis::Column, window, cx);
-                                        }
-                                    })
-                                    .action(Box::new(SplitEditorDown)),
-                                )
-                            })
-                            .when(split, |menu| {
-                                menu.item(menu::item("Move to Other Side", &workspace, move |this, window, cx| {
-                                    if let Some(ix) = this.tab_index(&moved) {
-                                        this.move_to_other_group(ix, window, cx);
-                                    }
-                                }))
-                            })
-                            .when(markdown, |menu| {
-                                menu.item(
-                                    menu::item("Open Preview to the Side", &workspace, move |this, window, cx| {
-                                        if let Some(ix) = this.tab_index(&preview) {
-                                            this.activate(ix, window, cx);
-                                            this.open_preview_to_side(&OpenPreviewToSide, window, cx);
-                                        }
-                                    })
-                                    .action(Box::new(OpenPreviewToSide)),
-                                )
-                            })
-                            .when(diff && !whole_commit, |menu| {
-                                let path = path.clone();
-                                menu.item(menu::item("Open File", &workspace, move |this, window, cx| {
-                                    this.open(path.clone(), true, window, cx)
-                                }))
-                            })
-                            .when(!whole_commit, |menu| {
-                                let path = path.clone();
-                                menu.item(menu::item("Show File History", &workspace, move |this, _, cx| {
-                                    this.show_history(&path, false, cx)
-                                }))
-                            })
-                            .separator()
-                            .item(menu::item("Copy Path", &workspace, {
-                                let path = path.clone();
-                                move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(path.to_string_lossy().into_owned()))
-                                }
-                            }))
-                            .item(menu::item("Copy Relative Path", &workspace, move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(relative.clone()))
-                            }))
-                            .item(menu::item("Reveal in File Tree", &workspace, {
-                                let path = path.clone();
-                                move |this, _, cx| this.reveal_in_tree(&path, cx)
-                            }))
-                            .when(local, |menu| {
-                                let path = path.clone();
-                                menu.item(menu::item("Reveal in Finder", &workspace, move |_, _, cx| {
-                                    cx.reveal_path(&path)
-                                }))
-                            })
-                        }
-                    })
+                    .context_menu(self.tab_menu(tab, split, cx.entity().downgrade()))
             }))
             .child(
                 div()
@@ -3219,8 +3114,134 @@ impl Workspace {
                     .h_full()
                     .flex_1()
                     .min_w(px(24.))
-                    .drag_over::<TabDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary)),
+                    .drag_over::<TabDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
+                    .context_menu({
+                        let workspace = cx.entity().downgrade();
+                        move |menu, _, _| {
+                            menu.item(
+                                menu::item("New File", &workspace, |this, window, cx| this.new_file(&NewFile, window, cx))
+                                    .action(Box::new(NewFile)),
+                            )
+                            .item(
+                                menu::item("Close All", &workspace, |this, window, cx| this.close_others(None, window, cx))
+                                    .action(Box::new(CloseAllTabs)),
+                            )
+                        }
+                    }),
             )
+    }
+
+    /// A tab's right-click menu, also on what it shows where that has
+    /// none of its own (an image, a whole commit).
+    fn tab_menu(
+        &self,
+        tab: &FileTab,
+        split: bool,
+        workspace: WeakEntity<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let path = tab.path.clone();
+        let editor = tab.editor.clone();
+        let diff = tab.diff.is_some();
+        let markdown = tab.markdown.is_some() && tab.is_file();
+        let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
+        let local = self.local;
+        let relative = tab
+            .path
+            .strip_prefix(&self.root)
+            .unwrap_or(&tab.path)
+            .to_string_lossy()
+            .into_owned();
+        move |menu, _, _| {
+            let relative = relative.clone();
+            let (close, others, moved, right, down, preview) =
+                (editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone());
+            menu.item(
+                menu::item("Close", &workspace, move |this, window, cx| {
+                    if let Some(ix) = this.tab_index(&close) {
+                        this.close(ix, window, cx);
+                    }
+                })
+                .action(Box::new(CloseTab)),
+            )
+            .item(menu::item("Close Others", &workspace, move |this, window, cx| {
+                this.close_others(this.tab_index(&others), window, cx)
+            }))
+            .item(
+                menu::item("Close All", &workspace, |this, window, cx| this.close_others(None, window, cx))
+                    .action(Box::new(CloseAllTabs)),
+            )
+            .separator()
+            .when(!split, |menu| {
+                menu.item(
+                    menu::item("Split Right", &workspace, move |this, window, cx| {
+                        if let Some(ix) = this.tab_index(&right) {
+                            this.activate(ix, window, cx);
+                            this.split_editor(Axis::Row, window, cx);
+                        }
+                    })
+                    .action(Box::new(SplitEditorRight)),
+                )
+                .item(
+                    menu::item("Split Down", &workspace, move |this, window, cx| {
+                        if let Some(ix) = this.tab_index(&down) {
+                            this.activate(ix, window, cx);
+                            this.split_editor(Axis::Column, window, cx);
+                        }
+                    })
+                    .action(Box::new(SplitEditorDown)),
+                )
+            })
+            .when(split, |menu| {
+                menu.item(menu::item("Move to Other Side", &workspace, move |this, window, cx| {
+                    if let Some(ix) = this.tab_index(&moved) {
+                        this.move_to_other_group(ix, window, cx);
+                    }
+                }))
+            })
+            .when(markdown, |menu| {
+                menu.item(
+                    menu::item("Open Preview to the Side", &workspace, move |this, window, cx| {
+                        if let Some(ix) = this.tab_index(&preview) {
+                            this.activate(ix, window, cx);
+                            this.open_preview_to_side(&OpenPreviewToSide, window, cx);
+                        }
+                    })
+                    .action(Box::new(OpenPreviewToSide)),
+                )
+            })
+            .when(diff && !whole_commit, |menu| {
+                let path = path.clone();
+                menu.item(menu::item("Open File", &workspace, move |this, window, cx| {
+                    this.open(path.clone(), true, window, cx)
+                }))
+            })
+            .when(!whole_commit, |menu| {
+                let path = path.clone();
+                menu.item(menu::item("Show File History", &workspace, move |this, _, cx| {
+                    this.show_history(&path, false, cx)
+                }))
+            })
+            .separator()
+            .item(menu::item("Copy Path", &workspace, {
+                let path = path.clone();
+                move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(path.to_string_lossy().into_owned()))
+                }
+            }))
+            .item(menu::item("Copy Relative Path", &workspace, move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(relative.clone()))
+            }))
+            .item(menu::item("Reveal in File Tree", &workspace, {
+                let path = path.clone();
+                move |this, _, cx| this.reveal_in_tree(&path, cx)
+            }))
+            .when(local, |menu| {
+                let path = path.clone();
+                menu.item(menu::item("Reveal in Finder", &workspace, move |_, _, cx| {
+                    cx.reveal_path(&path)
+                }))
+            })
+        }
     }
 
     /// A group's tab bar and the tab it shows. A click anywhere in it gives
@@ -3229,12 +3250,22 @@ impl Workspace {
         let theme = cx.theme();
         let body = match self.shown_in(group).map(|ix| &self.tabs[ix]) {
             None => div()
+                .id("code-empty")
                 .size_full()
                 .overflow_hidden()
                 .p_6()
                 .flex()
                 .items_center()
                 .justify_center()
+                .context_menu({
+                    let workspace = cx.entity().downgrade();
+                    move |menu, _, _| {
+                        menu.item(
+                            menu::item("New File", &workspace, |this, window, cx| this.new_file(&NewFile, window, cx))
+                                .action(Box::new(NewFile)),
+                        )
+                    }
+                })
                 .child(
                     svg()
                         .path("icons/den-empty.svg")
@@ -3253,14 +3284,38 @@ impl Workspace {
                     .child(err.clone())
                     .into_any_element(),
                 Content::Ready if let Some(image) = &tab.image => div()
+                    .id("image-view")
                     .size_full()
+                    .context_menu(self.tab_menu(tab, self.editor_split.is_some(), cx.entity().downgrade()))
                     .p_6()
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(img(image.clone()).max_w_full().max_h_full().object_fit(ObjectFit::Contain))
                     .into_any_element(),
-                Content::Ready if let Some(commit) = &tab.commit => div().size_full().child(commit.clone()).into_any_element(),
+                Content::Ready if let Some(commit) = &tab.commit => {
+                    let tab_menu = self.tab_menu(tab, self.editor_split.is_some(), cx.entity().downgrade());
+                    let hash = tab.diff.as_ref().and_then(|diff| diff.commit.as_ref()).map(|(hash, _)| hash.clone()).unwrap_or_default();
+                    // As in the history's menus: Show Files or Hide Files.
+                    let files = self.history.read(cx).files_in_menu(cx);
+                    div()
+                        .id("commit-view")
+                        .size_full()
+                        .context_menu(move |menu, window, cx| {
+                            let hash = hash.clone();
+                            let menu = menu
+                                .item(menu::PopupMenuItem::new("Copy Hash").on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))
+                                }))
+                                .when_some(files, |menu, shown| {
+                                    menu.menu(if shown { "Hide Files" } else { "Show Files" }, Box::new(ToggleCommitFiles))
+                                })
+                                .separator();
+                            tab_menu(menu, window, cx)
+                        })
+                        .child(commit.clone())
+                        .into_any_element()
+                }
                 Content::Ready => match tab.rendered() {
                     Some(markdown) => div()
                         .id("markdown-preview")

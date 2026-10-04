@@ -6,7 +6,7 @@ use std::path::Path;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex, h_resizable, v_resizable,
     input::Input,
-    menu::ContextMenuExt as _,
+    menu::{ContextMenuExt as _, PopupMenu},
     resizable_panel,
     tooltip::Tooltip,
     v_flex,
@@ -15,6 +15,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use super::{ConsoleLine, DebugEvent, Debugger, EditKind, Status, Var, child_path};
 use crate::{
+    DebugContinue, DebugPause, DebugRestart, DebugStop, StepInto, StepOut, StepOver,
     config::UiText,
     menu,
 };
@@ -113,6 +114,35 @@ impl Debugger {
         rows
     }
 
+    /// The panel's right-click menu: its toolbar's buttons, and Hide Panel.
+    /// The rows that have menus of their own end with it.
+    fn panel_menu(&self, cx: &Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let debugger = cx.entity().downgrade();
+        let stopped = self.current().is_some_and(|stop| !stop.resumed);
+        let active = self.status != Status::Idle;
+        let connected = self.status == Status::Connected;
+        move |menu, _, _| {
+            let menu = if stopped {
+                menu.item(menu::item("Continue", &debugger, |this, _, cx| this.continue_(cx)).action(Box::new(DebugContinue)))
+            } else if active {
+                menu.item(menu::item("Pause", &debugger, |this, _, cx| this.pause(cx)).action(Box::new(DebugPause)).disabled(!connected))
+            } else {
+                menu.item(
+                    menu::item("Start Debugging", &debugger, |this, window, cx| this.start(window, cx))
+                        .action(Box::new(DebugContinue)),
+                )
+            };
+            menu.item(menu::item("Step Over", &debugger, |this, _, cx| this.step_over(cx)).action(Box::new(StepOver)).disabled(!stopped))
+                .item(menu::item("Step Into", &debugger, |this, _, cx| this.step_in(cx)).action(Box::new(StepInto)).disabled(!stopped))
+                .item(menu::item("Step Out", &debugger, |this, _, cx| this.step_out(cx)).action(Box::new(StepOut)).disabled(!stopped))
+                .separator()
+                .item(menu::item("Restart", &debugger, |this, window, cx| this.restart(window, cx)).action(Box::new(DebugRestart)))
+                .item(menu::item("Stop", &debugger, |this, _, cx| this.stop(cx)).action(Box::new(DebugStop)).disabled(!active))
+                .separator()
+                .item(hide_item(&debugger))
+        }
+    }
+
     fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
@@ -197,12 +227,7 @@ impl Debugger {
                     .text_ui_small(cx)
                     .text_color(if stopped { theme.warning } else { theme.muted_foreground })
                     .child(status)
-                    .context_menu({
-                        let debugger = cx.entity().downgrade();
-                        move |menu, _, _| {
-                            menu.item(menu::item("Hide Panel", &debugger, |_, _, cx| cx.emit(DebugEvent::Hide)))
-                        }
-                    }),
+                    .context_menu(self.panel_menu(cx)),
             )
             .when(!self.tab, |el| el.child(
                 div()
@@ -358,6 +383,8 @@ impl Debugger {
                 };
                 let color = if bp.error.is_some() { theme.warning } else { breakpoint_color(cx) };
                 let (show, enable, remove) = (path.clone(), path.clone(), path.clone());
+                let menu_path = path.clone();
+                let debugger = cx.entity().downgrade();
                 list = list.child(
                     h_flex()
                         .id(SharedString::from(format!("bp-{file}-{line}")))
@@ -411,7 +438,23 @@ impl Debugger {
                         )
                         .on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(super::DebugEvent::Show { path: show.clone(), line, focus: true })
-                        })),
+                        }))
+                        .context_menu(move |menu, _, _| {
+                            let (go, toggle, remove) = (menu_path.clone(), menu_path.clone(), menu_path.clone());
+                            menu.item(menu::item("Go to Breakpoint", &debugger, move |_, _, cx| {
+                                cx.emit(super::DebugEvent::Show { path: go.clone(), line, focus: true })
+                            }))
+                            .item(menu::item(if enabled { "Disable Breakpoint" } else { "Enable Breakpoint" }, &debugger, move |this, _, cx| {
+                                this.set_breakpoint_enabled(&toggle, line, !enabled, cx)
+                            }))
+                            .item(menu::item("Remove Breakpoint", &debugger, move |this, _, cx| this.remove_breakpoint(&remove, line, cx)))
+                            .separator()
+                            .item(menu::item("Enable All Breakpoints", &debugger, |this, _, cx| this.enable_all_breakpoints(true, cx)))
+                            .item(menu::item("Disable All Breakpoints", &debugger, |this, _, cx| this.enable_all_breakpoints(false, cx)))
+                            .item(menu::item("Remove All Breakpoints", &debugger, |this, _, cx| this.remove_all_breakpoints(cx)))
+                            .separator()
+                            .item(hide_item(&debugger))
+                        }),
                 );
             }
         }
@@ -540,7 +583,10 @@ impl Debugger {
                                 cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))
                             }));
                         }
-                        menu.separator().item(menu::item("Hide Panel", &entity, |_, _, cx| cx.emit(DebugEvent::Hide)))
+                        if let Some(ix) = watch {
+                            menu = menu.item(menu::item("Remove Watch", &entity, move |this, _, cx| this.remove_watch(ix, cx)));
+                        }
+                        menu.separator().item(hide_item(&entity))
                     }}),
             );
         }
@@ -818,6 +864,7 @@ impl Render for Debugger {
                 .into_any_element()
         };
         v_flex()
+            .id("debugger")
             .size_full()
             .when(cfg!(test), |el| el.debug_selector(|| "debugger".into()))
             .bg(theme.background)
@@ -825,7 +872,14 @@ impl Render for Debugger {
             .child(toolbar)
             .children(problem)
             .child(div().flex_1().min_h_0().child(parts))
+            .context_menu(self.panel_menu(cx))
     }
+}
+
+/// Hide Panel: the debugger's own, wherever it is (a tab of the terminals'
+/// or a place of its own).
+fn hide_item(debugger: &WeakEntity<Debugger>) -> menu::PopupMenuItem {
+    menu::item("Hide Panel", debugger, |_, _, cx| cx.emit(DebugEvent::Hide))
 }
 
 /// The box that edits a breakpoint's condition, hit count or log message,
