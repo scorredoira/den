@@ -326,6 +326,14 @@ fn open_host_window(name: SharedString, cx: &mut App, build: impl FnOnce(&mut Wi
 }
 
 /// What a server is called: the name it was added with, if it was.
+/// Whether an agent's error says a path isn't there (ENOENT, or Windows'
+/// file or path not found), rather than that it couldn't answer or read it.
+fn not_found(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}");
+    // 3 is Windows' path not found; canonicalize never gives Unix's (ESRCH).
+    text.contains("(os error 2)") || text.contains("(os error 3)")
+}
+
 fn server_name(destination: &str, cx: &App) -> SharedString {
     Config::get(cx)
         .hosts
@@ -1037,7 +1045,11 @@ impl Den {
                 // A task is there; any other folder, if the server finds it.
                 let mut gone = Vec::new();
                 for path in open.into_iter().filter(|path| !tasks.iter().any(|task| task.path == *path)) {
-                    if client.request(Request::Resolve { path: path.clone() }).await.is_err() {
+                    // Only when the server says it isn't there: not when it
+                    // can't answer, or can't read it.
+                    if let Err(err) = client.request(Request::Resolve { path: path.clone() }).await
+                        && not_found(&err)
+                    {
                         gone.push(path);
                     }
                 }
@@ -1061,6 +1073,10 @@ impl Den {
     /// A folder that's no longer there: closed, and off the column's order
     /// and the recent ones.
     fn forget_gone(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
+        // Its unsaved files stay open, to be saved somewhere else.
+        if self.workspaces.get(&key).is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty()) {
+            return;
+        }
         if self.remembers() {
             let config = key.config();
             Config::update(cx, |c| {

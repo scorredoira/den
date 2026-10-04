@@ -107,9 +107,10 @@ pub(super) struct Panels {
     console_front: bool,
     /// Search or References, whichever showed last: F4 steps through it.
     pub results: Panel,
-    /// The place of the side column this workspace last drew: another
-    /// one, its panels read what they show.
-    seen: Option<Place>,
+    /// The side panels open in the column this workspace last drew: one
+    /// that wasn't (another place, brought there or unfolded) reads what it
+    /// shows.
+    seen: Vec<Panel>,
 }
 
 impl Panels {
@@ -125,7 +126,7 @@ impl Panels {
             console: false,
             console_front: false,
             results: Panel::Search,
-            seen: None,
+            seen: Vec::new(),
         }
     }
 
@@ -218,15 +219,16 @@ impl Workspace {
     /// Its panels read what they show when they come into sight: the side
     /// column changed, or this workspace came to the front with it.
     fn place_shown(&mut self, cx: &mut Context<Self>) {
-        let place = self.side_place(cx);
-        if self.panels.seen == place {
+        let layout = &Config::get(cx).layout;
+        let open: Vec<Panel> = self
+            .side_place(cx)
+            .map(|place| layout.panels(place).into_iter().filter(|panel| !layout.collapsed.contains(panel)).collect())
+            .unwrap_or_default();
+        if self.panels.seen == open {
             return;
         }
-        self.panels.seen = place;
-        let Some(place) = place else {
-            return;
-        };
-        let panels = Config::get(cx).layout.panels(place);
+        let panels: Vec<Panel> = open.iter().copied().filter(|panel| !self.panels.seen.contains(panel)).collect();
+        self.panels.seen = open;
         if panels.contains(&Panel::Changes) {
             self.changes.update(cx, |changes, cx| changes.shown(cx));
         }
@@ -344,8 +346,9 @@ impl Workspace {
     /// Brings a side panel to the place the column shows, from wherever it
     /// is (or hidden), above `before` or last.
     pub(crate) fn bring_panel(&mut self, panel: Panel, before: Option<Panel>, cx: &mut Context<Self>) {
+        // With every panel hidden there's no place showing: it shows in its own.
         let Some(place) = Config::get(cx).layout.current() else {
-            return;
+            return self.show_panel(panel, cx);
         };
         Config::update(cx, |config| config.layout.move_panel(panel, place, before));
         self.show_panel(panel, cx);
@@ -479,11 +482,24 @@ impl Workspace {
             );
         }
         if device {
+            let hide = cx.entity().downgrade();
             row = row.child(
                 resizable_panel()
                     .size(config::width(layout.device_width, 200., 2000.))
                     .size_range(px(200.)..px(2000.))
-                    .child(self.device.clone()),
+                    .child(div().size_full().child(self.device.clone()).capture_any_mouse_down(
+                        move |event: &MouseDownEvent, _, cx| {
+                            // Its menu's Hide Panel hides it, not the side
+                            // panel right-clicked last.
+                            if event.button == MouseButton::Right {
+                                let hide = hide.clone();
+                                let hide: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+                                    hide.update(cx, |this, cx| this.hide_panel(Panel::Device, cx)).ok();
+                                });
+                                menu::set_panel_under(Some(hide), cx);
+                            }
+                        },
+                    )),
             );
         }
         // The side column, the code, the terminals, the device: in order.

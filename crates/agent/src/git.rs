@@ -416,6 +416,7 @@ fn diff_with(dir: &Path, file: &str, uncommitted: bool, context: Option<&str>) -
     // Untracked: the whole file is new. `--no-index` exits with 1 when there are differences.
     let output = crate::platform::command("git")
         .args(["diff", "--no-index"])
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .args(context)
         .args(["--", "/dev/null", file])
         .current_dir(dir)
@@ -429,6 +430,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = crate::platform::command("git")
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
+        // A file's name is the file, not a pattern: `a[12].txt` isn't `a1.txt`.
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(dir)
         .output()?;
     if !output.status.success() {
@@ -611,6 +614,26 @@ mod tests {
         for file in &names {
             assert_eq!(std::fs::read_to_string(dir.join(file)).unwrap(), "original\n");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_name_with_glob_characters_is_only_that_file() {
+        let dir = repo();
+        for file in ["a[12].txt", "a1.txt"] {
+            std::fs::write(dir.join(file), "original\n").unwrap();
+        }
+        commit(&dir, "files");
+        for file in ["a[12].txt", "a1.txt"] {
+            std::fs::write(dir.join(file), "changed\n").unwrap();
+        }
+        run_op(&dir, GitOp::Stage { files: vec!["a[12].txt".into()] });
+        let status = status(&dir).unwrap();
+        assert_eq!(status.staged.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["a[12].txt"]);
+        run_op(&dir, GitOp::Unstage { files: vec!["a[12].txt".into()] });
+        run_op(&dir, GitOp::Discard { files: vec!["a[12].txt".into()] });
+        assert_eq!(std::fs::read_to_string(dir.join("a[12].txt")).unwrap(), "original\n");
+        assert_eq!(std::fs::read_to_string(dir.join("a1.txt")).unwrap(), "changed\n");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

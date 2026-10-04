@@ -1028,13 +1028,17 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::Relay(relay))
         }
         Request::RelaySend { relay, line } => {
-            let mut state = state.lock().unwrap();
-            let connection = state
+            // Written without the lock: a program that stops reading would
+            // otherwise stall every terminal.
+            let writer = state
+                .lock()
+                .unwrap()
                 .relays
-                .get_mut(&conn)
-                .and_then(|relays| relays.get_mut(&relay))
+                .get(&conn)
+                .and_then(|relays| relays.get(&relay))
+                .map(|relay| relay.writer())
                 .ok_or_else(|| anyhow::anyhow!("the relay is closed"))?;
-            connection.send(&line)?;
+            writer.send(&line)?;
             Ok(Response::Ok)
         }
         Request::RelayClose { relay } => {
@@ -1394,7 +1398,11 @@ fn resume_command(args: &str, session: Option<&ClaudeSession>) -> Option<String>
     // The session it resumed, if it was started with one.
     let mut resumed = None;
     let mut rest = words[start + 1..].iter().peekable();
+    // A word that isn't an option goes only as the value of the one before
+    // it: the others are the prompt it began with, not to be sent again.
+    let mut after_option = false;
     while let Some(word) = rest.next() {
+        let option = word.starts_with('-');
         match *word {
             "-c" | "--continue" | "--fork-session" => {}
             "-r" | "--resume" | "--session-id" => {
@@ -1404,14 +1412,25 @@ fn resume_command(args: &str, session: Option<&ClaudeSession>) -> Option<String>
             }
             _ => match word.strip_prefix("--resume=").or_else(|| word.strip_prefix("--session-id=")) {
                 Some(value) => resumed = Some(value.to_string()),
-                None => command.push(word.to_string()),
+                // `ps` joins the arguments with spaces and loses their
+                // quoting: each word goes quoted, so none can be a command.
+                None if option || after_option => command.push(shell_word(word)),
+                None => {}
             },
         }
+        after_option = option;
     }
     let id = session.and_then(|session| session.id.clone()).or(resumed.filter(|id| session_id(id)));
     command.push("--resume".to_string());
     command.extend(id);
     Some(command.join(" "))
+}
+
+/// `value` as one word for a POSIX shell, quoted only if it needs it.
+fn shell_word(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value.chars().all(|ch| ch.is_ascii_alphanumeric() || "-_=./:,@+%".contains(ch));
+    if plain { value.to_string() } else { shell_quote(value) }
 }
 
 /// `value` as one word for a POSIX shell.
@@ -1604,6 +1623,14 @@ mod restart_tests {
         assert_eq!(resume("vim claude.md"), None);
         // An id that isn't one isn't typed into the shell.
         assert_eq!(resume("claude --resume=x;rm").as_deref(), Some("claude --resume"));
+        // `ps` lost the quotes of the prompt it began with: none of it is typed.
+        assert_eq!(resume("claude fix login; then make clean").as_deref(), Some("claude --resume"));
+        assert_eq!(
+            resume("claude --allowedTools Bash(git:*) --model opus fix; make clean").as_deref(),
+            Some("claude --allowedTools 'Bash(git:*)' --model opus --resume")
+        );
+        // An option in the prompt goes as an argument, never as a command.
+        assert_eq!(resume("claude --verbose do it; rm -rf x").as_deref(), Some("claude --verbose do -rf x --resume"));
     }
 
     #[test]

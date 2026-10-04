@@ -192,6 +192,10 @@ impl Layout {
         let Some(from) = self.index(place.0) else {
             return;
         };
+        // Dropped on itself: it stays.
+        if before.and_then(|before| self.index(before.0)) == Some(from) {
+            return;
+        }
         let panels = self.places.remove(from);
         let at = before.and_then(|before| self.index(before.0)).unwrap_or(self.places.len());
         self.places.insert(at, panels);
@@ -624,12 +628,40 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let mut config: Self = Self::path()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
-            .unwrap_or_default();
+        let Some(path) = Self::path() else {
+            return Self::default();
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Self::default();
+        };
+        let (mut config, whole) = Self::parse(&bytes);
+        if !whole {
+            // What couldn't be read is kept aside before the next save
+            // writes over it.
+            let _ = std::fs::write(path.with_extension("json.bad"), &bytes);
+        }
         config.layout.repair();
         config
+    }
+
+    /// The config in `bytes`, and whether all of it was read. A value this
+    /// version can't read (one written by another version, or edited by
+    /// hand) goes back to its default without losing the others.
+    fn parse(bytes: &[u8]) -> (Self, bool) {
+        if let Ok(config) = serde_json::from_slice::<Self>(bytes) {
+            return (config, true);
+        }
+        let Ok(serde_json::Value::Object(fields)) = serde_json::from_slice(bytes) else {
+            return (Self::default(), false);
+        };
+        let mut read = serde_json::Map::new();
+        for (key, value) in fields {
+            read.insert(key.clone(), value);
+            if serde_json::from_value::<Self>(serde_json::Value::Object(read.clone())).is_err() {
+                read.remove(&key);
+            }
+        }
+        (serde_json::from_value(serde_json::Value::Object(read)).unwrap_or_default(), false)
     }
 
     fn save(&self) {
@@ -639,8 +671,13 @@ impl Config {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(path, bytes);
+        let Ok(bytes) = serde_json::to_vec_pretty(self) else {
+            return;
+        };
+        // Whole or not at all: a crash halfway leaves the one before.
+        let temp = path.with_extension("json.tmp");
+        if std::fs::write(&temp, bytes).is_ok() && std::fs::rename(&temp, &path).is_err() {
+            let _ = std::fs::remove_file(&temp);
         }
     }
 
@@ -724,6 +761,29 @@ impl Split {
         self.width = Some(width);
         self.key = Some(key);
         &self.state
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::{Config, ThemeChoice};
+
+    #[test]
+    fn a_value_it_cant_read_loses_only_that_value() {
+        let json = br#"{ "theme": "solarized", "order": ["/a", "/b"], "word_wrap": true }"#;
+        let (config, whole) = Config::parse(json);
+        assert!(!whole);
+        assert!(matches!(config.theme, ThemeChoice::System));
+        assert_eq!(config.order, ["/a", "/b"]);
+        assert!(config.word_wrap);
+    }
+
+    #[test]
+    fn a_cut_file_reads_as_the_default_and_says_so() {
+        let (config, whole) = Config::parse(br#"{ "order": ["/a""#);
+        assert!(!whole);
+        assert!(config.order.is_empty());
+        assert!(Config::parse(br#"{ "order": ["/a"] }"#).1);
     }
 }
 
@@ -829,6 +889,10 @@ mod layout_tests {
         assert_eq!(layout.place_of(Panel::Files), Some(explorer));
         layout.move_panel(Panel::Files, explorer, Some(Panel::Workspaces));
         assert_eq!(layout.panels(explorer), [Panel::Files, Panel::Workspaces, Panel::Outline]);
+        // Dropped on its own icon, it stays where it is.
+        let first = layout.places()[0];
+        layout.move_place(first, Some(first));
+        assert_eq!(layout.places()[0], first);
         // Named by its first panel: still the same place.
         let explorer = layout.place_of(Panel::Workspaces).unwrap();
         // Into another place, and hidden ones come back.

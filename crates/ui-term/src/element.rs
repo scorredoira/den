@@ -70,6 +70,9 @@ struct TextRun_ {
     text: String,
     cells: usize,
     run: TextRun,
+    /// A wide character's (two cells): shaped alone, as each glyph of a run
+    /// takes one cell.
+    wide: bool,
 }
 
 struct Background {
@@ -248,6 +251,7 @@ impl Element for TerminalElement {
             let appended = match runs.last_mut() {
                 Some(last)
                     if !wide
+                        && !last.wide
                         && last.line == line
                         && last.col + last.cells == col
                         && ((plain_space && !decorated(&last.run)) || same_style(&last.run, &run)) =>
@@ -269,6 +273,7 @@ impl Element for TerminalElement {
                     text: cell.c.to_string(),
                     cells: width,
                     run,
+                    wide,
                 });
             }
             if let Some(zerowidth) = cell.zerowidth() {
