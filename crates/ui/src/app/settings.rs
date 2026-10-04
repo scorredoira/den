@@ -25,7 +25,8 @@ pub(super) struct Settings {
     /// The chosen combination already belongs to another shortcut: ask before
     /// taking it away (a shortcut is never removed silently).
     conflict: Option<Conflict>,
-    _subscription: Subscription,
+    /// The search's and the extensions' (they go when Settings closes).
+    _subscriptions: [Subscription; 2],
 }
 
 struct Conflict {
@@ -61,7 +62,6 @@ impl Den {
                     Config::update(cx, |config| config.format_on_save = extensions);
                 }
             });
-            self._subscriptions.push(format_subscription);
             self.settings = Some(Settings {
                 focus: cx.focus_handle(),
                 search,
@@ -70,7 +70,7 @@ impl Den {
                 section: 0,
                 recording: None,
                 conflict: None,
-                _subscription: subscription,
+                _subscriptions: [subscription, format_subscription],
             });
         }
         if let Some(settings) = &self.settings {

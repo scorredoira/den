@@ -40,6 +40,9 @@ pub struct Picker {
     /// What's typed is offered too, after the matches, unless it's one of them.
     typed: bool,
     matches: Vec<String>,
+    /// The query `matches` are for: Enter right after typing may come before
+    /// the filtering in the background is done.
+    matched: Option<String>,
     selected: usize,
     filter: Option<Task<()>>,
     _subscription: Subscription,
@@ -70,6 +73,7 @@ impl Picker {
             free_text: false,
             typed: false,
             matches: Vec::new(),
+            matched: None,
             selected: 0,
             filter: None,
             _subscription: subscription,
@@ -102,27 +106,37 @@ impl Picker {
 
     fn refilter(&mut self, cx: &mut Context<Self>) {
         let query = self.input.read(cx).value().to_string();
-        let files = self.files.clone();
-        let typed = self.typed.then(|| query.trim().to_string()).filter(|typed| !typed.is_empty());
-        let filter = cx.background_spawn(async move { filter(&files, &query) });
+        let (files, typed) = (self.files.clone(), self.typed);
         self.filter = Some(cx.spawn(async move |this, cx| {
-            let mut matches = filter.await;
-            if let Some(typed) = typed.filter(|typed| !matches.contains(typed)) {
-                matches.push(typed);
-            }
-            this.update(cx, |this, cx| {
-                this.matches = matches;
-                this.selected = 0;
-                cx.notify();
-            })
-            .ok();
+            let matches = cx.background_spawn({
+                let query = query.clone();
+                async move { matches(&files, &query, typed) }
+            });
+            let matches = matches.await;
+            this.update(cx, |this, cx| this.set_matches(matches, query, cx)).ok();
         }));
     }
 
+    fn set_matches(&mut self, matches: Vec<String>, query: String, cx: &mut Context<Self>) {
+        self.matches = matches;
+        self.matched = Some(query);
+        self.selected = 0;
+        cx.notify();
+    }
+
     fn confirm(&mut self, cx: &mut Context<Self>) {
+        let query = self.input.read(cx).value().to_string();
         if self.free_text {
-            cx.emit(PickerEvent::Pick(self.input.read(cx).value().to_string()));
-        } else if let Some(file) = self.matches.get(self.selected) {
+            cx.emit(PickerEvent::Pick(query));
+            return;
+        }
+        // Typed faster than it filters: what's picked is for what's typed.
+        if self.matched.as_ref() != Some(&query) {
+            self.filter = None;
+            let matches = matches(&self.files, &query, self.typed);
+            self.set_matches(matches, query, cx);
+        }
+        if let Some(file) = self.matches.get(self.selected) {
             cx.emit(PickerEvent::Pick(file.clone()));
         }
     }
@@ -135,6 +149,17 @@ impl Picker {
         self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
         cx.notify();
     }
+}
+
+/// What's offered for `query`: the best matches and, if `typed`, what's typed
+/// after them (unless it's one of them).
+fn matches(files: &[String], query: &str, typed: bool) -> Vec<String> {
+    let mut matches = filter(files, query);
+    let query = query.trim();
+    if typed && !query.is_empty() && !matches.iter().any(|file| file == query) {
+        matches.push(query.to_string());
+    }
+    matches
 }
 
 /// The files that best match `query`, best first. With nothing typed, the
@@ -233,7 +258,12 @@ impl Render for Picker {
 
 #[cfg(test)]
 mod tests {
-    use super::filter;
+    use core::prelude::v1::test;
+    use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+    use gpui_kit::*;
+
+    use super::{Picker, PickerEvent, filter, matches};
 
     #[test]
     fn fuzzy_finds_by_path_fragments() {
@@ -245,5 +275,42 @@ mod tests {
         assert_eq!(filter(&files, "wsp")[0], "crates/ui/src/workspace.rs");
         assert_eq!(filter(&files, "zzz"), Vec::<String>::new());
         assert_eq!(filter(&files, "").len(), 4);
+    }
+
+    #[test]
+    fn what_is_typed_is_offered_after_the_matches() {
+        let hosts: Vec<String> = ["ws", "bill"].into_iter().map(String::from).collect();
+        assert_eq!(matches(&hosts, "me@box ", true), ["me@box"]);
+        assert_eq!(matches(&hosts, "ws", true), ["ws"]);
+        assert_eq!(matches(&hosts, "me@box", false), Vec::<String>::new());
+    }
+
+    /// Enter right after typing, before the background filtering is done,
+    /// picks from what's typed, not from the previous query's matches.
+    #[gpui_kit::test]
+    fn enter_right_after_typing_picks_what_was_typed(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::config::Config::default());
+        });
+        let hosts = Arc::new(vec!["ws".to_string(), "bill".to_string()]);
+        let (picker, cx) = cx.add_window_view(|window, cx| Picker::new(hosts, "Server", false, window, cx).typed());
+        cx.run_until_parked();
+        let picked = Rc::new(RefCell::new(Vec::new()));
+        let sink = picked.clone();
+        cx.update(|window, cx| {
+            cx.subscribe(&picker, move |_, event: &PickerEvent, _| {
+                if let PickerEvent::Pick(choice) = event {
+                    sink.borrow_mut().push(choice.clone());
+                }
+            })
+            .detach();
+            picker.update(cx, |picker, cx| {
+                picker.input.update(cx, |input, cx| input.set_value("me@box", window, cx));
+                picker.refilter(cx);
+                picker.confirm(cx);
+            });
+        });
+        assert_eq!(*picked.borrow(), ["me@box"]);
     }
 }
