@@ -97,9 +97,9 @@ fn run(destination: &str, script: &str, input: Option<&[u8]>) -> Result<String> 
         .stderr(Stdio::piped())
         .spawn()
         .context("could not run ssh")?;
-    if let Some(input) = input {
-        child.stdin.take().expect("stdin").write_all(input)?;
-    }
+    // A write fails when the remote command stops reading (it failed): its
+    // stderr says why, rather than "Broken pipe".
+    let written = input.map(|input| child.stdin.take().expect("stdin").write_all(input));
     let output = child.wait_with_output()?;
     if !output.status.success() {
         bail!(
@@ -107,6 +107,7 @@ fn run(destination: &str, script: &str, input: Option<&[u8]>) -> Result<String> 
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
+    written.transpose().context("could not send the input to ssh")?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 

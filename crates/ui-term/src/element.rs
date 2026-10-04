@@ -648,12 +648,34 @@ pub fn grid_point(
     } = layout.size;
     let x = (position.x - layout.origin.x).max(px(0.));
     let y = (position.y - layout.origin.y).max(px(0.));
-    let col = ((x / cell_width) as usize).min(cols as usize - 1);
+    let cell = x / cell_width;
+    let col = (cell as usize).min(cols as usize - 1);
     let row = ((y / line_height) as usize).min(rows as usize - 1);
-    let within = (x / cell_width).fract();
-    let side = if within > 0.5 { Side::Right } else { Side::Left };
+    // Past the last column (the right margin) counts as its right half, or
+    // dragging there would leave the last column out of the selection.
+    let side = if cell >= cols as f32 || cell.fract() > 0.5 { Side::Right } else { Side::Left };
     (
         AlacPoint::new(Line(row as i32 - display_offset as i32), Column(col)),
         side,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AlacPoint, GridLayout, GridSize, Line, grid_point};
+    use alacritty_terminal::index::{Column, Side};
+    use gpui_kit::{point, px};
+
+    #[test]
+    fn the_right_margin_selects_the_last_column_whole() {
+        let layout = GridLayout {
+            origin: point(px(0.), px(0.)),
+            size: GridSize { cols: 10, rows: 5, cell_width: px(8.), line_height: px(16.) },
+        };
+        let at = |x: f32| grid_point(layout, point(px(x), px(1.)), 0);
+        assert_eq!(at(81.), (AlacPoint::new(Line(0), Column(9)), Side::Right));
+        assert_eq!(at(100.), (AlacPoint::new(Line(0), Column(9)), Side::Right));
+        assert_eq!(at(73.), (AlacPoint::new(Line(0), Column(9)), Side::Left));
+        assert_eq!(at(78.), (AlacPoint::new(Line(0), Column(9)), Side::Right));
+    }
 }
