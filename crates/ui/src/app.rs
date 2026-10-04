@@ -2935,6 +2935,7 @@ impl Render for Den {
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, window, cx| {
                 this.switcher_modifiers(&event.modifiers, window, cx)
             }))
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| this.switcher_key_up(event)))
 
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
             .on_action(cx.listener(|this, _: &About, window, cx| this.open_about(window, cx)))
