@@ -21,11 +21,28 @@ pub enum ThemeChoice {
 }
 
 /// Where things go, the same in every workspace: on the left the side
-/// column, whose group of panels its icon picks; the code in the middle;
-/// the terminals on its right or under it; the device, on the far right.
+/// column, which shows one place's panels; the code in the middle; the
+/// terminals on its right or under it; the device, on the far right.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
+    /// The side column shows, and the place it shows (or last showed):
+    /// the same in every workspace, so that going from one to another
+    /// doesn't move it.
+    pub side: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub place: Place,
+    /// The side column's places, an icon each on the activity bar in this
+    /// order: their panels, top to bottom. Every side panel is in one.
+    pub places: Vec<Vec<Panel>>,
+    /// The side panels taken off the column (Hide Panel): they keep their
+    /// spot for when they're shown again.
+    pub hidden: Vec<Panel>,
+    /// The side panels folded to their header.
+    pub collapsed: Vec<Panel>,
+    /// The side panels' heights, as dragged.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub heights: HashMap<Panel, f32>,
     pub side_width: f32,
     pub dock: Dock,
     /// The terminals as a column; unset, half of what the others leave.
@@ -35,28 +52,165 @@ pub struct Layout {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dock_height: Option<f32>,
     pub device_width: f32,
-    /// The side panels' heights, as dragged.
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub heights: HashMap<Panel, f32>,
-    /// The side panels folded to their header.
-    pub collapsed: Vec<Panel>,
 }
 
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            side: true,
+            place: Place::default(),
+            places: Group::ALL.into_iter().map(|group| group.panels().to_vec()).collect(),
+            hidden: vec![Panel::Agents],
+            collapsed: vec![Panel::Outline, Panel::References, Panel::Breakpoints],
+            heights: HashMap::new(),
             side_width: 260.,
             dock: Dock::Right,
             dock_width: None,
             dock_height: None,
             device_width: 400.,
-            heights: HashMap::new(),
-            collapsed: vec![Panel::Outline, Panel::References, Panel::Breakpoints],
         }
     }
 }
 
+/// A place of the side column: the one with this panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Place(pub Panel);
+
+impl Default for Place {
+    fn default() -> Self {
+        Place(Panel::Files)
+    }
+}
+
+/// A value that, written by another version of den, reads as its default
+/// rather than losing the whole config.
+fn lenient<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + Default>(deserializer: D) -> Result<T, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(T::deserialize(value).unwrap_or_default())
+}
+
 impl Layout {
+    /// Mends one edited by hand: every side panel in one place, once.
+    pub fn repair(&mut self) {
+        let mut seen = Vec::new();
+        for place in &mut self.places {
+            place.retain(|panel| {
+                let keep = Group::of(*panel).is_some() && !matches!(panel, Panel::Commit | Panel::Debugger) && !seen.contains(panel);
+                seen.push(*panel);
+                keep
+            });
+        }
+        for group in Group::ALL {
+            for panel in group.panels().iter().filter(|panel| !seen.contains(panel)) {
+                // With those of its group, or a place of its own.
+                match self.places.iter_mut().find(|place| place.iter().any(|other| group.panels().contains(other))) {
+                    Some(place) => place.push(*panel),
+                    None => self.places.push(vec![*panel]),
+                }
+            }
+        }
+        self.places.retain(|place| !place.is_empty());
+    }
+
+    /// Which of `places` has `panel`.
+    fn index(&self, panel: Panel) -> Option<usize> {
+        self.places.iter().position(|place| place.contains(&panel))
+    }
+
+    /// The place `panel` is in, as the first of its panels in sight names
+    /// it.
+    pub fn place_of(&self, panel: Panel) -> Option<Place> {
+        self.index(panel).map(|ix| self.name(&self.places[ix]))
+    }
+
+    fn name(&self, panels: &[Panel]) -> Place {
+        Place(panels.iter().copied().find(|panel| !self.hidden.contains(panel)).unwrap_or(panels[0]))
+    }
+
+    /// What the side column shows in `place`, top to bottom.
+    pub fn panels(&self, place: Place) -> Vec<Panel> {
+        self.index(place.0).map(|ix| self.places[ix].iter().copied().filter(|panel| !self.hidden.contains(panel)).collect()).unwrap_or_default()
+    }
+
+    /// The place the side column shows, or last showed; the first one, if
+    /// that has nothing to show now.
+    pub fn current(&self) -> Option<Place> {
+        self.place_of(self.place.0).filter(|place| !self.panels(*place).is_empty()).or_else(|| self.places().first().copied())
+    }
+
+    /// The activity bar's places: those with something to show.
+    pub fn places(&self) -> Vec<Place> {
+        self.places.iter().map(|place| self.name(place)).filter(|place| !self.panels(*place).is_empty()).collect()
+    }
+
+    /// Puts `panel` in `place`, above `before` (or last); a place left
+    /// empty goes.
+    pub fn move_panel(&mut self, panel: Panel, place: Place, before: Option<Panel>) {
+        if before == Some(panel) || self.index(place.0).is_none() {
+            return;
+        }
+        // The place may be named by the panel that moves.
+        let others: Vec<Panel> = self.index(place.0).map(|ix| self.places[ix].clone()).unwrap_or_default();
+        let Some(anchor) = others.iter().copied().find(|other| *other != panel) else {
+            return;
+        };
+        for place in &mut self.places {
+            place.retain(|other| *other != panel);
+        }
+        let ix = self.index(anchor).expect("it stays");
+        let target = &mut self.places[ix];
+        let at = before.and_then(|before| target.iter().position(|other| *other == before)).unwrap_or(target.len());
+        target.insert(at, panel);
+        self.places.retain(|place| !place.is_empty());
+        self.hidden.retain(|other| *other != panel);
+    }
+
+    /// Gives `panel` a place of its own, right after the one it's in.
+    pub fn own_place(&mut self, panel: Panel) {
+        let Some(ix) = self.index(panel).filter(|ix| self.places[*ix].len() > 1) else {
+            return;
+        };
+        self.places[ix].retain(|other| *other != panel);
+        self.places.insert(ix + 1, vec![panel]);
+    }
+
+    /// Puts `from`'s panels in `into`, after its own.
+    pub fn merge(&mut self, from: Place, into: Place) {
+        let (Some(from), Some(into)) = (self.index(from.0), self.index(into.0)) else {
+            return;
+        };
+        if from == into {
+            return;
+        }
+        let panels = std::mem::take(&mut self.places[from]);
+        self.places[into].extend(panels);
+        self.places.retain(|place| !place.is_empty());
+    }
+
+    /// Puts `place`'s icon before `before`'s, or last.
+    pub fn move_place(&mut self, place: Place, before: Option<Place>) {
+        let Some(from) = self.index(place.0) else {
+            return;
+        };
+        let panels = self.places.remove(from);
+        let at = before.and_then(|before| self.index(before.0)).unwrap_or(self.places.len());
+        self.places.insert(at, panels);
+    }
+
+    /// The group a place stands for, by the panels it has: its icon and
+    /// title, unless it shows a single panel.
+    pub fn kind(&self, place: Place) -> Option<Group> {
+        let panels = self.index(place.0).map(|ix| self.places[ix].clone()).unwrap_or_default();
+        Group::ALL.into_iter().find(|group| panels.contains(&group.filler()))
+            .or_else(|| Group::ALL.into_iter().find(|group| panels.iter().any(|panel| group.panels().contains(panel))))
+    }
+
+    /// The panel that takes the height the others leave: the first group
+    /// filler among `open`, or the last.
+    pub fn filler(open: &[Panel]) -> Option<Panel> {
+        open.iter().copied().find(|panel| Group::ALL.iter().any(|group| group.filler() == *panel)).or(open.last().copied())
+    }
+
     /// A side panel's height: as dragged, or its own.
     pub fn height(&self, panel: Panel) -> f32 {
         self.heights.get(&panel).copied().unwrap_or(match panel {
@@ -267,21 +421,18 @@ pub struct Session {
     pub shows: Option<SavedPanels>,
 }
 
-/// What of a workspace shows besides the code.
+/// What of a workspace shows besides the code and the side column.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedPanels {
-    /// The group of the side column, the last shown if it's hidden.
-    pub group: Group,
-    pub side: bool,
     pub terminals: bool,
     pub device: bool,
 }
 
 impl Default for SavedPanels {
-    /// A new workspace's: the files, the code and the terminals.
+    /// A new workspace's: the terminals.
     fn default() -> Self {
-        Self { group: Group::Explorer, side: true, terminals: true, device: false }
+        Self { terminals: true, device: false }
     }
 }
 
@@ -353,6 +504,7 @@ pub struct Config {
     /// Folders and tasks opened, the most recent first (Open Recent).
     pub recent: Vec<SavedTask>,
     /// Where things go and their sizes.
+    #[serde(deserialize_with = "lenient")]
     pub layout: Layout,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
@@ -472,10 +624,12 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        Self::path()
+        let mut config: Self = Self::path()
             .and_then(|path| std::fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        config.layout.repair();
+        config
     }
 
     fn save(&self) {
@@ -664,6 +818,52 @@ mod layout_tests {
         }
         assert_eq!(Group::of(Panel::Commit), Some(Group::Git));
         assert_eq!(Group::of(Panel::Debugger), Some(Group::Debug));
+    }
+
+    #[test]
+    fn panels_go_anywhere_and_icons_reorder() {
+        use super::Place;
+        let mut layout = Layout::default();
+        let explorer = Place(Panel::Workspaces);
+        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Files, Panel::Outline]);
+        assert_eq!(layout.place_of(Panel::Files), Some(explorer));
+        layout.move_panel(Panel::Files, explorer, Some(Panel::Workspaces));
+        assert_eq!(layout.panels(explorer), [Panel::Files, Panel::Workspaces, Panel::Outline]);
+        // Named by its first panel: still the same place.
+        let explorer = layout.place_of(Panel::Workspaces).unwrap();
+        // Into another place, and hidden ones come back.
+        let git = layout.place_of(Panel::Changes).unwrap();
+        layout.move_panel(Panel::Agents, git, None);
+        assert_eq!(layout.panels(git), [Panel::Changes, Panel::History, Panel::Agents]);
+        // A place of its own, right after; merged back.
+        layout.own_place(Panel::Workspaces);
+        let workspaces = Place(Panel::Workspaces);
+        assert_eq!(layout.panels(workspaces), [Panel::Workspaces]);
+        assert_eq!(layout.places()[1], workspaces);
+        layout.merge(workspaces, git);
+        assert!(layout.places().len() == 4 && layout.panels(git).ends_with(&[Panel::Workspaces]));
+        // Icons reorder.
+        layout.move_place(git, Some(explorer));
+        assert_eq!(layout.places()[0], git);
+        layout.move_place(git, None);
+        assert_eq!(layout.places().last(), Some(&git));
+        // The last panel of a place leaves: the place goes.
+        let search = Place(Panel::Search);
+        layout.move_panel(Panel::Search, git, None);
+        layout.move_panel(Panel::References, git, None);
+        assert!(!layout.places().contains(&search));
+    }
+
+    #[test]
+    fn a_layout_edited_by_hand_is_mended() {
+        let mut layout: Layout = serde_json::from_str(r#"{"places": [["files", "files", "code"], []]}"#).unwrap();
+        layout.repair();
+        assert_eq!(layout.places[0], [Panel::Files, Panel::Workspaces, Panel::Agents, Panel::Outline]);
+        assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some() && !matches!(panel, Panel::Commit | Panel::Debugger)).all(|panel| layout.place_of(*panel).is_some()));
+        // One from before the places reads as a new one, the rest of the config intact.
+        let config: super::Config = serde_json::from_str(r#"{"order": ["/a"], "layout": {"place": {"group": "explorer"}, "alone": ["files"]}}"#).unwrap();
+        assert_eq!(config.order, ["/a"]);
+        assert_eq!(config.layout.place, super::Place::default());
     }
 
     #[test]
