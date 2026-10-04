@@ -9,3 +9,6 @@ gpui-kit.workspace = true
 anyhow.workspace = true
 smol.workspace = true
 alacritty_terminal.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

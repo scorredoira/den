@@ -20,4 +20,9 @@ pub trait TerminalBackend: 'static {
     fn cwd(&self) -> Option<PathBuf>;
     /// Saves a pasted image on the process's machine and returns its path there.
     fn save_image(&self, extension: &str, data: Vec<u8>) -> Pin<Box<dyn Future<Output = anyhow::Result<PathBuf>>>>;
+    /// Clears the history and the screen for every view of the process, as
+    /// its output. Fails where the other end can't (an older agent).
+    fn clear(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
+        Box::pin(async { anyhow::bail!("this terminal can't be cleared at its end") })
+    }
 }

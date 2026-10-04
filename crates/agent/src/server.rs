@@ -27,7 +27,7 @@ use crate::{
     platform::{self, Listener, Stream},
     pty::Pty,
     blocked, format, fs, git, lsp, ports, search,
-    snapshot::snapshot,
+    snapshot::{self, snapshot},
     tasks,
 };
 
@@ -705,6 +705,7 @@ fn own_separators(request: &mut Request) {
         | Request::TermInput { .. }
         | Request::TermResize { .. }
         | Request::TermKill { .. }
+        | Request::TermClear { .. }
         | Request::TermCwd { .. }
         | Request::SavePastedImage { .. }
         | Request::RepoList
@@ -919,6 +920,16 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             let (cols, rows) = (cols.max(2), rows.max(1));
             entry.emulator.resize(TermSize::new(cols as usize, rows as usize));
             entry.pty.resize(cols, rows);
+            Ok(Response::Ok)
+        }
+        Request::TermClear { term } => {
+            // Under the lock, as the pty's output: it lands between two
+            // chunks of it, the same in every emulator.
+            let mut state = state.lock().unwrap();
+            let entry = state.terms.get_mut(&term).ok_or_else(|| gone(term))?;
+            let data = snapshot::clear(&entry.emulator);
+            entry.parser.advance(&mut entry.emulator, &data);
+            state.broadcast(term, || Event::TermOutput { term, data: data.clone() });
             Ok(Response::Ok)
         }
         Request::TermKill { term } => {

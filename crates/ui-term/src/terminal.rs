@@ -7,7 +7,7 @@ use alacritty_terminal::{
     index::{Column, Line, Point as AlacPoint, Side},
     selection::{Selection, SelectionType},
     term::{Config, TermMode, cell::Flags, test::TermSize},
-    vte::ansi::Processor,
+    vte::ansi::{ClearMode, Handler as _, Processor},
 };
 use gpui_kit::*;
 
@@ -352,6 +352,46 @@ impl Terminal {
         }
     }
 
+    /// Selects everything, history included, down to the last line with text.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        let grid = self.term.grid();
+        let cols = grid.columns();
+        let mut last = grid.bottommost_line();
+        while last > grid.topmost_line() && (0..cols).all(|col| grid[last][Column(col)].c == ' ') {
+            last -= 1;
+        }
+        let start = AlacPoint::new(grid.topmost_line(), Column(0));
+        let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
+        selection.update(AlacPoint::new(last, Column(cols - 1)), Side::Right);
+        self.term.selection = Some(selection);
+        cx.notify();
+    }
+
+    /// Clears the history and the screen like Cmd-K in Terminal.app, keeping
+    /// the cursor's line at the top. The agent clears its emulator too and
+    /// sends the clear to every view, or reattaching would bring it all
+    /// back; if it can't (an older one), only this view clears.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        let clear = self.backend.clear();
+        cx.spawn(async move |this, cx| {
+            if clear.await.is_err() {
+                this.update(cx, |this, cx| this.clear_here(cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// What the agent's clear does (see its `snapshot::clear`), here only.
+    fn clear_here(&mut self, cx: &mut Context<Self>) {
+        let line = self.term.grid().cursor.point.line.0 as usize;
+        if line > 0 && !self.term.mode().contains(TermMode::ALT_SCREEN) {
+            self.term.scroll_up(line);
+            self.term.move_up(line);
+        }
+        self.term.clear_screen(ClearMode::Saved);
+        cx.notify();
+    }
+
     pub fn selection_text(&self) -> Option<String> {
         self.term
             .selection
@@ -389,5 +429,55 @@ impl Terminal {
 
     pub fn columns(&self) -> usize {
         self.term.grid().columns()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::prelude::v1::test;
+    use std::{future::Future, pin::Pin};
+
+    use super::*;
+
+    /// A process that takes nothing and, like an older agent, can't clear.
+    struct Backend;
+
+    impl TerminalBackend for Backend {
+        fn write(&self, _: Vec<u8>) {}
+        fn resize(&self, _: u16, _: u16) {}
+        fn kill(&self) {}
+        fn cwd(&self) -> Option<PathBuf> {
+            None
+        }
+        fn save_image(&self, _: &str, _: Vec<u8>) -> Pin<Box<dyn Future<Output = anyhow::Result<PathBuf>>>> {
+            Box::pin(async { anyhow::bail!("unused") })
+        }
+    }
+
+    fn terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
+        let (_, output) = smol::channel::unbounded();
+        cx.new(|cx| Terminal::new(Rc::new(Backend), output, 20, 3, b"one\r\ntwo\r\nthree\r\nfour\r\n$ ls", cx))
+    }
+
+    #[gpui_kit::test]
+    fn select_all_takes_the_history_and_stops_at_the_last_text(cx: &mut TestAppContext) {
+        let terminal = terminal(cx);
+        terminal.update(cx, |terminal, cx| {
+            terminal.select_all(cx);
+            assert_eq!(terminal.selection_text().as_deref(), Some("one\ntwo\nthree\nfour\n$ ls"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn clear_without_the_agent_clears_here(cx: &mut TestAppContext) {
+        let terminal = terminal(cx);
+        terminal.update(cx, |terminal, cx| terminal.clear(cx));
+        cx.run_until_parked();
+        terminal.update(cx, |terminal, cx| {
+            assert_eq!(terminal.term.grid().history_size(), 0);
+            assert_eq!(terminal.term.grid().cursor.point, AlacPoint::new(Line(0), Column(4)));
+            terminal.select_all(cx);
+            assert_eq!(terminal.selection_text().as_deref(), Some("$ ls"));
+        });
     }
 }

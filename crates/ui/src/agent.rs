@@ -91,6 +91,17 @@ impl TerminalBackend for AgentBackend {
         })
     }
 
+    /// An agent from before `TermClear` answers it with an error.
+    fn clear(&self) -> std::pin::Pin<Box<dyn Future<Output = Result<()>>>> {
+        let response = self.client.request(Request::TermClear { term: self.term });
+        Box::pin(async move {
+            match response.await? {
+                Response::Ok => Ok(()),
+                other => bail!("unexpected response from the agent: {other:?}"),
+            }
+        })
+    }
+
     /// Returns the last known directory and asks the agent for the current one.
     fn cwd(&self) -> Option<PathBuf> {
         let cache = self.cwd.clone();
