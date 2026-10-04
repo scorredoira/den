@@ -910,6 +910,21 @@ impl Debugger {
         cx.notify();
     }
 
+    /// Asks the program to let the person pick a widget on its screen (its
+    /// `inspect` command): the line that made it comes back as a reveal.
+    /// False when nothing is being debugged.
+    pub fn inspect(&mut self) -> bool {
+        if self.conn.is_none() {
+            return false;
+        }
+        self.send("inspect", json!({ "on": true }), |this, result, cx| {
+            if let Err(error) = result {
+                this.info(format!("The program can't inspect: {error}"), cx);
+            }
+        });
+        true
+    }
+
     fn info(&mut self, text: String, cx: &mut Context<Self>) {
         if !text.is_empty() {
             self.console.push(ConsoleLine::Info(text));
@@ -944,6 +959,10 @@ impl Debugger {
             }
             Ok(Message::Event(Event::Stopped(stop))) => self.on_stop(*stop, cx),
             Ok(Message::Event(Event::Resumed { vm })) => self.on_resumed(vm, cx),
+            Ok(Message::Event(Event::Reveal { file, line })) => {
+                let path = self.local_path(&file);
+                cx.emit(DebugEvent::Show { path, line: line.saturating_sub(1), focus: true });
+            }
             Ok(Message::Event(Event::Output { text, file, line })) => {
                 let path = (!file.is_empty()).then(|| self.local_path(&file));
                 self.console.push(ConsoleLine::Output { text: text.trim_end().to_string(), path, line });

@@ -33,7 +33,7 @@ use crate::{
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, Debugger, EditKind},
-    device::Device,
+    device::{Device, DeviceEvent},
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
     AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel,
     diff,
@@ -342,6 +342,7 @@ impl Workspace {
         }
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
+            cx.subscribe(&device, Self::on_device_event),
             cx.subscribe_in(&outline, window, Self::on_outline),
             cx.observe(&debugger, |_, _, cx| cx.notify()),
             // Its icon, when the device file comes or goes.
@@ -1860,6 +1861,18 @@ impl Workspace {
             self.focus_active(window, cx);
         } else {
             self.focus_handle.focus(window, cx);
+        }
+    }
+
+    /// Inspect on the phone goes to the program being debugged.
+    fn on_device_event(&mut self, device: Entity<Device>, event: &DeviceEvent, cx: &mut Context<Self>) {
+        match event {
+            DeviceEvent::Inspect => {
+                let asked = self.debugger.update(cx, |debugger, _| debugger.inspect());
+                if !asked {
+                    device.update(cx, |device, cx| device.warn("Debug the app (F5) to inspect it.", cx));
+                }
+            }
         }
     }
 
