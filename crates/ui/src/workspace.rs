@@ -3715,7 +3715,20 @@ impl Render for Workspace {
                     .min_h_0()
                     .w_full()
                     .child(self.render_activity_bar(cx))
-                    .child(div().flex_1().min_w_0().h_full().child(self.render_layout(window, cx))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            // A right-click forgets the panel the last one was in; the
+                            // side panels and the device, inside, set theirs after.
+                            .capture_any_mouse_down(|event: &MouseDownEvent, _, cx| {
+                                if event.button == MouseButton::Right {
+                                    menu::set_panel_under(None, None, cx);
+                                }
+                            })
+                            .child(self.render_layout(window, cx)),
+                    ),
             )
             // Across the whole window, as VS Code's.
             .child(self.render_status_bar(cx))

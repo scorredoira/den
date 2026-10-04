@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 pub use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::{App, Context, Global, WeakEntity, Window};
+use gpui_kit::{App, Context, Global, WeakEntity, Window, prelude::FluentBuilder as _};
 
 use crate::config::Config;
 
@@ -19,33 +19,43 @@ pub fn item<T: 'static>(
     })
 }
 
-/// How to hide the panel the last right-click landed in, set by its place
-/// before any menu in it opens; none in the code's, which is never hidden.
-struct PanelUnder(Option<Rc<dyn Fn(&mut App)>>);
+/// How to hide the panel the last right-click landed in, and to give it an
+/// icon of its own (a side panel with company), set by its place before any
+/// menu in it opens; none in the code's, which is never hidden.
+struct PanelUnder {
+    hide: Option<Rc<dyn Fn(&mut App)>>,
+    own_icon: Option<Rc<dyn Fn(&mut App)>>,
+}
 
 impl Global for PanelUnder {}
 
-pub fn set_panel_under(hide: Option<Rc<dyn Fn(&mut App)>>, cx: &mut App) {
-    cx.set_global(PanelUnder(hide));
+pub fn set_panel_under(hide: Option<Rc<dyn Fn(&mut App)>>, own_icon: Option<Rc<dyn Fn(&mut App)>>, cx: &mut App) {
+    cx.set_global(PanelUnder { hide, own_icon });
 }
 
 /// The panel right-clicked: every menu in a panel ends with this item.
 pub fn hide_panel() -> PopupMenuItem {
     PopupMenuItem::new("Hide Panel").on_click(|_, _, cx| {
-        if let Some(hide) = cx.try_global::<PanelUnder>().and_then(|under| under.0.clone()) {
+        if let Some(hide) = cx.try_global::<PanelUnder>().and_then(|under| under.hide.clone()) {
             hide(cx);
         }
     })
 }
 
-/// How every panel's menu ends: its Hide Panel, then Show Panel.
+/// How every panel's menu ends: its Hide Panel, Move to Its Own Icon (a
+/// side panel with company), then Show Panel.
 pub trait PanelItems {
     fn panel_items(self, hide: PopupMenuItem, window: &mut Window, cx: &mut Context<PopupMenu>) -> Self;
 }
 
 impl PanelItems for PopupMenu {
     fn panel_items(self, hide: PopupMenuItem, window: &mut Window, cx: &mut Context<PopupMenu>) -> Self {
-        self.item(hide).submenu("Show Panel", window, cx, panels_menu)
+        let own_icon = cx.try_global::<PanelUnder>().and_then(|under| under.own_icon.clone());
+        self.item(hide)
+            .when_some(own_icon, |menu, own_icon| {
+                menu.item(PopupMenuItem::new("Move to Its Own Icon").on_click(move |_, _, cx| own_icon(cx)))
+            })
+            .submenu("Show Panel", window, cx, panels_menu)
     }
 }
 

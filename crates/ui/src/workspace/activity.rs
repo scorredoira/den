@@ -128,8 +128,26 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: O
         .border_r_1()
         .border_color(theme.sidebar_border)
         .children(icons.into_iter().map(|icon| button(icon, cx)))
-        // Past the icons, it goes last.
-        .child(div().flex_1().w_full().on_drop(|drag: &PlaceDrag, _, cx| move_place(drag.0, None, cx)))
+        // Past the icons, an icon goes last; a panel gets an icon of its own there.
+        .child(
+            div()
+                .flex_1()
+                .w_full()
+                .on_drop(|drag: &PlaceDrag, _, cx| move_place(drag.0, None, cx))
+                .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
+                .on_drop(|drag: &PanelDrag, _, cx| {
+                    let panel = drag.0;
+                    Config::update(cx, |config| {
+                        config.layout.own_place(panel);
+                        if let Some(place) = config.layout.place_of(panel) {
+                            config.layout.move_place(place, None);
+                            config.layout.side = true;
+                            config.layout.place = place;
+                        }
+                    });
+                    cx.refresh_windows();
+                }),
+        )
         .children(bottom.into_iter().map(|icon| button(icon, cx)))
         // At the bottom, as in VS Code: connecting to a server, and Settings.
         .child(bottom_button("activity-remote", "icons/satellite-dish.svg", ADD_SERVER, Box::new(crate::AddServer), cx))

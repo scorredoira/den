@@ -907,6 +907,12 @@ mod layout_tests {
         assert_eq!(layout.place_of(Panel::Files), Some(explorer));
         layout.move_panel(Panel::Files, explorer, Some(Panel::Workspaces));
         assert_eq!(layout.panels(explorer), [Panel::Files, Panel::Workspaces, Panel::Outline]);
+        // Dropped past the icons, a panel gets one of its own, last.
+        let mut last = layout.clone();
+        last.own_place(Panel::Outline);
+        let outline = last.place_of(Panel::Outline).unwrap();
+        last.move_place(outline, None);
+        assert_eq!(last.places().last(), Some(&Place(Panel::Outline)));
         // Dropped on its own icon, it stays where it is.
         let first = layout.places()[0];
         layout.move_place(first, Some(first));
