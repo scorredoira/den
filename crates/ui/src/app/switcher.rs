@@ -121,7 +121,7 @@ impl Den {
                             h_flex()
                                 .gap_2()
                                 .text_ui_small(cx)
-                                .child(svg().path("icons/notebook-pen.svg").size(px(12.)).flex_none().text_color(theme.muted_foreground))
+                                .child(svg().path("icons/sticky-note-text.svg").size(px(12.)).flex_none().text_color(theme.muted_foreground))
                                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(next))
                         }))
                         .children(agents),

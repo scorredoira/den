@@ -45,7 +45,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Terminals => "icons/terminal.svg",
         Panel::Debugger => "icons/bug.svg",
         Panel::Device => "icons/smartphone.svg",
-        Panel::Notes => "icons/notebook-pen.svg",
+        Panel::Notes => "icons/sticky-note.svg",
     }
 }
 
@@ -603,22 +603,22 @@ impl Workspace {
         let showing = |panel| {
             layout.find(panel).is_some_and(|(column, stack)| panels.active(&layout.columns[column].stacks[stack]) == panel)
         };
-        let tab = |panel, view: AnyView, dot, closable| PanelTab {
+        let tab = |panel, view: AnyView, icon, closable| PanelTab {
             panel,
             view,
-            icon: icon(panel),
+            icon,
             title: if panel == Panel::Debugger { "Debug" } else { title(panel) },
             showing: showing(panel),
-            dot,
             closable,
         };
         let mut tabs = Vec::new();
         if with_terminals(layout, Panel::Debugger) && !panels.closed.contains(&Panel::Debugger) {
-            tabs.push(tab(Panel::Debugger, self.debugger.clone().into(), false, true));
+            tabs.push(tab(Panel::Debugger, self.debugger.clone().into(), icon(Panel::Debugger), true));
         }
-        // The notes' tab is always there.
+        // The notes' tab is always there: a blank note, or one written on.
         if with_terminals(layout, Panel::Notes) {
-            tabs.push(tab(Panel::Notes, self.notes.clone().into(), self.notes.read(cx).filled(), false));
+            let icon = if self.notes.read(cx).filled() { "icons/sticky-note-text.svg" } else { icon(Panel::Notes) };
+            tabs.push(tab(Panel::Notes, self.notes.clone().into(), icon, false));
         }
         self.terminals.update(cx, |terminals, cx| terminals.set_panel_tabs(tabs, cx));
     }

@@ -58,15 +58,13 @@ pub struct PanelTab {
     pub title: &'static str,
     /// The one showing, rather than the terminals.
     pub showing: bool,
-    /// A dot on its icon: it has something (the notes).
-    pub dot: bool,
     /// With a close button (the debugger's), or always there (the notes').
     pub closable: bool,
 }
 
 impl PanelTab {
-    fn key(&self) -> (Panel, EntityId, bool, bool, bool) {
-        (self.panel, self.view.entity_id(), self.showing, self.dot, self.closable)
+    fn key(&self) -> (Panel, EntityId, &'static str, bool, bool) {
+        (self.panel, self.view.entity_id(), self.icon, self.showing, self.closable)
     }
 }
 
@@ -818,23 +816,7 @@ impl TerminalArea {
             .border_color(theme.border)
             .when(showing, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
             .when(!showing, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .child(svg().path(tab.icon).size(px(14.)).text_color(theme.muted_foreground))
-                    .when(tab.dot, |el| {
-                        el.child(
-                            div()
-                                .absolute()
-                                .top(px(-2.))
-                                .right(px(-3.))
-                                .size(px(6.))
-                                .rounded_full()
-                                .bg(theme.primary),
-                        )
-                    }),
-            )
+            .child(svg().path(tab.icon).size(px(14.)).flex_none().text_color(theme.muted_foreground))
             .child(tab.title)
             // The notes' tab, with no close button, takes the same room.
             .when(!tab.closable, |el| el.pr_3())
