@@ -256,6 +256,8 @@ pub struct Workspace {
     /// The checked-out branch, from the workspaces list (see `set_branch`).
     branch: Option<String>,
     client: Option<Arc<Client>>,
+    /// The agent reports the root's changes while this lives.
+    fs_watch: Option<client::Watch>,
     /// On this machine (not on a server).
     local: bool,
     changes: Entity<ChangesPanel>,
@@ -428,9 +430,7 @@ impl Workspace {
         }
         let focus_handle = cx.focus_handle();
         // Disk changes are watched by the agent on the task's machine.
-        if let Some(client) = &agent {
-            Self::watch_fs(&root, client, window, cx);
-        }
+        let fs_watch = agent.as_ref().map(|client| Self::watch_fs(&root, client, window, cx));
         let message = (!has_agent).then(|| "No agent: no files or terminals".into());
         if !local {
             Self::watch_ports(cx);
@@ -452,6 +452,7 @@ impl Workspace {
             width: px(0.),
             branch: None,
             client: agent,
+            fs_watch,
             local,
             changes,
             history,
@@ -691,18 +692,18 @@ impl Workspace {
         self.tabs[ix].shown = self.shown;
     }
 
-    /// Asks the agent to report changes inside `root`.
-    fn watch_fs(root: &Path, client: &Arc<Client>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Asks the agent to report changes inside `root`, until the returned
+    /// `Watch` is dropped (with the workspace, or for another connection's).
+    fn watch_fs(root: &Path, client: &Arc<Client>, window: &mut Window, cx: &mut Context<Self>) -> client::Watch {
         let (tx, rx) = smol::channel::unbounded::<Vec<PathBuf>>();
         let watched = root.to_path_buf();
-        client.watch(move |event| {
+        let watch = client.watch_fs(root, move |event| {
             if let proto::Event::FsChanged { root, paths } = event
                 && *root == watched
             {
                 let _ = tx.try_send(paths.clone());
             }
         });
-        client.notify(Request::Watch { path: root.to_path_buf() });
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(paths) = rx.recv().await {
                 let paths: HashSet<PathBuf> = paths.into_iter().collect();
@@ -715,6 +716,7 @@ impl Workspace {
             }
         })
         .detach();
+        watch
     }
 
     /// Switches to a new connection with the agent (after reconnecting): the
@@ -724,7 +726,7 @@ impl Workspace {
         // Whatever failed with the lost connection ("Couldn't open terminal")
         // is retried with this one.
         self.message = None;
-        Self::watch_fs(&self.root, &client, window, cx);
+        self.fs_watch = Some(Self::watch_fs(&self.root, &client, window, cx));
         self.file_tree
             .update(cx, |tree, cx| tree.set_client(client.clone(), cx));
         for (panel, entity) in self.git_panels() {

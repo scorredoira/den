@@ -41,7 +41,17 @@ pub fn connect() -> Result<Arc<Client>> {
 struct AgentBackend {
     client: Arc<Client>,
     term: TermId,
+    /// This terminal's subscription to the process's output (`Client::subscribe`).
+    subscription: u64,
     cwd: Arc<Mutex<Option<PathBuf>>>,
+}
+
+/// The terminal is gone (or moved to another connection): the output stops
+/// coming here, without touching another view of the same process.
+impl Drop for AgentBackend {
+    fn drop(&mut self) {
+        self.client.unsubscribe(self.term, self.subscription);
+    }
 }
 
 impl TerminalBackend for AgentBackend {
@@ -128,7 +138,7 @@ async fn join(
     let (tx, rx) = smol::channel::bounded(128);
     let overflow_rx = rx.downgrade();
     let weak = Arc::downgrade(&client);
-    client.subscribe(term, move |update| {
+    let subscription = client.subscribe(term, move |update| {
         let Some(overflow_rx) = overflow_rx.upgrade() else { return };
         let event = match update {
             TermUpdate::Event(Event::TermOutput { data, .. }) => PtyEvent::Output(data),
@@ -142,15 +152,17 @@ async fn join(
             client.disconnect();
         }
     });
+    // Made first: if attaching fails, dropping it ends the subscription.
+    let backend = Rc::new(AgentBackend {
+        client: client.clone(),
+        term,
+        subscription,
+        cwd: Arc::default(),
+    });
     let response = client.request(Request::TermAttach { term }).await?;
     let Response::TermSnapshot { cols, rows, data } = response else {
         bail!("unexpected response from the agent: {response:?}");
     };
-    let backend = Rc::new(AgentBackend {
-        client,
-        term,
-        cwd: Arc::default(),
-    });
     Ok((backend, rx, cols, rows, data))
 }
 

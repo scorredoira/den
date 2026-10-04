@@ -519,6 +519,9 @@ pub struct Den {
     /// Settings, if open.
     settings: Option<settings::Settings>,
     focus_handle: FocusHandle,
+    /// Each host's events come to this window while its entry lives (the
+    /// local connection outlives the window).
+    watches: HashMap<SharedString, client::Watch>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -593,6 +596,7 @@ impl Den {
             },
             settings: None,
             focus_handle: cx.focus_handle(),
+            watches: HashMap::new(),
             _tasks: Vec::new(),
             _subscriptions: vec![appearance, {
                 // The switcher's keys come before any shortcut (Cmd-Shift-E
@@ -979,7 +983,7 @@ impl Den {
         client.notify(Request::Serve);
         let (tx, rx) = smol::channel::unbounded::<Event>();
         let name_for_watch = name.clone();
-        client.watch(move |event| {
+        let watch = client.watch_scoped(move |event| {
             let event = match event {
                 Event::OpenTask { path } => Event::OpenTask { path: path.clone() },
                 Event::Agents { agents } => Event::Agents { agents: agents.clone() },
@@ -999,6 +1003,8 @@ impl Den {
             };
             let _ = tx.try_send(event);
         });
+        // Replaces the lost connection's, if any.
+        self.watches.insert(name.clone(), watch);
         cx.spawn_in(window, async move |this, cx| {
             // The agents running there (an outdated agent doesn't know).
             if let Ok(Response::Agents(agents)) = client.request(Request::AgentList).await {

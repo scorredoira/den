@@ -216,6 +216,8 @@ impl TerminalArea {
                     this.remove(term, window, cx);
                 }
                 for (term, terminal) in added {
+                    // Opened here while this attached it too: the duplicate is
+                    // dropped, which ends only its own subscription.
                     if this.views.contains_key(&term) {
                         continue;
                     }

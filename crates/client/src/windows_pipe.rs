@@ -5,7 +5,7 @@
 use std::{
     io::{self, Read, Write},
     path::Path,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
 use tokio::{
@@ -85,7 +85,9 @@ enum Pipe {
 }
 
 struct Inner {
-    pipe: Pipe,
+    /// `None` once closed. Reads and writes share it; `close` takes it, so the
+    /// handle closes even while clones of the stream live on.
+    pipe: RwLock<Option<Pipe>>,
     closed: watch::Sender<bool>,
 }
 
@@ -95,7 +97,7 @@ pub struct Stream(Arc<Inner>);
 impl Stream {
     fn new(pipe: Pipe) -> Self {
         let (closed, _) = watch::channel(false);
-        Self(Arc::new(Inner { pipe, closed }))
+        Self(Arc::new(Inner { pipe: RwLock::new(Some(pipe)), closed }))
     }
 
     pub fn connect(path: &Path) -> io::Result<Self> {
@@ -103,8 +105,14 @@ impl Stream {
         Ok(Self::new(Pipe::Client(ClientOptions::new().open(name(path))?)))
     }
 
+    /// Wakes whoever waits on the pipe, then closes it: the other end sees EOF.
     pub fn close(&self) {
         self.0.closed.send_replace(true);
+        // Waits for a read or write in progress, which the flag above ends.
+        let pipe = self.0.pipe.write().unwrap_or_else(|err| err.into_inner()).take();
+        // Dropping it cancels its pending I/O and closes the handle.
+        let _enter = runtime().enter();
+        drop(pipe);
     }
 }
 
@@ -112,11 +120,14 @@ impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() { return Ok(0); }
         let mut closed = self.0.closed.subscribe();
+        if *closed.borrow() { return Ok(0); }
+        let pipe = self.0.pipe.read().unwrap_or_else(|err| err.into_inner());
+        let Some(pipe) = pipe.as_ref() else { return Ok(0) };
         runtime().block_on(async {
             loop {
                 if *closed.borrow() { return Ok(0); }
                 let ready = async {
-                    match &self.0.pipe {
+                    match pipe {
                         Pipe::Client(pipe) => pipe.readable().await,
                         Pipe::Server(pipe) => pipe.readable().await,
                     }
@@ -126,7 +137,7 @@ impl Read for Stream {
                     _ = closed.changed() => return Ok(0),
                     result = ready => result?,
                 }
-                let result = match &self.0.pipe {
+                let result = match pipe {
                     Pipe::Client(pipe) => pipe.try_read(buf),
                     Pipe::Server(pipe) => pipe.try_read(buf),
                 };
@@ -144,11 +155,14 @@ impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() { return Ok(0); }
         let mut closed = self.0.closed.subscribe();
+        if *closed.borrow() { return Err(io::ErrorKind::BrokenPipe.into()); }
+        let pipe = self.0.pipe.read().unwrap_or_else(|err| err.into_inner());
+        let Some(pipe) = pipe.as_ref() else { return Err(io::ErrorKind::BrokenPipe.into()) };
         runtime().block_on(async {
             loop {
                 if *closed.borrow() { return Err(io::ErrorKind::BrokenPipe.into()); }
                 let ready = async {
-                    match &self.0.pipe {
+                    match pipe {
                         Pipe::Client(pipe) => pipe.writable().await,
                         Pipe::Server(pipe) => pipe.writable().await,
                     }
@@ -158,7 +172,7 @@ impl Write for Stream {
                     _ = closed.changed() => return Err(io::ErrorKind::BrokenPipe.into()),
                     result = ready => result?,
                 }
-                let result = match &self.0.pipe {
+                let result = match pipe {
                     Pipe::Client(pipe) => pipe.try_write(buf),
                     Pipe::Server(pipe) => pipe.try_write(buf),
                 };
@@ -197,5 +211,7 @@ mod tests {
         std::thread::spawn(move || tx.send(client.read(&mut [0; 1])).unwrap());
         closer.close();
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap().unwrap(), 0);
+        // The handle is closed, not just flagged: the agent sees EOF.
+        assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
     }
 }

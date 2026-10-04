@@ -129,15 +129,17 @@ impl Terminal {
     /// Processes the process's output as it arrives.
     fn read(output: smol::channel::Receiver<PtyEvent>, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
-            let mut disconnected = false;
+            // Only an explicit `Exit` means the process ended: a channel that
+            // just closes lost its sender, and the process may well be alive.
+            let mut disconnected = true;
             while let Ok(event) = output.recv().await {
                 let mut bytes = match event {
                     PtyEvent::Output(bytes) => bytes,
-                    PtyEvent::Exit => break,
-                    PtyEvent::Disconnected => {
-                        disconnected = true;
+                    PtyEvent::Exit => {
+                        disconnected = false;
                         break;
                     }
+                    PtyEvent::Disconnected => break,
                 };
                 // Gather whatever has already arrived to process it in a single repaint.
                 let mut end = None;
