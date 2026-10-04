@@ -23,6 +23,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
     CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
+    OpenChanges, ShowFileHistory,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
@@ -60,6 +61,8 @@ pub(crate) mod autosave_tests;
 mod layout_tests;
 #[cfg(test)]
 mod new_file_tests;
+#[cfg(test)]
+mod tab_menu_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
 pub(crate) use layout::{WorkspacesPanel, title as panel_title};
@@ -2612,6 +2615,68 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Closes the tabs after `ix` in its group, and shows it (those with
+    /// unsaved changes stay, with a warning).
+    fn close_to_the_right(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (keep, group) = (self.tabs[ix].editor.clone(), self.tabs[ix].group);
+        let right: Vec<_> = self.tabs[ix + 1..]
+            .iter()
+            .filter(|tab| tab.group == group)
+            .map(|tab| tab.editor.clone())
+            .collect();
+        self.close_saved_of(&right, window, cx);
+        if let Some(ix) = self.tab_index(&keep) {
+            self.activate(ix, window, cx);
+        }
+        if right.iter().any(|editor| self.tab_index(editor).is_some()) {
+            self.message = Some("Tabs with unsaved changes remain open".into());
+        }
+        cx.notify();
+    }
+
+    /// Closes the tabs of `group` without unsaved changes.
+    fn close_saved(&mut self, group: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let editors: Vec<_> = self.tabs.iter().filter(|tab| tab.group == group).map(|tab| tab.editor.clone()).collect();
+        self.close_saved_of(&editors, window, cx);
+        cx.notify();
+    }
+
+    /// Closes the tabs of these editors but those with unsaved changes.
+    fn close_saved_of(&mut self, editors: &[Entity<EditorState>], window: &mut Window, cx: &mut Context<Self>) {
+        for editor in editors {
+            if let Some(ix) = self.tab_index(editor).filter(|ix| !self.tabs[*ix].dirty) {
+                self.close(ix, window, cx);
+            }
+        }
+    }
+
+    /// Keeps a preview tab open: the next preview gets a tab of its own.
+    fn keep_open(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.tabs[ix].preview = false;
+        cx.notify();
+    }
+
+    /// The uncommitted changes of `path`, side by side, as the Changes panel
+    /// and `den diff` show them.
+    fn open_changes(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        if let Ok(relative) = path.strip_prefix(&self.root) {
+            let file = relative.to_string_lossy().into_owned();
+            self.open_diff(DiffOf { file, commit: None, source: false }, true, window, cx);
+        }
+    }
+
+    /// Whether `path` has uncommitted changes, as the Changes panel last read
+    /// them: for a menu, built when it opens.
+    fn has_changes(&self, path: &Path) -> impl Fn(&App) -> bool + 'static {
+        let changes = self.changes.downgrade();
+        let file = path.strip_prefix(&self.root).ok().map(|relative| relative.to_string_lossy().into_owned());
+        move |cx| {
+            file.as_ref()
+                .zip(changes.upgrade())
+                .is_some_and(|(file, changes)| changes.read(cx).is_changed(file))
+        }
+    }
+
     /// A tab's index by its editor, which is unique (paths aren't: a file,
     /// its diff and its side preview share one).
     fn tab_index(&self, editor: &Entity<EditorState>) -> Option<usize> {
@@ -3132,6 +3197,10 @@ impl Workspace {
         let diff = tab.diff.is_some();
         let markdown = tab.markdown.is_some() && tab.is_file();
         let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
+        let in_preview = tab.preview;
+        // The file's own changes, from its tab or a view of it.
+        let changeable = !diff && !tab.doc;
+        let changed = self.has_changes(&tab.path);
         let local = self.local;
         let relative = tab
             .path
@@ -3139,10 +3208,11 @@ impl Workspace {
             .unwrap_or(&tab.path)
             .to_string_lossy()
             .into_owned();
-        move |menu, _, _| {
+        move |menu, _, cx| {
             let relative = relative.clone();
             let (close, others, moved, right, down, preview) =
                 (editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone());
+            let (to_the_right, saved, keep) = (editor.clone(), editor.clone(), editor.clone());
             menu.item(
                 menu::item("Close", &workspace, move |this, window, cx| {
                     if let Some(ix) = this.tab_index(&close) {
@@ -3154,11 +3224,28 @@ impl Workspace {
             .item(menu::item("Close Others", &workspace, move |this, window, cx| {
                 this.close_others(this.tab_index(&others), window, cx)
             }))
+            .item(menu::item("Close to the Right", &workspace, move |this, window, cx| {
+                if let Some(ix) = this.tab_index(&to_the_right) {
+                    this.close_to_the_right(ix, window, cx);
+                }
+            }))
+            .item(menu::item("Close Saved", &workspace, move |this, window, cx| {
+                if let Some(ix) = this.tab_index(&saved) {
+                    this.close_saved(this.tabs[ix].group, window, cx);
+                }
+            }))
             .item(
                 menu::item("Close All", &workspace, |this, window, cx| this.close_others(None, window, cx))
                     .action(Box::new(CloseAllTabs)),
             )
             .separator()
+            .when(in_preview, |menu| {
+                menu.item(menu::item("Keep Open", &workspace, move |this, _, cx| {
+                    if let Some(ix) = this.tab_index(&keep) {
+                        this.keep_open(ix, cx);
+                    }
+                }))
+            })
             .when(!split, |menu| {
                 menu.item(
                     menu::item("Split Right", &workspace, move |this, window, cx| {
@@ -3202,6 +3289,13 @@ impl Workspace {
                 menu.item(menu::item("Open File", &workspace, move |this, window, cx| {
                     this.open(path.clone(), true, window, cx)
                 }))
+            })
+            .when(changeable, |menu| {
+                let path = path.clone();
+                menu.item(
+                    menu::item("Open Changes", &workspace, move |this, window, cx| this.open_changes(&path, window, cx))
+                        .disabled(!changed(cx)),
+                )
             })
             .when(!whole_commit, |menu| {
                 let path = path.clone();
@@ -3344,7 +3438,7 @@ impl Workspace {
                         // The debugger stopped: run to a line of any file; set the next
                         // statement only in the function stopped at.
                         let stopped = execution.is_some() && !readonly;
-                        let debugging = self.debugger.read(cx).is_active() && !readonly;
+                        let changed = self.has_changes(&tab.path);
                         let jumpable = execution.as_ref().is_some_and(|(at, _, top)| *at == tab.path && *top);
                         let blame = file
                             .filter(|file| !file.dirty && tab.diff.is_none() && !stopped_here)
@@ -3357,7 +3451,7 @@ impl Workspace {
                             // is built while the editor is mid-update: it can't be
                             // read (GPUI aborts), so Cut and Copy are always
                             // enabled and do nothing without a selection.
-                            .context_menu(move |menu, _, _| {
+                            .context_menu(move |menu, _, cx| {
                                 let menu = if markdown {
                                     menu.menu("Show Preview", Box::new(ToggleMarkdownSource)).separator()
                                 } else {
@@ -3375,11 +3469,17 @@ impl Workspace {
                                 let menu = menu
                                     .menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition))
                                     .menu_with_disabled("Find References", readonly, Box::new(FindReferences))
+                                    .menu_with_disabled("Go to Symbol…", readonly, Box::new(GoToSymbol))
                                     .menu_with_disabled("Format Document", readonly, Box::new(FormatDocument));
-                                let menu = if !debugging {
+                                // The file's changes and history, and its breakpoints:
+                                // they go in before a session too, as with F9.
+                                let menu = if readonly {
                                     menu
                                 } else {
                                     menu.separator()
+                                        .menu_with_disabled("Open Changes", !changed(cx), Box::new(OpenChanges))
+                                        .menu("Show File History", Box::new(ShowFileHistory))
+                                        .separator()
                                         .menu("Toggle Breakpoint", Box::new(ToggleBreakpoint))
                                         .menu("Add Conditional Breakpoint…", Box::new(AddConditionalBreakpoint))
                                         .menu("Add Logpoint…", Box::new(AddLogpoint))
@@ -3687,6 +3787,16 @@ impl Render for Workspace {
                 this.edit_breakpoint_at_cursor(EditKind::Condition, window, cx)
             }))
             .on_action(cx.listener(|this, _: &AddLogpoint, window, cx| this.edit_breakpoint_at_cursor(EditKind::Log, window, cx)))
+            .on_action(cx.listener(|this, _: &OpenChanges, window, cx| {
+                if let Some((path, _)) = this.cursor_place(cx) {
+                    this.open_changes(&path, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowFileHistory, _, cx| {
+                if let Some((path, _)) = this.cursor_place(cx) {
+                    this.show_history(&path, false, cx);
+                }
+            }))
             .on_action(cx.listener(Self::add_to_watch))
             .on_action(cx.listener(Self::evaluate_in_console))
             .on_action(cx.listener(Self::set_next_statement))

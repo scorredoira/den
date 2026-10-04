@@ -151,6 +151,11 @@ impl ChangesPanel {
         staged.chain(unstaged).collect::<std::collections::HashSet<_>>().len()
     }
 
+    /// Whether `file` (relative to the root) is among those changes.
+    pub fn is_changed(&self, file: &str) -> bool {
+        self.status.staged.iter().chain(&self.status.unstaged).any(|changed| changed.path == file)
+    }
+
     /// Showing the panel always rereads: while hidden, changes only mark it
     /// stale.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
