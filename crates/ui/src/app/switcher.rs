@@ -88,16 +88,13 @@ impl Den {
         let theme = cx.theme().clone();
         let column = (!self.tasks_shown(cx)).then(|| {
             // As wide as when it shows.
-            let width = self.active_workspace().and_then(|workspace| workspace.read(cx).workspaces_width()).unwrap_or_else(|| {
-                let layout = Layout::default();
-                layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.)
-            });
+            let width = Config::get(cx).layout.side_width;
             div()
                 .absolute()
                 .top_0()
                 .bottom_0()
                 .left(px(ACTIVITY_WIDTH))
-                .w(config::width(width, 160., 500.))
+                .w(config::width(width, 160., 800.))
                 .border_r_1()
                 .border_color(theme.border)
                 // Only to its right, over what it covers.
@@ -108,7 +105,7 @@ impl Den {
                     spread_radius: px(-2.),
                     inset: false,
                 }])
-                .child(self.render_column(cx))
+                .child(self.render_column(true, cx))
         });
         // What's next there, from its notes, and its agents.
         let next = crate::notes::first_line(&notice.key.config(), cx);

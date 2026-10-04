@@ -607,8 +607,7 @@ impl Device {
                 tool("device-rotate-right", "icons/rotate-cw.svg", "Rotate Right", running, theme.foreground, cx)
                     .on_click(cx.listener(|this, _, _, _| this.send(protocol::rotate(true)))),
             )
-            // Past the buttons, the bar moves the panel.
-            .child(crate::workspace::drags_panel(
+            .child(
                 div()
                     .id("device-status")
                     .ml_2()
@@ -623,8 +622,7 @@ impl Device {
                     .text_ui_small(cx)
                     .text_color(theme.muted_foreground)
                     .children(status),
-                crate::config::Panel::Device,
-            ))
+            )
             .into_any_element()
     }
 

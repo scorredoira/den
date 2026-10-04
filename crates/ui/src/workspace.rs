@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -22,7 +22,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
+    CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
@@ -31,8 +31,8 @@ use crate::{
     commit_view::{CommitView, CommitViewEvent},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
-    config::{self, Config, Layout, Panel, SavedTab, Session, TextArea, UiText},
-    debug::{self, DebugEvent, Debugger, EditKind},
+    config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
+    debug::{self, DebugEvent, DebugView, Debugger, EditKind},
     device::{Device, DeviceEvent},
     notes::NotesPanel,
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
@@ -62,8 +62,8 @@ mod layout_tests;
 mod new_file_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::{WorkspacesPanel, column_shown, drags_panel, drop_panels, init_panels, set_column, title as panel_title};
-pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar, toggle_activity_icon};
+pub(crate) use layout::WorkspacesPanel;
+pub(crate) use activity::{ACTIVITY_WIDTH, Badge, Item, OnActivity, TaskBadges, activity_bar};
 
 enum Content {
     Loading,
@@ -232,19 +232,13 @@ impl DiffOf {
 
 pub struct Workspace {
     root: PathBuf,
-    /// Its window, whose workspaces column it shows.
-    window_id: WindowId,
-    /// Where its panels are and their sizes, saved with what's open.
-    layout: Layout,
-    /// Which of its panels show (see `layout::Panels`).
+    /// What of it shows (see `layout::Panels`).
     panels: Panels,
     /// The task's key in `config.json`, to remember what was open.
     session_key: String,
     /// Last session's tabs were already reopened (nothing is saved before that).
     restored: bool,
     focus_handle: FocusHandle,
-    /// Preview of a panel's drop: next to the stack showing that panel.
-    panel_drop: Option<(Panel, crate::drag_drop::DropPlacement)>,
     /// The app's workspaces column.
     workspaces: Option<Entity<WorkspacesPanel>>,
     /// The app's agents panel (see `set_agents`).
@@ -256,8 +250,8 @@ pub struct Workspace {
     terminals_maximized: bool,
     /// The columns.
     split: config::Split,
-    /// The stacks of each column.
-    column_splits: Vec<config::Split>,
+    /// The code and, while it's their place, the terminals under it.
+    rows: config::Split,
     width: Pixels,
     /// The checked-out branch, from the workspaces list (see `set_branch`).
     branch: Option<String>,
@@ -266,7 +260,6 @@ pub struct Workspace {
     local: bool,
     changes: Entity<ChangesPanel>,
     history: Entity<ChangesPanel>,
-    commit: Entity<changes::CommitFilesPanel>,
     search: Entity<SearchPanel>,
     /// References panel: the latest F12 (with several targets) or Shift-F12.
     references: Entity<SearchPanel>,
@@ -308,6 +301,8 @@ pub struct Workspace {
     signature_at: Option<Position>,
     signature_task: Task<()>,
     debugger: Entity<Debugger>,
+    /// Its parts with a panel or a tab of their own.
+    debug_views: HashMap<Panel, Entity<DebugView>>,
     debug_hover: Entity<debug::hover::HoverCard>,
     device: Entity<Device>,
     notes: Entity<NotesPanel>,
@@ -328,18 +323,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let window_id = window.window_handle().window_id();
         let file_tree = cx.new(|cx| FileTree::new(root.clone(), agent.clone(), local, cx));
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
         let changes = cx.new(|cx| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::Uncommitted, cx));
         let history = cx.new(|cx| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::History, cx));
-        let commit = cx.new(|cx| changes::CommitFilesPanel::new(history.clone(), cx));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
         let outline = cx.new(|_| OutlinePanel::new());
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
+        let debug_views = layout::debug_views(&debugger, cx);
         let device = cx.new(|cx| Device::new(root.clone(), local, cx));
         let notes = cx.new(|cx| NotesPanel::new(session_key.clone(), window, cx));
         // The tests' Run and Debug come from the launch file.
@@ -400,7 +394,6 @@ impl Workspace {
                         this.message = Some(message.clone());
                         cx.notify();
                     }
-                    TerminalAreaEvent::ShowPanel(Some(Panel::Notes)) => this.show_notes(window, cx),
                     TerminalAreaEvent::ShowPanel(Some(panel)) => this.show_panel(*panel, cx),
                     TerminalAreaEvent::ShowPanel(None) => this.show_panel(Panel::Terminals, cx),
                     TerminalAreaEvent::ClosePanel(panel) => this.hide_panel(*panel, cx),
@@ -444,13 +437,10 @@ impl Workspace {
         }
         Self {
             root,
-            window_id,
-            layout: Layout::default(),
             panels: Panels::new(),
             session_key,
             restored: false,
             focus_handle,
-            panel_drop: None,
             workspaces: None,
             agents: None,
             badges: TaskBadges::default(),
@@ -458,14 +448,13 @@ impl Workspace {
             terminals,
             terminals_maximized: false,
             split: config::Split::new(cx),
-            column_splits: Vec::new(),
+            rows: config::Split::new(cx),
             width: px(0.),
             branch: None,
             client: agent,
             local,
             changes,
             history,
-            commit,
             search,
             references,
             outline,
@@ -491,6 +480,7 @@ impl Workspace {
             signature_at: None,
             signature_task: Task::ready(()),
             debugger,
+            debug_views,
             debug_hover,
             device,
             notes,
@@ -557,7 +547,7 @@ impl Workspace {
             .cloned()
             .unwrap_or_default();
         self.editor_split = session.split;
-        self.restore_layout(session.layout, session.panels, cx);
+        self.restore_panels(session.shows, cx);
         // A git panel that shows from the start reads now, not when shown.
         for (panel, entity) in [(Panel::Changes, self.changes.clone()), (Panel::History, self.history.clone())] {
             if self.client.is_some() && self.is_shown(panel, cx) {
@@ -598,8 +588,7 @@ impl Workspace {
     fn session(&self, cx: &App) -> Session {
         let mut session = Session {
             split: self.editor_split,
-            layout: Some(self.layout.clone()),
-            panels: Some(self.panels.saved()),
+            shows: Some(self.panels.saved()),
             ..Session::default()
         };
         for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.doc) {
@@ -1763,7 +1752,7 @@ impl Workspace {
     }
 
     fn step_result(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let references = self.panels.stamp(Panel::References) > self.panels.stamp(Panel::Search);
+        let references = self.panels.results == Panel::References;
         let panel = if references { &self.references } else { &self.search };
         panel.update(cx, |panel, cx| panel.step(delta, cx));
     }
@@ -1926,10 +1915,7 @@ impl Workspace {
                 });
                 let line = debug::command_line(line, file.as_deref());
                 debugger.update(cx, |debugger, _| debugger.set_ran(line.clone()));
-                // A tab with the terminals, the debugger stays in front.
-                if !self.debugger_with_terminals(cx) {
-                    self.show_panel(Panel::Terminals, cx);
-                }
+                self.show_panel(Panel::Terminals, cx);
                 let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line, window, cx));
                 let debugger = debugger.downgrade();
                 cx.spawn(async move |_, cx| {
@@ -1943,11 +1929,7 @@ impl Workspace {
                 self.terminals.update(cx, |terminals, cx| terminals.interrupt(*term, cx));
             }
             DebugEvent::Refocus => self.focus_active(window, cx),
-            DebugEvent::Reveal => {
-                if !self.is_shown(Panel::Debugger, cx) {
-                    self.show_panel(Panel::Debugger, cx);
-                }
-            }
+            DebugEvent::Reveal => self.reveal_debugger(cx),
             DebugEvent::Hide => self.hide_panel(Panel::Debugger, cx),
             DebugEvent::Device(id) => {
                 self.show_panel(Panel::Device, cx);
@@ -2062,14 +2044,14 @@ impl Workspace {
     fn add_to_watch(&mut self, _: &AddToWatch, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(expr) = self.expression_at_cursor(cx) {
             self.debugger.update(cx, |debugger, cx| debugger.add_watch(expr, cx));
-            self.show_panel(Panel::Debugger, cx);
+            self.show_panel(Panel::Watch, cx);
         }
     }
 
     fn evaluate_in_console(&mut self, _: &EvaluateInConsole, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(expr) = self.expression_at_cursor(cx) {
             self.debugger.update(cx, |debugger, cx| debugger.evaluate_in_console(expr, cx));
-            self.show_panel(Panel::Debugger, cx);
+            self.show_panel(Panel::Console, cx);
         }
     }
 
@@ -2108,8 +2090,7 @@ impl Workspace {
 
     /// Cmd-Alt-N: the notes, to write in them; written in, back to the code.
     fn toggle_notes(&mut self, _: &ToggleNotes, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_shown(Panel::Notes, cx) && self.notes.read(cx).is_focused(window, cx) {
-            // As a tab of the terminals', they show instead.
+        if self.is_shown(Panel::Notes, cx) {
             self.hide_panel(Panel::Notes, cx);
             self.focus_ide(window, cx);
         } else {
@@ -3632,7 +3613,6 @@ impl Render for Workspace {
         }
         if !cx.has_active_drag() {
             self.editor_drop = None;
-            self.panel_drop = None;
         }
         v_flex()
             .id("workspace")
@@ -3641,7 +3621,6 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && cx.stop_active_drag(window) {
                     this.editor_drop = None;
-                    this.panel_drop = None;
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -3691,6 +3670,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusPaneDown, window, cx| this.focus_pane(Direction::Down, window, cx)))
             .on_action(cx.listener(Self::toggle_terminals))
             .on_action(cx.listener(Self::maximize_terminals))
+            .on_action(cx.listener(|this, _: &MoveTerminals, _, cx| this.move_terminals(cx)))
             .on_action(cx.listener(Self::toggle_breakpoint))
             .on_action(cx.listener(Self::run_to_cursor))
             .on_action(cx.listener(|this, _: &AddConditionalBreakpoint, window, cx| {
@@ -3737,6 +3717,7 @@ impl Render for Workspace {
                     .map(|picker| div().absolute().top(px(44.)).left_0().right_0().flex().justify_center().child(picker)),
             )
             .child(self.debug_hover.clone())
+            .children(self.render_notes(cx))
     }
 }
 

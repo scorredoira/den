@@ -56,9 +56,10 @@ keyboard stays in the terminal unless --focus.
                       closes the file's tabs, or every tab; none if one
                       has unsaved changes.
   den panel show | hide <panel>
-                      files, search, changes, history, commit, references,
-                      outline, code, terminals, debugger, notes, device or
-                      workspaces.
+                      workspaces, agents, files, outline, search,
+                      references, changes, history, debugger, callstack,
+                      variables, watch, breakpoints, terminals, console,
+                      notes or device.
   den reveal <file>   selects the file in the files panel.
   den message <text>  shows a message in the status bar.
   den notes           prints the workspace's notes (its Notes panel).

@@ -1,13 +1,13 @@
-//! The debugger panel under the code: the toolbar, and the call stack,
-//! breakpoints, variables, watches and console.
+//! The debugger's parts: its toolbar, at the top of the side column's
+//! Run and Debug group; the call stack, the variables, the watches and the
+//! breakpoints, panels of that group; the console, a tab of the terminals'.
 
 use std::path::Path;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, h_flex, h_resizable, v_resizable,
+    ActiveTheme as _, Sizable as _, h_flex,
     input::Input,
     menu::{ContextMenuExt as _, PopupMenu},
-    resizable_panel,
     tooltip::Tooltip,
     v_flex,
 };
@@ -145,6 +145,21 @@ impl Debugger {
         }
     }
 
+    /// The toolbar, with what went wrong launching under it.
+    pub fn render_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let problem = self.render_launch_problem(cx);
+        v_flex()
+            .id("debug-bar")
+            .when(cfg!(test), |el| el.debug_selector(|| "debugger".into()))
+            .w_full()
+            .flex_none()
+            .bg(cx.theme().sidebar)
+            .child(self.render_toolbar(cx))
+            .children(problem)
+            .context_menu(self.panel_menu(cx))
+            .into_any_element()
+    }
+
     fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
@@ -229,22 +244,8 @@ impl Debugger {
                     .text_ui_small(cx)
                     .text_color(if stopped { theme.warning } else { theme.muted_foreground })
                     .child(status)
-                    .map(|el| crate::workspace::drags_panel(el, crate::config::Panel::Debugger))
                     .context_menu(self.panel_menu(cx)),
             )
-            .when(!self.tab, |el| el.child(
-                div()
-                    .id("debug-close")
-                    .size(px(22.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(theme.radius)
-                    .hover(|style| style.bg(theme.secondary))
-                    .child(svg().path("icons/tab-close.svg").size(px(14.)).text_color(theme.muted_foreground))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DebugEvent::Hide)))
-                    .tooltip(|window, cx| Tooltip::new("Hide (Cmd-Shift-D)").build(window, cx)),
-            ))
             .into_any_element()
     }
 
@@ -801,103 +802,73 @@ impl Debugger {
     }
 }
 
-impl Render for Debugger {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.console.len() != self.console_seen {
-            self.console_seen = self.console.len();
-            self.console_scroll.scroll_to_bottom();
-        }
-        let section = |title: &'static str, id: &'static str, body: AnyElement, cx: &App| {
-            let theme = cx.theme();
-            v_flex()
-                .size_full()
-                .min_h_0()
-                .child(
-                    div()
-                        .h(px(22.))
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .flex_none()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.muted_foreground)
-                        .child(title),
-                )
-                .child(div().id(id).flex_1().min_h_0().overflow_y_scroll().child(body))
+/// A part of the debugger, drawn where its panel is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DebugPart {
+    Stack,
+    Variables,
+    Watch,
+    Breakpoints,
+    Console,
+}
+
+impl Debugger {
+    pub fn render_part(&mut self, part: DebugPart, cx: &mut Context<Self>) -> AnyElement {
+        let (id, body) = match part {
+            DebugPart::Stack => ("debug-stack", self.render_stack(cx)),
+            DebugPart::Variables => ("debug-variables", self.render_variables(cx)),
+            DebugPart::Watch => ("debug-watch", self.render_watches(cx)),
+            DebugPart::Breakpoints => ("debug-breakpoints", self.render_breakpoints(cx)),
+            DebugPart::Console => {
+                if self.console.len() != self.console_seen {
+                    self.console_seen = self.console.len();
+                    self.console_scroll.scroll_to_bottom();
+                }
+                let console = self.render_console(cx);
+                return div()
+                    .id("debug-console")
+                    .when(cfg!(test), |el| el.debug_selector(|| "debug-console".into()))
+                    .size_full()
+                    .bg(cx.theme().background)
+                    .text_ui(cx)
+                    .child(console)
+                    .context_menu(self.panel_menu(cx))
+                    .into_any_element();
+            }
         };
-        let stack = self.render_stack(cx);
-        let breakpoints = self.render_breakpoints(cx);
-        let variables = self.render_variables(cx);
-        let watches = self.render_watches(cx);
-        let console = self.render_console(cx);
-        let problem = self.render_launch_problem(cx);
-        let toolbar = self.render_toolbar(cx);
-        let theme = cx.theme();
-        let stack_and_breakpoints = v_flex()
+        div()
+            .id(id)
             .size_full()
-            .child(div().flex_1().min_h_0().child(section("CALL STACK", "debug-stack", stack, cx)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(section("BREAKPOINTS", "debug-breakpoints", breakpoints, cx)),
-            );
-        let variables = section("VARIABLES", "debug-variables", variables, cx);
-        let watch_and_console = v_flex()
-            .size_full()
-            .child(div().flex_1().min_h_0().child(section("WATCH", "debug-watch", watches, cx)))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .h(px(22.))
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .flex_none()
-                            .text_size(px(11.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.muted_foreground)
-                            .child("CONSOLE"),
-                    )
-                    .child(div().flex_1().min_h_0().child(console)),
-            );
-        // Under the code its parts are columns; as a column, they are rows.
-        let parts = if self.tall {
-            v_resizable("debug-rows")
-                .child(resizable_panel().size(px(240.)).child(stack_and_breakpoints))
-                .child(resizable_panel().child(variables))
-                .child(resizable_panel().size(px(320.)).child(watch_and_console))
-                .into_any_element()
-        } else {
-            h_resizable("debug-columns")
-                .child(resizable_panel().size(px(360.)).child(stack_and_breakpoints))
-                .child(resizable_panel().child(variables))
-                .child(resizable_panel().size(px(560.)).child(watch_and_console))
-                .into_any_element()
-        };
-        v_flex()
-            .id("debugger")
-            .size_full()
-            .when(cfg!(test), |el| el.debug_selector(|| "debugger".into()))
-            .bg(theme.background)
+            .overflow_y_scroll()
             .text_ui(cx)
-            .child(toolbar)
-            .children(problem)
-            .child(div().flex_1().min_h_0().child(parts))
+            .child(body)
             .context_menu(self.panel_menu(cx))
+            .into_any_element()
     }
 }
 
-/// Hide Panel: the debugger's own, wherever it is (a tab of the terminals'
-/// or a place of its own).
+/// A part of the debugger as a view of its own, to go in a panel or a tab.
+pub struct DebugView {
+    debugger: Entity<Debugger>,
+    part: DebugPart,
+    _observe: Subscription,
+}
+
+impl DebugView {
+    pub fn new(debugger: Entity<Debugger>, part: DebugPart, cx: &mut Context<Self>) -> Self {
+        let observe = cx.observe(&debugger, |_, _, cx| cx.notify());
+        Self { debugger, part, _observe: observe }
+    }
+}
+
+impl Render for DebugView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let part = self.part;
+        self.debugger.update(cx, |debugger, cx| debugger.render_part(part, cx))
+    }
+}
+
+/// Hide Panel: the Run and Debug group closes.
 fn hide_item(debugger: &WeakEntity<Debugger>) -> menu::PopupMenuItem {
     menu::item("Hide Panel", debugger, |_, _, cx| cx.emit(DebugEvent::Hide))
 }

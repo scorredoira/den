@@ -91,6 +91,7 @@ actions!(
         PrevResult,
         ToggleTerminals,
         MaximizeTerminals,
+        MoveTerminals,
         NewTask,
         OpenTaskPicker,
         OpenCommandPalette,
@@ -122,11 +123,6 @@ actions!(
         ResetLayout,
     ]
 );
-
-/// Shows a panel's icon on the activity bar, or hides it (View > Activity Bar).
-#[derive(Clone, Debug, PartialEq, Action)]
-#[action(namespace = app, no_json)]
-pub struct ToggleActivityIcon(pub config::Panel);
 
 /// `den [folder | file]`: given a file, opens it in its repo (see
 /// `proto::open_target`). `den -s <server> [<path>]`: only a window on that

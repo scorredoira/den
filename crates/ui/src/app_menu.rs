@@ -20,10 +20,7 @@ use crate::{
 pub fn set(cx: &mut App) {
     let config = Config::get(cx);
     let wrap = config.word_wrap;
-    // An item for each icon of the activity bar, checked while it's on it.
-    let activity = Menu::new("Activity Bar").items(config.activity().into_iter().map(|panel| {
-        MenuItem::action(crate::workspace::panel_title(panel), ToggleActivityIcon(panel)).checked(!config.hidden_activity().contains(&panel))
-    }));
+    let bottom = config.layout.dock == crate::config::Dock::Bottom;
     let mac = cfg!(target_os = "macos");
     let mut menus = Vec::new();
     if mac {
@@ -100,12 +97,12 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Outline", ShowOutline),
             MenuItem::action("Toggle Side Panel", ToggleSidePanel),
             MenuItem::separator(),
-            MenuItem::action("Toggle Workspaces Column", ToggleTasks),
+            MenuItem::action("Toggle Workspaces", ToggleTasks),
             MenuItem::action("Toggle Terminals", ToggleTerminals),
             MenuItem::action("Maximize Terminals", MaximizeTerminals),
+            MenuItem::action("Terminals Under the Code", MoveTerminals).checked(bottom),
             MenuItem::action("Toggle Notes", ToggleNotes),
             MenuItem::separator(),
-            MenuItem::submenu(activity),
             MenuItem::action("Reset Layout", ResetLayout),
             MenuItem::separator(),
             MenuItem::action("Split Editor Right", SplitEditorRight),

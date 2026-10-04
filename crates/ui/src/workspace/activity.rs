@@ -1,13 +1,10 @@
-//! The activity bar, on the window's left edge: an icon for each panel but
-//! the code, which stays put and never closes (the others go around it). A
-//! click shows or hides the panel wherever it's placed; dragging an icon
-//! reorders the bar, or places the panel. The places have no tabs: the bar
-//! does their job. Its right-click menu (and View > Activity Bar) takes
-//! icons off it.
+//! The activity bar, on the window's left edge: an icon for each group of
+//! the side column, which shows it or, if it's the one showing, closes the
+//! column; the device's while there's one; and at the bottom the notes,
+//! connecting to a server and Settings.
 use super::*;
-use super::layout::{PanelDrag, drags_panel, icon, title};
-use crate::config::Panel;
-use gpui_kit::component::menu::PopupMenuItem;
+use super::layout::{group_icon, icon};
+use crate::config::{Group, Panel};
 
 pub(crate) const ACTIVITY_WIDTH: f32 = 48.;
 
@@ -19,21 +16,60 @@ fn thin(path: &str) -> SharedString {
     format!("icons/thin/{}", path.strip_prefix("icons/").unwrap_or(path)).into()
 }
 
-/// What an icon tells of its panel besides whether it shows.
+/// What an icon tells besides whether what it shows shows.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Badge {
     Count(usize),
     Dot(Hsla),
 }
 
-/// An icon: its panel, whether it shows and its badge.
-pub(crate) type Activity = (Panel, bool, Option<Badge>);
+/// What an icon of the bar shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Item {
+    Group(Group),
+    Device,
+    Notes,
+}
 
-pub(crate) type OnActivity = Rc<dyn Fn(Panel, &mut Window, &mut App)>;
+impl Item {
+    fn icon(self) -> &'static str {
+        match self {
+            Item::Group(group) => group_icon(group),
+            Item::Device => icon(Panel::Device),
+            Item::Notes => icon(Panel::Notes),
+        }
+    }
 
-/// The bar with `icons`, in the order the config says.
-pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) -> AnyElement {
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Item::Group(group) => group.title(),
+            Item::Device => "Device",
+            Item::Notes => "Notes",
+        }
+    }
+}
+
+/// An icon: what it shows, whether it shows and its badge.
+pub(crate) type Activity = (Item, bool, Option<Badge>);
+
+pub(crate) type OnActivity = Rc<dyn Fn(Item, &mut Window, &mut App)>;
+
+/// The bar with `icons` at the top and `bottom` above the server's and
+/// Settings'.
+pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: OnActivity, cx: &App) -> AnyElement {
     let theme = cx.theme();
+    let button = |(item, shown, badge): Activity, cx: &App| {
+        let click = click.clone();
+        div()
+            .relative()
+            .child(
+                activity_button(item, shown, cx)
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("activity-{item:?}")))
+                    .tooltip(move |window, cx| Tooltip::new(item.title()).build(window, cx))
+                    .on_click(move |_, window, cx| click(item, window, cx)),
+            )
+            .children(badge.map(|badge| render_badge(badge, cx)))
+    };
     v_flex()
         .id("activity-bar")
         .when(cfg!(test), |el| el.debug_selector(|| "activity-bar".into()))
@@ -46,69 +82,32 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
         .bg(theme.sidebar)
         .border_r_1()
         .border_color(theme.sidebar_border)
-        .children(icons.into_iter().map(|(panel, shown, badge)| {
-            let click = click.clone();
-            div()
-                .relative()
-                .child(
-                    activity_button(panel, shown, cx)
-                        .when(cfg!(test), |el| el.debug_selector(move || format!("activity-{panel:?}")))
-                        .tooltip(move |window, cx| Tooltip::new(title(panel)).build(window, cx))
-                        .on_click(move |_, window, cx| click(panel, window, cx))
-                        .map(|el| drags_panel(el, panel))
-                        .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
-                        .on_drop(move |drag: &PanelDrag, _, cx| {
-                            cx.stop_propagation();
-                            reorder(drag.0, Some(panel), cx);
-                        }),
-                )
-                .children(badge.map(|badge| render_badge(badge, cx)))
-        }))
-        // Past the icons, it goes last.
-        .child(div().flex_1().w_full().on_drop(|drag: &PanelDrag, _, cx| reorder(drag.0, None, cx)))
+        .children(icons.into_iter().map(|icon| button(icon, cx)))
+        .child(div().flex_1())
+        .children(bottom.into_iter().map(|icon| button(icon, cx)))
         // At the bottom, as in VS Code: connecting to a server, and Settings.
         .child(bottom_button("activity-remote", "icons/satellite-dish.svg", ADD_SERVER, Box::new(crate::AddServer), cx))
         .child(bottom_button("activity-settings", "icons/settings.svg", "Settings", Box::new(crate::OpenSettings), cx))
-        .context_menu(|popup, _, cx| {
-            let config = Config::get(cx);
-            let hidden = config.hidden_activity();
-            config
-                .activity()
-                .into_iter()
-                .fold(popup, |popup, panel| {
-                    popup.item(
-                        PopupMenuItem::new(title(panel))
-                            .checked(!hidden.contains(&panel))
-                            .on_click(move |_, _, cx| toggle_activity_icon(panel, cx)),
-                    )
-                })
-                .separator()
-                .item(menu::reset_layout())
-        })
+        .context_menu(|popup, _, _| popup.item(menu::reset_layout()))
         .into_any_element()
 }
 
-/// Puts `panel`'s icon on the bar, or takes it off.
-pub(crate) fn toggle_activity_icon(panel: Panel, cx: &mut App) {
-    Config::update(cx, |config| config.toggle_activity(panel));
-    // View > Activity Bar checks it.
-    crate::app_menu::set(cx);
-    cx.refresh_windows();
-}
-
-/// An icon in the foreground's color while its panel shows: unlike a tab,
-/// several show at once, so none is filled in as if selected.
-fn activity_button(panel: Panel, shown: bool, cx: &App) -> Stateful<Div> {
+/// An icon in the foreground's color while what it shows shows, with a
+/// bar on its left.
+fn activity_button(item: Item, shown: bool, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
     div()
-        .id(("activity", panel as usize))
+        .id(SharedString::from(format!("activity-{item:?}")))
         .size(px(40.))
         .flex()
         .items_center()
         .justify_center()
         .rounded(theme.radius)
         .hover(|style| style.bg(theme.sidebar_accent))
-        .child(svg().path(thin(icon(panel))).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
+        .when(shown, |el| {
+            el.child(div().absolute().left(px(-4.)).top(px(8.)).bottom(px(8.)).w(px(2.)).rounded_full().bg(theme.primary))
+        })
+        .child(svg().path(thin(item.icon())).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
 }
 
 const ADD_SERVER: &str = if cfg!(windows) { "Add Server or WSL Distro…" } else { "Add Server…" };
@@ -128,12 +127,6 @@ fn bottom_button(id: &'static str, path: &'static str, tip: &'static str, action
         .child(svg().path(thin(path)).size(px(ICON)).text_color(theme.muted_foreground))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-}
-
-fn reorder(panel: Panel, target: Option<Panel>, cx: &mut App) {
-    Config::update(cx, |config| config.move_activity(panel, target));
-    // Every window draws the bar.
-    cx.refresh_windows();
 }
 
 /// On the icon's bottom right corner: a count, or a dot in the state's color.
@@ -161,36 +154,37 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 
 impl Workspace {
     pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut panels = Config::get(cx).shown_activity();
+        let side = self.side_group();
+        let mut icons: Vec<Activity> =
+            Group::ALL.into_iter().map(|group| (Item::Group(group), side == Some(group), self.badge(Item::Group(group), cx))).collect();
         if self.device.read(cx).available() {
-            panels.push(Panel::Device);
+            icons.push((Item::Device, self.is_shown(Panel::Device, cx), None));
         }
-        let icons = panels.into_iter().map(|panel| (panel, self.is_shown(panel, cx), self.badge(panel, cx))).collect();
+        let bottom = vec![(Item::Notes, self.is_shown(Panel::Notes, cx), self.badge(Item::Notes, cx))];
         let workspace = cx.entity().downgrade();
-        let click: OnActivity = Rc::new(move |panel, window, cx| {
-            workspace.update(cx, |this, cx| this.click_activity(panel, window, cx)).ok();
+        let click: OnActivity = Rc::new(move |item, window, cx| {
+            workspace.update(cx, |this, cx| this.click_activity(item, window, cx)).ok();
         });
-        activity_bar(icons, click, cx)
+        activity_bar(icons, bottom, click, cx)
     }
 
-    /// Every panel with an icon, on the bar or not, and whether it shows:
-    /// Show Panel's.
-    pub(crate) fn menu_panels(&self, cx: &App) -> Vec<(Panel, bool)> {
-        let mut panels = Config::get(cx).activity();
+    /// What Show Panel lists: the groups, the terminals, the device and the
+    /// notes, and whether each shows.
+    pub(crate) fn menu_items(&self, cx: &App) -> Vec<(Item, bool)> {
+        let side = self.side_group();
+        let mut items: Vec<(Item, bool)> = Group::ALL.into_iter().map(|group| (Item::Group(group), side == Some(group))).collect();
         if self.device.read(cx).available() {
-            panels.push(Panel::Device);
+            items.push((Item::Device, self.is_shown(Panel::Device, cx)));
         }
-        panels.into_iter().map(|panel| (panel, self.is_shown(panel, cx))).collect()
+        items.push((Item::Notes, self.is_shown(Panel::Notes, cx)));
+        items
     }
 
-    fn badge(&self, panel: Panel, cx: &App) -> Option<Badge> {
-        match panel {
-            Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
-            Panel::Agents => self.badges.agents.map(Badge::Dot),
-            Panel::Terminals => self.badges.terminals.map(Badge::Dot),
-            Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
-            Panel::Notes => self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary)),
-            Panel::Debugger => {
+    fn badge(&self, item: Item, cx: &App) -> Option<Badge> {
+        match item {
+            Item::Group(Group::Explorer) => self.badges.workspaces.or(self.badges.agents).map(Badge::Dot),
+            Item::Group(Group::Git) => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
+            Item::Group(Group::Debug) => {
                 let debugger = self.debugger.read(cx);
                 if debugger.is_stopped() {
                     Some(Badge::Dot(cx.theme().warning))
@@ -198,24 +192,31 @@ impl Workspace {
                     debugger.is_active().then(|| Badge::Dot(cx.theme().success))
                 }
             }
-            _ => None,
+            Item::Group(Group::Search) | Item::Device => None,
+            Item::Notes => self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary)),
         }
     }
 
-    /// Shows the panel, or hides it if it shows. The terminals and the
-    /// search get the focus, as their keys do.
-    pub(crate) fn click_activity(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
-        let shown = self.is_shown(panel, cx);
-        match panel {
-            Panel::Terminals => self.set_terminals_visible(!shown, window, cx),
-            Panel::Search if !shown => self.show_search(&ShowSearch, window, cx),
-            _ if shown => self.hide_panel(panel, cx),
-            _ => self.show_panel(panel, cx),
+    /// A group shows, or closes the side column if it's the one showing;
+    /// the device and the notes show or hide. The search gets the focus,
+    /// as its key does.
+    pub(crate) fn click_activity(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
+        match item {
+            Item::Group(Group::Search) if self.side_group() != Some(Group::Search) => {
+                self.show_search(&ShowSearch, window, cx)
+            }
+            Item::Group(group) => self.click_group(group, cx),
+            Item::Device => self.toggle_panel(Panel::Device, cx),
+            Item::Notes if self.is_shown(Panel::Notes, cx) => {
+                self.hide_panel(Panel::Notes, cx);
+                self.focus_ide(window, cx);
+            }
+            Item::Notes => self.show_notes(window, cx),
         }
     }
 
-    /// The state of the app's tasks: this one's, on the terminals' icon; the
-    /// most urgent of the others, on the workspaces'.
+    /// The state of the app's tasks: the most urgent of the others' and of
+    /// the agents', on the explorer's icon.
     pub fn set_badges(&mut self, badges: TaskBadges, cx: &mut Context<Self>) {
         if self.badges != badges {
             self.badges = badges;
@@ -227,7 +228,7 @@ impl Workspace {
 /// Dots in the color of Claude's state (see `set_badges`).
 #[derive(Clone, Copy, Default, PartialEq)]
 pub struct TaskBadges {
-    pub terminals: Option<Hsla>,
+    /// The most urgent of the other workspaces.
     pub workspaces: Option<Hsla>,
     /// The most urgent of the agents.
     pub agents: Option<Hsla>,

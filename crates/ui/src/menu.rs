@@ -49,21 +49,18 @@ impl PanelItems for PopupMenu {
     }
 }
 
-/// Every panel, checked while it shows, as the activity bar's menu lists
-/// them: a click shows or hides it, as its icon does. And Reset Layout.
+/// What the activity bar shows, checked while it shows: a click shows or
+/// hides it, as its icon does. And Reset Layout.
 fn show_panel_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     let Some(workspace) = crate::app::window_workspace(window, cx) else {
         return menu.item(reset_layout());
     };
-    let panels = workspace.read(cx).menu_panels(cx);
+    let items = workspace.read(cx).menu_items(cx);
     let weak = workspace.downgrade();
-    panels
+    items
         .into_iter()
-        .fold(menu, |menu, (panel, shown)| {
-            menu.item(
-                item(crate::workspace::panel_title(panel), &weak, move |this, window, cx| this.click_activity(panel, window, cx))
-                    .checked(shown),
-            )
+        .fold(menu, |menu, (activity, shown)| {
+            menu.item(item(activity.title(), &weak, move |this, window, cx| this.click_activity(activity, window, cx)).checked(shown))
         })
         .separator()
         .item(reset_layout())
@@ -75,16 +72,10 @@ pub fn reset_layout() -> PopupMenuItem {
 }
 
 /// What Reset Layout does beyond the workspace's panels (`Workspace::
-/// reset_layout`): the workspaces column hidden and the activity bar as it
-/// starts.
+/// reset_layout`): the places and sizes as they start, in every window.
 pub fn reset_layout_now(cx: &mut App) {
-    Config::update(cx, |config| {
-        config.tasks_column = Some(false);
-        // The activity bar too: its order and the icons on it.
-        config.activity = Vec::new();
-        config.hidden_activity = None;
-    });
-    // View > Activity Bar checks the icons.
+    Config::update(cx, |config| config.layout = crate::config::Layout::default());
+    // View checks where the terminals go.
     crate::app_menu::set(cx);
     cx.refresh_windows();
 }

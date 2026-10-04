@@ -30,13 +30,13 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleActivityIcon, ToggleTasks,
-    config::{self, Config, HostConfig, Layout, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
+    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleTasks,
+    config::{self, Config, Group, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
     shortcuts::{self, SHORTCUTS},
-    workspace::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, Workspace, WorkspacesPanel, activity_bar},
+    workspace::{ACTIVITY_WIDTH, Badge, Item, OnActivity, TaskBadges, Workspace, WorkspacesPanel, activity_bar},
 };
 
 mod about;
@@ -54,13 +54,8 @@ const REFRESH: Duration = Duration::from_secs(5);
 /// Name of this machine in the tasks column.
 pub const LOCAL: &str = "local";
 
-/// Width of the fold arrow at the end of a repo with worktrees.
-const FOLD_WIDTH: f32 = 12.;
-
-/// How far a server's workspaces sit in from its name.
 /// The last choice of Open Folder on Server: a server not connected yet.
 const ADD_SERVER: &str = "Add Server…";
-const ROW_INDENT: f32 = 24.;
 
 /// What a server shows while connecting, unless it's doing something longer.
 const CONNECTING: &str = "connecting…";
@@ -525,7 +520,6 @@ impl Den {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        crate::workspace::init_panels(window.window_handle().window_id(), server.is_none(), cx);
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             if Config::get(cx).theme == ThemeChoice::System {
                 Theme::sync_system_appearance(Some(window), cx);
@@ -566,11 +560,13 @@ impl Den {
             split: config::Split::new(cx),
             workspaces_panel: {
                 let den = cx.entity().downgrade();
+                let actions = den.clone();
                 cx.new(|_| {
                     WorkspacesPanel::new(move |_, cx| {
-                        den.update(cx, |den, cx| den.render_column(cx).into_any_element())
+                        den.update(cx, |den, cx| den.render_column(false, cx).into_any_element())
                             .unwrap_or_else(|_| div().into_any_element())
                     })
+                    .with_actions(move |_, _| tasks_add_button(&actions).into_any_element())
                 })
             },
             agents_panel: {
@@ -603,12 +599,10 @@ impl Den {
         window.on_window_should_close(cx, move |window, cx| {
             den.update(cx, |den, cx| den.discarded || den.confirm_quit(Closing::Window, window, cx)).unwrap_or(true)
         });
-        // Its panels and its connections to servers go with it (this
-        // machine's is the app's): a closed window's must not be sent the
-        // servers' `den` commands.
-        let window_id = window.window_handle().window_id();
-        cx.on_release(move |this, cx| {
-            crate::workspace::drop_panels(window_id, cx);
+        // Its connections to servers go with it (this machine's is the
+        // app's): a closed window's must not be sent the servers' `den`
+        // commands.
+        cx.on_release(move |this, _| {
             for host in this.hosts.iter().filter(|host| host.destination.is_some() || this.server.is_some()) {
                 if let Some(client) = &host.client {
                     client.disconnect();
@@ -624,10 +618,10 @@ impl Den {
             this.connect(name, window, cx);
         }
 
-        let refresh = cx.spawn(async move |this, cx| {
+        let refresh = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH).await;
-                if this.update(cx, |this, cx| this.refresh_all(cx)).is_err() {
+                if this.update_in(cx, |this, window, cx| this.refresh_all(window, cx)).is_err() {
                     break;
                 }
             }
@@ -903,7 +897,7 @@ impl Den {
         if self.adding_host.as_ref() == Some(&name) {
             self.open_folder_picker(name.clone(), window, cx);
         }
-        self.refresh_all(cx);
+        self.refresh_all(window, cx);
         cx.notify();
     }
 
@@ -1025,28 +1019,56 @@ impl Den {
         .detach();
     }
 
-    /// Re-reads the tasks of the connected servers.
-    fn refresh_all(&mut self, cx: &mut Context<Self>) {
+    /// Re-reads the tasks of the connected servers, and closes the folders
+    /// open on them that are no longer there (a worktree deleted elsewhere).
+    fn refresh_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for (name, client) in self
             .hosts
             .iter()
             .filter_map(|host| Some((host.name.clone(), host.client.clone()?)))
             .collect::<Vec<_>>()
         {
-            cx.spawn(async move |this, cx| {
-                let tasks = list_tasks(&client).await;
-                this.update(cx, |this, cx| {
-                    if let (Ok(tasks), Some(host)) = (tasks, this.host_mut(&name))
+            let open: Vec<PathBuf> =
+                self.workspaces.keys().filter(|key| key.host == name).map(|key| key.path.clone()).collect();
+            cx.spawn_in(window, async move |this, cx| {
+                let Ok(tasks) = list_tasks(&client).await else {
+                    return;
+                };
+                // A task is there; any other folder, if the server finds it.
+                let mut gone = Vec::new();
+                for path in open.into_iter().filter(|path| !tasks.iter().any(|task| task.path == *path)) {
+                    if client.request(Request::Resolve { path: path.clone() }).await.is_err() {
+                        gone.push(path);
+                    }
+                }
+                this.update_in(cx, |this, window, cx| {
+                    if let Some(host) = this.host_mut(&name)
                         && host.tasks != tasks
                     {
                         host.tasks = tasks;
                         cx.notify();
+                    }
+                    for path in gone {
+                        this.forget_gone(TaskKey { host: name.clone(), path }, window, cx);
                     }
                 })
                 .ok();
             })
             .detach();
         }
+    }
+
+    /// A folder that's no longer there: closed, and off the column's order
+    /// and the recent ones.
+    fn forget_gone(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remembers() {
+            let config = key.config();
+            Config::update(cx, |c| {
+                c.order.retain(|other| *other != config);
+                c.recent.retain(|recent| !(recent.host == key.host.as_ref() && recent.path == key.path));
+            });
+        }
+        self.close_folder(&key, window, cx);
     }
 
     /// Keep the default light surfaces and use layered charcoal surfaces in
@@ -1222,36 +1244,18 @@ impl Den {
         self.refresh_repos(window, cx);
     }
 
-    /// Whether the tasks column shows: as last chosen or, if never chosen,
-    /// once there's more than folders to it (a server or a worktree). In a
-    /// window opened with `den -s`, hidden once a folder opens, until shown;
-    /// before, it's where the connection's progress (or failure) shows.
-    fn tasks_visible(&self, cx: &App) -> bool {
-        if !self.remembers() {
-            return crate::workspace::column_shown(self.handle.window_id(), cx).unwrap_or(self.active.is_none());
-        }
-        Config::get(cx)
-            .tasks_column
-            .unwrap_or_else(|| self.hosts.len() > 1 || self.hosts.iter().any(|host| host.tasks.iter().any(|task| !task.main)))
-    }
-
-    /// The tasks column shows: with a workspace, also in front of the panels
-    /// it shares a place with.
+    /// The workspaces show: in the side column, or alone without a
+    /// workspace open.
     fn tasks_shown(&self, cx: &App) -> bool {
-        match self.active_workspace() {
-            Some(workspace) => workspace.read(cx).is_shown(Panel::Workspaces, cx),
-            None => self.tasks_visible(cx),
-        }
+        self.active_workspace().is_none_or(|workspace| workspace.read(cx).is_shown(Panel::Workspaces, cx))
     }
 
     fn show_tasks_column(&mut self, visible: bool, cx: &mut Context<Self>) {
-        match self.active_workspace() {
-            Some(workspace) => workspace.update(cx, |workspace, cx| match visible {
+        if let Some(workspace) = self.active_workspace() {
+            workspace.update(cx, |workspace, cx| match visible {
                 true => workspace.show_panel(Panel::Workspaces, cx),
                 false => workspace.hide_panel(Panel::Workspaces, cx),
-            }),
-            None if !self.remembers() => crate::workspace::set_column(self.handle.window_id(), visible, cx),
-            None => Config::update(cx, |config| config.tasks_column = Some(visible)),
+            });
         }
         cx.notify();
     }
@@ -1623,18 +1627,17 @@ impl Den {
         self.show_tasks_column(visible, cx);
     }
 
-    /// The tasks' state on the activity bar's icons: the active one's on the
-    /// terminals, the most urgent of the others on the workspaces.
+    /// The tasks' state on the explorer's icon: the most urgent of the
+    /// other workspaces, and of the agents.
     fn task_badges(&self, cx: &App) -> TaskBadges {
         let dot = |(dot, color): (&str, Hsla)| (urgency(dot, color, cx) > 0).then_some(color);
-        let active = self.active.as_ref().and_then(|key| Some(self.status(key, self.task(key)?, cx)));
         let others = self
             .ordered(cx)
             .into_iter()
             .filter(|(key, _)| self.active.as_ref() != Some(key))
             .map(|(key, task)| self.status(&key, task, cx))
             .max_by_key(|(dot, color)| urgency(dot, *color, cx));
-        TaskBadges { terminals: active.and_then(dot), workspaces: others.and_then(dot), agents: self.agents_badge(cx) }
+        TaskBadges { workspaces: others.and_then(dot), agents: self.agents_badge(cx) }
     }
 
     /// Opens `path` on `host`: the task it is, or the folder on its own.
@@ -1903,11 +1906,6 @@ impl Den {
         }
         if !self.tasks_shown(cx) {
             self.show_tasks_column(true, cx);
-        }
-        // The new row goes under the repo's checkout, with its worktrees.
-        let fold_key = TaskKey { host: host.clone(), path: repo.clone() }.config();
-        if Config::get(cx).collapsed.contains(&fold_key) {
-            self.toggle_fold(&fold_key, cx);
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("branch name"));
         let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
@@ -2321,15 +2319,18 @@ impl Den {
         self.active.as_ref().and_then(|key| self.workspaces.get(key).cloned())
     }
 
-    /// The tasks column.
-    fn render_column(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The workspaces: with `header`, its title above them, as without a
+    /// workspace open (with one, its panel's header is the side column's).
+    fn render_column(&self, header: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let body = self.render_tasks(cx);
+        let header = header.then(|| self.render_tasks_header(cx));
         let theme = cx.theme();
         v_flex()
             .id("task-column")
             .size_full()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
+            .children(header)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     this.cancel(window, cx);
@@ -2339,28 +2340,41 @@ impl Den {
             .child(body)
     }
 
-    /// The activity bar, with only the workspaces' icon; the tasks column,
-    /// where its panel's column is; and the welcome.
-    fn render_without_workspace(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The workspaces' title, with what adds to them.
+    fn render_tasks_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let weak = cx.entity().downgrade();
+        h_flex()
+            .id("tasks-header")
+            .h(px(34.))
+            .flex_none()
+            .px_3()
+            .border_b_1()
+            .border_color(theme.sidebar_border)
+            .text_ui_small(cx)
+            .font_semibold()
+            .text_color(theme.muted_foreground)
+            .child(div().flex_1().child("WORKSPACES"))
+            .child(tasks_add_button(&weak))
+            .context_menu(move |menu, window, cx| column_menu(menu, &weak, window, cx))
+            .into_any_element()
+    }
+
+    /// The activity bar, with only the explorer's icon; the workspaces, as
+    /// wide as the side column; and the welcome.
+    fn render_without_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
-        let den = cx.entity().downgrade();
-        let click: OnActivity = Rc::new(move |_, window, cx| {
-            den.update(cx, |this, cx| this.toggle_tasks(&ToggleTasks, window, cx)).ok();
-        });
-        let icons = Config::get(cx).shown_activity().contains(&Panel::Workspaces).then_some((Panel::Workspaces, visible, badge));
-        let bar = activity_bar(icons.into_iter().collect(), click, cx);
-        // A new workspace's width for the column.
-        let layout = Layout::default();
-        let width = layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.);
-        let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [visible, true], cx).clone();
+        let click: OnActivity = Rc::new(|_, _, _| {});
+        let bar = activity_bar(vec![(Item::Group(Group::Explorer), true, badge)], Vec::new(), click, cx);
+        let width = Config::get(cx).layout.side_width;
+        let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [true, true], cx).clone();
         let split = h_resizable("den-split")
             .with_state(&state)
             .child(
                 resizable_panel()
-                    .size(config::width(width, 160., 500.))
-                    .size_range(px(160.)..px(500.))
-                    .visible(visible)
-                    .child(self.render_column(cx)),
+                    .size(config::width(width, 160., 800.))
+                    .size_range(px(160.)..px(800.))
+                    .child(self.render_column(true, cx)),
             )
             .child(resizable_panel().child(match &self.guide {
                 Some(guide) => self.render_guide(guide, cx),
@@ -2488,42 +2502,8 @@ impl Den {
                 )
         });
         let weak = cx.entity().downgrade();
-        let header_menu = weak.clone();
         v_flex()
             .size_full()
-            .child(
-                h_flex()
-                    .id("tasks-header")
-                    .h(px(34.))
-                    .flex_none()
-                    .px_3()
-                    .border_b_1()
-                    .border_color(theme.sidebar_border)
-                    .text_ui_small(cx)
-                    .font_semibold()
-                    .text_color(theme.muted_foreground)
-                    // Dragged by its title, the panel moves, as by its icon.
-                    .child(
-                        div()
-                            .id("tasks-title")
-                            .flex_1()
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .child("WORKSPACES")
-                            .map(|el| crate::workspace::drags_panel(el, Panel::Workspaces)),
-                    )
-                    .child({
-                        let add_menu = header_menu.clone();
-                        Button::new("tasks-add")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::default().path("icons/plus.svg"))
-                            .tooltip("Open Folder or Add Server")
-                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| add_menu_items(menu, &add_menu))
-                    })
-                    .context_menu(move |menu, window, cx| column_menu(menu, &header_menu, window, cx)),
-            )
             .child(
                 v_flex()
                     .id("task-list")
@@ -2544,14 +2524,9 @@ impl Den {
             .into_any_element()
     }
 
-    /// A repo's workspaces: under its name, which folds them, its checkout
-    /// and its worktrees, each a row of its own with its state. A repo
-    /// without worktrees is a single row.
+    /// A folder's workspaces, a row each: its checkout and, in a repo, its
+    /// worktrees; then the one being named.
     fn render_repo(&self, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
-        let (head, worktrees) = match group {
-            [(key, task), rest @ ..] if task.main => (Some((key, *task)), rest),
-            _ => (None, group),
-        };
         let Some(&(ref first, first_task)) = group.first() else {
             return div().into_any_element();
         };
@@ -2560,59 +2535,10 @@ impl Den {
             .as_ref()
             .filter(|form| form.host == first.host && form.repo == first_task.repo)
             .map(|form| render_new_task(form, cx));
-        if worktrees.is_empty() && new_task.is_none() {
-            return self.render_task(first, first_task, Some(None), &[], cx);
-        }
-        let fold_key = TaskKey { host: first.host.clone(), path: first_task.repo.clone() }.config();
-        let collapsed = Config::get(cx).collapsed.contains(&fold_key);
-        let header = match head {
-            // The repo's name, with its checkout's menu; folded, its dot sums
-            // up its workspaces'.
-            Some((key, task)) => self.render_task(key, task, Some(Some((fold_key, collapsed))), group, cx),
-            // Its checkout isn't among them: the repo's name, which only folds.
-            None => {
-                let theme = cx.theme();
-                h_flex()
-                    .id(SharedString::from(format!("repo-{fold_key}")))
-                    .h(px(26.))
-                    .pl(px(ROW_INDENT))
-                    .pr_3()
-                    .gap_2()
-                    .text_ui(cx)
-                    .text_color(theme.muted_foreground)
-                    .child(svg().path("icons/folder.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
-                    .child(div().flex_1().child(folder_name(&first_task.repo)))
-                    .child(fold_chevron(collapsed, cx))
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(&fold_key, cx)))
-                    .into_any_element()
-            }
-        };
-        let rows: Vec<AnyElement> = if collapsed {
-            Vec::new()
-        } else {
-            head.into_iter()
-                .chain(worktrees.iter().map(|(key, task)| (key, *task)))
-                .map(|(key, task)| self.render_task(key, task, None, &[], cx))
-                .chain(new_task)
-                .collect()
-        };
-        let line = cx.theme().sidebar_border;
         v_flex()
-            .my_1()
-            .child(header)
-            .when(!collapsed, |el| el.child(v_flex().ml(px(ROW_INDENT + 7.)).border_l_1().border_color(line).children(rows)))
+            .children(group.iter().map(|(key, task)| self.render_task(key, task, cx)))
+            .children(new_task)
             .into_any_element()
-    }
-
-    fn toggle_fold(&mut self, fold_key: &str, cx: &mut Context<Self>) {
-        Config::update(cx, |c| {
-            if c.collapsed.iter().any(|key| key == fold_key) {
-                c.collapsed.retain(|key| key != fold_key);
-            } else {
-                c.collapsed.push(fold_key.to_string());
-            }
-        });
-        cx.notify();
     }
 
     /// A workspace's state: being deleted, or the most urgent of its
@@ -2625,45 +2551,17 @@ impl Den {
         (dot, color)
     }
 
-    /// A workspace's row. `fold` is set on the column's own rows (not those
-    /// under a repo's name): `Some((key, collapsed))` for that name, which
-    /// a checkout with worktrees gets above them and itself; `folded`, the
-    /// workspaces under it, whose state shows on it while they're hidden.
-    fn render_task(
-        &self,
-        key: &TaskKey,
-        task: &TaskInfo,
-        fold: Option<Option<(String, bool)>>,
-        folded: &[(TaskKey, &TaskInfo)],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let folder: SharedString = folder_name(&task.path).into();
-        // The repo's name above its workspaces, and its checkout under it,
-        // which goes by its branch like the worktrees.
-        let header = matches!(fold, Some(Some(_)));
-        let child_checkout = task.main && fold.is_none();
-        let label = match &task.branch {
-            Some(branch) if child_checkout => branch.clone().into(),
-            _ => column_label(task),
+    /// A workspace's row: its state's dot, its repo and branch, what its
+    /// agents do; on hover, New Worktree on a repo's checkout, Delete
+    /// Worktree on a worktree.
+    fn render_task(&self, key: &TaskKey, task: &TaskInfo, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.active.as_ref() == Some(key);
+        let (dot, color) = self.status(key, task, cx);
+        let state = match self.workspace_state(key, cx).2 {
+            _ if self.removing.contains(key) => "deleting",
+            "idle" => "",
+            state => state,
         };
-        // A checkout off its main branch has the branch beside it.
-        let branch = task
-            .branch
-            .clone()
-            .filter(|branch| task.main && !header && *branch != *label && !matches!(branch.as_str(), "master" | "main"));
-        let active = !header && self.active.as_ref() == Some(key);
-        let (mut dot, mut color) = self.status(key, task, cx);
-        if header {
-            // The most urgent of its workspaces; it shows only folded.
-            for (key, task) in folded {
-                let (other, other_color) = self.status(key, task, cx);
-                if urgency(other, other_color, cx) > urgency(dot, color, cx) {
-                    (dot, color) = (other, other_color);
-                }
-            }
-        }
-        let shows_dot = !header || matches!(fold, Some(Some((_, true))));
-        let header_fold = fold.clone().flatten().map(|(fold_key, _)| fold_key);
         let theme = cx.theme();
         let known = self
             .host(&key.host)
@@ -2681,9 +2579,10 @@ impl Den {
                 || self.host(&key.host).is_some_and(|host| {
                     host.tasks.iter().any(|other| other.repo == task.repo && !other.main)
                 }));
+        let label = row_label(task);
         // On hover, as in its menu: a repo makes a worktree, a worktree is
         // deleted.
-        let action = if git && task.main && connected && !child_checkout {
+        let action = if git && task.main && connected {
             let (host, repo) = (key.host.clone(), task.repo.clone());
             Some(row_action(
                 format!("task-new-{}", key.config()),
@@ -2712,65 +2611,25 @@ impl Den {
         };
 
         let row = h_flex()
-            // The repo's name and its checkout's row are the same workspace:
-            // each its own id, or neither gets its clicks.
-            .id(SharedString::from(format!("{}-{}", if header { "repo" } else { "task" }, key.config())))
+            .id(SharedString::from(format!("task-{}", key.config())))
             .group("task")
             // On its way out.
             .when(self.removing.contains(key), |row| row.opacity(0.5))
-            .h(px(26.))
+            .h(px(24.))
             .px_3()
             .gap_2()
             .text_ui(cx)
             .when(active, |el| el.bg(theme.list_active))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
-            .when(fold.is_some(), |row| row.pl(px(ROW_INDENT)))
-            // What it is: a folder, or a repo's worktree.
-            .child(
-                svg()
-                    .path(if child_checkout && task.branch.is_some() { "icons/git-branch.svg" } else { kind_icon(task) })
-                    .size(px(14.))
-                    .flex_none()
-                    .text_color(workspace_color(key)),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(label.clone()),
-            )
             // Its agents' state, the same dot as in the Agents panel.
-            .map(|row| match dot {
-                _ if !shows_dot => row,
-                "…" => row.child(spinner(color)),
-                _ => row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)),
+            .child(match dot {
+                "…" => spinner(color).into_any_element(),
+                _ => div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot).into_any_element(),
             })
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.clone()))
             .child(div().flex_1())
-            .children(branch.map(|branch| {
-                div()
-                    .flex_none()
-                    .max_w(px(120.))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_ui_small(cx)
-                    .text_color(theme.muted_foreground)
-                    .child(branch)
-            }))
+            .child(div().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(state))
             .children(action)
-            .when_some(fold.flatten(), |row, (fold_key, collapsed)| {
-                row.child(
-                    div()
-                        .id(SharedString::from(format!("fold-{fold_key}")))
-                        .child(fold_chevron(collapsed, cx))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_fold(&fold_key, cx);
-                        })),
-                )
-            })
             .on_drag(
                 TaskDrag {
                     key: key.clone(),
@@ -2783,18 +2642,13 @@ impl Den {
                 let key = key.clone();
                 move |this, drag: &TaskDrag, _, cx| this.move_task(&drag.key, &key, cx)
             }))
-            // The repo's name folds; its checkout is the row under it.
             .on_click(cx.listener({
                 let key = key.clone();
-                let fold_key = header_fold.clone();
-                move |this, _, window, cx| match &fold_key {
-                    Some(fold_key) => this.toggle_fold(fold_key, cx),
-                    None => this.activate(key.clone(), window, cx),
-                }
+                move |this, _, window, cx| this.activate(key.clone(), window, cx)
             }))
-            .when(!known || label != folder, |row| {
+            .tooltip({
                 let path = key.path.display().to_string();
-                row.tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                move |window, cx| Tooltip::new(path.clone()).build(window, cx)
             })
             .context_menu({
                 let key = key.clone();
@@ -2879,7 +2733,7 @@ impl Den {
         let error = self
             .error
             .as_ref()
-            .filter(|(target, _)| shows_dot && target == key)
+            .filter(|(target, _)| target == key)
             .map(|(_, error)| div().mx_3().mb_1().child(error_text(error.clone(), cx)));
 
         v_flex().child(row).children(error).into_any_element()
@@ -2915,18 +2769,17 @@ impl Render for Den {
         if let Some(workspace) = self.active_workspace() {
             let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
-            let (panel, visible) = (self.workspaces_panel.clone(), self.tasks_visible(cx));
+            let panel = self.workspaces_panel.clone();
             let agents = self.agents_panel.clone();
             let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
-                workspace.set_workspaces(&panel, visible, cx);
+                workspace.set_workspaces(&panel);
                 workspace.set_agents(&agents);
                 workspace.set_badges(badges, cx);
             });
         }
-        let tasks_visible = self.tasks_shown(cx);
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| self.title());
         let color = self.active.as_ref().map(workspace_color);
         v_flex()
@@ -2939,7 +2792,6 @@ impl Render for Den {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
-            .on_action(|action: &ToggleActivityIcon, _, cx| crate::workspace::toggle_activity_icon(action.0, cx))
             .on_action(cx.listener(|this, _: &ResetLayout, _, cx| {
                 menu::reset_layout_now(cx);
                 if let Some(workspace) = this.active_workspace() {
@@ -3036,7 +2888,7 @@ impl Render for Den {
                     .w_full()
                     .child(match self.active_workspace() {
                         Some(workspace) => workspace.into_any_element(),
-                        None => self.render_without_workspace(tasks_visible, window, cx),
+                        None => self.render_without_workspace(window, cx),
                     })
                     .children(self.render_notice(window, cx)),
             )
@@ -3166,6 +3018,17 @@ fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, 
     .separator()
 }
 
+/// Open Folder or Add Server: the workspaces' header's button.
+fn tasks_add_button(den: &WeakEntity<Den>) -> impl IntoElement {
+    let den = den.clone();
+    Button::new("tasks-add")
+        .ghost()
+        .xsmall()
+        .icon(Icon::default().path("icons/plus.svg"))
+        .tooltip("Open Folder or Add Server")
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| add_menu_items(menu, &den))
+}
+
 /// Hide Panel, at the end of every menu in the tasks column.
 fn hide_column(den: &WeakEntity<Den>) -> menu::PopupMenuItem {
     menu::item("Hide Panel", den, |this, _, cx| this.show_tasks_column(false, cx))
@@ -3178,6 +3041,17 @@ fn recent_label(key: &TaskKey) -> String {
         _ => key.path.display().to_string(),
     };
     if key.host == LOCAL { path } else { format!("{}: {path}", key.host) }
+}
+
+/// A workspace's name in the lists: its repo and branch (`scl / agente`),
+/// or the folder of one that isn't a repo.
+fn row_label(task: &TaskInfo) -> SharedString {
+    let repo = folder_name(&task.repo);
+    match &task.branch {
+        Some(branch) => format!("{repo} / {branch}").into(),
+        None if !task.main => format!("{repo} / {}", folder_name(&task.path)).into(),
+        None => folder_name(&task.path).into(),
+    }
 }
 
 /// A workspace's icon: a folder, or a branch for a repo's worktree.
@@ -3262,15 +3136,6 @@ fn row_action(
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(on_click)
         .into_any_element()
-}
-
-/// The arrow that folds a repo's worktrees under its checkout.
-fn fold_chevron(collapsed: bool, cx: &App) -> impl IntoElement {
-    let icon = if collapsed { "icons/chevron-right.svg" } else { "icons/chevron-down.svg" };
-    div()
-        .w(px(FOLD_WIDTH))
-        .flex_none()
-        .child(svg().path(icon).size(px(FOLD_WIDTH)).text_color(cx.theme().muted_foreground))
 }
 
 /// An open folder that doesn't belong to any known repo.
