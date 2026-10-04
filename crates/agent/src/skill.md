@@ -1,6 +1,6 @@
 ---
 name: den
-description: Drive the Den app you are running in (when DEN_TERMINAL is set) with the `den` command - show the user a file, a line or a selected range, a diff or a Markdown note; read what the user has selected in the editor or which files are open; open terminals, read them and type in them (e.g. start or watch other agents in their own worktrees); create worktrees. Use it whenever pointing the user at code would help, when the user refers to "this" or "what I selected", or to work with other terminals.
+description: Drive the Den app you are running in (when DEN_TERMINAL is set) with the `den` command. When the user talks about what is on their screen (this file, the app, the simulator, the debugger, "where are you"), run `den where` first - it says the workspace, branch and worktree, the open tabs, the panels, the device and the debug session. Also: show the user a file, a line or a selected range, a diff or a Markdown note; read what the user has selected in the editor or which files are open; open terminals, read them and type in them (e.g. start or watch other agents in their own worktrees); create worktrees. Use it whenever pointing the user at code would help, when the user refers to "this" or "what I selected", or to work with other terminals.
 ---
 
 # Den
@@ -10,6 +10,17 @@ You are running in a terminal of Den, an editor with persistent terminals
 workspace of the terminal it runs in, also over SSH. Run `den --help` for the
 full list; the main ones:
 
+- `den where` prints, as JSON, what the user has in front: the workspace
+  (server, path, repo, branch, whether it is a worktree), the tabs and the
+  active one with its cursor, the panels shown, the Device panel (devices,
+  the one on screen, booted or not) and the debugger's session (status,
+  the command it ran, the program's page and device, the last line the
+  program revealed). Run it first when the user refers to their screen.
+- `den workspace <path|name|branch>` brings a workspace to the front;
+  `den close <file>` (or `--all`) closes tabs, never one with unsaved
+  changes; `den panel show|hide <panel>` (files, terminals, debugger,
+  device, changes, notes, search, outline…); `den reveal <file>` selects
+  it in the files panel.
 - `den show <file>:<line>` opens the file at that line for the user;
   `den show <file>:<line>-<line>` (or `<line>:<col>-<line>:<col>`) selects
   that range. Use it to point at what you are talking about instead of
@@ -35,7 +46,9 @@ full list; the main ones:
   `den debug break <file>:<line>`, `den debug start [<file>]`, then
   `den debug wait` (until a VM stops; it prints the state: where, the
   frames, the locals), `den debug eval <expr>`, `den debug next|in|out|continue`,
-  `den debug stop`. `den debug state` prints the state at any time. To test
+  `den debug stop`. `den debug state` prints the state at any time.
+  `den debug inspect` lets the user pick a widget in the app being
+  debugged; the line that made it opens, and is `revealed` in the state. To test
   a program, start it, trigger what reaches the breakpoint (a request, a
   test) and wait.
 

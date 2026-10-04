@@ -65,6 +65,10 @@ In Den's terminals, more commands act on the workspace of the terminal they run 
 
 | Command | What it does |
 | --- | --- |
+| `den where` | Prints as JSON what's in front: the workspace (server, path, repo, branch, worktree or not), its tabs, the panels shown, the Device panel and the debugger's session. |
+| `den workspace <path\|name\|branch>` | Brings that workspace to the front. |
+| `den close <file>`, `den close --all` | Closes the file's tabs, or all of them; none if one has unsaved changes. |
+| `den panel show\|hide <panel>`, `den reveal <file>` | Shows or hides a panel; selects the file in the files panel. |
 | `den show <file>:<line>` | Opens the file at that line; `<file>:10-20` or `<file>:10:5-12:3` selects that range. The keyboard stays in the terminal unless `--focus`. |
 | `den diff [<file>]` | Shows the uncommitted changes. |
 | `den doc [<title>]` | Shows the Markdown read from stdin in a tab. |
@@ -74,7 +78,7 @@ In Den's terminals, more commands act on the workspace of the terminal they run 
 | `den workspaces` | Lists the workspaces and whether each is working, waiting for an answer or finished. |
 | `den term new [--right\|--down] [<command>]` | Opens a terminal, runs the command in its shell and prints its id. |
 | `den term list`, `read <id>`, `send <id> <text>`, `focus <id>`, `close <id>` | Lists, reads, types in, shows and closes terminals. |
-| `den debug state`, `start [<file>]`, `break <file>:<line>`, `wait`, `eval <expr>`, `next`, `continue`, `stop`… | Drives the debugger and prints its state as JSON: an agent sets a breakpoint, starts the program, triggers the code and waits for the stop. |
+| `den debug state`, `inspect`, `start [<file>]`, `break <file>:<line>`, `wait`, `eval <expr>`, `next`, `continue`, `stop`… | Drives the debugger and prints its state as JSON: an agent sets a breakpoint, starts the program, triggers the code and waits for the stop. |
 
 They are meant for coding agents: when `~/.claude` exists, the agent installs a Claude Code skill (`~/.claude/skills/den`) that tells Claude about them. Other agents can read `den --help`. A path that is also a command's name opens with `./`, as in `den ./tabs`.
 

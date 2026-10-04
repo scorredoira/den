@@ -333,6 +333,14 @@ pub struct Debugger {
     launching_test: Option<(PathBuf, String)>,
     /// A restart: the program started again doesn't open `open` again.
     restarting: bool,
+    /// The line the launch ran in its terminal, `${file}` replaced: what
+    /// `den debug state` says is being debugged.
+    ran: Option<String>,
+    /// The program's page and device, from its `hello`.
+    page: Option<String>,
+    device: Option<String>,
+    /// The last place the program asked to show (`reveal`), 1-based line.
+    revealed: Option<(String, u32)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -405,6 +413,10 @@ impl Debugger {
             hover_change: None,
             launching_test: None,
             restarting: false,
+            ran: None,
+            page: None,
+            device: None,
+            revealed: None,
             tests: None,
             _subscriptions: subscriptions,
         }
@@ -619,11 +631,26 @@ impl Debugger {
     /// With `open_page`, the program's page is opened once it listens.
     fn begin(&mut self, launch: Launch, open_page: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.console.clear();
+        self.ran = None;
+        self.page = None;
+        self.device = None;
+        self.revealed = None;
         self.launched = false;
         self.open_page = open_page;
         self.status = Status::Connecting(format!("Connecting to port {}…", launch.port));
         self.connect(launch.port, launch.command, window, cx);
         cx.notify();
+    }
+
+    /// A line from the program, for tests.
+    #[cfg(test)]
+    pub fn receive(&mut self, line: &str, cx: &mut Context<Self>) {
+        self.on_line(line, cx);
+    }
+
+    /// The launch's line as its terminal runs it (`ran`).
+    pub fn set_ran(&mut self, line: String) {
+        self.ran = Some(line);
     }
 
     pub fn set_terminal(&mut self, term: Option<TermId>, cx: &mut Context<Self>) {
@@ -857,8 +884,10 @@ impl Debugger {
         // wherever the program says that is; a server, which has a page,
         // just runs.
         let page = page_of(&body);
-        if let Some(device) = body.get("device").and_then(Value::as_str).filter(|id| !id.is_empty()) {
-            cx.emit(DebugEvent::Device(device.to_string()));
+        self.page = page.clone();
+        self.device = body.get("device").and_then(Value::as_str).filter(|id| !id.is_empty()).map(str::to_string);
+        if let Some(device) = &self.device {
+            cx.emit(DebugEvent::Device(device.clone()));
         }
         if body.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
             self.send("run", json!({ "entry": page.is_none() }), |_, _, _| {});
@@ -1003,6 +1032,7 @@ impl Debugger {
             Ok(Message::Event(Event::Resumed { vm })) => self.on_resumed(vm, cx),
             Ok(Message::Event(Event::Reveal { file, line })) => {
                 let path = self.local_path(&file);
+                self.revealed = Some((file, line));
                 cx.emit(DebugEvent::Show { path, line: line.saturating_sub(1), focus: true });
             }
             Ok(Message::Event(Event::Output { text, file, line })) => {

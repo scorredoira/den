@@ -124,6 +124,18 @@ impl Debugger {
         if let Some(error) = &self.launch_error {
             out["launchError"] = Value::String(error.clone());
         }
+        if let Some(command) = &self.ran {
+            out["command"] = Value::String(command.clone());
+        }
+        if let Some(page) = &self.page {
+            out["page"] = Value::String(page.clone());
+        }
+        if let Some(device) = &self.device {
+            out["device"] = Value::String(device.clone());
+        }
+        if let Some((file, line)) = &self.revealed {
+            out["revealed"] = json!({ "file": file, "line": line });
+        }
         out
     }
 }

@@ -65,24 +65,109 @@ impl Workspace {
         let mut out = String::new();
         for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| !tab.view) {
             let active = Some(ix) == self.active;
-            let name = match &tab.diff {
-                _ if tab.doc => format!("doc: {}", tab.path.display()),
-                Some(diff) => match &diff.commit {
-                    Some((_, short)) if diff.file.is_empty() => format!("commit {short}"),
-                    Some((_, short)) => format!("{} at {short}", diff.file),
-                    None => format!("changes: {}", diff.file),
-                },
-                None if active => {
-                    let cursor = tab.editor.read(cx).cursor_position();
-                    format!("{}:{}:{}", tab.path.display(), cursor.line + 1, cursor.character + 1)
-                }
-                None => tab.path.display().to_string(),
-            };
             let mark = if active { "*" } else { " " };
             let dirty = if tab.dirty { " (unsaved)" } else { "" };
-            out.push_str(&format!("{mark} {name}{dirty}\n"));
+            out.push_str(&format!("{mark} {}{dirty}\n", self.tab_name(ix, cx)));
         }
         out
+    }
+
+    /// A tab as `den tabs` and `den where` name it: the file, with the
+    /// cursor for the active one; a doc, a diff or a commit said so.
+    fn tab_name(&self, ix: usize, cx: &App) -> String {
+        let tab = &self.tabs[ix];
+        match &tab.diff {
+            _ if tab.doc => format!("doc: {}", tab.path.display()),
+            Some(diff) => match &diff.commit {
+                Some((_, short)) if diff.file.is_empty() => format!("commit {short}"),
+                Some((_, short)) => format!("{} at {short}", diff.file),
+                None => format!("changes: {}", diff.file),
+            },
+            None if Some(ix) == self.active => {
+                let cursor = tab.editor.read(cx).cursor_position();
+                format!("{}:{}:{}", tab.path.display(), cursor.line + 1, cursor.character + 1)
+            }
+            None => tab.path.display().to_string(),
+        }
+    }
+
+    /// `den where`: what the workspace shows. The tabs, the active one by
+    /// itself; the panels in sight; the Device panel; the debugger's session.
+    pub fn whereabouts(&self, cx: &App) -> serde_json::Value {
+        let tabs: Vec<serde_json::Value> = (0..self.tabs.len())
+            .filter(|ix| !self.tabs[*ix].view)
+            .map(|ix| {
+                let mut tab = serde_json::json!({ "tab": self.tab_name(ix, cx) });
+                if self.tabs[ix].dirty {
+                    tab["unsaved"] = true.into();
+                }
+                tab
+            })
+            .collect();
+        let panels: Vec<Panel> = Panel::ALL.into_iter().filter(|panel| self.is_shown(*panel, cx)).collect();
+        let mut device = self.device.read(cx).state();
+        if device["available"] == true {
+            device["shown"] = self.is_shown(Panel::Device, cx).into();
+        }
+        let debugger = self.debugger.read(cx).state();
+        let mut session = serde_json::json!({});
+        for key in ["status", "running", "stopped", "command", "page", "device", "revealed", "launchError"] {
+            if let Some(value) = debugger.get(key) {
+                session[key] = value.clone();
+            }
+        }
+        if let Some(focus) = debugger.get("focus") {
+            session["stoppedAt"] = serde_json::json!(format!("{}:{}", focus["file"].as_str().unwrap_or(""), focus["line"]));
+        }
+        let mut out = serde_json::json!({
+            "root": self.root,
+            "tabs": tabs,
+            "panels": panels,
+            "device": device,
+            "debugger": session,
+        });
+        if let Some(branch) = &self.branch {
+            out["branch"] = branch.clone().into();
+        }
+        if let Some(ix) = self.active {
+            out["active"] = self.tab_name(ix, cx).into();
+        }
+        out
+    }
+
+    /// `den close`: the tabs of `path` (a file, its diffs and views), or
+    /// every tab. None closes if one has unsaved changes: closing would
+    /// throw them away.
+    pub fn close_files(&mut self, path: Option<&Path>, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let hits = |tab: &FileTab| path.is_none_or(|path| tab.path == path);
+        let unsaved: Vec<String> =
+            self.tabs.iter().filter(|tab| hits(tab) && tab.dirty).map(|tab| tab.path.display().to_string()).collect();
+        if !unsaved.is_empty() {
+            return Err(format!("unsaved changes, nothing closed: {}", unsaved.join(", ")));
+        }
+        if let Some(path) = path
+            && !self.tabs.iter().any(|tab| hits(tab))
+        {
+            return Err(format!("{} isn't open", path.display()));
+        }
+        while let Some(ix) = self.tabs.iter().position(|tab| hits(tab)) {
+            self.close(ix, window, cx);
+        }
+        Ok(())
+    }
+
+    /// `den panel show|hide`.
+    pub fn set_panel(&mut self, panel: Panel, show: bool, cx: &mut Context<Self>) {
+        if show {
+            self.show_panel(panel, cx);
+        } else {
+            self.hide_panel(panel, cx);
+        }
+    }
+
+    /// `den reveal`: `path` selected in the files panel, which shows.
+    pub fn reveal_file(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.reveal_in_tree(path, cx);
     }
 
     /// `den message`: `text` in the status bar.
@@ -168,6 +253,54 @@ mod tests {
         debugger.update(cx, |debugger, cx| debugger.remove_breakpoint(&path, 11, cx));
         let state = debugger.read_with(cx, |debugger, _| debugger.state());
         assert_eq!(state["breakpoints"], serde_json::json!([]));
+    }
+
+    /// `den where` of a workspace with nothing open: its root, no tabs, no
+    /// Device panel, the debugger idle. `den close` of a file not open says so.
+    #[gpui_kit::test]
+    fn whereabouts_and_close(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            Workspace::new(PathBuf::from("/where-test"), None, true, "where-test".into(), window, cx)
+        });
+        let place = workspace.read_with(cx, |workspace, cx| workspace.whereabouts(cx));
+        assert_eq!(place["root"], "/where-test");
+        assert_eq!(place["tabs"], serde_json::json!([]));
+        assert!(place.get("active").is_none());
+        assert_eq!(place["device"], serde_json::json!({ "available": false }));
+        assert_eq!(place["debugger"]["status"], "idle");
+        assert!(place["panels"].as_array().unwrap().iter().all(|panel| panel.is_string()));
+
+        let closed = cx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.close_files(Some(Path::new("/where-test/a.ts")), window, cx))
+        });
+        assert_eq!(closed, Err("/where-test/a.ts isn't open".to_string()));
+        let all = cx.update(|window, cx| workspace.update(cx, |workspace, cx| workspace.close_files(None, window, cx)));
+        assert_eq!(all, Ok(()));
+    }
+
+    /// A `reveal` from the program is in `den debug state`, the program's
+    /// page and device from its `hello` too.
+    #[gpui_kit::test]
+    fn debug_state_says_what_the_program_said(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            Workspace::new(PathBuf::from("/reveal-test"), None, true, "reveal-test".into(), window, cx)
+        });
+        let debugger = workspace.read_with(cx, |workspace, _| workspace.debugger());
+        debugger.update(cx, |debugger, cx| {
+            debugger.receive(r#"{"event":"reveal","file":"client/home.ts","line":12}"#, cx);
+            debugger.set_ran("scl -d apps/padel/app.xml".into());
+        });
+        let state = debugger.read_with(cx, |debugger, _| debugger.state());
+        assert_eq!(state["revealed"], serde_json::json!({ "file": "client/home.ts", "line": 12 }));
+        assert_eq!(state["command"], "scl -d apps/padel/app.xml");
     }
 
     #[test]

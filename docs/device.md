@@ -38,7 +38,9 @@ programs list it by): Den shows the panel and serves that device, booted or
 not, so F5 alone brings up the phone with the app on it. Its Inspect button
 asks the program being debugged (the debugger's `inspect`) to let the person
 pick a widget on the phone; the line that made it opens in the editor
-(`reveal`). With nothing being debugged, the panel says so.
+(`reveal`). With nothing being debugged, the panel says so. From a terminal,
+`den debug inspect` does the same, and `den debug state` gives the line
+revealed last; `den where` says which device the panel has and how it goes.
 
 ## The protocol
 

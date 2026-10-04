@@ -30,8 +30,18 @@ In den's terminals, these act on the workspace of the terminal they run in.
 Paths are relative to the current folder; lines and columns start at 1. The
 keyboard stays in the terminal unless --focus.
 
+  den where           prints what's in front as JSON: the workspace (server,
+                      path, repo, branch, worktree or not), its tabs and
+                      the active one with its cursor, the panels shown,
+                      the Device panel (its devices, the one on screen)
+                      and the debugger's session (status, the command it
+                      ran, the program's page and device, the last line
+                      it revealed).
+  den workspace <path | name | branch>
+                      brings that workspace to the front.
   den show <file>[:<line>[:<col>]] [--focus]
-                      opens the file with the cursor at that line.
+                      opens the file with the cursor at that line; on a
+                      file already open, goes to its tab.
   den show <file>:<line>[:<col>]-<line>[:<col>] [--focus]
                       opens it with that range selected (whole lines
                       without columns).
@@ -42,6 +52,14 @@ keyboard stays in the terminal unless --focus.
                       (path:line:col-line:col), then the selected text.
   den tabs            lists the files open in the editor, the active one
                       with its cursor.
+  den close <file> | --all
+                      closes the file's tabs, or every tab; none if one
+                      has unsaved changes.
+  den panel show | hide <panel>
+                      files, search, changes, history, commit, references,
+                      outline, code, terminals, debugger, notes, device or
+                      workspaces.
+  den reveal <file>   selects the file in the files panel.
   den message <text>  shows a message in the status bar.
   den notes           prints the workspace's notes (its Notes panel).
   den notes add [<text>]
@@ -67,6 +85,9 @@ keyboard stays in the terminal unless --focus.
                       locals, the breakpoints and the end of the console.
   den debug start [<file>]
                       starts a session (F5) on the file, or the open one.
+  den debug inspect   lets the user pick a widget on the app being debugged;
+                      the line that made it opens, and `den debug state`
+                      gives it as `revealed`.
   den debug stop | continue | next | in | out | pause
                       Shift-F5, F5, F10, F11, Shift-F11 and F6.
   den debug break <file>:<line>
