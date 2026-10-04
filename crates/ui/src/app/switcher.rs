@@ -4,21 +4,19 @@
 //! selects the next, Shift-E (or ↑) the one before, letting go of Cmd enters
 //! it and Esc stays.
 //!
-//! Cmd-E enters the next one with no list, so while Cmd is down it says
-//! which, with the workspaces column shown; held down, it waits to be let
-//! go.
+//! Cmd-E enters the next one with no list, so while Cmd is down the
+//! workspaces column shows where it went (drawn over the window if it was
+//! hidden, so nothing beside it moves) and, at the bottom, what's next there
+//! and what its agents are on; held down, it waits to be let go.
 
 use super::*;
 
-/// The workspace Cmd-E just entered and its place among those it goes round.
+/// The workspace Cmd-E just entered.
 pub(super) struct Notice {
     key: TaskKey,
-    position: usize,
-    total: usize,
-    /// E is still down: its repeats go nowhere.
+    /// E is still down: its repeats go nowhere. Off the Mac: there its
+    /// key-up never comes while Cmd is down (see `repeating`).
     held: bool,
-    /// The workspaces column was hidden: it hides again when Cmd is let go.
-    hide_column: bool,
 }
 
 pub(super) struct Switcher {
@@ -52,7 +50,7 @@ impl Den {
     /// the column (the first after the last), only those with a coding agent
     /// or any of them.
     pub(super) fn next_task(&mut self, with_agent: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.notice.as_ref().is_some_and(|notice| notice.held) {
+        if repeating() || self.notice.as_ref().is_some_and(|notice| notice.held) {
             return;
         }
         let column: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
@@ -65,18 +63,10 @@ impl Den {
         let Some(key) = next.cloned() else {
             return;
         };
-        let position = round.iter().position(|other| **other == key).unwrap_or(0) + 1;
-        let total = round.len();
-        let hidden = !self.tasks_shown(cx);
         self.activate(key.clone(), window, cx);
         // From the menu, with no Cmd to let go of: nothing to say.
         if window.modifiers().secondary() {
-            // Hidden before the first Cmd-E of this Cmd, it shows until Cmd goes.
-            let hide_column = self.notice.as_ref().map_or(hidden, |notice| notice.hide_column);
-            if hidden {
-                self.show_tasks_column(true, cx);
-            }
-            self.notice = Some(Notice { key, position, total, held: true, hide_column });
+            self.notice = Some(Notice { key, held: !cfg!(target_os = "macos") });
             cx.notify();
         }
     }
@@ -90,67 +80,76 @@ impl Den {
         }
     }
 
-    /// Cmd-E's notice, near the top: the workspace's name, where it is in
-    /// the round, and what its agents are on. Clicks go through it.
-    pub(super) fn render_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// Cmd-E's notice: the workspaces column, over the window if it's
+    /// hidden, and at the bottom the next of the workspace's notes and what
+    /// its agents are on. Clicks go through it.
+    pub(super) fn render_notice(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let notice = self.notice.as_ref()?;
         let theme = cx.theme().clone();
-        let (icon, name, place) = self.naming(&notice.key);
-        // What's next there, from its notes.
-        let next = crate::notes::first_line(&notice.key.config(), cx);
-        let agents = self.workspace_agents(&notice.key).into_iter().take(3).map(|agent| {
-            let (dot, color, _) = self.agent_status(&notice.key.host, agent, cx);
-            h_flex()
-                .gap_2()
-                .text_ui_small(cx)
-                .text_color(theme.muted_foreground)
-                .child(div().flex_none().w(px(14.)).text_color(color).child(dot))
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(super::agents::agent_title(agent)))
-        });
-        Some(
+        let column = (!self.tasks_shown(cx)).then(|| {
+            // As wide as when it shows.
+            let width = self.active_workspace().and_then(|workspace| workspace.read(cx).workspaces_width()).unwrap_or_else(|| {
+                let layout = Layout::default();
+                layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.)
+            });
             div()
                 .absolute()
-                .top(px(96.))
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(
-                    v_flex()
-                        .w(px(480.))
-                        .px_4()
-                        .py_3()
-                        .gap_1()
-                        .bg(theme.popover)
-                        .relative()
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(theme.border)
-                        .rounded(theme.radius_lg)
-                        .shadow_lg()
-                        .text_color(theme.popover_foreground)
-                        // The workspace's color, along its left.
-                        .child(div().absolute().left_0().top_0().bottom_0().w(px(4.)).bg(workspace_color(&notice.key)))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(svg().path(icon).size(px(16.)).flex_none().text_color(workspace_color(&notice.key)))
-                                .child(div().flex_none().max_w(px(280.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_lg().child(name))
-                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_ui_small(cx).text_color(theme.muted_foreground).child(place))
-                                .child(div().flex_1())
-                                .child(div().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(format!("{}/{}", notice.position, notice.total))),
-                        )
-                        .children(next.map(|next| {
-                            h_flex()
-                                .gap_2()
-                                .text_ui_small(cx)
-                                .child(svg().path("icons/sticky-note-text.svg").size(px(12.)).flex_none().text_color(theme.muted_foreground))
-                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(next))
-                        }))
-                        .children(agents),
-                )
-                .into_any_element(),
-        )
+                .top_0()
+                .bottom_0()
+                .left(px(ACTIVITY_WIDTH))
+                .w(config::width(width, 160., 500.))
+                .border_r_1()
+                .border_color(theme.border)
+                // Only to its right, over what it covers.
+                .shadow(vec![BoxShadow {
+                    color: hsla(0., 0., 0., 0.25),
+                    offset: point(px(6.), px(0.)),
+                    blur_radius: px(12.),
+                    spread_radius: px(-2.),
+                    inset: false,
+                }])
+                .child(self.render_column(cx))
+        });
+        // What's next there, from its notes, and its agents.
+        let next = crate::notes::first_line(&notice.key.config(), cx);
+        let agents: Vec<_> = self
+            .workspace_agents(&notice.key)
+            .into_iter()
+            .take(3)
+            .map(|agent| {
+                let (dot, color, _) = self.agent_status(&notice.key.host, agent, cx);
+                h_flex()
+                    .gap_2()
+                    .text_color(theme.muted_foreground)
+                    .child(div().flex_none().w(px(14.)).text_color(color).child(dot))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(super::agents::agent_title(agent)))
+            })
+            .collect();
+        let banner = (next.is_some() || !agents.is_empty()).then(|| {
+            let width = f32::from(window.viewport_size().width);
+            div().absolute().bottom(px(48.)).left_0().right_0().flex().justify_center().child(
+                v_flex()
+                    .max_w(px((width * 0.6).max(320.)))
+                    .px_4()
+                    .py_2()
+                    .gap_1()
+                    .bg(theme.popover)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius_lg)
+                    .shadow_lg()
+                    .text_ui(cx)
+                    .text_color(theme.popover_foreground)
+                    .children(next.map(|next| {
+                        h_flex()
+                            .gap_2()
+                            .child(svg().path("icons/sticky-note-text.svg").size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(next))
+                    }))
+                    .children(agents),
+            )
+        });
+        Some(div().absolute().top_0().left_0().size_full().children(column).children(banner).into_any_element())
     }
 
     /// Selects `by` further down the list (up if negative), round the ends.
@@ -221,10 +220,7 @@ impl Den {
         if modifiers.secondary() {
             return;
         }
-        if let Some(notice) = self.notice.take() {
-            if notice.hide_column {
-                self.show_tasks_column(false, cx);
-            }
+        if self.notice.take().is_some() {
             cx.notify();
         }
         if let Some(switcher) = self.switcher.take() {
@@ -311,4 +307,28 @@ impl Den {
                 .into_any_element(),
         )
     }
+}
+
+/// The key that ran the shortcut is held down, repeating. On the Mac a key
+/// let go while Cmd is down has no key-up, so it's asked of the key-down
+/// itself (a menu's click is no repeat).
+#[cfg(target_os = "macos")]
+fn repeating() -> bool {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    const KEY_DOWN: usize = 10;
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let event: *mut AnyObject = msg_send![app, currentEvent];
+        if event.is_null() {
+            return false;
+        }
+        let kind: usize = msg_send![event, type];
+        kind == KEY_DOWN && msg_send![event, isARepeat]
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn repeating() -> bool {
+    false
 }

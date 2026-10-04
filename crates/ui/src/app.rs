@@ -3003,10 +3003,18 @@ impl Render for Den {
                             .on_click(cx.listener(move |this, _, window, cx| this.ask_update(version.clone().into(), window, cx)))
                     }))
             )
-            .child(div().flex_1().min_h_0().w_full().child(match self.active_workspace() {
-                Some(workspace) => workspace.into_any_element(),
-                None => self.render_without_workspace(tasks_visible, window, cx),
-            }))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(match self.active_workspace() {
+                        Some(workspace) => workspace.into_any_element(),
+                        None => self.render_without_workspace(tasks_visible, window, cx),
+                    })
+                    .children(self.render_notice(window, cx)),
+            )
             .children(self.task_picker.as_ref().or(self.command_palette.as_ref()).or(self.recent_picker.as_ref()).map(|(picker, _)| {
                 div()
                     .absolute()
@@ -3019,7 +3027,6 @@ impl Render for Den {
             }))
             .children(self.settings.as_ref().map(|settings| self.render_settings(settings, cx)))
             .children(self.render_switcher(cx))
-            .children(self.render_notice(cx))
             .children(
                 self.host_picker
                     .as_ref()
