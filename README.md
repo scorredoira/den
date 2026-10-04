@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/main.png" alt="Den: the workspaces column, the code, and Claude Code next to a shell in split terminals">
+  <img src="docs/screenshots/main.png" alt="Den: the Workspaces and Files panels, the code, and Claude Code above a shell in split terminals">
 </p>
 
 - **Native, in Rust.** GPU-rendered with GPUI, no Electron. On macOS, Linux and Windows.
@@ -20,7 +20,7 @@
 - **Git built in.** Every workspace is a folder, a checkout or a worktree, and New Worktree (Cmd-Shift-N) starts one per task. Uncommitted changes, the history of the repo or of a file, side-by-side diffs (in one column when there's no room for two), commits with all their files, and the blame of the current line. Den only reads: commit and push from a terminal.
 - **A debugger.** Breakpoints in the gutter (with conditions, hit counts and logpoints), stepping, the values of the variables written in the code as it stops, hover, watches and a console that evaluates and assigns. For any program that speaks [Den's debug protocol](docs/debugger.md), on your machine or on a server.
 - **A phone beside the code.** On macOS, the Device panel shows the screen of an iOS simulator or any other phone a program serves with [Den's device protocol](docs/device.md): the mouse is a finger, the keyboard is the phone's, and F10 still steps through the code.
-- **Every agent at a glance.** The workspaces of all your servers in one column, each with a dot for the coding agents (Claude Code, Codex…) running in its terminals: red when one is asking something, yellow while one works, green when they finished unseen. The Agents panel lists them all. No hooks: Den reads the terminals. Cmd-1…9, Cmd-E and Cmd-Alt-E jump between them.
+- **Every agent at a glance.** The workspaces of all your servers in one panel, each with a dot for the coding agents (Claude Code, Codex…) running in its terminals: red when one is asking something, yellow while one works, green when they finished unseen. The Agents panel lists them all. No hooks: Den reads the terminals. Cmd-1…9, Cmd-E and Cmd-Alt-E jump between them.
 - **Agents drive Den.** With the `den` command, Claude shows you the code it's talking about with the range selected, the diff to review or a Markdown report, reads what you selected, and opens terminals, reads them and types in them. Den installs a Claude Code skill so Claude knows how.
 
 ## Install
@@ -94,7 +94,7 @@ Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settin
 
 Cmd-E goes straight into the next one with a coding agent, in the panel's order, and Cmd-Alt-Shift-E into the next one of all. Cmd-Alt-E switches between the ones being worked on as Cmd-Tab does between apps: the previous one, then those with a coding agent, the ones waiting for an answer first and each the most recently used first (all of them while no other has an agent); holding Cmd, each E goes one further (Shift-E back) and letting go enters it. Cmd-K finds one across servers, the most recently used first. On Linux and Windows these are Ctrl-Alt-E, Ctrl-Alt-Shift-E, Ctrl-Tab and Ctrl-Shift-K, so that Ctrl plus a letter stays the shell's inside a terminal. Every shortcut can be changed in Settings (Cmd-,).
 
-Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
+Cmd-D splits a terminal down and Cmd-Alt-D to the right (Ctrl-Alt-D and Ctrl-Shift-5 on Linux and Windows), and Cmd-Alt-arrows move between the panes. Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.
 
 ## Layout
 
@@ -106,6 +106,8 @@ Each workspace in the Workspaces panel has a dot for the coding agents (Claude C
 
 The side column, what it shows and where things go are the same in every workspace: going from one to another moves nothing. Each workspace keeps whether its terminals and its device show; a new one shows the terminals. Reset Layout (View, or the activity bar's right-click) puts it all back as it starts.
 
+Each workspace has its notes, which open over the window from the activity bar or with Cmd-Alt-N (Esc or a click outside closes them): plain Markdown for what's next there, kept by Den in its config folder, never in the repo, and forgotten when the worktree is removed. Their icon gets a dot while they have something, and Cmd-E shows their first line on the way in.
+
 ## Debugging
 
 A workspace says how to start its program in `.den/debug.json`:
@@ -115,8 +117,6 @@ A workspace says how to start its program in `.den/debug.json`:
 ```
 
 `${file}` is the open file: the program decides what debugging it means (a script, a test, the server it belongs to). `${port}` is a free port the agent picks for this session. F5 runs the command in a terminal and connects to the port. With a fixed `"port"` instead of `${port}`, it attaches when something already answers on it, or when there's no command. With `"open": "http://localhost:<port>/<page>"`, the browser opens that page once the program listens on that port (a server, not a script); on macOS, a Chrome tab already showing that server comes to the front instead. A program started this way stops at its first line, as Visual Studio does (F5 goes on), except a server with `open`, which runs and shows its page as soon as it listens. Its call stack, variables, watches and breakpoints are the Run and Debug group of the side column, with the toolbar at its top; its console is a tab after the terminals'. F9 toggles a breakpoint (or click the gutter; right-click it for a condition, a hit count or a log message), F10 steps over, F11 into, Shift-F11 out, Ctrl-F10 runs to the cursor, Ctrl-Shift-F10 makes the cursor's line the next statement, F6 pauses, Shift-F5 stops and Cmd-Shift-D shows or hides Run and Debug. See [docs/debugger.md](docs/debugger.md).
-
-Each workspace has its notes, which open over the window from the activity bar or with Cmd-Alt-N (Esc or a click outside closes them): plain Markdown for what's next there, kept by Den in its config folder, never in the repo, and forgotten when the worktree is removed. Their icon gets a dot while they have something, and Cmd-E shows their first line on the way in.
 
 ## Updates
 
