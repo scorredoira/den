@@ -17,16 +17,6 @@ the agent, so a program on a server is debugged like a local one.
   command, which debugs whatever is open, and the program decides what that
   means (a script, a test file, the server it is part of). Without `command`,
   F5 attaches to a program already running.
-- `open`: a page of the program to open in the browser once something the
-  command started listens on its port, e.g.
-  `"http://localhost:9092/platform/tenants"`. Only URLs of localhost; on a
-  server the port is forwarded over SSH. A script run by the same command
-  doesn't listen there, so nothing opens; Restart doesn't open it again. On
-  macOS, a Google Chrome tab already showing that server (the same port on
-  `localhost`, a subdomain of it or `127.0.0.1`, whatever its page) comes to
-  the front as it is instead; the first time, macOS asks whether Den may
-  control Chrome. Elsewhere, or without such a tab, the page opens in the
-  default browser.
 - `port`: where the program listens, on the loopback of the agent's machine.
   4444 when missing. A command with `${port}` doesn't need it: Den asks the
   agent for a free port and puts it there, so every session has a port of its
@@ -41,10 +31,25 @@ Den says so instead of waiting. A command is never typed into a terminal that
 still runs something: it gets a new one. A program held before running
 (`waiting` in `hello`) is released with `entry`, so it stops at its entry, as
 Visual Studio's debugger does: where the program says (sim: the first line of
-`main`, or of the function `-de` names). A launch with `open` is a server:
-it is released without `entry`, so it runs and its page opens as soon as it
-listens. Stop (Shift-F5) interrupts a program it
-started and leaves one it attached to running.
+`main`, or of the function `-de` names). A program with a page (`page` in
+`hello`) is a server: it is released without `entry`, so it runs. Stop
+(Shift-F5) interrupts a program it started and leaves one it attached to
+running.
+
+### The program's page
+
+A server names its page in `hello` (`page`, e.g.
+`"http://localhost:9092/platform/tenants"`), and Den opens it in the browser
+once something a terminal of the workspace runs listens on its port. Only when
+the launch started the program: attaching or Restart doesn't open it again.
+Only URLs of localhost; on a server the port is forwarded over SSH. The program
+says it, not the launch file, because one command runs many things (a script,
+a server, an app on a phone simulator) and only the server has a page, on the
+port it chose. On macOS, a Google Chrome tab already showing that server (the
+same port on `localhost`, a subdomain of it or `127.0.0.1`, whatever its page)
+comes to the front as it is instead; the first time, macOS asks whether Den
+may control Chrome. Elsewhere, or without such a tab, the page opens in the
+default browser.
 
 A file from when there were several `configurations` starts the first one.
 
@@ -174,7 +179,7 @@ A stop carries everything needed to show it, so it costs no round trip.
 
 | cmd | arguments | result |
 |-----|-----------|--------|
-| `hello` | `version` | `version`, `cwd`, `waiting` (held before running), `running` (VMs running), `stopped: [Stop]` |
+| `hello` | `version` | `version`, `cwd`, `waiting` (held before running), `running` (VMs running), `stopped: [Stop]`, `page?` (the program's page, above) |
 | `run` | `entry?` | Releases a program held before running. Idempotent. With `entry`, the program stops at its entry (reason `entry`): the start of the code being debugged, which it decides, not the first code it runs. |
 | `setBreakpoints` | `file`, `breakpoints: [{line, condition?, hit?, log?}]` | `breakpoints: [{line, error?}]`: where each one went, and why it was ignored |
 | `setExceptions` | `uncaught`, `all` | |
