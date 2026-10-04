@@ -110,6 +110,37 @@ fn dragging_the_terminals_icon_under_the_code(cx: &mut TestAppContext) {
     assert_eq!(cx.update(|_, cx| workspace.read(cx).panel_drop), None);
 }
 
+/// Drags from `selector` to the bottom of the code: what it moves goes under it.
+fn drag_under_the_code(cx: &mut VisualTestContext, selector: &'static str) {
+    let start = bounds(cx, selector).center();
+    let code = bounds(cx, "stack-Code");
+    let end = point(code.center().x, code.bottom() - px(10.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    cx.update(|_, cx| assert!(cx.has_active_drag()));
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_panel_drags_by_its_title(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    drag_under_the_code(cx, "title-Files");
+    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
+    let (column, stack) = layout.find(Panel::Files).unwrap();
+    assert_eq!(layout.find(Panel::Code), Some((column, stack - 1)));
+}
+
+#[gpui_kit::test]
+fn the_terminals_drag_by_their_bar_past_the_tabs(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    drag_under_the_code(cx, "terminal-tab-end");
+    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
+    let (column, stack) = layout.find(Panel::Terminals).unwrap();
+    assert_eq!(layout.find(Panel::Code), Some((column, stack - 1)));
+}
+
 #[gpui_kit::test]
 fn dropping_the_changes_on_the_terminals_bar_puts_them_together(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});

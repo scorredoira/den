@@ -1,17 +1,23 @@
 //! Where the panels go: columns of stacks of panels, one showing at a time
 //! (see `config::Layout`), changed by dragging a panel's icon in the activity
-//! bar, and which panel each stack shows.
+//! bar or its header, and which panel each stack shows.
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::*;
 use crate::config::{Layout, Panel, SavedPanels, Side, Stack};
 use crate::drag_drop::DropPlacement;
+use crate::menu::PanelItems as _;
 
 /// A panel being moved: by its icon, its title or its tab among the
 /// terminals'.
 #[derive(Clone)]
 pub(crate) struct PanelDrag(pub Panel);
+
+/// Dragged by `el` (its icon, its title, its tab or its bar), the panel moves.
+pub(crate) fn drags_panel<E: StatefulInteractiveElement>(el: E, panel: Panel) -> E {
+    el.on_drag(PanelDrag(panel), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
+}
 
 /// The app's workspaces column, drawn where its panel is placed.
 pub(crate) struct WorkspacesPanel {
@@ -585,7 +591,7 @@ impl Workspace {
         let content = div().id("panel-stack-content").flex_1().min_h_0().child(content);
         // Its own menus end with Hide Panel; elsewhere in it, that alone.
         let content = if has_header(active) {
-            content.context_menu(|menu, _, _| menu.item(menu::hide_panel())).into_any_element()
+            content.context_menu(|menu, window, cx| menu.panel_items(menu::hide_panel(), window, cx)).into_any_element()
         } else {
             content.into_any_element()
         };
@@ -644,6 +650,7 @@ impl Workspace {
             .child(
                 div()
                     .id("panel-stack-title")
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("title-{active:?}")))
                     .flex_1()
                     .h_full()
                     .flex()
@@ -654,11 +661,11 @@ impl Workspace {
                     .text_color(theme.muted_foreground)
                     // As the workspaces column's.
                     .child(title(active).to_uppercase())
-                    // Dragged, the panel moves, as by its icon.
-                    .on_drag(PanelDrag(active), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
-                    .context_menu(move |menu, _, _| {
+                    .map(|el| drags_panel(el, active))
+                    .context_menu(move |menu, window, cx| {
+                        let hide = menu::item("Hide Panel", &workspace, move |this, _, cx| this.hide_panel(active, cx));
                         menu.when_some(files, |menu, shown| menu.item(changes::ChangesPanel::files_item(shown, &history)))
-                            .item(menu::item("Hide Panel", &workspace, move |this, _, cx| this.hide_panel(active, cx)))
+                            .panel_items(hide, window, cx)
                     }),
             )
             .into_any_element()

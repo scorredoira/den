@@ -12,6 +12,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
+use crate::menu::PanelItems as _;
 use proto::{Request, Response, SearchHit};
 
 use crate::{config::UiText, menu};
@@ -431,7 +432,7 @@ impl Render for SearchPanel {
                                 .context_menu({
                                     let panel = view.downgrade();
                                     let path = path.clone();
-                                    move |menu, _, _| {
+                                    move |menu, window, cx| {
                                         let (open, copy) = (path.clone(), path.clone());
                                         menu.item(menu::item("Open File", &panel, move |_, _, cx| {
                                             cx.emit(SearchEvent::Open {
@@ -445,7 +446,7 @@ impl Render for SearchPanel {
                                             cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                                         }))
                                         .separator()
-                                        .item(menu::hide_panel())
+                                        .panel_items(menu::hide_panel(), window, cx)
                                     }
                                 })
                                 .into_any_element(),
@@ -500,14 +501,14 @@ impl Render for SearchPanel {
                                     .context_menu({
                                         let panel = view.downgrade();
                                         let line = hit.text.clone();
-                                        move |menu, _, _| {
+                                        move |menu, window, cx| {
                                             let line = line.clone();
                                             menu.item(menu::item("Open", &panel, move |this, _, cx| this.open(hit_ix, true, cx)))
                                                 .item(menu::item("Copy Line", &panel, move |_, _, cx| {
                                                     cx.write_to_clipboard(ClipboardItem::new_string(line.trim().to_string()))
                                                 }))
                                                 .separator()
-                                                .item(menu::hide_panel())
+                                                .panel_items(menu::hide_panel(), window, cx)
                                         }
                                     })
                                     .into_any_element()

@@ -20,6 +20,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
+use crate::menu::PanelItems as _;
 use proto::LspSymbol;
 
 use crate::{
@@ -362,14 +363,14 @@ impl Render for OutlinePanel {
             .child(div().flex_1().min_h_0().child(list))
             .context_menu({
             let outline = cx.entity().downgrade();
-            move |menu, _, _| {
+            move |menu, window, cx| {
                 let item = |label: &'static str, collapse: bool| {
                     let outline = outline.clone();
                     PopupMenuItem::new(label).on_click(move |_, _, cx| {
                         outline.update(cx, |outline, cx| outline.collapse_all(collapse, cx)).ok();
                     })
                 };
-                menu.item(item("Collapse All", true)).item(item("Expand All", false)).separator().item(crate::menu::hide_panel())
+                menu.item(item("Collapse All", true)).item(item("Expand All", false)).separator().panel_items(crate::menu::hide_panel(), window, cx)
             }
         })
         .into_any_element()

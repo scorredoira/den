@@ -5,7 +5,7 @@
 //! does their job. Its right-click menu (and View > Activity Bar) takes
 //! icons off it.
 use super::*;
-use super::layout::{PanelDrag, icon, title};
+use super::layout::{PanelDrag, drags_panel, icon, title};
 use crate::config::Panel;
 use gpui_kit::component::menu::PopupMenuItem;
 
@@ -55,7 +55,7 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
                         .when(cfg!(test), |el| el.debug_selector(move || format!("activity-{panel:?}")))
                         .tooltip(move |window, cx| Tooltip::new(title(panel)).build(window, cx))
                         .on_click(move |_, window, cx| click(panel, window, cx))
-                        .on_drag(PanelDrag(panel), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
+                        .map(|el| drags_panel(el, panel))
                         .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
                         .on_drop(move |drag: &PanelDrag, _, cx| {
                             cx.stop_propagation();
@@ -173,6 +173,16 @@ impl Workspace {
         activity_bar(icons, click, cx)
     }
 
+    /// Every panel with an icon, on the bar or not, and whether it shows:
+    /// Show Panel's.
+    pub(crate) fn menu_panels(&self, cx: &App) -> Vec<(Panel, bool)> {
+        let mut panels = Config::get(cx).activity();
+        if self.device.read(cx).available() {
+            panels.push(Panel::Device);
+        }
+        panels.into_iter().map(|panel| (panel, self.is_shown(panel, cx))).collect()
+    }
+
     fn badge(&self, panel: Panel, cx: &App) -> Option<Badge> {
         match panel {
             Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
@@ -194,7 +204,7 @@ impl Workspace {
 
     /// Shows the panel, or hides it if it shows. The terminals and the
     /// search get the focus, as their keys do.
-    pub(super) fn click_activity(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn click_activity(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
         let shown = self.is_shown(panel, cx);
         match panel {
             Panel::Terminals => self.set_terminals_visible(!shown, window, cx),

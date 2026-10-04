@@ -17,6 +17,7 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
+use crate::menu::PanelItems as _;
 
 use crate::{CollapseFileTree, config::UiText};
 
@@ -758,13 +759,13 @@ impl Render for FileTree {
             }))
             .context_menu({
                 let tree = cx.entity().downgrade();
-                move |menu, _, cx| {
+                move |menu, window, cx| {
                     let Some(this) = tree.upgrade() else {
                         return menu;
                     };
                     let this = this.read(cx);
                     let path = this.menu_target.clone().unwrap_or_else(|| this.root.clone());
-                    this.context_menu(path, menu, tree.clone()).separator().item(crate::menu::hide_panel())
+                    this.context_menu(path, menu, tree.clone()).separator().panel_items(crate::menu::hide_panel(), window, cx)
                 }
             })
             .child(list)

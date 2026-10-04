@@ -25,6 +25,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
+use crate::menu::PanelItems as _;
 use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
@@ -240,6 +241,13 @@ pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, c
         }
         Err(err) => eprintln!("could not open the window: {err:#}"),
     }
+}
+
+/// The workspace `window` shows: what a menu in it acts on.
+pub(crate) fn window_workspace(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
+    let handle = window.window_handle();
+    let open = cx.try_global::<Main>()?.windows.iter().find(|open| open.handle == handle)?;
+    open.den.upgrade()?.read(cx).active_workspace()
 }
 
 /// `den -s <server> [<path>]`: `path` on `server` in a window of its own
@@ -2430,7 +2438,9 @@ impl Den {
                         )
                         .on_click(cx.listener(move |this, _, window, cx| this.ask_restart(restart.clone(), window, cx)))
                     })
-                    .context_menu(move |menu, _, _| host_menu(menu, &menu_name, connected, keep, &weak)),
+                    .context_menu(move |menu, window, cx| {
+                        host_menu(menu, &menu_name, connected, keep, &weak).panel_items(hide_column(&weak), window, cx)
+                    }),
             )
             .children(detail.map(|detail| {
                 div()
@@ -2491,7 +2501,17 @@ impl Den {
                     .text_ui_small(cx)
                     .font_semibold()
                     .text_color(theme.muted_foreground)
-                    .child(div().flex_1().child("WORKSPACES"))
+                    // Dragged by its title, the panel moves, as by its icon.
+                    .child(
+                        div()
+                            .id("tasks-title")
+                            .flex_1()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .child("WORKSPACES")
+                            .map(|el| crate::workspace::drags_panel(el, Panel::Workspaces)),
+                    )
                     .child({
                         let add_menu = header_menu.clone();
                         Button::new("tasks-add")
@@ -2501,7 +2521,7 @@ impl Den {
                             .tooltip("Open Folder or Add Server")
                             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| add_menu_items(menu, &add_menu))
                     })
-                    .context_menu(move |menu, _, _| column_menu(menu, &header_menu)),
+                    .context_menu(move |menu, window, cx| column_menu(menu, &header_menu, window, cx)),
             )
             .child(
                 v_flex()
@@ -2517,7 +2537,7 @@ impl Den {
                             .id("task-list-space")
                             .flex_1()
                             .min_h(px(32.))
-                            .context_menu(move |menu, _, _| column_menu(menu, &weak)),
+                            .context_menu(move |menu, window, cx| column_menu(menu, &weak, window, cx)),
                     ),
             )
             .into_any_element()
@@ -2787,7 +2807,7 @@ impl Den {
                     .workspaces
                     .get(&key)
                     .is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty());
-                move |menu, _, _| {
+                move |menu, window, cx| {
                     let (create, copy, finder, init, remove, close, add) =
                         (key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone());
                     let (repo, folder) = (repo.clone(), repo.clone());
@@ -2850,7 +2870,7 @@ impl Den {
                         }))
                     })
                     .separator()
-                    .item(hide_column(&weak))
+                    .panel_items(hide_column(&weak), window, cx)
                 }
             });
 
@@ -3115,21 +3135,20 @@ fn add_menu_items(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
 }
 
 /// Right-click on the tasks column's empty space or its title.
-fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
+fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     add_menu_items(menu, den)
         .separator()
-        .item(hide_column(den))
+        .panel_items(hide_column(den), window, cx)
 }
 
-/// Right-click on a server's name in the tasks column.
+/// Right-click on a server's name in the tasks column, before Hide Panel.
 /// With `keep`, the window's server and folders aren't remembered yet (see
 /// `Den::keep`).
 fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, den: &WeakEntity<Den>) -> PopupMenu {
     if name == LOCAL {
         return menu
             .item(menu::item("Open Folder…", den, |this, window, cx| this.open_folder(&OpenFolder, window, cx)))
-            .separator()
-            .item(hide_column(den));
+            .separator();
     }
     let (open, reconnect, remove) = (name.clone(), name.clone(), name.clone());
     menu.when(keep, |menu| {
@@ -3146,7 +3165,6 @@ fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, 
     .item(menu::item("Reconnect", den, move |this, window, cx| this.connect(reconnect.clone(), window, cx)))
     .item(menu::item("Remove Server", den, move |this, window, cx| this.remove_host(remove.clone(), window, cx)))
     .separator()
-    .item(hide_column(den))
 }
 
 /// Hide Panel, at the end of every menu in the tasks column.

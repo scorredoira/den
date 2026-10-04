@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-pub use gpui_kit::component::menu::PopupMenuItem;
+pub use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::{App, Context, Global, WeakEntity, Window};
 
 use crate::config::Config;
@@ -36,6 +36,37 @@ pub fn hide_panel() -> PopupMenuItem {
             hide(cx);
         }
     })
+}
+
+/// How every panel's menu ends: its Hide Panel, then Show Panel.
+pub trait PanelItems {
+    fn panel_items(self, hide: PopupMenuItem, window: &mut Window, cx: &mut Context<PopupMenu>) -> Self;
+}
+
+impl PanelItems for PopupMenu {
+    fn panel_items(self, hide: PopupMenuItem, window: &mut Window, cx: &mut Context<PopupMenu>) -> Self {
+        self.item(hide).submenu("Show Panel", window, cx, |menu, window, cx| show_panel_menu(menu, window, cx))
+    }
+}
+
+/// Every panel, checked while it shows, as the activity bar's menu lists
+/// them: a click shows or hides it, as its icon does. And Reset Layout.
+fn show_panel_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let Some(workspace) = crate::app::window_workspace(window, cx) else {
+        return menu.item(reset_layout());
+    };
+    let panels = workspace.read(cx).menu_panels(cx);
+    let weak = workspace.downgrade();
+    panels
+        .into_iter()
+        .fold(menu, |menu, (panel, shown)| {
+            menu.item(
+                item(crate::workspace::panel_title(panel), &weak, move |this, window, cx| this.click_activity(panel, window, cx))
+                    .checked(shown),
+            )
+        })
+        .separator()
+        .item(reset_layout())
 }
 
 /// The item that puts the workspace's panels back where they start.
