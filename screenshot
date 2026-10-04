@@ -41,7 +41,7 @@ cat > "$demo/config/config.json" <<EOF
 {
   "theme": "dark",
   "check_for_updates": false,
-  "layout": { "tasks": 230, "side": 230, "terminals": 760 },
+  "layout": { "side_width": 280, "dock_width": 800 },
   "window": { "x": 40, "y": 60, "width": 1800, "height": 1000, "maximized": false },
   "last": { "host": "local", "path": "$task" },
   "sessions": {
@@ -105,7 +105,7 @@ keys "key code 125
     delay 0.5
     key code 36"
 sleep 3
-keys 'keystroke "d" using {command down, shift down}'
+keys 'keystroke "d" using {command down}'
 sleep 1.5
 type_line 'git status --short; git log --oneline --graph -12'
 sleep 50
