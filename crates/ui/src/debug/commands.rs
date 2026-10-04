@@ -106,7 +106,7 @@ impl Debugger {
                 ConsoleLine::Info(text) => text.clone(),
                 ConsoleLine::Output { text, .. } => text.clone(),
                 ConsoleLine::Input(text) => format!("> {text}"),
-                ConsoleLine::Result(var) => var.value.clone(),
+                ConsoleLine::Result(var, _) => var.value.clone(),
                 ConsoleLine::Error(text) => format!("error: {text}"),
             })
             .collect();

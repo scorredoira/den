@@ -301,7 +301,7 @@ mod tests {
         let debugger = workspace.read_with(cx, |workspace, _| workspace.debugger());
         debugger.update(cx, |debugger, cx| {
             debugger.receive(r#"{"event":"reveal","file":"client/home.ts","line":12}"#, cx);
-            debugger.set_ran("scl -d apps/padel/app.xml".into());
+            debugger.set_ran(0, "scl -d apps/padel/app.xml".into(), None);
         });
         let state = debugger.read_with(cx, |debugger, _| debugger.state());
         assert_eq!(state["revealed"], serde_json::json!({ "file": "client/home.ts", "line": 12 }));

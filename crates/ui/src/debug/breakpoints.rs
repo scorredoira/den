@@ -2,7 +2,10 @@
 //! session, follow the lines they're on as the file is edited, and are saved
 //! with the workspace.
 
-use std::path::{Path, PathBuf};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 use crate::config::SavedBreakpoint;
 
@@ -28,6 +31,31 @@ impl Breakpoint {
     /// It does more than stop: it has a condition, a hit count or a message.
     pub fn is_special(&self) -> bool {
         !self.condition.is_empty() || !self.hit.is_empty() || !self.log.is_empty()
+    }
+}
+
+/// An edit of a file, by lines: it begins on line `start`, and `kept` is the
+/// first line after it that it left whole, now `delta` lines further down
+/// (up, when negative).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineEdit {
+    pub start: u32,
+    pub kept: u32,
+    pub delta: i64,
+}
+
+impl LineEdit {
+    /// The edit that replaced `range` of `old` with `with`. Text inserted at
+    /// the start of a line goes before it: Enter there, or lines pasted
+    /// there, move the line down.
+    pub fn new(old: &str, range: Range<usize>, with: &str) -> Self {
+        let line_of = |offset: usize| old[..offset].matches('\n').count() as u32;
+        let start = line_of(range.start);
+        let end = line_of(range.end);
+        let ends_at_line_start = range.end == 0 || old.as_bytes()[range.end - 1] == b'\n';
+        let kept = if ends_at_line_start { end } else { end + 1 };
+        let delta = with.matches('\n').count() as i64 - (end - start) as i64;
+        Self { start, kept, delta }
     }
 }
 
@@ -143,24 +171,28 @@ impl Breakpoints {
         }
     }
 
-    /// Follows an edit of `path`: `delta` lines were inserted (or removed,
-    /// when negative) right after line `at`. Breakpoints after it move with
-    /// their lines; those on removed lines go to `at`.
-    pub fn shift(&mut self, path: &Path, at: u32, delta: i64) -> bool {
+    /// Follows an edit of `path` (see `LineEdit`). Breakpoints from the
+    /// first line it left whole move with their lines; those on lines it
+    /// replaced stay within what replaced them, and those on removed lines
+    /// go to its first.
+    pub fn shift(&mut self, path: &Path, edit: LineEdit) -> bool {
         let Some(ix) = self.files.iter().position(|(file, _)| file == path) else {
             return false;
         };
-        if delta == 0 {
-            return false;
-        }
+        let LineEdit { start, kept, delta } = edit;
         let list = std::mem::take(&mut self.files[ix].1);
         let mut changed = false;
         for mut bp in list {
-            if bp.line > at {
-                let line = (bp.line as i64 + delta).max(at as i64) as u32;
-                changed |= line != bp.line;
-                bp.line = line;
-            }
+            let line = if bp.line >= kept {
+                bp.line as i64 + delta
+            } else if bp.line > start {
+                (bp.line as i64).min(kept as i64 + delta - 1).max(start as i64)
+            } else {
+                bp.line as i64
+            };
+            let line = line.max(0) as u32;
+            changed |= line != bp.line;
+            bp.line = line;
             // two that met on a line become one
             if self.at(path, bp.line).is_none() {
                 self.put(path, bp);
@@ -192,12 +224,12 @@ mod tests {
         bps.toggle(b, 10);
 
         // three lines inserted after line 5: only those below move
-        bps.shift(a, 5, 3);
+        bps.shift(a, LineEdit { start: 5, kept: 6, delta: 3 });
         assert_eq!(lines(&bps, a), vec![2, 13, 23]);
         assert_eq!(lines(&bps, b), vec![10], "another file doesn't move");
 
-        // lines 11..=14 removed after line 10: the one on them goes to 10
-        bps.shift(a, 10, -4);
+        // lines 11..=14 removed from the end of line 10: the one on them goes to 10
+        bps.shift(a, LineEdit { start: 10, kept: 15, delta: -4 });
         assert_eq!(lines(&bps, a), vec![2, 10, 19]);
     }
 
@@ -207,8 +239,45 @@ mod tests {
         let mut bps = Breakpoints::default();
         bps.toggle(a, 4);
         bps.toggle(a, 6);
-        bps.shift(a, 3, -5);
+        bps.shift(a, LineEdit { start: 3, kept: 9, delta: -5 });
         assert_eq!(lines(&bps, a), vec![3]);
+    }
+
+    /// The breakpoints of `a` after replacing `range` of `old` with `with`.
+    fn after_edit(at: &[u32], old: &str, range: Range<usize>, with: &str) -> Vec<u32> {
+        let a = Path::new("/w/a.ts");
+        let mut bps = Breakpoints::default();
+        for line in at {
+            bps.toggle(a, *line);
+        }
+        bps.shift(a, LineEdit::new(old, range, with));
+        lines(&bps, a)
+    }
+
+    #[test]
+    fn an_edit_moves_breakpoints_by_where_it_is() {
+        let old = "a\nb\nc\n";
+        // Enter at the start of line 1: its code, and breakpoint, go down
+        assert_eq!(after_edit(&[0, 1], old, 2..2, "\n"), vec![0, 2]);
+        // lines pasted there too
+        assert_eq!(after_edit(&[1], old, 2..2, "x\ny\n"), vec![3]);
+        // Enter at its end: the breakpoint stays, the next lines go down
+        assert_eq!(after_edit(&[1, 2], old, 3..3, "\n"), vec![1, 3]);
+        // typing within a line moves nothing
+        assert_eq!(after_edit(&[1, 2], old, 2..2, "x"), vec![1, 2]);
+        // Backspace at the start of line 2 joins it to line 1
+        assert_eq!(after_edit(&[0, 2], old, 3..4, ""), vec![0, 1]);
+        // a line deleted whole: the next one takes its place
+        assert_eq!(after_edit(&[1, 2], old, 2..4, ""), vec![1]);
+    }
+
+    #[test]
+    fn breakpoints_in_lines_replaced_stay_in_what_replaced_them() {
+        let old = "a\nb\nc\nd\ne\n";
+        // lines 1..=3 replaced by one: those on them go to it
+        assert_eq!(after_edit(&[0, 2, 3, 4], old, 2..8, "x\n"), vec![0, 1, 2]);
+        // reformatted with as many lines: nothing moves
+        assert_eq!(after_edit(&[1, 3], old, 2..8, "x\ny\nz\n"), vec![1, 3]);
     }
 
     #[test]

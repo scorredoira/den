@@ -37,7 +37,10 @@ Visual Studio's debugger does: where the program says (sim: the first line of
 `main`, or of the function `-de` names). A program with a page (`page` in
 `hello`) is a server: it is released without `entry`, so it runs. Stop
 (Shift-F5) interrupts a program it started and leaves one it attached to
-running.
+running. Restart (Cmd-Shift-F5) starts the session again as it started: the
+same file (not the one a stop opened since), or the same test. A program it
+started frees its terminal and its port first, so the new session doesn't
+attach to the one that is ending.
 
 ### The program's page
 

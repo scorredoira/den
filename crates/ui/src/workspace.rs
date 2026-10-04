@@ -167,8 +167,9 @@ struct FileTab {
     /// A page of the app's own (the shortcuts guide), with no file behind
     /// it: read-only, never saved, not reopened with the session.
     doc: bool,
-    /// Lines of the text, to move breakpoints with the lines edited.
-    lines: usize,
+    /// The text as of its last change, once read: what an edit changed
+    /// moves the breakpoints.
+    text: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1910,19 +1911,20 @@ impl Workspace {
                 self.refresh_debug_marks(cx);
             }
             DebugEvent::Marks => self.refresh_debug_marks(cx),
-            DebugEvent::Run { term, line } => {
+            DebugEvent::Run { session, term, line } => {
+                let session = *session;
                 let file = self.active_file().map(|ix| {
                     let path = &self.tabs[ix].path;
                     path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/")
                 });
                 let line = debug::command_line(line, file.as_deref());
-                debugger.update(cx, |debugger, _| debugger.set_ran(line.clone()));
+                debugger.update(cx, |debugger, _| debugger.set_ran(session, line.clone(), file));
                 self.show_panel(Panel::Terminals, cx);
                 let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line, window, cx));
                 let debugger = debugger.downgrade();
                 cx.spawn(async move |_, cx| {
                     let term = run.await;
-                    debugger.update(cx, |debugger, cx| debugger.set_terminal(term, cx)).ok();
+                    debugger.update(cx, |debugger, cx| debugger.set_terminal(session, term, cx)).ok();
                 })
                 .detach();
                 cx.notify();
@@ -2182,7 +2184,7 @@ impl Workspace {
             shown: 0,
             view: false,
             doc: false,
-            lines: 0,
+            text: None,
             _subscriptions: subscriptions,
         }
     }
@@ -2235,7 +2237,7 @@ impl Workspace {
                         tab.saved = text.clone();
                         tab.content = Content::Ready;
                         tab.restored = false;
-                        tab.lines = text.split('\n').count();
+                        tab.text = Some(text.clone().into());
                         let focused = window.focused(cx);
                         tab.editor.update(cx, |state, cx| {
                             let cursor = state.cursor_position();
@@ -2378,15 +2380,17 @@ impl Workspace {
         if let Some(markdown) = &self.tabs[ix].markdown {
             markdown.update(cx, |view, cx| view.set_text(&text, cx));
         }
-        // Breakpoints move with the lines they're on.
+        // Breakpoints move with the lines they're on, by where the text
+        // changed: an edit of another view comes to the file's tab too.
         if self.tabs[ix].is_file() {
-            let lines = text.split('\n').count();
-            let before = std::mem::replace(&mut self.tabs[ix].lines, lines);
-            if before != 0 && lines != before {
-                let delta = lines as i64 - before as i64;
-                let cursor = editor.read(cx).cursor_position().line as i64;
-                let at = if delta > 0 { cursor - delta } else { cursor }.max(0) as u32;
-                self.debugger.update(cx, |debugger, cx| debugger.shift_breakpoints(&path, at, delta, cx));
+            let before = self.tabs[ix].text.replace(text.clone());
+            let marked = !self.debugger.read(cx).breakpoints.of(&path).is_empty();
+            if marked
+                && let Some(before) = before
+                && let Some((range, with)) = editing::difference(&before, &text)
+            {
+                let edit = debug::LineEdit::new(&before, range, &with);
+                self.debugger.update(cx, |debugger, cx| debugger.shift_breakpoints(&path, edit, cx));
             }
         }
         // Editing a preview turns it into a pinned tab.

@@ -39,43 +39,54 @@ struct TreeRow {
 enum RowKind {
     Value,
     Loading,
-    /// More children to load (of the value with that ref).
-    More(u64, u64),
+    /// More children to load (of the value with that ref): how many, when
+    /// it's known.
+    More(u64, Option<u64>),
+    /// Children that couldn't be had, and why.
+    Error(String),
 }
 
 impl Debugger {
     fn tree(&self, rows: &mut Vec<TreeRow>, key: String, depth: usize, var: &Var, expr: Option<String>) {
         let expanded = var.reference != 0 && self.expanded.contains(&key);
         rows.push(TreeRow { key: key.clone(), depth, var: var.clone(), expanded, expr: expr.clone(), kind: RowKind::Value });
-        if !expanded {
-            return;
+        if expanded {
+            self.children_rows(rows, &key, depth + 1, var, |child| {
+                expr.as_deref().map(|parent| child_path(parent, &child.name))
+            });
         }
-        match self.children.get(&var.reference) {
-            Some(children) => {
-                for child in &children.vars {
-                    let child_expr = expr.as_deref().map(|parent| child_path(parent, &child.name));
-                    self.tree(rows, format!("{key}/{}", child.name), depth + 1, child, child_expr);
-                }
-                let total = var.count.max(children.total);
-                if (children.vars.len() as u64) < total {
-                    rows.push(TreeRow {
-                        key: format!("{key}/…"),
-                        depth: depth + 1,
-                        var: Var::default(),
-                        expanded: false,
-                        expr: None,
-                        kind: RowKind::More(var.reference, total - children.vars.len() as u64),
-                    });
-                }
-            }
-            None => rows.push(TreeRow {
-                key: format!("{key}/…"),
-                depth: depth + 1,
-                var: Var::default(),
-                expanded: false,
-                expr: None,
-                kind: RowKind::Loading,
-            }),
+    }
+
+    /// The children of the expanded `var` at `depth`, a page at a time,
+    /// each named by `expr_of`.
+    fn children_rows(
+        &self,
+        rows: &mut Vec<TreeRow>,
+        key: &str,
+        depth: usize,
+        var: &Var,
+        expr_of: impl Fn(&Var) -> Option<String>,
+    ) {
+        let row = |kind| TreeRow { key: format!("{key}/…"), depth, var: Var::default(), expanded: false, expr: None, kind };
+        let Some(children) = self.children.get(&var.reference) else {
+            rows.push(row(RowKind::Loading));
+            return;
+        };
+        for child in &children.vars {
+            self.tree(rows, format!("{key}/{}", child.name), depth, child, expr_of(child));
+        }
+        // without a count, there are more while pages come back full
+        let loaded = children.vars.len() as u64;
+        let more = if var.count > 0 {
+            (loaded < var.count).then_some(Some(var.count - loaded))
+        } else {
+            children.more.then_some(None)
+        };
+        if let Some(error) = &children.error {
+            rows.push(row(RowKind::Error(error.clone())));
+        }
+        if let Some(left) = more {
+            rows.push(row(RowKind::More(var.reference, left)));
         }
     }
 
@@ -94,23 +105,9 @@ impl Debugger {
             };
             // its children are named by themselves, not as members
             let expanded = self.expanded.contains("g");
-            rows.push(TreeRow { key: "g".into(), depth: 0, var: globals, expanded, expr: None, kind: RowKind::Value });
+            rows.push(TreeRow { key: "g".into(), depth: 0, var: globals.clone(), expanded, expr: None, kind: RowKind::Value });
             if expanded {
-                match self.children.get(&self.globals) {
-                    Some(children) => {
-                        for var in &children.vars {
-                            self.tree(&mut rows, format!("g/{}", var.name), 1, var, Some(var.name.clone()));
-                        }
-                    }
-                    None => rows.push(TreeRow {
-                        key: "g/…".into(),
-                        depth: 1,
-                        var: Var::default(),
-                        expanded: false,
-                        expr: None,
-                        kind: RowKind::Loading,
-                    }),
-                }
+                self.children_rows(&mut rows, "g", 1, &globals, |var| Some(var.name.clone()));
             }
         }
         rows
@@ -478,7 +475,24 @@ impl Debugger {
                     );
                     continue;
                 }
+                RowKind::Error(error) => {
+                    list = list.child(
+                        div()
+                            .h(px(ROW))
+                            .pl(pad + px(16.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(theme.danger)
+                            .child(error),
+                    );
+                    continue;
+                }
                 RowKind::More(reference, left) => {
+                    let label = match left {
+                        Some(left) => format!("Show {} more…", left.min(super::PAGE)),
+                        None => "Show more…".to_string(),
+                    };
                     list = list.child(
                         div()
                             .id(SharedString::from(format!("{id}-{}", row.key)))
@@ -486,7 +500,7 @@ impl Debugger {
                             .pl(pad + px(16.))
                             .text_color(theme.link)
                             .hover(|style| style.underline())
-                            .child(format!("Show {} more…", left.min(super::PAGE)))
+                            .child(label)
                             .on_click(cx.listener(move |this, _, _, _| this.fetch_more(reference))),
                     );
                     continue;
@@ -731,7 +745,7 @@ impl Debugger {
                             }))
                     }))
                     .into_any_element(),
-                ConsoleLine::Result(var) => {
+                ConsoleLine::Result(var, _) => {
                     let mut rows = Vec::new();
                     self.tree(&mut rows, format!("c{ix}"), 0, &Var { name: String::new(), ..var.clone() }, None);
                     self.render_rows("console", rows, None, cx)
