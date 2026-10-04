@@ -358,7 +358,19 @@ mod tests {
         let script = task.join(".den/format");
         std::fs::write(&script, "#!/bin/sh\ncase \"$1\" in *.xml) tr a-z A-Z ;; *.bad) echo broken >&2; exit 1 ;; *) exit 2 ;; esac\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let Response::Formatted { text, by } = format(&task, &task.join("a.xml"), "<a/>").unwrap() else { panic!() };
+        // Another test's child, forked while the script was open for writing,
+        // keeps it "busy" (ETXTBSY) until it execs: wait that out.
+        let mut first = format(&task, &task.join("a.xml"), "<a/>");
+        for _ in 0..50 {
+            match &first {
+                Err(err) if format!("{err:#}").contains("os error 26") => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    first = format(&task, &task.join("a.xml"), "<a/>");
+                }
+                _ => break,
+            }
+        }
+        let Response::Formatted { text, by } = first.unwrap() else { panic!() };
         assert_eq!((text.as_deref(), by.as_deref()), (Some("<A/>"), Some(".den/format")));
         let Response::Formatted { text, by } = format(&task, &task.join("a.json"), "{\"a\":1}").unwrap() else { panic!() };
         assert_eq!((text.as_deref(), by.as_deref()), (Some("{\n    \"a\": 1\n}"), Some("json")));
