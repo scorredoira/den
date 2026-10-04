@@ -140,18 +140,18 @@ fn page_of(hello: &Map<String, Value>) -> Option<String> {
 }
 
 /// A configuration's `command` as it is run: `${file}` is the open file,
-/// relative to the workspace, quoted for the shell when it needs it.
-pub fn command_line(command: &str, file: Option<&str>) -> Result<String, String> {
-    if !command.contains("${file}") {
-        return Ok(command.to_string());
-    }
-    let file = file.ok_or("The command uses ${file}: open the file to debug.")?;
+/// relative to the workspace, quoted for the shell when it needs it. With no
+/// file open it is empty, and the program decides what to debug without one.
+pub fn command_line(command: &str, file: Option<&str>) -> String {
+    let Some(file) = file else {
+        return command.replace("${file}", "");
+    };
     let quoted = if file.chars().all(|c| c.is_alphanumeric() || "/._-+".contains(c)) {
         file.to_string()
     } else {
         format!("'{}'", file.replace('\'', r"'\''"))
     };
-    Ok(command.replace("${file}", &quoted))
+    command.replace("${file}", &quoted)
 }
 
 /// A value shown by hovering its name, opened like a variable.
@@ -1883,10 +1883,11 @@ mod tests {
 
     #[test]
     fn a_command_gets_the_open_file() {
-        assert_eq!(command_line("sim -d ${file}", Some("cmd/tool.ts")).unwrap(), "sim -d cmd/tool.ts");
-        assert_eq!(command_line("sim -d ${file}", Some("my dir/it's.ts")).unwrap(), r"sim -d 'my dir/it'\''s.ts'");
-        assert_eq!(command_line("sim -d server", None).unwrap(), "sim -d server");
-        assert!(command_line("sim -d ${file}", None).is_err());
+        assert_eq!(command_line("sim -d ${file}", Some("cmd/tool.ts")), "sim -d cmd/tool.ts");
+        assert_eq!(command_line("sim -d ${file}", Some("my dir/it's.ts")), r"sim -d 'my dir/it'\''s.ts'");
+        assert_eq!(command_line("sim -d server", None), "sim -d server");
+        // no file open: the program decides what to debug without one
+        assert_eq!(command_line("sim -d ${file}", None), "sim -d ");
     }
 
     #[test]

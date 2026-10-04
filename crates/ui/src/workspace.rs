@@ -1922,13 +1922,7 @@ impl Workspace {
                     let path = &self.tabs[ix].path;
                     path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/")
                 });
-                let line = match debug::command_line(line, file.as_deref()) {
-                    Ok(line) => line,
-                    Err(error) => {
-                        debugger.update(cx, |debugger, cx| debugger.fail(error, cx));
-                        return;
-                    }
-                };
+                let line = debug::command_line(line, file.as_deref());
                 // A tab with the terminals, the debugger stays in front.
                 if !self.debugger_with_terminals(cx) {
                     self.show_panel(Panel::Terminals, cx);
@@ -3825,14 +3819,7 @@ impl Workspace {
         };
         let file = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
         let command = tests.command(debug, test);
-        let line = match debug::command_line(&command, Some(&file)) {
-            Ok(line) => line,
-            Err(error) => {
-                self.message = Some(error.into());
-                cx.notify();
-                return;
-            }
-        };
+        let line = debug::command_line(&command, Some(&file));
         if debug {
             self.debugger.update(cx, |debugger, cx| {
                 debugger.launch_command(line, tests.port, path.to_path_buf(), test.to_string(), window, cx)
