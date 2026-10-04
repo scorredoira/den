@@ -220,11 +220,11 @@ impl Workspace {
     }
 
     /// What Show Panel and the activity bar's menu list: every side panel,
-    /// checked while it's in the place the column shows; the terminals,
-    /// the device and the notes, while they show.
+    /// checked while it's in the place the column shows (none while it's
+    /// closed); the terminals, the device and the notes, while they show.
     pub(crate) fn menu_panels(&self, cx: &App) -> Vec<(Panel, bool)> {
         let layout = &Config::get(cx).layout;
-        let here = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
+        let here = self.side_place(cx).map(|place| layout.panels(place)).unwrap_or_default();
         let mut panels: Vec<(Panel, bool)> =
             Group::ALL.into_iter().flat_map(|group| group.panels()).map(|panel| (*panel, here.contains(panel))).collect();
         panels.push((Panel::Terminals, self.is_shown(Panel::Terminals, cx)));
@@ -236,7 +236,8 @@ impl Workspace {
     }
 
     /// A panel of that menu: a side panel comes to the place the column
-    /// shows, from wherever it is, or goes off it; the others show or hide.
+    /// shows, from wherever it is (one there already, or hidden there,
+    /// keeps its spot), or goes off it; the others show or hide.
     pub(crate) fn toggle_from_menu(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
         match panel {
             Panel::Terminals => self.set_terminals_visible(!self.is_shown(panel, cx), window, cx),
