@@ -59,6 +59,15 @@ enum Programs {
 /// How much of what a program wrote to stderr is kept, to say why it ended.
 const STDERR_TAIL: usize = 2000;
 
+/// What the panel asks of the workspace.
+pub enum DeviceEvent {
+    /// Pick a widget on the phone: the program being debugged shows the
+    /// line that made it.
+    Inspect,
+}
+
+impl EventEmitter<DeviceEvent> for Device {}
+
 /// A device, and the program that serves it (as the device file names it).
 #[derive(Clone, Debug, PartialEq)]
 struct Choice {
@@ -376,6 +385,12 @@ impl Device {
     #[cfg(not(target_os = "macos"))]
     fn on_frame(&mut self, _: u32) {}
 
+    /// Says why the inspect asked for can't happen, until the next one.
+    pub fn warn(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.warning = Some(text.to_string());
+        cx.notify();
+    }
+
     fn send(&self, command: String) {
         if let Some(serving) = &self.serving {
             // Unbounded: it fails only once the program is gone, which its
@@ -489,6 +504,10 @@ impl Device {
             .child(
                 tool("device-home", "icons/house.svg", "Home", running, theme.foreground, cx)
                     .on_click(cx.listener(|this, _, _, _| this.send(protocol::home()))),
+            )
+            .child(
+                tool("device-inspect", "icons/crosshair.svg", "Inspect: tap a widget to see the line that made it", running, theme.foreground, cx)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DeviceEvent::Inspect))),
             )
             .child(
                 tool("device-rotate-left", "icons/rotate-ccw.svg", "Rotate Left", running, theme.foreground, cx)

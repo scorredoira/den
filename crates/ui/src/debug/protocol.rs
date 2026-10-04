@@ -62,6 +62,9 @@ pub enum Event {
     Stopped(Box<Stop>),
     Resumed { vm: u64 },
     Output { text: String, file: String, line: u32 },
+    /// The program asks to show a place of its files: the line that made a
+    /// widget picked on a phone (its `inspect` command).
+    Reveal { file: String, line: u32 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -86,6 +89,10 @@ pub fn parse(line: &str) -> Result<Message, String> {
             "resumed" => Message::Event(Event::Resumed { vm: value["vm"].as_u64().unwrap_or(0) }),
             "output" => Message::Event(Event::Output {
                 text: value["text"].as_str().unwrap_or_default().to_string(),
+                file: value["file"].as_str().unwrap_or_default().to_string(),
+                line: value["line"].as_u64().unwrap_or(0) as u32,
+            }),
+            "reveal" => Message::Event(Event::Reveal {
                 file: value["file"].as_str().unwrap_or_default().to_string(),
                 line: value["line"].as_u64().unwrap_or(0) as u32,
             }),
@@ -160,6 +167,14 @@ mod tests {
         assert_eq!(
             parse(r#"{"id":5,"ok":false,"error":"x is not defined"}"#).unwrap(),
             Message::Response { id: 5, result: Err("x is not defined".into()) }
+        );
+    }
+
+    #[test]
+    fn a_program_asks_to_show_a_place() {
+        assert_eq!(
+            parse(r#"{"event":"reveal","file":"client/scl/uicatalog/shell.ts","line":394}"#).unwrap(),
+            Message::Event(Event::Reveal { file: "client/scl/uicatalog/shell.ts".into(), line: 394 })
         );
     }
 

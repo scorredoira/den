@@ -189,6 +189,7 @@ A stop carries everything needed to show it, so it costs no round trip.
 | `expand` | `ref`, `start?`, `count?` | `vars: [Var]`, a page of the children. |
 | `eval` | `vm`, `frame`, `expr` | A `Var` named `expr`. `a = expr` and `a.b[0] = expr` assign. |
 | `threads` | | `running`, `stopped: [vm]` |
+| `inspect` | `on` | The program's own, when it has one: an app with widgets lets the person pick one on its screen, and answers with a `reveal` of the line that made it. An unknown command is an error. |
 
 `setBreakpoints` replaces every breakpoint of the file. A breakpoint on a line
 without code may move to the next line with code; the result says where.
@@ -209,5 +210,6 @@ asked for.
 | `stopped` | a `Stop` |
 | `resumed` | `vm`, sent before the VM runs again |
 | `output` | `text`, `file`, `line` |
+| `reveal` | `file`, `line`: a place the program asks to show. Den opens it in the editor. |
 
 Programs that implement it: sim (`sim -d`, see its `debugger.md`).

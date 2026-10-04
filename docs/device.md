@@ -31,7 +31,10 @@ keeps running while its workspace is open.
 
 Building and opening the app on the device, and debugging it, belong in the
 debugger's launch file (`docs/debugger.md`), not here: the panel only shows
-the device and drives it.
+the device and drives it. Its Inspect button asks the program being debugged
+(the debugger's `inspect`) to let the person pick a widget on the phone; the
+line that made it opens in the editor (`reveal`). With nothing being
+debugged, the panel says so.
 
 ## The protocol
 
