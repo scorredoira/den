@@ -1,6 +1,6 @@
 # Keyboard Shortcuts
 
-Den keeps a **workspace** for each folder you open: its files, its terminals and its Claude Code session. A git repo's **worktrees** are workspaces too, folded under the repo in the workspaces column, so several branches can be open side by side. Terminals live in an agent, on this machine or on a server: closing Den doesn't stop them, and they come back as they were.
+Den keeps a **workspace** for each folder you open: its files, its terminals and its Claude Code session. A git repo's **worktrees** are workspaces too, listed with the repo in the Workspaces panel, so several branches can be open side by side. Terminals live in an agent, on this machine or on a server: closing Den doesn't stop them, and they come back as they were.
 
 From any terminal, `den <folder or file>` opens it in Den.
 
@@ -14,7 +14,7 @@ The shortcuts below are the current ones: change them in Settings → Keyboard S
 | {{OpenFileFinder}} | Go to a file by name |
 | {{OpenTaskPicker}} | Go to a workspace, on any server |
 | {{PreviousTask}} | Switch workspace, as Cmd-Tab: the previous one, then those with an agent, waiting ones first; holding Cmd, E again goes further, Shift-E back; let go to enter |
-| {{NextActiveTask}} | Go straight into the next workspace with an agent; while Cmd is down the workspaces column shows where it is (over the window if hidden) and, at the bottom, its notes and agents |
+| {{NextActiveTask}} | Go straight into the next workspace with an agent; while Cmd is down the workspaces show where it is (over the window if hidden) and, at the bottom, its notes and agents |
 | {{NextTask}} | Go straight into the next workspace |
 | {{OpenFolder}} | Open a folder |
 | {{OpenRemoteFolder}} | Open a folder on a server |
@@ -25,7 +25,7 @@ The shortcuts below are the current ones: change them in Settings → Keyboard S
 
 | Shortcut | Does |
 | --- | --- |
-| {{ToggleTasks}} | Show or hide the workspaces column |
+| {{ToggleTasks}} | Show or hide the workspaces |
 | {{NewTask}} | New worktree in the current repo |
 
 Right-click a workspace to hide it, remove it from the list (nothing on disk is touched) or delete a worktree. Drag them to reorder: a repo moves with its worktrees.
@@ -95,7 +95,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{StepOver}} / {{StepInto}} / {{StepOut}} | Step over, into, out |
 | {{RunToCursor}} | Run to the cursor's line |
 | {{SetNextStatement}} | Make the cursor's line the next one to run |
-| {{ToggleDebugPanel}} | Show or hide the debugger |
+| {{ToggleDebugPanel}} | Show or hide Run and Debug: the call stack, the variables, the watches and the breakpoints |
 
 ## Search
 
@@ -110,16 +110,16 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 
 | Shortcut | Does |
 | --- | --- |
-| {{ToggleSidePanel}} | Show or hide the side panel |
+| {{ToggleSidePanel}} | Show or hide the side column |
 | {{ShowFiles}} | Files |
 | {{CollapseFileTree}} | Collapse all the folders |
 | {{ShowChanges}} | Changes: what isn't committed |
 | {{ShowHistory}} | History: the commits, searchable by hash, message or author |
-| {{ToggleCommitFiles}} | The selected commit's files, under the commits or in their own panel |
+| {{ToggleCommitFiles}} | The selected commit's files, under the commits |
 | {{ShowReferences}} | References |
 | {{ShowOutline}} | Outline: the classes, functions, constants… of the file in front, not what's inside the functions |
 
-Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there. Right-click anywhere in a panel to hide it; in the history, or the commit's files, to show or hide those files too. In the history, ↑ and ↓ go through the commits. Right-click the bar, or go to View > Activity Bar, to take an icon off it; View > Reset Layout puts every panel back where it starts. Each workspace keeps its own panels, where they are and which show; a new one starts with the files, the code and the terminals.
+The activity bar, on the left, has an icon for each group of the side column: the explorer (workspaces, agents, files, outline), search, source control and Run and Debug. A click shows its group, or closes the column if it's the one showing. A click on a panel's header folds it; drag its lower edge to size it. Right-click anywhere in a panel to hide the column; in the history, to show or hide the commit's files too. In the history, ↑ and ↓ go through the commits. View > Reset Layout puts everything back where it starts. Each workspace keeps which group shows and whether the terminals do; a new one starts with the explorer, the code and the terminals.
 
 ## Terminals
 
@@ -127,7 +127,8 @@ Each panel has an icon in the activity bar, on the left: a click shows or hides 
 | --- | --- |
 | {{ToggleTerminals}} | Show or hide the terminals |
 | {{MaximizeTerminals}} | Terminals over the whole window, or back |
-| {{ToggleNotes}} | The workspace's notes, to write what's next in it, or back |
+| {{MoveTerminals}} | Terminals under the code, or back on its right |
+| {{ToggleNotes}} | The workspace's notes, over the window, to write what's next in it, or close them |
 | {{NewTerminal}} | New terminal |
 | {{SplitRight}} / {{SplitDown}} | Split the terminal to the right or down |
 | {{FocusPaneLeft}} {{FocusPaneRight}} {{FocusPaneUp}} {{FocusPaneDown}} | Move to the terminal on that side |

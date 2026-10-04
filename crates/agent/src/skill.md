@@ -19,7 +19,7 @@ full list; the main ones:
 - `den workspace <path|name|branch>` brings a workspace to the front;
   `den close <file>` (or `--all`) closes tabs, never one with unsaved
   changes; `den panel show|hide <panel>` (files, terminals, debugger,
-  device, changes, notes, search, outline…); `den reveal <file>` selects
+  console, device, changes, notes, search, outline…); `den reveal <file>` selects
   it in the files panel.
 - `den show <file>:<line>` opens the file at that line for the user;
   `den show <file>:<line>-<line>` (or `<line>:<col>-<line>:<col>`) selects

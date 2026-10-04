@@ -1,27 +1,22 @@
 use super::*;
-use crate::config::Side;
+use crate::config::{Dock, Group};
 use core::prelude::v1::test;
 
-/// Draws a workspace with a file, the terminals and the debugger open (in
-/// front of its place, unless it's the terminals'), the panels where
-/// `layout` says.
+/// Draws a workspace with a file open, as a new one shows: the explorer,
+/// the code and the terminals; `layout` first changes where things go.
 fn draw(cx: &mut TestAppContext, layout: impl FnOnce(&mut config::Layout)) -> (Entity<Workspace>, &mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         let mut config = Config::default();
-        // Every icon on the bar.
-        config.hidden_activity = Some(Vec::new());
+        layout(&mut config.layout);
         cx.set_global(config);
     });
     let (workspace, cx) = cx.add_window_view(|window, cx| {
         let mut workspace = Workspace::new(PathBuf::from("/layout-test"), None, true, "layout-test".into(), window, cx);
-        layout(&mut workspace.layout);
         let mut tab = workspace.new_tab(PathBuf::from("main.ts"), false, window, cx);
         tab.content = Content::Ready;
         workspace.tabs.push(tab);
         workspace.activate(0, window, cx);
-        workspace.show_panel(Panel::Debugger, cx);
-        workspace.show_panel(Panel::Terminals, cx);
         workspace
     });
     cx.run_until_parked();
@@ -39,287 +34,163 @@ fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> 
 }
 
 #[gpui_kit::test]
-fn files_code_and_terminals_with_the_debugger_as_their_tab(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
+fn the_side_column_the_code_and_the_terminals(cx: &mut TestAppContext) {
+    let (_, cx) = draw(cx, |_| {});
+    let side = bounds(cx, "side-column");
     let files = bounds(cx, "stack-Files");
     let code = bounds(cx, "editor-body-0");
     let terminals = bounds(cx, "terminals");
-    assert!(files.right() <= code.left(), "{files:?} {code:?}");
+    assert!(files.left() >= side.left() && files.right() <= side.right(), "{files:?} {side:?}");
+    assert!(side.right() <= code.left(), "{side:?} {code:?}");
     assert!(terminals.left() >= code.right(), "{terminals:?} {code:?}");
-    // Behind its tab; in front, under the terminals' bar.
-    assert!(cx.debug_bounds("debugger").is_none());
-    let tab = bounds(cx, "debug-tab");
-    click(cx, "debug-tab");
-    let debugger = bounds(cx, "debugger");
-    assert!(debugger.left() >= code.right() && debugger.top() >= tab.bottom(), "{debugger:?} {tab:?}");
-    // Closing its tab, the terminals show again and the tab goes; showing
-    // it (debugging) brings it back in front.
-    click(cx, "debug-tab-close");
-    assert!(cx.debug_bounds("debugger").is_none());
-    assert!(cx.debug_bounds("debug-tab").is_none());
-    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
-    workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Debugger, cx));
-    cx.run_until_parked();
-    bounds(cx, "debugger");
-    // The same key hides it, as its tab's close does.
-    workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Debugger, cx));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("debug-tab").is_none());
-    bounds(cx, "terminals");
+    // The explorer's panels one above the other, the outline folded.
+    let agents = bounds(cx, "stack-Agents");
+    assert!(agents.bottom() <= files.top(), "{agents:?} {files:?}");
+    let outline = bounds(cx, "stack-Outline");
+    assert!(outline.top() >= files.bottom() && outline.size.height <= px(24.), "{outline:?}");
 }
 
 #[gpui_kit::test]
-fn columns_in_any_order(cx: &mut TestAppContext) {
-    // Files, debugger, code, terminals; the changes a column of their own.
-    let (_, cx) = draw(cx, |layout| {
-        assert!(layout.move_panel(Panel::Debugger, Panel::Code, Side::Left));
-        assert!(layout.move_panel(Panel::Changes, Panel::Terminals, Side::Right));
-    });
-    let files = bounds(cx, "stack-Files");
-    let debugger = bounds(cx, "debugger");
-    let code = bounds(cx, "editor-body-0");
-    let terminals = bounds(cx, "terminals");
-    let changes = bounds(cx, "stack-Changes");
-    assert!(files.right() <= debugger.left(), "{files:?} {debugger:?}");
-    assert!(debugger.right() <= code.left(), "{debugger:?} {code:?}");
-    assert!(code.right() <= terminals.left(), "{code:?} {terminals:?}");
-    assert!(terminals.right() <= changes.left(), "{terminals:?} {changes:?}");
-}
-
-#[gpui_kit::test]
-fn dragging_the_terminals_icon_under_the_code(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    let start = bounds(cx, "activity-Terminals").center();
-    let code = bounds(cx, "stack-Code");
-    let end = point(code.center().x, code.bottom() - px(10.));
-    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    cx.update(|_, cx| {
-        assert!(cx.has_active_drag());
-        assert_eq!(workspace.read(cx).panel_drop, Some((Panel::Code, crate::drag_drop::DropPlacement::Bottom)));
-    });
-    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    cx.run_until_parked();
-    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
-    let (column, stack) = layout.find(Panel::Terminals).unwrap();
-    assert_eq!(layout.find(Panel::Code), Some((column, stack - 1)));
+fn the_terminals_go_under_the_code(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| layout.dock = Dock::Bottom);
     let code = bounds(cx, "editor-body-0");
     let terminals = bounds(cx, "terminals");
     assert!(terminals.top() >= code.bottom(), "{terminals:?} {code:?}");
-    assert_eq!(cx.update(|_, cx| workspace.read(cx).panel_drop), None);
-}
-
-/// Drags from `selector` to the bottom of the code: what it moves goes under it.
-fn drag_under_the_code(cx: &mut VisualTestContext, selector: &'static str) {
-    let start = bounds(cx, selector).center();
-    let code = bounds(cx, "stack-Code");
-    let end = point(code.center().x, code.bottom() - px(10.));
-    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    cx.update(|_, cx| assert!(cx.has_active_drag()));
-    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    assert!(terminals.left() < code.right(), "{terminals:?} {code:?}");
+    // And back on its right.
+    workspace.update(cx, |workspace, cx| workspace.move_terminals(cx));
     cx.run_until_parked();
+    let code = bounds(cx, "editor-body-0");
+    let terminals = bounds(cx, "terminals");
+    assert!(terminals.left() >= code.right(), "{terminals:?} {code:?}");
 }
 
 #[gpui_kit::test]
-fn a_panel_drags_by_its_title(cx: &mut TestAppContext) {
+fn a_group_icon_shows_its_group_or_closes_the_column(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    drag_under_the_code(cx, "title-Files");
-    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
-    let (column, stack) = layout.find(Panel::Files).unwrap();
-    assert_eq!(layout.find(Panel::Code), Some((column, stack - 1)));
-}
-
-#[gpui_kit::test]
-fn the_terminals_drag_by_their_bar_past_the_tabs(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    drag_under_the_code(cx, "terminal-tab-end");
-    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
-    let (column, stack) = layout.find(Panel::Terminals).unwrap();
-    assert_eq!(layout.find(Panel::Code), Some((column, stack - 1)));
-}
-
-#[gpui_kit::test]
-fn dropping_the_changes_on_the_terminals_bar_puts_them_together(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    let start = bounds(cx, "activity-Changes").center();
-    let terminals = bounds(cx, "stack-Terminals");
-    let end = point(terminals.center().x, terminals.top() + px(10.));
-    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    // Over their bar, the preview says it joins them, not that it goes above.
-    let drop = cx.update(|_, cx| workspace.read(cx).panel_drop);
-    assert_eq!(drop, Some((Panel::Terminals, crate::drag_drop::DropPlacement::Center)));
-    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    cx.run_until_parked();
-    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
-    let (column, stack) = layout.find(Panel::Terminals).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Terminals, Panel::Debugger, Panel::Notes, Panel::Changes]);
-    // The panel dropped shows; the terminals are behind it.
-    cx.update(|_, cx| {
-        assert!(workspace.read(cx).is_shown(Panel::Changes, cx));
-        assert!(!workspace.read(cx).is_shown(Panel::Terminals, cx));
+    click(cx, "activity-Group(Git)");
+    assert!(cx.debug_bounds("stack-Files").is_none());
+    bounds(cx, "stack-Changes");
+    bounds(cx, "stack-History");
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::Changes, cx));
+        assert!(!workspace.is_shown(Panel::Workspaces, cx));
     });
+    // Its icon again: the column closes and the code takes its width.
+    let code = bounds(cx, "editor-body-0");
+    click(cx, "activity-Group(Git)");
+    assert!(cx.debug_bounds("side-column").is_none());
+    assert!(bounds(cx, "editor-body-0").left() < code.left());
+    // Cmd-B brings it back with the same group.
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_side_panel(&ToggleSidePanel, window, cx));
+    cx.run_until_parked();
     bounds(cx, "stack-Changes");
 }
 
 #[gpui_kit::test]
-fn closing_a_stack_gives_its_width_to_the_code(cx: &mut TestAppContext) {
+fn a_panel_folds_by_its_header(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    let before = bounds(cx, "editor-body-0");
-    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    let files = bounds(cx, "stack-Files");
+    click(cx, "title-Agents");
+    assert!(!workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Agents, cx)));
+    // Folded, the others take its room.
+    assert!(bounds(cx, "stack-Files").top() < files.top());
+    // Showing it unfolds it.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Agents, cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("terminals").is_none());
-    let after = bounds(cx, "editor-body-0");
-    assert!(after.size.width > before.size.width, "{after:?} {before:?}");
-    // Cmd-B closes the stack with the files, whichever panel it shows.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));
-    cx.dispatch_action(ToggleSidePanel);
+    assert!(workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Agents, cx)));
+    // Showing a panel of another group shows that group.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Watch, cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("stack-Search").is_none());
-    cx.dispatch_action(ToggleSidePanel);
-    cx.run_until_parked();
-    bounds(cx, "stack-Search");
+    bounds(cx, "stack-Watch");
+    bounds(cx, "debugger");
+    assert!(cx.debug_bounds("stack-Files").is_none());
 }
 
 #[gpui_kit::test]
-fn the_code_shares_a_place_like_any_panel(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |layout| assert!(layout.move_panel(Panel::Code, Panel::Search, Side::Tab(Some(Panel::Search)))));
-    // It has no icon: it stays where it is.
-    assert!(cx.debug_bounds("activity-Code").is_none());
-    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
-    let (column, stack) = layout.find(Panel::Code).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Code, Panel::Search, Panel::References, Panel::Outline]);
-    bounds(cx, "editor-body-0");
-    // Another panel there hides it; hiding that one brings it back, its place
-    // never closes.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Files, cx));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("editor-body-0").is_none());
-    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Files, cx));
-    cx.run_until_parked();
-    bounds(cx, "editor-body-0");
-    // Opening a file shows it too.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Search, cx));
-    workspace.update_in(cx, |workspace, window, cx| workspace.activate(0, window, cx));
-    cx.run_until_parked();
-    bounds(cx, "editor-body-0");
-}
-
-#[gpui_kit::test]
-fn the_workspaces_are_a_panel(cx: &mut TestAppContext) {
+fn the_workspaces_are_a_panel_of_the_explorer(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     let panel = cx.update(|_, cx| {
         cx.new(|_| WorkspacesPanel::new(|_, _| div().size_full().debug_selector(|| "workspaces".into()).into_any_element()))
     });
-    workspace.update(cx, |workspace, cx| workspace.set_workspaces(&panel, true, cx));
+    workspace.update(cx, |workspace, _| workspace.set_workspaces(&panel));
+    workspace.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
     let workspaces = bounds(cx, "workspaces");
-    assert!(workspaces.right() <= bounds(cx, "stack-Files").left(), "on the left by default");
-    assert!(bounds(cx, "activity-Workspaces").right() <= workspaces.left(), "the activity bar, left of everything");
-    // Hidden from the workspace, the app's choice changes for every task.
+    assert!(workspaces.bottom() <= bounds(cx, "stack-Files").top());
+    // Hiding them closes the explorer.
     workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Workspaces, cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("workspaces").is_none());
-    assert_eq!(cx.update(|_, cx| Config::get(cx).tasks_column), Some(false));
-    // Shown again by the app, it's in front of its stack.
-    workspace.update(cx, |workspace, cx| {
-        assert!(workspace.layout.move_panel(Panel::Workspaces, Panel::Files, Side::Tab(None)));
-        workspace.show_panel(Panel::Files, cx);
-        workspace.set_workspaces(&panel, true, cx);
-    });
-    cx.run_until_parked();
-    bounds(cx, "workspaces");
+    assert!(cx.debug_bounds("side-column").is_none());
 }
 
 #[gpui_kit::test]
-fn an_icon_shows_and_hides_its_panel_where_it_is(cx: &mut TestAppContext) {
+fn the_debug_console_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    let shown = |panel, cx: &mut VisualTestContext| workspace.read_with(cx, |workspace, cx| workspace.is_shown(panel, cx));
-    // The changes, a tab behind the files: to the front.
-    click(cx, "activity-Changes");
-    assert!(shown(Panel::Changes, cx));
-    bounds(cx, "stack-Changes");
-    // Again: their place closes.
-    click(cx, "activity-Changes");
-    assert!(!shown(Panel::Changes, cx));
-    assert!(cx.debug_bounds("stack-Changes").is_none());
-    assert!(cx.debug_bounds("stack-Files").is_none());
-    // The terminals, a column of their own, close and open again.
-    click(cx, "activity-Terminals");
-    assert!(cx.debug_bounds("terminals").is_none());
-    click(cx, "activity-Terminals");
-    bounds(cx, "terminals");
+    assert!(cx.debug_bounds("console-tab").is_none());
+    // A session starts: the Run and Debug group, and the console's tab.
+    workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
+    cx.run_until_parked();
+    bounds(cx, "debugger");
+    bounds(cx, "stack-CallStack");
+    assert!(cx.debug_bounds("debug-console").is_none(), "behind its tab");
+    click(cx, "console-tab");
+    let console = bounds(cx, "debug-console");
+    assert!(console.left() >= bounds(cx, "editor-body-0").right());
+    // Closed, the terminals show again and the tab goes.
+    click(cx, "console-tab-close");
+    assert!(cx.debug_bounds("console-tab").is_none());
+    assert!(cx.debug_bounds("debug-console").is_none());
+    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
 }
 
 #[gpui_kit::test]
-fn dragging_an_icon_within_the_bar_reorders_it(cx: &mut TestAppContext) {
+fn the_notes_open_over_the_window(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    let start = bounds(cx, "activity-Debugger").center();
-    let end = bounds(cx, "activity-Files").center();
-    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(start - point(px(0.), px(12.)), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    assert!(cx.debug_bounds("notes-modal").is_none());
+    click(cx, "activity-Notes");
+    let notes = bounds(cx, "notes-modal");
+    let code = bounds(cx, "editor-body-0");
+    assert!(notes.left() > code.left() && notes.right() < code.right() + px(400.), "{notes:?}");
+    // A click outside closes them.
+    cx.simulate_click(point(px(5.), px(5.)), Modifiers::default());
     cx.run_until_parked();
-    let order = cx.update(|_, cx| Config::get(cx).activity());
-    assert_eq!(order[..3], [Panel::Workspaces, Panel::Debugger, Panel::Files]);
-    assert!(bounds(cx, "activity-Debugger").bottom() <= bounds(cx, "activity-Files").top());
-    // The layout didn't change.
-    let layout = cx.update(|_, cx| workspace.read(cx).layout.clone());
-    assert!(layout == config::Layout::default());
+    assert!(cx.debug_bounds("notes-modal").is_none());
+    assert!(!workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Notes, cx)));
 }
 
-/// Each workspace has its own panels, where it put them and as it left them:
-/// showing, hiding or moving one in a workspace leaves the others as they
-/// were. The workspaces column is the window's: shown, it shows in all.
 #[gpui_kit::test]
 fn each_workspace_has_its_own_panels(cx: &mut TestAppContext) {
     let (first, cx) = draw(cx, |_| {});
     let second = first.update_in(cx, |_, window, cx| cx.new(|cx| Workspace::new(PathBuf::from("/other"), None, true, "other".into(), window, cx)));
     first.update(cx, |workspace, cx| workspace.show_panel(Panel::Changes, cx));
     assert!(!second.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Changes, cx)));
-    // A new one shows the files, the code and the terminals, nothing else.
+    // A new one shows the explorer, the code and the terminals, nothing else.
     second.read_with(cx, |workspace, cx| {
-        for panel in [Panel::Files, Panel::Code, Panel::Terminals] {
+        for panel in [Panel::Files, Panel::Agents, Panel::Code, Panel::Terminals] {
             assert!(workspace.is_shown(panel, cx), "{panel:?}");
         }
-        for panel in [Panel::Debugger, Panel::Device, Panel::Changes] {
+        for panel in [Panel::Debugger, Panel::Device, Panel::Changes, Panel::Outline, Panel::Notes] {
             assert!(!workspace.is_shown(panel, cx), "{panel:?}");
         }
     });
     second.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
     assert!(first.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Terminals, cx)));
-    // Where it goes too.
-    first.update(cx, |workspace, cx| {
-        assert!(workspace.layout.move_panel(Panel::Terminals, Panel::Code, Side::Bottom));
-        workspace.layout_changed(cx);
-    });
-    assert!(second.read_with(cx, |workspace, _| workspace.layout == config::Layout::default()));
-    // The workspaces column, shown from one, the app shows in every one.
-    let panel = cx.update(|_, cx| cx.new(|_| WorkspacesPanel::new(|_, _| div().into_any_element())));
-    first.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
-    assert_eq!(cx.update(|_, cx| Config::get(cx).tasks_column), Some(true));
-    second.update(cx, |workspace, cx| workspace.set_workspaces(&panel, true, cx));
-    assert!(second.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Workspaces, cx)));
+    // Where the terminals go is every workspace's.
+    first.update(cx, |workspace, cx| workspace.set_dock(Dock::Bottom, cx));
+    assert_eq!(cx.update(|_, cx| Config::get(cx).layout.dock), Dock::Bottom);
 }
 
-/// A workspace's panels are saved with what it has open: opened again, they
-/// are where it left them and show as they did.
+/// What a workspace shows is saved with what it has open: opened again, it
+/// shows as it did.
 #[gpui_kit::test]
 fn a_workspace_reopens_with_its_panels(cx: &mut TestAppContext) {
     let (first, cx) = draw(cx, |_| {});
     first.update_in(cx, |workspace, window, cx| {
         workspace.restore(window, cx);
-        assert!(workspace.layout.move_panel(Panel::Terminals, Panel::Code, Side::Bottom));
-        workspace.layout_changed(cx);
-        workspace.show_panel(Panel::Device, cx);
-        workspace.hide_panel(Panel::Files, cx);
+        workspace.show_panel(Panel::History, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
     });
-    let layout = first.read_with(cx, |workspace, _| workspace.layout.clone());
     let again = first.update_in(cx, |_, window, cx| {
         cx.new(|cx| {
             let mut workspace = Workspace::new(PathBuf::from("/layout-test"), None, true, "layout-test".into(), window, cx);
@@ -328,16 +199,14 @@ fn a_workspace_reopens_with_its_panels(cx: &mut TestAppContext) {
         })
     });
     again.read_with(cx, |workspace, cx| {
-        assert!(workspace.layout == layout);
-        assert!(workspace.is_shown(Panel::Device, cx));
-        assert!(!workspace.is_shown(Panel::Files, cx));
+        assert_eq!(workspace.side_group(), Some(Group::Git));
+        assert!(!workspace.is_shown(Panel::Terminals, cx));
     });
-    // Reset Layout puts this one back as a new one's.
+    // Reset Layout puts it back as a new one's.
     again.update(cx, |workspace, cx| workspace.reset_layout(cx));
     again.read_with(cx, |workspace, cx| {
-        assert!(workspace.layout == config::Layout::default());
-        assert!(!workspace.is_shown(Panel::Device, cx));
-        assert!(workspace.is_shown(Panel::Files, cx));
+        assert_eq!(workspace.side_group(), Some(Group::Explorer));
+        assert!(workspace.is_shown(Panel::Terminals, cx));
     });
 }
 

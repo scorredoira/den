@@ -134,10 +134,6 @@ impl NotesPanel {
         self.editor.update(cx, |editor, cx| editor.focus(window, cx));
     }
 
-    pub fn is_focused(&self, window: &Window, cx: &App) -> bool {
-        self.editor.read(cx).focus_handle(cx).contains_focused(window, cx)
-    }
-
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let filled = !self.editor.read(cx).value().trim().is_empty();
         if filled != self.filled {

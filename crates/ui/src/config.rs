@@ -20,15 +20,121 @@ pub enum ThemeChoice {
     Dark,
 }
 
-/// Where the panels go and their sizes: each workspace's own (its `Session`).
+/// Where things go, the same in every workspace: on the left the side
+/// column, whose group of panels its icon picks; the code in the middle;
+/// the terminals on its right or under it; the device, on the far right.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
-    /// Left to right.
-    pub columns: Vec<Column>,
+    pub side_width: f32,
+    pub dock: Dock,
+    /// The terminals as a column; unset, half of what the others leave.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dock_width: Option<f32>,
+    /// The terminals as a row; unset, a third of the window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dock_height: Option<f32>,
+    pub device_width: f32,
+    /// The side panels' heights, as dragged.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub heights: HashMap<Panel, f32>,
+    /// The side panels folded to their header.
+    pub collapsed: Vec<Panel>,
 }
 
-/// What can be placed in a column.
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            side_width: 260.,
+            dock: Dock::Right,
+            dock_width: None,
+            dock_height: None,
+            device_width: 400.,
+            heights: HashMap::new(),
+            collapsed: vec![Panel::Outline, Panel::References, Panel::Breakpoints],
+        }
+    }
+}
+
+impl Layout {
+    /// A side panel's height: as dragged, or its own.
+    pub fn height(&self, panel: Panel) -> f32 {
+        self.heights.get(&panel).copied().unwrap_or(match panel {
+            Panel::Workspaces | Panel::Changes => 240.,
+            Panel::Agents => 110.,
+            _ => 180.,
+        })
+    }
+}
+
+/// Where the terminals go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dock {
+    /// A column on the right of the code.
+    #[default]
+    Right,
+    /// A row under the code.
+    Bottom,
+}
+
+/// The groups of the side column, an icon each on the activity bar: one
+/// shows at a time, its panels one above the other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Group {
+    #[default]
+    Explorer,
+    Search,
+    Git,
+    Debug,
+}
+
+impl Group {
+    pub const ALL: [Group; 4] = [Group::Explorer, Group::Search, Group::Git, Group::Debug];
+
+    /// Its panels, top to bottom.
+    pub fn panels(self) -> &'static [Panel] {
+        match self {
+            Group::Explorer => &[Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline],
+            Group::Search => &[Panel::Search, Panel::References],
+            Group::Git => &[Panel::Changes, Panel::History],
+            Group::Debug => &[Panel::CallStack, Panel::Variables, Panel::Watch, Panel::Breakpoints],
+        }
+    }
+
+    /// The panel that takes the height the others leave, while it's open.
+    pub fn filler(self) -> Panel {
+        match self {
+            Group::Explorer => Panel::Files,
+            Group::Search => Panel::Search,
+            Group::Git => Panel::History,
+            Group::Debug => Panel::Variables,
+        }
+    }
+
+    /// The group `panel` is in: the history's for the commit's files (a
+    /// part of it), the debug one for the debugger.
+    pub fn of(panel: Panel) -> Option<Group> {
+        match panel {
+            Panel::Commit => Some(Group::Git),
+            Panel::Debugger => Some(Group::Debug),
+            _ => Group::ALL.into_iter().find(|group| group.panels().contains(&panel)),
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Explorer => "Explorer",
+            Group::Search => "Search",
+            Group::Git => "Source Control",
+            Group::Debug => "Run and Debug",
+        }
+    }
+}
+
+/// What shows in the window: the side column's panels, the code, the
+/// terminals and what goes with them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Panel {
@@ -36,8 +142,7 @@ pub enum Panel {
     Files,
     Changes,
     History,
-    /// The files of the commit selected in the history. In the history's
-    /// place, it's the lower part of the history (see `Layout::commit_in_history`).
+    /// The files of the commit selected in the history, its lower part.
     Commit,
     Search,
     References,
@@ -53,224 +158,38 @@ pub enum Panel {
     Notes,
     /// The terminals running a coding agent, in every workspace.
     Agents,
+    /// The debugger's parts, in the side column.
+    #[serde(rename = "callstack")]
+    CallStack,
+    Variables,
+    Watch,
+    Breakpoints,
+    /// The debugger's console, a tab of the terminals'.
+    Console,
 }
 
 impl Panel {
-    /// In the activity bar's order, unless it's dragged.
-    pub const ALL: [Panel; 14] = [
+    pub const ALL: [Panel; 19] = [
         Panel::Workspaces,
+        Panel::Agents,
         Panel::Files,
+        Panel::Outline,
         Panel::Search,
+        Panel::References,
         Panel::Changes,
         Panel::History,
-        Panel::Agents,
         Panel::Commit,
-        Panel::References,
-        Panel::Outline,
+        Panel::CallStack,
+        Panel::Variables,
+        Panel::Watch,
+        Panel::Breakpoints,
         Panel::Code,
         Panel::Terminals,
+        Panel::Console,
         Panel::Debugger,
         Panel::Notes,
         Panel::Device,
     ];
-
-    /// The width of a column of its own when it gets one: the lists' and
-    /// the debugger's a set one; unset (the terminals'), half of what the
-    /// others leave. The code's takes the rest anyway.
-    fn width(self) -> Option<f32> {
-        match self {
-            Panel::Workspaces | Panel::Agents | Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References | Panel::Outline => Some(260.),
-            Panel::Debugger => Some(420.),
-            Panel::Device => Some(400.),
-            Panel::Notes => Some(320.),
-            Panel::Code | Panel::Terminals => None,
-        }
-    }
-}
-
-/// Off the activity bar until shown: what is always in sight or opens by
-/// itself (the terminals show anyway, the references on Find References,
-/// the debugger on debugging, the notes as a tab of the terminals').
-const HIDDEN_ACTIVITY: [Panel; 4] = [Panel::Terminals, Panel::References, Panel::Debugger, Panel::Notes];
-
-/// Panels one above the other. The one with the code takes the width left
-/// by the others.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Column {
-    /// Unset, half of the space left.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<f32>,
-    pub stacks: Vec<Stack>,
-}
-
-/// Panels in the same place, as tabs; one shows at a time. The one with the
-/// code takes the height left by the others.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Stack {
-    /// Unset, half of the column.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub height: Option<f32>,
-    pub panels: Vec<Panel>,
-}
-
-impl Stack {
-    fn of(panels: &[Panel]) -> Self {
-        Self { height: None, panels: panels.to_vec() }
-    }
-}
-
-impl Column {
-    fn of(width: Option<f32>, stacks: Vec<Stack>) -> Self {
-        Self { width, stacks }
-    }
-}
-
-/// Where a dragged panel goes, next to the stack it is dropped on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    /// One more tab, before that one (or the last).
-    Tab(Option<Panel>),
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
-impl Default for Layout {
-    /// The workspaces, the files' place, the code, the terminals with the
-    /// debugger and the notes as their tabs, and the device on the right.
-    fn default() -> Self {
-        let mut layout = Self {
-            columns: vec![
-                Column::of(Some(260.), vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Search, Panel::References, Panel::Outline])]),
-                Column::of(None, vec![Stack::of(&[Panel::Code])]),
-                Column::of(None, vec![Stack::of(&[Panel::Terminals, Panel::Debugger, Panel::Notes])]),
-            ],
-        };
-        layout.repair();
-        layout
-    }
-}
-
-impl Layout {
-    /// Mends a layout edited by hand: each panel once, nothing empty, every
-    /// panel placed (the workspaces, a column on the left).
-    pub(crate) fn repair(&mut self) {
-        let mut seen = Vec::new();
-        for stack in self.columns.iter_mut().flat_map(|column| &mut column.stacks) {
-            stack.panels.retain(|panel| {
-                let new = !seen.contains(panel);
-                seen.push(*panel);
-                new
-            });
-        }
-        self.prune();
-        if !seen.contains(&Panel::Code) {
-            self.columns = Self::default().columns;
-            return;
-        }
-        for panel in Panel::ALL.into_iter().filter(|panel| !seen.contains(panel) && *panel != Panel::Workspaces) {
-            // The device, a column of its own on the right, as a phone beside
-            // the code.
-            if panel == Panel::Device {
-                self.columns.push(Column::of(panel.width(), vec![Stack::of(&[panel])]));
-                continue;
-            }
-            // The agents, always in sight under the files.
-            if panel == Panel::Agents
-                && let Some((column, stack)) = self.find(Panel::Files)
-            {
-                self.columns[column].stacks.insert(stack + 1, Stack::of(&[panel]));
-                continue;
-            }
-            // The commit's files, missing (a config from before they were a
-            // panel), go in the history; the notes, with the terminals.
-            let home = match panel {
-                Panel::Commit => Panel::History,
-                Panel::Notes => Panel::Terminals,
-                _ => Panel::Code,
-            };
-            let stack = self.columns.iter_mut().flat_map(|column| &mut column.stacks).find(|stack| match home {
-                // Not with the code, nor in the agents' own place.
-                Panel::Code => !stack.panels.contains(&Panel::Code) && !stack.panels.contains(&Panel::Agents),
-                _ => stack.panels.contains(&home),
-            });
-            match stack {
-                Some(stack) => stack.panels.push(panel),
-                None => self.columns.push(Column::of(None, vec![Stack::of(&[panel])])),
-            }
-        }
-        if !seen.contains(&Panel::Workspaces) {
-            self.columns.insert(0, Column::of(Some(240.), vec![Stack::of(&[Panel::Workspaces])]));
-        }
-    }
-
-    fn prune(&mut self) {
-        for column in &mut self.columns {
-            column.stacks.retain(|stack| !stack.panels.is_empty());
-        }
-        self.columns.retain(|column| !column.stacks.is_empty());
-    }
-
-    /// The commit's files are in the history's place: the history shows
-    /// them in its lower part, rather than as a panel of their own.
-    pub fn commit_in_history(&self) -> bool {
-        self.find(Panel::Commit).is_some_and(|place| self.find(Panel::History) == Some(place))
-    }
-
-    /// The column and the stack in it where `panel` is.
-    pub fn find(&self, panel: Panel) -> Option<(usize, usize)> {
-        self.columns.iter().enumerate().find_map(|(column, col)| {
-            col.stacks.iter().position(|stack| stack.panels.contains(&panel)).map(|stack| (column, stack))
-        })
-    }
-
-    /// Moves `panel` to `side` of the stack with `anchor` (which can be
-    /// `panel`'s own); false if that is where it already was or can't go.
-    pub fn move_panel(&mut self, panel: Panel, anchor: Panel, side: Side) -> bool {
-        let Some((column, stack)) = self.find(anchor).filter(|_| side != Side::Tab(Some(panel))) else {
-            return false;
-        };
-        // Something that stays where the panel goes, to find the place again
-        // once the panel is taken out.
-        let stays = match side {
-            Side::Left | Side::Right => self.columns[column].stacks.iter().flat_map(|stack| &stack.panels).copied().find(|p| *p != panel),
-            _ => self.columns[column].stacks[stack].panels.iter().copied().find(|p| *p != panel),
-        };
-        let Some(stays) = stays else {
-            return false;
-        };
-        let before = self.clone();
-        // The commit's files go with the history they're part of.
-        let carry = panel == Panel::History && self.commit_in_history();
-        let (from_column, from_stack) = self.find(panel).expect("every panel is placed");
-        self.columns[from_column].stacks[from_stack].panels.retain(|p| *p != panel);
-        self.prune();
-        let (column, stack) = self.find(stays).expect("it stays");
-        match side {
-            Side::Tab(tab) => {
-                let panels = &mut self.columns[column].stacks[stack].panels;
-                let at = tab.and_then(|tab| panels.iter().position(|p| *p == tab)).unwrap_or(panels.len());
-                panels.insert(at, panel);
-            }
-            Side::Top | Side::Bottom => {
-                let at = stack + usize::from(side == Side::Bottom);
-                self.columns[column].stacks.insert(at, Stack::of(&[panel]));
-            }
-            Side::Left | Side::Right => {
-                let at = column + usize::from(side == Side::Right);
-                self.columns.insert(at, Column::of(panel.width(), vec![Stack::of(&[panel])]));
-            }
-        }
-        if carry {
-            let (column, stack) = self.find(Panel::Commit).expect("every panel is placed");
-            self.columns[column].stacks[stack].panels.retain(|p| *p != Panel::Commit);
-            self.prune();
-            let (column, stack) = self.find(Panel::History).expect("it was just placed");
-            self.columns[column].stacks[stack].panels.push(Panel::Commit);
-        }
-        *self != before
-    }
 }
 
 /// Window position and size.
@@ -343,22 +262,27 @@ pub struct Session {
     /// The code area split in two, side by side or one above the other.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub split: Option<crate::splits::Axis>,
-    /// Where its panels are and their sizes; unset, as a new one's.
+    /// What shows; unset, as in a new one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub layout: Option<Layout>,
-    /// Which panels show; unset, as a new one's.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub panels: Option<SavedPanels>,
+    pub shows: Option<SavedPanels>,
 }
 
-/// Which panels of a workspace show: when each was last shown (a stack
-/// shows its most recent) and those closed.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// What of a workspace shows besides the code.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedPanels {
-    pub shown: HashMap<Panel, u64>,
-    pub closed: Vec<Panel>,
-    pub clock: u64,
+    /// The group of the side column, the last shown if it's hidden.
+    pub group: Group,
+    pub side: bool,
+    pub terminals: bool,
+    pub device: bool,
+}
+
+impl Default for SavedPanels {
+    /// A new workspace's: the files, the code and the terminals.
+    fn default() -> Self {
+        Self { group: Group::Explorer, side: true, terminals: true, device: false }
+    }
 }
 
 /// The debugger's state of a task: what survives closing the app.
@@ -418,9 +342,6 @@ pub struct Config {
     /// List order, set by dragging; those not in it go at the end. Each is
     /// its path locally or `server:path` on a server.
     pub order: Vec<String>,
-    /// Repos whose worktrees are folded under their checkout (same keys as
-    /// `order`, the checkout's).
-    pub collapsed: Vec<String>,
     pub hosts: Vec<HostConfig>,
     pub window: Option<SavedWindow>,
     /// What's open in each task (same keys as `order`).
@@ -431,19 +352,8 @@ pub struct Config {
     pub last: Option<SavedTask>,
     /// Folders and tasks opened, the most recent first (Open Recent).
     pub recent: Vec<SavedTask>,
-    /// The tasks column shown or hidden by hand; unset, it shows once
-    /// there's more than folders to it (a server or a worktree).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tasks_column: Option<bool>,
-    /// The activity bar's icons, top to bottom, set by dragging; those not
-    /// in it go at the end.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub activity: Vec<Panel>,
-    /// Icons taken off the activity bar from its right-click menu or View;
-    /// their panels still open with their keys and menus. Unset, those of
-    /// `HIDDEN_ACTIVITY`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hidden_activity: Option<Vec<Panel>>,
+    /// Where things go and their sizes.
+    pub layout: Layout,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
     pub font_sizes: FontSizes,
@@ -534,53 +444,6 @@ impl Config {
     pub fn font_size(&self, area: TextArea) -> f32 {
         let mut sizes = self.font_sizes;
         area.slot(&mut sizes).unwrap_or(area.default_size()).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
-    }
-
-    /// The activity bar's icons, top to bottom: each panel once, but the
-    /// code, which as in any editor stays put and never closes, and the
-    /// device, which only a workspace with a device file has (it goes last).
-    pub fn activity(&self) -> Vec<Panel> {
-        let mut order: Vec<Panel> = Vec::new();
-        for panel in self.activity.iter().chain(&Panel::ALL) {
-            if !matches!(panel, Panel::Code | Panel::Device) && !order.contains(panel) {
-                order.push(*panel);
-            }
-        }
-        order
-    }
-
-    /// The icons taken off the bar.
-    pub fn hidden_activity(&self) -> Vec<Panel> {
-        self.hidden_activity.clone().unwrap_or_else(|| HIDDEN_ACTIVITY.to_vec())
-    }
-
-    /// The icons the bar draws: `activity` without the hidden ones.
-    pub fn shown_activity(&self) -> Vec<Panel> {
-        let hidden = self.hidden_activity();
-        self.activity().into_iter().filter(|panel| !hidden.contains(panel)).collect()
-    }
-
-    /// Shows `panel`'s icon on the bar, or hides it if it shows.
-    pub fn toggle_activity(&mut self, panel: Panel) {
-        let mut hidden = self.hidden_activity();
-        if hidden.contains(&panel) {
-            hidden.retain(|other| *other != panel);
-        } else {
-            hidden.push(panel);
-        }
-        self.hidden_activity = Some(hidden);
-    }
-
-    /// Puts `panel`'s icon where `target`'s is, or at the end.
-    pub fn move_activity(&mut self, panel: Panel, target: Option<Panel>) {
-        let mut order = self.activity();
-        let Some(from) = order.iter().position(|p| *p == panel) else {
-            return;
-        };
-        let to = target.and_then(|target| order.iter().position(|p| *p == target)).unwrap_or(order.len() - 1);
-        order.remove(from);
-        order.insert(to, panel);
-        self.activity = order;
     }
 
     /// Whether it looks for new releases by itself.
@@ -786,123 +649,29 @@ mod split_tests {
 
 #[cfg(test)]
 mod layout_tests {
-    use super::{Layout, Panel, Side};
+    use super::{Group, Layout, Panel, SavedPanels, Session};
     use core::prelude::v1::test;
 
-    fn places(layout: &Layout) -> Vec<Vec<Vec<Panel>>> {
-        layout.columns.iter().map(|column| column.stacks.iter().map(|stack| stack.panels.clone()).collect()).collect()
-    }
-
-    use Panel::*;
-
     #[test]
-    fn a_layout_edited_by_hand_is_mended() {
-        let edited = r#"{"columns": [{"stacks": [{"panels": ["files", "code", "files"]}, {"panels": ["search"]}]}, {"stacks": []}]}"#;
-        let mut layout: Layout = serde_json::from_str(edited).unwrap();
-        layout.repair();
-        // The missing ones go with a panel other than the code; the
-        // workspaces and the device, a column of their own.
-        assert_eq!(
-            places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Agents], vec![Search, Changes, History, Commit, References, Outline, Terminals, Debugger, Notes]], vec![vec![Device]]]
-        );
-        let mut layout: Layout = serde_json::from_str(r#"{"columns": [{"stacks": [{"panels": ["files"]}]}]}"#).unwrap();
-        layout.repair();
-        assert!(layout == Layout::default(), "without the code, it starts again");
-        // A config from when the agents had no panel: theirs goes under the files.
-        let old = r#"{"columns": [{"stacks": [{"panels": ["files"]}]}, {"stacks": [{"panels": ["code", "terminals"]}]}]}"#;
-        let mut layout: Layout = serde_json::from_str(old).unwrap();
-        layout.repair();
-        assert_eq!(places(&layout)[1], [vec![Files, Search, Changes, History, Commit, References, Outline, Debugger], vec![Agents]]);
+    fn every_side_panel_is_in_one_group() {
+        for panel in Panel::ALL {
+            let groups = Group::ALL.into_iter().filter(|group| group.panels().contains(&panel)).count();
+            let side = !matches!(panel, Panel::Code | Panel::Terminals | Panel::Console | Panel::Device | Panel::Notes | Panel::Debugger | Panel::Commit);
+            assert_eq!(groups, usize::from(side), "{panel:?}");
+        }
+        for group in Group::ALL {
+            assert!(group.panels().contains(&group.filler()));
+        }
+        assert_eq!(Group::of(Panel::Commit), Some(Group::Git));
+        assert_eq!(Group::of(Panel::Debugger), Some(Group::Debug));
     }
 
     #[test]
-    fn moving_panels() {
-        let mut layout = Layout::default();
-        assert_eq!(
-            places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline], vec![Agents]], vec![vec![Code]], vec![vec![Terminals, Debugger, Notes]], vec![vec![Device]]]
-        );
-        // The changes, a column of their own after the files.
-        assert!(layout.move_panel(Changes, Files, Side::Right));
-        assert_eq!(places(&layout)[2], [vec![Changes]]);
-        assert_eq!(layout.columns[2].width, Some(260.), "a list's own width, not half the window");
-        // Back as a tab, before the search.
-        assert!(layout.move_panel(Changes, Search, Side::Tab(Some(Search))));
-        assert_eq!(places(&layout)[1], [vec![Files, History, Commit, Changes, Search, References, Outline], vec![Agents]]);
-        assert_eq!(layout.columns.len(), 5, "the empty column goes");
-        // Under the files, in their column.
-        assert!(layout.move_panel(References, Files, Side::Bottom));
-        assert_eq!(places(&layout)[1], [vec![Files, History, Commit, Changes, Search, Outline], vec![References], vec![Agents]]);
-        // The terminals left of the files: the debugger and the notes keep
-        // their place.
-        assert!(layout.move_panel(Terminals, Files, Side::Left));
-        assert_eq!(places(&layout)[1], [vec![Terminals]]);
-        assert_eq!(layout.columns[1].width, None, "the terminals, half of what's left");
-        assert_eq!(places(&layout)[4], [vec![Debugger, Notes]]);
-        // The code and the workspaces go anywhere too: tabs with the files,
-        // and the workspaces under the terminals.
-        assert!(layout.move_panel(Code, Files, Side::Tab(None)));
-        assert!(layout.move_panel(Workspaces, Terminals, Side::Bottom));
-        assert_eq!(places(&layout)[0], [vec![Terminals], vec![Workspaces]]);
-        assert_eq!(places(&layout)[1], [vec![Files, History, Commit, Changes, Search, Outline, Code], vec![References], vec![Agents]]);
-    }
-
-    #[test]
-    fn the_commit_files_are_part_of_the_history_until_moved_apart() {
-        let mut layout = Layout::default();
-        assert!(layout.commit_in_history());
-        // A column of their own.
-        assert!(layout.move_panel(Commit, Files, Side::Right));
-        assert_eq!(places(&layout)[2], [vec![Commit]]);
-        assert!(!layout.commit_in_history());
-        // Dropped on the history, part of it again.
-        assert!(layout.move_panel(Commit, History, Side::Tab(None)));
-        assert!(layout.commit_in_history());
-        // The history takes them along.
-        assert!(layout.move_panel(History, Terminals, Side::Bottom));
-        assert_eq!(places(&layout)[3], [vec![Terminals, Debugger, Notes], vec![History, Commit]]);
-    }
-
-    #[test]
-    fn moves_that_change_nothing() {
-        let mut layout = Layout::default();
-        let before = places(&layout);
-        // Alone in its column, beside itself or on itself.
-        assert!(!layout.move_panel(Code, Code, Side::Left));
-        assert!(!layout.move_panel(Code, Code, Side::Top));
-        assert!(!layout.move_panel(Code, Code, Side::Tab(None)));
-        // On its own tab, or as the last tab when it is.
-        assert!(!layout.move_panel(Changes, Changes, Side::Tab(Some(Changes))));
-        assert!(!layout.move_panel(Outline, Files, Side::Tab(None)));
-        assert_eq!(places(&layout), before);
-        // Next to its own stack, with others in it, it does move.
-        assert!(layout.move_panel(Changes, Changes, Side::Bottom));
-        assert_eq!(places(&layout)[1], [vec![Files, History, Commit, Search, References, Outline], vec![Changes], vec![Agents]]);
-    }
-
-    #[test]
-    fn the_activity_bar_order() {
-        let mut config = super::Config::default();
-        assert!(!config.activity().contains(&Code));
-        // Some start off the bar.
-        assert_eq!(config.shown_activity(), [Workspaces, Files, Search, Changes, History, Agents, Commit, Outline]);
-        // Dragged down, an icon takes the place of the one dropped on; up, too.
-        config.move_activity(Workspaces, Some(Changes));
-        assert_eq!(config.activity()[..4], [Files, Search, Changes, Workspaces]);
-        config.move_activity(Debugger, Some(Files));
-        assert_eq!(config.activity()[..2], [Debugger, Files]);
-        // Dropped past the icons, it goes last.
-        config.move_activity(Debugger, None);
-        assert_eq!(config.activity().last(), Some(&Debugger));
-        // A hand-edited one: the code, repeated and missing ones mended.
-        config.activity = vec![Code, Terminals, Terminals];
-        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Search, Changes, History, Agents, Commit, References, Outline, Debugger, Notes]);
-        // A hidden icon keeps its place for when it's shown again.
-        config.toggle_activity(Workspaces);
-        assert_eq!(config.shown_activity()[..2], [Files, Search]);
-        config.move_activity(Files, None);
-        config.toggle_activity(Workspaces);
-        assert_eq!(config.shown_activity()[..3], [Workspaces, Search, Changes]);
+    fn a_session_from_before_the_groups_starts_as_a_new_one() {
+        let old = r#"{"tabs": [], "layout": {"columns": [{"stacks": [{"panels": ["files"]}]}]}, "panels": {"shown": {"files": 1}, "closed": [], "clock": 1}}"#;
+        let session: Session = serde_json::from_str(old).unwrap();
+        assert_eq!(session.shows.unwrap_or_default(), SavedPanels::default());
+        let layout: Layout = serde_json::from_str("{}").unwrap();
+        assert!(layout == Layout::default());
     }
 }

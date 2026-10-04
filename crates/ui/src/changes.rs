@@ -75,11 +75,6 @@ pub struct ChangesPanel {
     local: bool,
     root: PathBuf,
     view: View,
-    /// The commit's files share the history's place in the workspace's
-    /// layout: they show under the commits.
-    commit_in_history: bool,
-    /// In a place of their own, whether they show.
-    commit_shown: bool,
     /// Branch, distance from the remote and what's uncommitted.
     status: GitStatus,
     /// History view.
@@ -115,8 +110,6 @@ impl ChangesPanel {
             local,
             root,
             view,
-            commit_in_history: true,
-            commit_shown: false,
             status: GitStatus::default(),
             commits: Vec::new(),
             file: None,
@@ -677,17 +670,9 @@ impl ChangesPanel {
         self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir)
     }
 
-    /// The selected commit's files, under the commits while they share the
-    /// history's place.
+    /// The selected commit's files, under the commits.
     fn has_commit_files(&self) -> bool {
-        self.lists_commits() && self.commit_in_history
-    }
-
-    /// Where the workspace's layout puts the commit's files: with the history
-    /// or in a place of their own, and there whether they show.
-    pub fn set_commit_place(&mut self, with_history: bool, shown: bool) {
-        self.commit_in_history = with_history;
-        self.commit_shown = shown;
+        self.lists_commits()
     }
 
     /// Shows or hides the selected commit's files under the commits: hidden,
@@ -707,10 +692,9 @@ impl ChangesPanel {
         self.lists_commits().then(|| self.files_shown(cx))
     }
 
-    /// Whether the selected commit's files show: under the commits or in
-    /// their own place.
+    /// Whether the selected commit's files show under the commits.
     fn files_shown(&self, cx: &App) -> bool {
-        if self.commit_in_history { self.files_open(cx) } else { self.commit_shown }
+        self.files_open(cx)
     }
 
     /// Hide Files or Show Files, in every right-click menu of the history
@@ -843,26 +827,5 @@ impl Render for ChangesPanel {
                     .child(error)
             }))
             .child(div().flex_1().min_h_0().child(body))
-    }
-}
-
-/// The Commit Files panel: the files of the commit selected in the history,
-/// when placed apart from it.
-pub struct CommitFilesPanel {
-    history: Entity<ChangesPanel>,
-    _subscription: Subscription,
-}
-
-impl CommitFilesPanel {
-    pub fn new(history: Entity<ChangesPanel>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&history, |_, _, cx| cx.notify());
-        Self { history, _subscription: subscription }
-    }
-}
-
-impl Render for CommitFilesPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let files = self.history.update(cx, |history, cx| history.render_commit_files(cx));
-        v_flex().size_full().pt_1().text_ui(cx).child(files)
     }
 }

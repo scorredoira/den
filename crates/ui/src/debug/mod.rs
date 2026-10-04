@@ -29,6 +29,7 @@ use serde_json::{Map, Value, json};
 
 pub use breakpoints::{Breakpoint, Breakpoints};
 pub use commands::WaitFor;
+pub use panel::{DebugPart, DebugView};
 use protocol::{Event, Message, Stop, Var};
 
 use crate::config::{Config, DebugSaved};
@@ -317,10 +318,6 @@ pub struct Debugger {
     history_at: Option<usize>,
     value_edit: Option<ValueEdit>,
     pub edit: Option<BreakpointEdit>,
-    /// Its column is narrow and tall: its parts go one above the other.
-    pub tall: bool,
-    /// A tab of the terminals': their bar closes it.
-    pub tab: bool,
     /// The value shown by hovering its name in the code.
     pub hover: Option<HoverValue>,
     /// The pointer is over the card or its name: the code under the card
@@ -406,8 +403,6 @@ impl Debugger {
             history_at: None,
             value_edit: None,
             edit: None,
-            tall: false,
-            tab: false,
             hover: None,
             hover_inside: false,
             hover_change: None,

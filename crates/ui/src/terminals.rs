@@ -7,7 +7,6 @@ mod drag;
 use drag::{Source, TerminalDrag};
 use crate::drag_drop::DropPlacement;
 use crate::menu::PanelItems as _;
-use crate::workspace::drags_panel;
 
 use std::{
     cell::Cell,
@@ -21,7 +20,7 @@ use anyhow::Result;
 use client::Client;
 use gpui_kit::component::{
     ActiveTheme as _, h_flex, h_resizable,
-    menu::{ContextMenuExt as _, PopupMenu},
+    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -30,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for};
 
 use crate::{
-    config::{Panel, UiText},
+    config::{Config, Panel, UiText},
     CloseTab, NewTerminal, SplitDown, SplitRight, agent, menu,
     splits::{Axis, Direction, Tree},
 };
@@ -44,7 +43,7 @@ pub enum TerminalAreaEvent {
     },
     /// A message for the status bar.
     Message(SharedString),
-    /// A panel's tab after the terminals' (the debugger's, the notes'):
+    /// A panel's tab after the terminals' (the debugger's console):
     /// show it, or (`None`) go back to the terminals.
     ShowPanel(Option<Panel>),
     /// A panel's tab closed.
@@ -59,7 +58,7 @@ pub struct PanelTab {
     pub title: &'static str,
     /// The one showing, rather than the terminals.
     pub showing: bool,
-    /// With a close button (the debugger's), or always there (the notes').
+    /// With a close button, or always there.
     pub closable: bool,
 }
 
@@ -788,11 +787,17 @@ impl TerminalArea {
                     .min_w(px(24.))
                     .when(cfg!(test), |el| el.debug_selector(|| "terminal-tab-end".into()))
                     .drag_over::<TerminalDrag>(|style, _, _, cx| style.border_l_2().border_color(cx.theme().primary))
-                    // Past the tabs, the bar moves the panel.
-                    .map(|el| drags_panel(el, Panel::Terminals))
                     .context_menu({
                         let area = self.weak.clone();
-                        move |menu, window, cx| menu.panel_items(hide_item(&area), window, cx)
+                        move |menu, window, cx| {
+                            let bottom = Config::get(cx).layout.dock == crate::config::Dock::Bottom;
+                            menu.item(
+                                PopupMenuItem::new(if bottom { "Move to the Right" } else { "Move Under the Code" })
+                                    .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::MoveTerminals), cx)),
+                            )
+                            .separator()
+                            .panel_items(hide_item(&area), window, cx)
+                        }
                     }),
             )
             .children(fixed)
@@ -803,7 +808,7 @@ impl TerminalArea {
         let theme = cx.theme();
         let (panel, showing) = (tab.panel, tab.showing);
         let name = match panel {
-            Panel::Debugger => "debug",
+            Panel::Console => "console",
             _ => tab.title,
         };
         let group = SharedString::from(format!("{name}-tab"));
@@ -851,9 +856,6 @@ impl TerminalArea {
                     })),
             ))
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(panel)))))
-            // Dragged, the panel moves as by its icon: below the terminals,
-            // say, or to a column of its own.
-            .map(|el| drags_panel(el, panel))
             .context_menu({
                 let (area, closable) = (self.weak.clone(), tab.closable);
                 // The notes' tab stays: Hide Panel hides the terminals' place.

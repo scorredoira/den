@@ -1,8 +1,8 @@
 //! The coding agents (Claude Code, Codex…) running in the terminals of every
 //! server, as the agent reports them (see `Event::Agents`). They're the one
 //! source of what each workspace is doing: a workspace's dot in the column
-//! is the most urgent of its agents'. The Agents panel lists them all, under
-//! their workspaces; a click on one goes to its terminal.
+//! is the most urgent of its agents'. The Agents panel lists them all, a row
+//! each with its workspace and state; a click on one goes to its terminal.
 
 use proto::{AgentInfo, TermId};
 
@@ -93,8 +93,8 @@ impl Den {
             .map(|(_, color, _)| color)
     }
 
-    /// The Agents panel: every agent, on every server, under its workspace
-    /// (in the column's order), with what it's on and its state's dot.
+    /// The Agents panel: every agent, on every server, by workspace (in the
+    /// column's order): its state's dot, its workspace and its state.
     pub(super) fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<AnyElement> = Vec::new();
         let several = self.agents.values().filter(|agents| !agents.is_empty()).count() > 1;
@@ -125,8 +125,6 @@ impl Den {
                     .unwrap_or(usize::MAX)
             });
             for group in groups {
-                let key = TaskKey { host: host.name.clone(), path: PathBuf::from(group) };
-                rows.push(self.render_agents_workspace(&key, cx));
                 for agent in agents.iter().filter(|agent| agent.group == group) {
                     rows.push(self.render_agent(&host.name, agent, cx));
                 }
@@ -153,50 +151,26 @@ impl Den {
             .children(empty)
     }
 
-    /// A workspace's name above its agents; a click goes to it.
-    fn render_agents_workspace(&self, key: &TaskKey, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let task = self.task(key);
-        let label = task.map(column_label).unwrap_or_else(|| folder_name(&key.path).into());
-        let icon = task.map(kind_icon).unwrap_or("icons/folder.svg");
-        let active = self.active.as_ref() == Some(key);
-        let target = key.clone();
-        h_flex()
-            .id(SharedString::from(format!("agents-workspace-{}", key.config())))
-            .h(px(26.))
-            .mt_1()
-            .px_3()
-            .gap_2()
-            .text_ui(cx)
-            // Where you are, not a selection: bold rather than the selection's band.
-            .when(active, |el| el.font_weight(FontWeight::SEMIBOLD))
-            .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
-            .child(svg().path(icon).size(px(14.)).flex_none().text_color(workspace_color(key)))
-            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
-            .tooltip({
-                let path = key.path.display().to_string();
-                move |window, cx| Tooltip::new(path.clone()).build(window, cx)
-            })
-            .on_click(cx.listener(move |this, _, window, cx| this.activate(target.clone(), window, cx)))
-            .into_any_element()
-    }
-
+    /// An agent's row: its dot, its workspace and its state; what it's on,
+    /// on hover.
     fn render_agent(&self, host: &SharedString, agent: &AgentInfo, cx: &mut Context<Self>) -> AnyElement {
-        let (dot, color, _) = self.agent_status(host, agent, cx);
+        let (dot, color, state) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);
+        let key = TaskKey { host: host.clone(), path: PathBuf::from(&agent.group) };
+        let label = self.task(&key).map(row_label).unwrap_or_else(|| folder_name(&key.path).into());
         let (host, group, term) = (host.clone(), agent.group.clone(), agent.term);
         h_flex()
             .id(SharedString::from(format!("agent-{host}-{term}")))
             .h(px(24.))
-            .pl(px(ROW_INDENT + 10.))
-            .pr_3()
+            .px_3()
             .gap_2()
-            .text_ui_small(cx)
-            .text_color(theme.muted_foreground)
+            .text_ui(cx)
             .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
-            .child(div().flex_none().w(px(12.)).text_color(color).child(dot))
-            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title.clone()))
+            .child(div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
+            .child(div().flex_1())
+            .child(div().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(if state == "idle" { "" } else { state }))
             .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, window, cx| this.open_agent(host.clone(), group.clone(), term, window, cx)))
             .into_any_element()
