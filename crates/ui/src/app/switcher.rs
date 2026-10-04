@@ -3,8 +3,18 @@
 //! waiting for an answer first), with the previous one selected; each E (or ↓)
 //! selects the next, Shift-E (or ↑) the one before, letting go of Cmd enters
 //! it and Esc stays.
+//!
+//! Cmd-E enters the next one with no list, so while Cmd is down it says
+//! which.
 
 use super::*;
+
+/// The workspace Cmd-E just entered and its place among those it goes round.
+pub(super) struct Notice {
+    key: TaskKey,
+    position: usize,
+    total: usize,
+}
 
 pub(super) struct Switcher {
     /// The most recently used first: the one in front.
@@ -40,12 +50,84 @@ impl Den {
         let column: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
         let start = self.active.as_ref().and_then(|active| column.iter().position(|key| key == active));
         let after = start.map_or(0, |ix| ix + 1);
+        let round: Vec<&TaskKey> = column.iter().filter(|key| !with_agent || !self.workspace_agents(key).is_empty()).collect();
         let next = (0..column.len())
             .map(|step| &column[(after + step) % column.len()])
-            .find(|key| Some(*key) != self.active.as_ref() && (!with_agent || !self.workspace_agents(key).is_empty()));
-        if let Some(key) = next.cloned() {
-            self.activate(key, window, cx);
+            .find(|key| Some(*key) != self.active.as_ref() && round.contains(key));
+        let Some(key) = next.cloned() else {
+            return;
+        };
+        let position = round.iter().position(|other| **other == key).unwrap_or(0) + 1;
+        let total = round.len();
+        self.activate(key.clone(), window, cx);
+        // From the menu, with no Cmd to let go of: nothing to say.
+        if window.modifiers().secondary() {
+            self.notice = Some(Notice { key, position, total });
+            cx.notify();
         }
+    }
+
+    /// Cmd-E's notice, near the top: the workspace's name, where it is in
+    /// the round, and what its agents are on. Clicks go through it.
+    pub(super) fn render_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let notice = self.notice.as_ref()?;
+        let theme = cx.theme().clone();
+        let (icon, name, place) = self.naming(&notice.key);
+        // What's next there, from its notes.
+        let next = crate::notes::first_line(&notice.key.config(), cx);
+        let agents = self.workspace_agents(&notice.key).into_iter().take(3).map(|agent| {
+            let (dot, color, _) = self.agent_status(&notice.key.host, agent, cx);
+            h_flex()
+                .gap_2()
+                .text_ui_small(cx)
+                .text_color(theme.muted_foreground)
+                .child(div().flex_none().w(px(14.)).text_color(color).child(dot))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(super::agents::agent_title(agent)))
+        });
+        Some(
+            div()
+                .absolute()
+                .top(px(96.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    v_flex()
+                        .w(px(480.))
+                        .px_4()
+                        .py_3()
+                        .gap_1()
+                        .bg(theme.popover)
+                        .relative()
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(theme.radius_lg)
+                        .shadow_lg()
+                        .text_color(theme.popover_foreground)
+                        // The workspace's color, along its left.
+                        .child(div().absolute().left_0().top_0().bottom_0().w(px(4.)).bg(workspace_color(&notice.key)))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(svg().path(icon).size(px(16.)).flex_none().text_color(workspace_color(&notice.key)))
+                                .child(div().flex_none().max_w(px(280.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_lg().child(name))
+                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_ui_small(cx).text_color(theme.muted_foreground).child(place))
+                                .child(div().flex_1())
+                                .child(div().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(format!("{}/{}", notice.position, notice.total))),
+                        )
+                        .children(next.map(|next| {
+                            h_flex()
+                                .gap_2()
+                                .text_ui_small(cx)
+                                .child(svg().path("icons/notebook-pen.svg").size(px(12.)).flex_none().text_color(theme.muted_foreground))
+                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(next))
+                        }))
+                        .children(agents),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Selects `by` further down the list (up if negative), round the ends.
@@ -111,10 +193,13 @@ impl Den {
         keys
     }
 
-    /// Cmd let go: enters the one selected.
+    /// Cmd let go: enters the one selected, and Cmd-E's notice goes.
     pub(super) fn switcher_modifiers(&mut self, modifiers: &Modifiers, window: &mut Window, cx: &mut Context<Self>) {
         if modifiers.secondary() {
             return;
+        }
+        if self.notice.take().is_some() {
+            cx.notify();
         }
         if let Some(switcher) = self.switcher.take() {
             if let Some(key) = switcher.keys.get(switcher.selected) {
@@ -131,18 +216,24 @@ impl Den {
         }
     }
 
+    /// A workspace's icon and name as in the column (a worktree by its
+    /// branch), and its repo and server to go beside it.
+    fn naming(&self, key: &TaskKey) -> (&'static str, SharedString, String) {
+        let task = self.task(key);
+        let icon = task.map(kind_icon).unwrap_or("icons/folder.svg");
+        let name = task.map(column_label).unwrap_or_else(|| folder_name(&key.path).into());
+        let repo = task.filter(|task| !task.main).map(|task| folder_name(&task.repo));
+        let place = [repo, (key.host != LOCAL).then(|| key.host.to_string())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        (icon, name, place)
+    }
+
     pub(super) fn render_switcher(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let switcher = self.switcher.as_ref()?;
         let theme = cx.theme().clone();
         let rows = switcher.keys.iter().enumerate().map(|(ix, key)| {
             let selected = ix == switcher.selected;
             let task = self.task(key);
-            let icon = task.map(kind_icon).unwrap_or("icons/folder.svg");
-            // Named as in the column: a worktree by its branch, with its
-            // repo and its server beside it.
-            let name = task.map(column_label).unwrap_or_else(|| folder_name(&key.path).into());
-            let repo = task.filter(|task| !task.main).map(|task| folder_name(&task.repo));
-            let place = [repo, (key.host != LOCAL).then(|| key.host.to_string())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+            let (icon, name, place) = self.naming(key);
             let (dot, color) = task.map(|task| self.status(key, task, cx)).unwrap_or(("○", theme.muted_foreground));
             // Every workspace with an agent has its dot, an idle one too.
             let dotted = dot != "○" || !self.workspace_agents(key).is_empty();
@@ -155,7 +246,7 @@ impl Den {
                 .gap_2()
                 .rounded(theme.radius)
                 .when(selected, |el| el.bg(theme.accent))
-                .child(svg().path(icon).size(px(14.)).flex_none().text_color(theme.muted_foreground))
+                .child(svg().path(icon).size(px(14.)).flex_none().text_color(workspace_color(&key)))
                 .child(div().flex_none().max_w(px(260.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_ui_small(cx).text_color(theme.muted_foreground).child(place))
                 .child(div().flex_1())

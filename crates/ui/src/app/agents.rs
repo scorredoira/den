@@ -42,7 +42,7 @@ impl Den {
 
     /// An agent's dot: waiting for an answer, working, done without being
     /// looked at, or idle; and the word for it.
-    fn agent_status(&self, host: &SharedString, agent: &AgentInfo, cx: &App) -> (&'static str, Hsla, &'static str) {
+    pub(super) fn agent_status(&self, host: &SharedString, agent: &AgentInfo, cx: &App) -> (&'static str, Hsla, &'static str) {
         let theme = cx.theme();
         if agent.blocked {
             ("●", theme.danger, "waiting")
@@ -116,7 +116,7 @@ impl Den {
 
 /// What the agent is on: its title without its spinner, or the
 /// agent's name.
-fn agent_title(agent: &AgentInfo) -> SharedString {
+pub(super) fn agent_title(agent: &AgentInfo) -> SharedString {
     let title = agent
         .title
         .as_deref()

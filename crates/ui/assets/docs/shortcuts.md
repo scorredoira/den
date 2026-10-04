@@ -126,6 +126,7 @@ Each panel has an icon in the activity bar, on the left: a click shows or hides 
 | --- | --- |
 | {{ToggleTerminals}} | Show or hide the terminals |
 | {{MaximizeTerminals}} | Terminals over the whole window, or back |
+| {{ToggleNotes}} | The workspace's notes, to write what's next in it, or back |
 | {{NewTerminal}} | New terminal |
 | {{SplitRight}} / {{SplitDown}} | Split the terminal to the right or down |
 | {{FocusPaneLeft}} {{FocusPaneRight}} {{FocusPaneUp}} {{FocusPaneDown}} | Move to the terminal on that side |

@@ -75,6 +75,8 @@ pub enum Panel {
     Debugger,
     /// The screen of a phone (see `device`).
     Device,
+    /// What's next in the workspace (see `notes`).
+    Notes,
     /// Configs from when the agents had a panel of their own (they're in
     /// the workspaces column now) name it: it's dropped on reading.
     Agents,
@@ -82,7 +84,7 @@ pub enum Panel {
 
 impl Panel {
     /// In the activity bar's order, unless it's dragged.
-    pub const ALL: [Panel; 12] = [
+    pub const ALL: [Panel; 13] = [
         Panel::Workspaces,
         Panel::Files,
         Panel::Search,
@@ -94,6 +96,7 @@ impl Panel {
         Panel::Code,
         Panel::Terminals,
         Panel::Debugger,
+        Panel::Notes,
         Panel::Device,
     ];
 
@@ -105,6 +108,7 @@ impl Panel {
             Panel::Workspaces | Panel::Agents | Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References | Panel::Outline => Some(260.),
             Panel::Debugger => Some(420.),
             Panel::Device => Some(400.),
+            Panel::Notes => Some(320.),
             Panel::Code | Panel::Terminals => None,
         }
     }
@@ -112,8 +116,8 @@ impl Panel {
 
 /// Off the activity bar until shown: what is always in sight or opens by
 /// itself (the terminals show anyway, the references on Find References,
-/// the debugger on debugging).
-const HIDDEN_ACTIVITY: [Panel; 3] = [Panel::Terminals, Panel::References, Panel::Debugger];
+/// the debugger on debugging, the notes as a tab of the terminals').
+const HIDDEN_ACTIVITY: [Panel; 4] = [Panel::Terminals, Panel::References, Panel::Debugger, Panel::Notes];
 
 /// Panels one above the other. The one with the code takes the width left
 /// by the others.
@@ -186,10 +190,11 @@ impl Layout {
                 Some(self.side.unwrap_or(260.)),
                 vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Search, Panel::References, Panel::Outline])],
             )];
-            // The debugger, a tab of the terminals' unless it was placed.
+            // The debugger, a tab of the terminals' unless it was placed;
+            // the notes, one too.
             let terminals = match self.debug_at {
-                None => vec![Panel::Terminals, Panel::Debugger],
-                Some(_) => vec![Panel::Terminals],
+                None => vec![Panel::Terminals, Panel::Debugger, Panel::Notes],
+                Some(_) => vec![Panel::Terminals, Panel::Notes],
             };
             if self.terminals_at == Some(PanelAt::Bottom) {
                 code.push(Stack { height: Some(self.terminals_height.unwrap_or(280.)), panels: terminals.clone() });
@@ -234,8 +239,12 @@ impl Layout {
                 continue;
             }
             // The commit's files, missing (a config from before they were a
-            // panel), go in the history.
-            let home = if panel == Panel::Commit { Panel::History } else { Panel::Code };
+            // panel), go in the history; the notes, with the terminals.
+            let home = match panel {
+                Panel::Commit => Panel::History,
+                Panel::Notes => Panel::Terminals,
+                _ => Panel::Code,
+            };
             let stack = self.columns.iter_mut().flat_map(|column| &mut column.stacks).find(|stack| match home {
                 Panel::Code => !stack.panels.contains(&Panel::Code),
                 _ => stack.panels.contains(&home),
@@ -836,7 +845,7 @@ mod layout_tests {
         layout.carry_over();
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]], vec![vec![Device]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code], vec![Terminals, Notes]], vec![vec![Debugger]], vec![vec![Device]]]
         );
         assert_eq!(layout.columns[0].width, Some(200.));
         assert_eq!(layout.columns[1].width, Some(300.));
@@ -859,7 +868,7 @@ mod layout_tests {
         // workspaces and the device, a column of their own.
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Search, Changes, History, Commit, References, Outline, Terminals, Debugger]], vec![vec![Device]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Search, Changes, History, Commit, References, Outline, Terminals, Debugger, Notes]], vec![vec![Device]]]
         );
         let mut layout: Layout = serde_json::from_str(r#"{"columns": [{"stacks": [{"panels": ["files"]}]}]}"#).unwrap();
         layout.carry_over();
@@ -876,7 +885,7 @@ mod layout_tests {
         let mut layout = Layout::default();
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code]], vec![vec![Terminals, Debugger]], vec![vec![Device]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code]], vec![vec![Terminals, Debugger, Notes]], vec![vec![Device]]]
         );
         // The changes, a column of their own after the files.
         assert!(layout.move_panel(Changes, Files, Side::Right));
@@ -889,11 +898,12 @@ mod layout_tests {
         // Under the files, in their column.
         assert!(layout.move_panel(References, Files, Side::Bottom));
         assert_eq!(places(&layout)[1], [vec![Files, History, Commit, Changes, Search, Outline], vec![References]]);
-        // The terminals left of the files: the debugger keeps its place.
+        // The terminals left of the files: the debugger and the notes keep
+        // their place.
         assert!(layout.move_panel(Terminals, Files, Side::Left));
         assert_eq!(places(&layout)[1], [vec![Terminals]]);
         assert_eq!(layout.columns[1].width, None, "the terminals, half of what's left");
-        assert_eq!(places(&layout)[4], [vec![Debugger]]);
+        assert_eq!(places(&layout)[4], [vec![Debugger, Notes]]);
         // The code and the workspaces go anywhere too: tabs with the files,
         // and the workspaces under the terminals.
         assert!(layout.move_panel(Code, Files, Side::Tab(None)));
@@ -915,7 +925,7 @@ mod layout_tests {
         assert!(layout.commit_in_history());
         // The history takes them along.
         assert!(layout.move_panel(History, Terminals, Side::Bottom));
-        assert_eq!(places(&layout)[3], [vec![Terminals, Debugger], vec![History, Commit]]);
+        assert_eq!(places(&layout)[3], [vec![Terminals, Debugger, Notes], vec![History, Commit]]);
     }
 
     #[test]
@@ -951,7 +961,7 @@ mod layout_tests {
         assert_eq!(config.activity().last(), Some(&Debugger));
         // A hand-edited one: the code, repeated and missing ones mended.
         config.activity = vec![Code, Terminals, Terminals];
-        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Search, Changes, History, Commit, References, Outline, Debugger]);
+        assert_eq!(config.activity(), [Terminals, Workspaces, Files, Search, Changes, History, Commit, References, Outline, Debugger, Notes]);
         // A hidden icon keeps its place for when it's shown again.
         config.toggle_activity(Workspaces);
         assert_eq!(config.shown_activity()[..2], [Files, Search]);

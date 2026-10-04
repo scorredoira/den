@@ -178,6 +178,7 @@ impl Workspace {
             Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
             Panel::Terminals => self.badges.terminals.map(Badge::Dot),
             Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
+            Panel::Notes => self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary)),
             Panel::Debugger => {
                 let debugger = self.debugger.read(cx);
                 if debugger.is_stopped() {

@@ -34,8 +34,9 @@ use crate::{
     config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, Debugger, EditKind},
     device::{Device, DeviceEvent},
+    notes::NotesPanel,
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
-    AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel,
+    AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel, ToggleNotes,
     diff,
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
@@ -45,7 +46,7 @@ use crate::{
     file_tree::{FileTree, FileTreeEvent},
     language, menu,
     splits::{Axis, Direction},
-    terminals::{TerminalArea, TerminalAreaEvent},
+    terminals::{PanelTab, TerminalArea, TerminalAreaEvent},
 };
 
 mod tab_drag;
@@ -59,6 +60,7 @@ pub(crate) mod autosave_tests;
 mod layout_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
+pub(crate) use layout::PanelDrag;
 pub(crate) use layout::{WorkspacesPanel, column_shown, drop_panels, init_panels, reset_panels, set_column, title as panel_title};
 pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar, toggle_activity_icon};
 
@@ -301,6 +303,7 @@ pub struct Workspace {
     debugger: Entity<Debugger>,
     debug_hover: Entity<debug::hover::HoverCard>,
     device: Entity<Device>,
+    notes: Entity<NotesPanel>,
     /// The terminal the tests run in, reused by the next one.
     test_term: Option<proto::TermId>,
     _subscriptions: Vec<Subscription>,
@@ -332,6 +335,7 @@ impl Workspace {
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
         let device = cx.new(|cx| Device::new(root.clone(), local, cx));
+        let notes = cx.new(|cx| NotesPanel::new(session_key.clone(), window, cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         // A git panel that shows from the start reads now, not when shown.
@@ -347,6 +351,8 @@ impl Workspace {
             cx.observe(&debugger, |_, _, cx| cx.notify()),
             // Its icon, when the device file comes or goes.
             cx.observe(&device, |_, _, cx| cx.notify()),
+            // The dot on its tab and icon, when it fills or empties.
+            cx.observe(&notes, |_, _, cx| cx.notify()),
             // The count on the changes' icon.
             cx.observe(&changes, {
                 let mut last = 0;
@@ -389,9 +395,10 @@ impl Workspace {
                         this.message = Some(message.clone());
                         cx.notify();
                     }
-                    TerminalAreaEvent::ShowDebugger(true) => this.show_panel(Panel::Debugger, cx),
-                    TerminalAreaEvent::ShowDebugger(false) => this.show_panel(Panel::Terminals, cx),
-                    TerminalAreaEvent::CloseDebugger => this.hide_panel(Panel::Debugger, cx),
+                    TerminalAreaEvent::ShowPanel(Some(Panel::Notes)) => this.show_notes(window, cx),
+                    TerminalAreaEvent::ShowPanel(Some(panel)) => this.show_panel(*panel, cx),
+                    TerminalAreaEvent::ShowPanel(None) => this.show_panel(Panel::Terminals, cx),
+                    TerminalAreaEvent::ClosePanel(panel) => this.hide_panel(*panel, cx),
                 },
             ),
             cx.subscribe_in(&changes, window, Self::on_git_event),
@@ -478,6 +485,7 @@ impl Workspace {
             debugger,
             debug_hover,
             device,
+            notes,
             test_term: None,
             _subscriptions: subscriptions,
         }
@@ -2071,6 +2079,23 @@ impl Workspace {
         self.toggle_panel(Panel::Debugger, cx);
     }
 
+    /// The notes, with the focus to write in them.
+    fn show_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_panel(Panel::Notes, cx);
+        self.notes.update(cx, |notes, cx| notes.focus(window, cx));
+    }
+
+    /// Cmd-Alt-N: the notes, to write in them; written in, back to the code.
+    fn toggle_notes(&mut self, _: &ToggleNotes, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_shown(Panel::Notes, cx) && self.notes.read(cx).is_focused(window, cx) {
+            // As a tab of the terminals', they show instead.
+            self.hide_panel(Panel::Notes, cx);
+            self.focus_ide(window, cx);
+        } else {
+            self.show_notes(window, cx);
+        }
+    }
+
     fn new_tab(&mut self, path: PathBuf, preview: bool, window: &mut Window, cx: &mut Context<Self>) -> FileTab {
         let language = language::for_path(&path);
         self.new_tab_with(path, preview, language, window, cx)
@@ -3586,6 +3611,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::evaluate_in_console))
             .on_action(cx.listener(Self::set_next_statement))
             .on_action(cx.listener(Self::toggle_debug_panel))
+            .on_action(cx.listener(Self::toggle_notes))
             .on_action(cx.listener(|this, _: &DebugContinue, window, cx| {
                 this.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx))
             }))

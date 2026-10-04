@@ -126,7 +126,7 @@ fn dropping_the_changes_on_the_terminals_bar_puts_them_together(cx: &mut TestApp
     cx.run_until_parked();
     let layout = cx.update(|_, cx| Config::get(cx).layout.clone());
     let (column, stack) = layout.find(Panel::Terminals).unwrap();
-    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Terminals, Panel::Debugger, Panel::Changes]);
+    assert_eq!(layout.columns[column].stacks[stack].panels, [Panel::Terminals, Panel::Debugger, Panel::Notes, Panel::Changes]);
     // The panel dropped shows; the terminals are behind it.
     cx.update(|_, cx| {
         assert!(workspace.read(cx).is_shown(Panel::Changes, cx));
