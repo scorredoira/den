@@ -50,6 +50,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Add Server…", AddServer),
             MenuItem::action("Open Recent…", OpenRecent),
             MenuItem::separator(),
+            MenuItem::action("New File…", NewFile),
             MenuItem::action("New Worktree…", NewTask),
             MenuItem::action("New Terminal", NewTerminal),
             MenuItem::separator(),

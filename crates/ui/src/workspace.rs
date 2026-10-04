@@ -25,7 +25,7 @@ use crate::{
     CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
-    ToggleTerminals, OpenFileFinder, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
+    ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     changes::{self, ChangesEvent, ChangesPanel},
     commit_view::{CommitView, CommitViewEvent},
@@ -58,6 +58,8 @@ mod commands;
 pub(crate) mod autosave_tests;
 #[cfg(test)]
 mod layout_tests;
+#[cfg(test)]
+mod new_file_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
 pub(crate) use layout::PanelDrag;
@@ -2610,6 +2612,19 @@ impl Workspace {
         self.tabs.iter().position(|tab| &tab.editor == editor)
     }
 
+    /// Cmd-N: a new file in the folder of the file open, or the workspace's,
+    /// named in the files panel.
+    fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self
+            .active_file()
+            .and_then(|ix| self.tabs[ix].path.parent())
+            .filter(|dir| dir.starts_with(&self.root))
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone());
+        self.show_panel(Panel::Files, cx);
+        self.file_tree.update(cx, |tree, cx| tree.new_file_in(dir, window, cx));
+    }
+
     fn reveal_in_tree(&mut self, path: &Path, cx: &mut Context<Self>) {
         self.show_panel(Panel::Files, cx);
         self.file_tree.update(cx, |tree, cx| tree.reveal(path, cx));
@@ -3616,6 +3631,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::set_next_statement))
             .on_action(cx.listener(Self::toggle_debug_panel))
             .on_action(cx.listener(Self::toggle_notes))
+            .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(|this, _: &DebugContinue, window, cx| {
                 this.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx))
             }))

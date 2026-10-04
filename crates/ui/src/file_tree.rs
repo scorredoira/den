@@ -442,6 +442,27 @@ impl FileTree {
         }
     }
 
+    /// The folder a new file's name is being typed in.
+    #[cfg(test)]
+    pub fn new_file_dir(&self) -> Option<&Path> {
+        match &self.edit {
+            Some(Edit { kind: EditKind::NewFile { dir }, .. }) => Some(dir),
+            _ => None,
+        }
+    }
+
+    /// Types a new file's name at the top of `dir`, its folders open.
+    pub fn new_file_in(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let mut open = Some(dir.as_path());
+        while let Some(d) = open
+            && d.starts_with(&self.root)
+        {
+            self.expanded.insert(d.to_path_buf());
+            open = d.parent();
+        }
+        self.start_edit(EditKind::NewFile { dir }, window, cx);
+    }
+
     fn start_edit(&mut self, kind: EditKind, window: &mut Window, cx: &mut Context<Self>) {
         let initial = match &kind {
             EditKind::Rename(path) => path
