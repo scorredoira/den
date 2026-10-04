@@ -537,6 +537,31 @@ impl TerminalArea {
         }
     }
 
+    /// Closes every tab but the one at `ix`, with their terminals.
+    fn close_other_tabs(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        let had_focus = self.contains_focus(window, cx);
+        let others: Vec<TermId> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != ix)
+            .flat_map(|(_, tab)| tab.tree.leaves())
+            .collect();
+        for term in others {
+            self.close_term(term, window, cx);
+        }
+        // The one left is the active one, focused if a closed one was.
+        if had_focus {
+            self.activate_tab(0, window, cx);
+        } else {
+            self.active = 0;
+            cx.notify();
+        }
+    }
+
     /// Splits next to `term` (the terminal that was clicked).
     fn split_at(&mut self, term: TermId, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         self.select(term, cx);
@@ -549,6 +574,8 @@ impl TerminalArea {
         let has_selection = view.as_ref().is_some_and(|view| view.read(cx).has_selection(cx));
         let copy_view = view.clone();
         let paste_view = view.clone();
+        let select_view = view.clone();
+        let clear_view = view.clone();
         // Copy and Paste have their shortcuts in the terminal's context.
         let menu = match &view {
             Some(view) => menu.action_context(view.focus_handle(cx)),
@@ -574,6 +601,17 @@ impl TerminalArea {
             })
             .action(Box::new(ui_term::Paste)),
         )
+        .item(menu::item("Select All", &area, move |_, _, cx| {
+            if let Some(view) = &select_view {
+                view.read(cx).terminal().clone().update(cx, |terminal, cx| terminal.select_all(cx));
+            }
+        }))
+        .separator()
+        .item(menu::item("Clear", &area, move |_, _, cx| {
+            if let Some(view) = &clear_view {
+                view.read(cx).terminal().clone().update(cx, |terminal, cx| terminal.clear(cx));
+            }
+        }))
         .separator()
         .item(
             menu::item("Split Right", &area, move |this, window, cx| {
@@ -742,6 +780,7 @@ impl TerminalArea {
                     }))
                     .context_menu({
                         let area = self.weak.clone();
+                        let alone = self.tabs.len() == 1;
                         move |menu, window, cx| {
                             menu.item(
                                 menu::item("New Terminal", &area, |this, window, cx| this.new_terminal(window, cx))
@@ -765,6 +804,12 @@ impl TerminalArea {
                                 .item(menu::item("Close Tab", &area, move |this, window, cx| {
                                     this.close_tab(ix, window, cx)
                                 }))
+                                .item(
+                                    menu::item("Close Other Tabs", &area, move |this, window, cx| {
+                                        this.close_other_tabs(ix, window, cx)
+                                    })
+                                    .disabled(alone),
+                                )
                                 .separator()
                                 .panel_items(hide_item(&area), window, cx)
                         }

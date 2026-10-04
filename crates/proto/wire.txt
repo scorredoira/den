@@ -60,6 +60,7 @@ pub type TermId = u64;
     AgentList
     TaskForceRemove { path: PathBuf }
     ListDirAll { path: PathBuf }
+    TermClear { term: TermId }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)] pub enum LspOp {
     Definition

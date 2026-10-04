@@ -20,6 +20,23 @@ use alacritty_terminal::{
     vte::ansi::{Color, CursorShape, NamedColor},
 };
 
+/// What clears a terminal like Cmd-K in Terminal.app: the history and the
+/// screen go, the cursor's line moves to the top. The agent's emulator
+/// processes it and the UIs receive it as output, so every view clears alike.
+/// A CAN first ends an escape sequence the output may have left halfway. In
+/// the alternate screen (vim, htop) the screen is the application's: only
+/// the history goes.
+pub fn clear<T: EventListener>(term: &Term<T>) -> Vec<u8> {
+    let line = term.grid().cursor.point.line.0;
+    let mut out = String::from("\x18");
+    if line > 0 && !term.mode().contains(TermMode::ALT_SCREEN) {
+        // Scrolling the lines above into the history, then dropping it.
+        let _ = write!(out, "\x1b[{line}S\x1b[{line}A");
+    }
+    out.push_str("\x1b[3J");
+    out.into_bytes()
+}
+
 /// Attributes that change how a cell looks.
 const STYLE_FLAGS: Flags = Flags::BOLD
     .union(Flags::DIM)
@@ -252,5 +269,21 @@ mod tests {
         assert!(copy.mode().contains(TermMode::ALT_SCREEN | TermMode::BRACKETED_PASTE | TermMode::APP_CURSOR));
         assert_eq!(screen(&copy), screen(&original));
         assert_eq!(copy.grid().cursor.point, original.grid().cursor.point);
+    }
+
+    #[test]
+    fn clear_keeps_the_cursor_line_on_top() {
+        let mut term = term(20, 3);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"one\r\ntwo\r\nthree\r\nfour\r\n$ ls\x1b[3");
+        assert_eq!(term.grid().history_size(), 2);
+
+        // Halfway through an escape sequence: the clear ends it.
+        let data = clear(&term);
+        parser.advance(&mut term, &data);
+
+        assert_eq!(screen(&term), vec!["$ ls", "", ""]);
+        assert_eq!(term.grid().history_size(), 0);
+        assert_eq!(term.grid().cursor.point, alacritty_terminal::index::Point::new(Line(0), Column(4)));
     }
 }

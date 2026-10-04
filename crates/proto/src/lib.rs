@@ -202,6 +202,10 @@ pub enum Request {
     /// `ListDir` with what git ignores too (`target/`, `node_modules`…);
     /// never `.git`. Responds `Dir`.
     ListDirAll { path: PathBuf },
+    /// Clears terminal `term` like Cmd-K: its history and screen go, the
+    /// cursor's line moves to the top. Every view of it clears with the
+    /// agent's, as output of the process. Responds `Ok`.
+    TermClear { term: TermId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
