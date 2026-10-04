@@ -151,10 +151,10 @@ impl Den {
             .children(empty)
     }
 
-    /// An agent's row: its dot, its workspace and its state; what it's on,
-    /// on hover.
+    /// An agent's row: its dot and its workspace; what it's on, on hover.
+    /// The dot is its state: no word for it ("working", "done"…), ever.
     fn render_agent(&self, host: &SharedString, agent: &AgentInfo, cx: &mut Context<Self>) -> AnyElement {
-        let (dot, color, state) = self.agent_status(host, agent, cx);
+        let (dot, color, _) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);
         let key = TaskKey { host: host.clone(), path: PathBuf::from(&agent.group) };
@@ -169,8 +169,6 @@ impl Den {
             .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
             .child(div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
-            .child(div().flex_1())
-            .child(div().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(if state == "idle" { "" } else { state }))
             .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, window, cx| this.open_agent(host.clone(), group.clone(), term, window, cx)))
             .into_any_element()
@@ -194,6 +192,24 @@ pub(super) fn agent_title(agent: &AgentInfo) -> SharedString {
                 first.make_ascii_uppercase();
             }
             name.into()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The workspaces' and the agents' rows show their state only as a dot.
+    /// The words ("working", "done"…) were taken off four times and came
+    /// back with rewrites of these rows: this fails if they do again.
+    #[test]
+    fn the_rows_have_no_word_for_the_state() {
+        for (file, source) in [("app.rs", include_str!("../app.rs")), ("app/agents.rs", include_str!("agents.rs"))] {
+            // The code, not its tests (this one names what it looks for).
+            let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+            let code: String = code.lines().filter(|line| !line.trim_start().starts_with("//")).collect();
+            for shown in [".child(state)", ".child(if state", "\"deleting\""] {
+                assert!(!code.contains(shown), "{file} shows the agents' state in words ({shown}): only the dot says it");
+            }
         }
     }
 }
