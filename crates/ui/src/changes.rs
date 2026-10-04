@@ -16,7 +16,9 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenu},
-    resizable_panel, v_flex, v_resizable,
+    resizable_panel,
+    tooltip::Tooltip,
+    v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, Request, Response};
@@ -358,10 +360,12 @@ fn link(id: impl Into<ElementId>, label: impl Into<SharedString>, cx: &App) -> S
 /// A file row: status, name, folder, and lines added and removed.
 fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
-    let (name, dir) = match file.path.rsplit_once('/') {
-        Some((dir, name)) => (name.to_string(), dir.to_string()),
-        None => (file.path.clone(), String::new()),
-    };
+    // The whole path, its folder muted: in the list's order, the files of a
+    // folder go together. Cut at the start, so the name always shows.
+    let dir = file.path.rfind('/').map_or(0, |slash| slash + 1);
+    let muted = HighlightStyle { color: Some(theme.muted_foreground), ..Default::default() };
+    let path = StyledText::new(file.path.clone()).with_highlights([(0..dir, muted)]);
+    let tip = SharedString::from(file.path.clone());
     let status_color = match file.status {
         'A' | '?' => theme.success,
         'D' | 'U' => theme.danger,
@@ -385,21 +389,14 @@ fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: 
                 .child(if file.status == '?' { 'U' } else { file.status }.to_string()),
         )
         .child(
-            h_flex()
+            div()
                 .flex_1()
                 .min_w_0()
-                .gap_1()
                 .overflow_hidden()
                 .whitespace_nowrap()
-                .child(div().flex_none().when(file.status == 'D', |el| el.line_through()).child(name))
-                .child(
-                    div()
-                        .text_ui_small(cx)
-                        .text_color(theme.muted_foreground)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(dir),
-                ),
+                .text_ellipsis_start()
+                .when(file.status == 'D', |el| el.line_through())
+                .child(path),
         )
         .child(
             h_flex()
@@ -411,6 +408,7 @@ fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: 
                     el.child(div().text_color(theme.danger).child(format!("−{}", file.removed)))
                 }),
         )
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
 }
 
 /// "5 min ago", "3 d ago"…
