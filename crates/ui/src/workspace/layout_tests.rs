@@ -143,6 +143,71 @@ fn a_panel_hides_or_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
     other.read_with(cx, |other, cx| assert_eq!(other.side_place(cx), Some(Place(Panel::Workspaces))));
 }
 
+/// From the menu, a panel already in the place, or hidden there, comes
+/// back in its spot; with the column closed, nothing is checked.
+#[gpui_kit::test]
+fn the_menu_brings_a_panel_back_in_its_spot(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let checked = |cx: &mut VisualTestContext| {
+        let panels = workspace.read_with(cx, |workspace, cx| workspace.menu_panels(cx));
+        panels.into_iter().filter(|(panel, checked)| *checked && config::Group::of(*panel).is_some()).count()
+    };
+    assert!(checked(cx) > 0);
+    click(cx, "activity-Place(Place(Workspaces))");
+    assert!(cx.debug_bounds("side-column").is_none());
+    assert_eq!(checked(cx), 0);
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_from_menu(Panel::Files, window, cx));
+    cx.run_until_parked();
+    let files = bounds(cx, "stack-Files");
+    assert!(bounds(cx, "stack-Workspaces").bottom() <= files.top() && files.bottom() <= bounds(cx, "stack-Outline").top());
+    // The agents, hidden, come back between the workspaces and the files.
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_from_menu(Panel::Agents, window, cx));
+    cx.run_until_parked();
+    let agents = bounds(cx, "stack-Agents");
+    assert!(bounds(cx, "stack-Workspaces").bottom() <= agents.top() && agents.bottom() <= bounds(cx, "stack-Files").top());
+}
+
+/// Hiding the commit's files leaves the history; hiding the debugger leaves
+/// the panels it shares the column with.
+#[gpui_kit::test]
+fn the_commit_files_and_the_debugger_hide_alone(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Commit, cx));
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Commit, cx));
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::History, cx));
+        assert!(!workspace.is_shown(Panel::Commit, cx));
+    });
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Commit, cx));
+    assert!(workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Commit, cx)));
+    // The debugger's parts in the explorer: hidden, the files stay.
+    cx.update(|_, cx| {
+        Config::update(cx, |config| {
+            let explorer = config.layout.place_of(Panel::Files).unwrap();
+            config.layout.move_panel(Panel::CallStack, explorer, None);
+            config.layout.move_panel(Panel::Variables, explorer, None);
+        })
+    });
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Debugger, cx));
+    cx.run_until_parked();
+    bounds(cx, "stack-CallStack");
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Debugger, cx));
+    cx.run_until_parked();
+    bounds(cx, "stack-Files");
+    assert!(cx.debug_bounds("stack-CallStack").is_none() && cx.debug_bounds("stack-Variables").is_none());
+    // Shown again, they're all back.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Debugger, cx));
+    cx.run_until_parked();
+    bounds(cx, "stack-CallStack");
+    bounds(cx, "stack-Variables");
+    // Alone in their place, they close the column.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Watch, cx));
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Debugger, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("side-column").is_none());
+}
+
 #[gpui_kit::test]
 fn the_workspaces_are_a_panel_of_the_explorer(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});

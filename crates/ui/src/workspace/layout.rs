@@ -176,7 +176,7 @@ impl Workspace {
             Panel::Console => panels.terminals && panels.console && panels.console_front,
             Panel::Device => panels.device && self.device.read(cx).available(),
             Panel::Notes => panels.notes,
-            Panel::Commit => self.is_shown(Panel::History, cx),
+            Panel::Commit => self.is_shown(Panel::History, cx) && self.history.read(cx).files_open(cx),
             Panel::Debugger => DEBUG_PANELS.into_iter().any(|panel| self.in_side(panel, cx)),
             _ => self.in_side(panel, cx) && !Config::get(cx).layout.collapsed.contains(&panel),
         }
@@ -261,6 +261,17 @@ impl Workspace {
             }
             Panel::Notes => panels.notes = true,
             _ => {
+                if panel == Panel::Commit {
+                    self.history.update(cx, |history, cx| history.show_files(true, cx));
+                }
+                // The debugger's parts it took off a place they share (see
+                // `hide_panel`) come back with it.
+                let layout = &Config::get(cx).layout;
+                let parts: Vec<Panel> =
+                    DEBUG_PANELS.into_iter().filter(|part| layout.place_of(*part) == layout.place_of(Panel::CallStack)).collect();
+                if panel == Panel::Debugger && parts.iter().all(|part| layout.hidden.contains(part)) {
+                    Config::update(cx, |config| config.layout.hidden.retain(|other| !parts.contains(other)));
+                }
                 // The debugger is its call stack's place; the commit's files, the history.
                 let panel = match panel {
                     Panel::Debugger => Panel::CallStack,
@@ -286,7 +297,9 @@ impl Workspace {
         self.layout_changed(cx);
     }
 
-    /// Hides `panel`: a side panel's place closes the side column.
+    /// Hides `panel`: a side panel's place closes the side column; the
+    /// commit's files go from under the commits; the debugger's parts go
+    /// off a column they share with others, or close it.
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         let panels = &mut self.panels;
         match panel {
@@ -301,6 +314,18 @@ impl Workspace {
             }
             Panel::Device => panels.device = false,
             Panel::Notes => panels.notes = false,
+            Panel::Commit => self.history.update(cx, |history, cx| history.show_files(false, cx)),
+            Panel::Debugger => {
+                let layout = &Config::get(cx).layout;
+                let here = self.side_place(cx).map(|place| layout.panels(place)).unwrap_or_default();
+                let parts: Vec<Panel> = here.iter().copied().filter(|panel| DEBUG_PANELS.contains(panel)).collect();
+                if parts.len() == here.len() {
+                    close_side(cx);
+                } else if !parts.is_empty() {
+                    // The others stay in sight.
+                    Config::update(cx, |config| config.layout.hidden.extend(parts));
+                }
+            }
             _ => {
                 if self.is_shown(panel, cx) || self.in_side(panel, cx) {
                     close_side(cx);

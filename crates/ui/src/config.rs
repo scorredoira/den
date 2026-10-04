@@ -143,8 +143,9 @@ impl Layout {
         self.places.iter().map(|place| self.name(place)).filter(|place| !self.panels(*place).is_empty()).collect()
     }
 
-    /// Puts `panel` in `place`, above `before` (or last); a place left
-    /// empty goes.
+    /// Puts `panel` in `place`, above `before` (or last, unless it's there
+    /// already: then it keeps its spot); a place left empty goes. The
+    /// column stays on the place it shows.
     pub fn move_panel(&mut self, panel: Panel, place: Place, before: Option<Panel>) {
         if before == Some(panel) || self.index(place.0).is_none() {
             return;
@@ -154,6 +155,20 @@ impl Layout {
         let Some(anchor) = others.iter().copied().find(|other| *other != panel) else {
             return;
         };
+        // Already there, hidden or not, it keeps its spot.
+        if before.is_none() && others.contains(&panel) {
+            self.hidden.retain(|other| *other != panel);
+            return;
+        }
+        // The panel naming the place showing leaves: one in sight that
+        // stays names it, so the column doesn't follow the panel. With none,
+        // the place goes from the bar, and the column follows.
+        if self.place.0 == panel
+            && let Some(ix) = self.index(panel)
+            && let Some(other) = self.places[ix].iter().find(|other| **other != panel && !self.hidden.contains(other))
+        {
+            self.place = Place(*other);
+        }
         for place in &mut self.places {
             place.retain(|other| *other != panel);
         }
@@ -916,6 +931,40 @@ mod layout_tests {
         layout.move_panel(Panel::Search, git, None);
         layout.move_panel(Panel::References, git, None);
         assert!(!layout.places().contains(&search));
+    }
+
+    #[test]
+    fn the_column_stays_on_its_place_as_its_panels_move() {
+        use super::Place;
+        let mut layout = Layout::default();
+        let git = layout.place_of(Panel::Changes).unwrap();
+        // The panel naming the place showing goes elsewhere: the column stays.
+        assert_eq!(layout.place, Place(Panel::Files));
+        layout.move_panel(Panel::Files, git, None);
+        assert_eq!(layout.current(), layout.place_of(Panel::Outline));
+        assert_eq!(layout.panels(layout.current().unwrap()), [Panel::Workspaces, Panel::Outline]);
+        // As a click names it, by its first panel in sight.
+        layout.place = layout.current().unwrap();
+        layout.move_panel(Panel::Workspaces, git, None);
+        assert_eq!(layout.panels(layout.current().unwrap()), [Panel::Outline]);
+        // The last one leaves: the column goes with it.
+        layout.move_panel(Panel::Outline, git, None);
+        assert_eq!(layout.current(), Some(git));
+    }
+
+    #[test]
+    fn a_panel_brought_where_it_is_keeps_its_spot() {
+        use super::Place;
+        let mut layout = Layout::default();
+        let explorer = Place(Panel::Workspaces);
+        layout.move_panel(Panel::Files, explorer, None);
+        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Files, Panel::Outline]);
+        // A hidden one comes back where it was.
+        layout.move_panel(Panel::Agents, explorer, None);
+        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline]);
+        // Above another, it moves.
+        layout.move_panel(Panel::Outline, explorer, Some(Panel::Workspaces));
+        assert_eq!(layout.panels(explorer)[0], Panel::Outline);
     }
 
     #[test]
