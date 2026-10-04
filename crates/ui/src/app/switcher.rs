@@ -5,7 +5,8 @@
 //! it and Esc stays.
 //!
 //! Cmd-E enters the next one with no list, so while Cmd is down it says
-//! which.
+//! which, with the workspaces column shown; held down, it waits to be let
+//! go.
 
 use super::*;
 
@@ -14,6 +15,10 @@ pub(super) struct Notice {
     key: TaskKey,
     position: usize,
     total: usize,
+    /// E is still down: its repeats go nowhere.
+    held: bool,
+    /// The workspaces column was hidden: it hides again when Cmd is let go.
+    hide_column: bool,
 }
 
 pub(super) struct Switcher {
@@ -47,6 +52,9 @@ impl Den {
     /// the column (the first after the last), only those with a coding agent
     /// or any of them.
     pub(super) fn next_task(&mut self, with_agent: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.notice.as_ref().is_some_and(|notice| notice.held) {
+            return;
+        }
         let column: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
         let start = self.active.as_ref().and_then(|active| column.iter().position(|key| key == active));
         let after = start.map_or(0, |ix| ix + 1);
@@ -59,11 +67,26 @@ impl Den {
         };
         let position = round.iter().position(|other| **other == key).unwrap_or(0) + 1;
         let total = round.len();
+        let hidden = !self.tasks_shown(cx);
         self.activate(key.clone(), window, cx);
         // From the menu, with no Cmd to let go of: nothing to say.
         if window.modifiers().secondary() {
-            self.notice = Some(Notice { key, position, total });
+            // Hidden before the first Cmd-E of this Cmd, it shows until Cmd goes.
+            let hide_column = self.notice.as_ref().map_or(hidden, |notice| notice.hide_column);
+            if hidden {
+                self.show_tasks_column(true, cx);
+            }
+            self.notice = Some(Notice { key, position, total, held: true, hide_column });
             cx.notify();
+        }
+    }
+
+    /// E let go: another Cmd-E goes to the next workspace.
+    pub(super) fn switcher_key_up(&mut self, event: &KeyUpEvent) {
+        if event.keystroke.key == "e"
+            && let Some(notice) = &mut self.notice
+        {
+            notice.held = false;
         }
     }
 
@@ -198,7 +221,10 @@ impl Den {
         if modifiers.secondary() {
             return;
         }
-        if self.notice.take().is_some() {
+        if let Some(notice) = self.notice.take() {
+            if notice.hide_column {
+                self.show_tasks_column(false, cx);
+            }
             cx.notify();
         }
         if let Some(switcher) = self.switcher.take() {
