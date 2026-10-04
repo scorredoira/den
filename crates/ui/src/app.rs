@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::Duration,
 };
 
@@ -183,6 +183,11 @@ struct OpenWindow {
 /// The local agent, for the main window.
 pub fn set_agent(agent: Option<Arc<Client>>, cx: &mut App) {
     cx.default_global::<Main>().agent = agent;
+}
+
+/// Whether `client` is the app's connection to the local agent.
+fn is_app_agent(client: &Arc<Client>, cx: &App) -> bool {
+    cx.try_global::<Main>().and_then(|main| main.agent.as_ref()).is_some_and(|agent| Arc::ptr_eq(agent, client))
 }
 
 /// The open windows, the main one first.
@@ -793,10 +798,7 @@ impl Den {
         let destination = host.destination.clone();
         host.status = HostStatus::Connecting(CONNECTING);
         cx.notify();
-        let agents = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .unwrap_or_default();
+        let agents = crate::agent::agents_dir().unwrap_or_default();
         // Uploading the agent takes a while: the column says so.
         let (step_tx, step_rx) = smol::channel::unbounded::<&'static str>();
         let step_name = name.clone();
@@ -876,8 +878,23 @@ impl Den {
         let Some(host) = self.host_mut(&name) else {
             return;
         };
-        host.client = Some(client.clone());
+        let previous = host.client.replace(client.clone());
         host.status = HostStatus::Connected;
+        // Reconnect while connected: the previous connection goes (unless
+        // it's the app's, which this machine's `den` commands come to).
+        if let Some(previous) = previous
+            && !Arc::ptr_eq(&previous, &client)
+            && !is_app_agent(&previous, cx)
+        {
+            previous.disconnect();
+        }
+        // The agent wasn't up when den started: now that it is, `den <path>`
+        // from other terminals comes to the app (and a window opened from
+        // the Dock connects to it).
+        if name == LOCAL && self.server.is_none() && cx.try_global::<Main>().is_none_or(|main| main.agent.is_none()) {
+            set_agent(Some(client.clone()), cx);
+            crate::listen_for_open(&client, cx);
+        }
         self.watch_host(name.clone(), client.clone(), window, cx);
         self.track(name.clone(), &client, window, cx);
         let workspaces: Vec<Entity<Workspace>> = self
@@ -915,9 +932,10 @@ impl Den {
         client.on_disconnect(move || {
             let _ = tx.try_send(());
         });
+        let client = Arc::downgrade(client);
         cx.spawn_in(window, async move |this, cx| {
             if rx.recv().await.is_ok() {
-                this.update_in(cx, |this, window, cx| this.lost(name, window, cx)).ok();
+                this.update_in(cx, |this, window, cx| this.lost(name, &client, window, cx)).ok();
             }
         })
         .detach();
@@ -936,12 +954,22 @@ impl Den {
 
     /// The connection was lost: terminals are left disconnected (still alive
     /// in the agent) and it retries until it's back.
-    fn lost(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(host) = self.host_mut(&name) {
-            host.client = None;
-            host.status = HostStatus::Failed("connection lost; reconnecting…".into());
-        }
+    fn lost(&mut self, name: SharedString, client: &Weak<Client>, window: &mut Window, cx: &mut Context<Self>) {
+        // A connection already replaced (Reconnect), or a server removed.
+        let Some(host) = self.host_mut(&name).filter(|host| {
+            host.client.as_ref().is_some_and(|current| Weak::ptr_eq(&Arc::downgrade(current), client))
+        }) else {
+            return;
+        };
+        host.client = None;
+        host.status = HostStatus::Failed("connection lost; reconnecting…".into());
         self.connect(name, window, cx);
+    }
+
+    /// Whether `client` is still the connection to the server `name`: a
+    /// replaced or removed one's events are no longer this window's.
+    fn is_current(&self, name: &str, client: &Arc<Client>) -> bool {
+        self.client(name).is_some_and(|current| Arc::ptr_eq(&current, client))
     }
 
     /// Receives the agents running on the server and the tasks created with
@@ -974,9 +1002,22 @@ impl Den {
         cx.spawn_in(window, async move |this, cx| {
             // The agents running there (an outdated agent doesn't know).
             if let Ok(Response::Agents(agents)) = client.request(Request::AgentList).await {
-                this.update(cx, |this, cx| this.set_agents(name.clone(), agents, cx)).ok();
+                this.update(cx, |this, cx| {
+                    if this.is_current(&name, &client) {
+                        this.set_agents(name.clone(), agents, cx);
+                    }
+                })
+                .ok();
             }
             while let Ok(event) = rx.recv().await {
+                // The server was removed, or reconnected: no longer heard here.
+                if !this.read_with(cx, |this, _| this.is_current(&name, &client)).unwrap_or(false) {
+                    if let Event::Command { command, .. } = event {
+                        let result = Err("den is no longer connected to this server".to_string());
+                        client.notify(Request::CommandDone { command, result });
+                    }
+                    break;
+                }
                 let alive = match event {
                     Event::Agents { agents } => this.update(cx, |this, cx| this.set_agents(name.clone(), agents, cx)).is_ok(),
                     // From a terminal outside den: only one window opens it.
@@ -1436,7 +1477,8 @@ impl Den {
 
     /// Click on a file in the dialog: it closes and goes to its tab.
     fn go_to_unsaved(&mut self, key: TaskKey, file: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.quit_confirm = None;
+        // Not quitting after all, as with Cancel.
+        self.cancel_quit(window, cx);
         let path = key.path.join(&file);
         self.activate(key, window, cx);
         if let Some(workspace) = self.active_workspace() {
@@ -1543,11 +1585,22 @@ impl Den {
             )
     }
 
+    /// One picker at a time: opening one closes the others, which would
+    /// be drawn over it or keep the focus.
+    fn close_pickers(&mut self) {
+        self.task_picker = None;
+        self.command_palette = None;
+        self.recent_picker = None;
+        self.host_picker = None;
+        self.folder_picker = None;
+    }
+
     /// Cmd-E: goes back to the previous task; again, to the one before (like Alt-Tab).
     fn open_task_picker(&mut self, _: &OpenTaskPicker, window: &mut Window, cx: &mut Context<Self>) {
         if self.task_picker.is_some() {
             return;
         }
+        self.close_pickers();
         // The most recently used first, so Enter goes back to the previous
         // one; those never visited in the column's order; the one in front, last.
         let mut keys: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
@@ -1559,17 +1612,13 @@ impl Den {
                 recent.iter().position(|task| task.host == key.host.to_string() && task.path == key.path).unwrap_or(RECENT)
             }
         });
-        let labels: Vec<String> = keys.iter().map(|key| self.label(key)).collect();
-        let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Go to workspace…", false, window, cx));
-        let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
+        let labels = distinct_labels(keys.iter().map(|key| (self.label(key), key.path.as_path())));
+        let picker = cx.new(|cx| Picker::new(Arc::new(labels.clone()), "Go to workspace…", false, window, cx));
+        let subscription = cx.subscribe_in(&picker, window, move |this, _, event: &PickerEvent, window, cx| {
             this.task_picker = None;
             match event {
                 PickerEvent::Pick(label) => {
-                    let key = this
-                        .ordered(cx)
-                        .into_iter()
-                        .map(|(key, _)| key)
-                        .find(|key| &this.label(key) == label);
+                    let key = labels.iter().position(|other| other == label).map(|ix| keys[ix].clone());
                     match key {
                         Some(key) => this.activate(key, window, cx),
                         None => this.focus_active(window, cx),
@@ -1588,6 +1637,7 @@ impl Den {
         if self.command_palette.is_some() {
             return;
         }
+        self.close_pickers();
         // The commands run where the focus was, as if their keys were pressed there.
         let previous = window.focused(cx);
         let commands: Vec<_> = SHORTCUTS
@@ -1794,6 +1844,7 @@ impl Den {
             [] => self.open_host_picker(window, cx),
             // The servers connected, and another to connect to.
             _ => {
+                self.close_pickers();
                 let mut choices = hosts;
                 choices.push(ADD_SERVER.to_string());
                 let picker = cx.new(|cx| Picker::new(Arc::new(choices), "Open a folder on…", false, window, cx));
@@ -1834,6 +1885,7 @@ impl Den {
         if self.recent_picker.is_some() {
             return;
         }
+        self.close_pickers();
         let labels: Vec<String> = self.recents(cx).into_iter().map(|(_, label)| label).collect();
         let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Open recent…", false, window, cx));
         let subscription = cx.subscribe_in(&picker, window, |this, _, event: &PickerEvent, window, cx| {
@@ -2207,6 +2259,7 @@ impl Den {
     }
 
     fn show_host_picker(&mut self, mut hosts: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_pickers();
         hosts.retain(|host| self.host(host).is_none());
         let placeholder =
             if cfg!(windows) { "Server from ~/.ssh/config, WSL distro or user@host…" } else { "Server from ~/.ssh/config or user@host…" };
@@ -2238,6 +2291,7 @@ impl Den {
         let Some(client) = self.client(&host) else {
             return;
         };
+        self.close_pickers();
         let title = format!("OPEN FOLDER ON {}", host.to_uppercase());
         let picker = cx.new(|cx| FolderPicker::new(client.clone(), title, start, window, cx));
         let subscription = cx.subscribe_in(&picker, window, move |this, _, event: &FolderPickerEvent, window, cx| {
@@ -2296,7 +2350,13 @@ impl Den {
     }
 
     fn forget_host(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        // Its connection goes with it: no more agents or `den` commands from it.
+        if let Some(client) = self.client(&name) {
+            client.disconnect();
+        }
         self.hosts.retain(|host| host.name != name);
+        self.agents.remove(&name);
+        self.agents_attention.retain(|(host, _)| *host != name);
         self.workspaces.retain(|key, _| key.host != name);
         if self.remembers() {
             Config::update(cx, |c| c.hosts.retain(|host| host.name != name.as_ref()));
@@ -3205,6 +3265,19 @@ fn folder_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// Labels to pick from, each with its path if another has the same (two
+/// folders called `api`): which is picked is known by its label.
+fn distinct_labels<'a>(labels: impl Iterator<Item = (String, &'a Path)>) -> Vec<String> {
+    let labels: Vec<(String, &Path)> = labels.collect();
+    labels
+        .iter()
+        .map(|(label, path)| match labels.iter().filter(|(other, _)| other == label).count() {
+            1 => label.clone(),
+            _ => format!("{label} · {}", path.display()),
+        })
+        .collect()
+}
+
 /// The checkout's folder name, or `repo/folder` for a worktree.
 fn task_label(task: &TaskInfo) -> String {
     let repo = folder_name(&task.repo);
@@ -3213,9 +3286,16 @@ fn task_label(task: &TaskInfo) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, path::Path};
 
     use gpui_kit::component::highlighter::SyntaxColors;
+
+    #[test]
+    fn workspaces_with_the_same_name_are_told_apart() {
+        let paths = [Path::new("/work/api"), Path::new("/personal/api"), Path::new("/work/web")];
+        let labels = super::distinct_labels(["api", "api", "web"].into_iter().map(String::from).zip(paths));
+        assert_eq!(labels, ["api · /work/api", "api · /personal/api", "web"]);
+    }
 
     #[test]
     fn ssh_config_hosts() {
@@ -3298,6 +3378,44 @@ mod palette_tests {
         picker.update(cx, |_, cx| cx.emit(PickerEvent::Pick("Settings".into())));
         cx.run_until_parked();
         assert!(den.read_with(cx, |den, _| den.settings.is_some()));
+    }
+
+    /// One picker at a time: the one drawn is the one with the focus.
+    #[gpui_kit::test]
+    fn opening_a_picker_closes_the_others(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        cx.update(|window, cx| {
+            den.update(cx, |den, cx| {
+                den.open_task_picker(&crate::OpenTaskPicker, window, cx);
+                den.open_command_palette(window, cx);
+            })
+        });
+        assert!(den.read_with(cx, |den, _| den.task_picker.is_none() && den.command_palette.is_some()));
+    }
+
+    /// Going to an unsaved file from the quit dialog cancels quitting, as
+    /// Cancel does: a window that went on without saving asks again.
+    #[gpui_kit::test]
+    fn going_to_an_unsaved_file_cancels_quitting(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        let key = super::TaskKey { host: super::LOCAL.into(), path: "/unsaved-project".into() };
+        cx.update(|window, cx| {
+            den.update(cx, |den, cx| {
+                den.discarded = true;
+                den.quit_confirm = Some((cx.focus_handle(), super::Closing::App));
+                den.go_to_unsaved(key, "main.rs".into(), window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert!(den.read_with(cx, |den, _| den.quit_confirm.is_none() && !den.discarded));
     }
 
     /// Check for Updates opens About; a build that isn't installed says so

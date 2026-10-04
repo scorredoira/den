@@ -78,10 +78,18 @@ pub fn status(cx: &App) -> Status {
 /// then every few hours, while Settings has it on.
 pub fn init(cx: &mut App) {
     cx.set_global(Updates::default());
-    if install().is_none() {
+    // Before an update can move them.
+    let _ = crate::agent::agents_dir();
+    let Some(install) = install() else {
         cx.global_mut::<Updates>().status = Status::NotInstalled;
         return;
-    }
+    };
+    // The previous build's, kept for it until it restarted into this one.
+    let previous = kept(&install);
+    cx.background_executor().spawn(async move {
+        let _ = std::fs::remove_dir_all(previous);
+    })
+    .detach();
     cx.spawn(async move |cx| {
         cx.background_executor().timer(FIRST_CHECK).await;
         loop {
@@ -182,6 +190,18 @@ fn install() -> Option<Install> {
     install_of(&exe)
 }
 
+/// Where an update keeps the running build's files until it restarts: the
+/// agents it connects to and uploads to servers, which must be its own.
+fn kept(install: &Install) -> PathBuf {
+    match install {
+        Install::Bundle(bundle) => {
+            let name = bundle.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            bundle.with_file_name(format!(".{name}.old"))
+        }
+        Install::Linux(exe) => exe.with_file_name(".previous"),
+    }
+}
+
 fn install_of(exe: &Path) -> Option<Install> {
     if cfg!(target_os = "macos") {
         let bundle = exe.ancestors().find(|dir| dir.extension().is_some_and(|ext| ext == "app"))?;
@@ -240,10 +260,18 @@ fn check_and_install(install: &Install) -> Result<std::result::Result<String, (S
             bail!("{archive_name} does not match its checksum");
         }
         match install {
-            Install::Bundle(bundle) => replace_bundle(&archive, bundle, &work),
+            Install::Bundle(bundle) => {
+                let relaunch = replace_bundle(&archive, bundle, &work)?;
+                crate::agent::agents_moved(kept(install).join("Contents/MacOS"));
+                Ok(relaunch)
+            }
             Install::Linux(exe) => {
                 run(Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(&work))?;
+                let agents = crate::agent::agents_dir()?;
+                let previous = kept(install);
+                keep_agents(&agents, &previous)?;
                 run(Command::new("sh").arg(work.join(&label).join("install.sh")))?;
+                crate::agent::agents_moved(previous);
                 Ok(vec![exe.to_string_lossy().into_owned()])
             }
         }
@@ -253,7 +281,8 @@ fn check_and_install(install: &Install) -> Result<std::result::Result<String, (S
 }
 
 /// Unpacks the release's `Den.app` beside `bundle` and swaps it in. The
-/// running app keeps its files; the next start is the new one.
+/// running app keeps its files: the old bundle stays, hidden beside it (see
+/// `kept`), until the next start, which is the new one.
 fn replace_bundle(archive: &Path, bundle: &Path, work: &Path) -> Result<Vec<String>> {
     run(Command::new("ditto").args(["-x", "-k"]).arg(archive).arg(work))?;
     let unpacked = work.join("Den.app");
@@ -273,8 +302,21 @@ fn replace_bundle(archive: &Path, bundle: &Path, work: &Path) -> Result<Vec<Stri
         let _ = std::fs::rename(&old, bundle);
         return Err(err).with_context(|| format!("could not replace {}", bundle.display()));
     }
-    let _ = std::fs::remove_dir_all(&old);
     Ok(vec!["open".into(), "-a".into(), bundle.to_string_lossy().into_owned()])
+}
+
+/// Copies the agents in `from` to `to`, before `install.sh` puts the next
+/// build's in their place.
+fn keep_agents(from: &Path, to: &Path) -> Result<()> {
+    let _ = std::fs::remove_dir_all(to);
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)?.flatten() {
+        if entry.file_name().to_string_lossy().starts_with("den-agent") {
+            std::fs::copy(entry.path(), to.join(entry.file_name()))
+                .with_context(|| format!("could not keep {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn download(url: &str, to: &Path) -> Result<()> {
@@ -343,6 +385,13 @@ mod tests {
             assert_eq!(install_of(Path::new("/home/u/den/target/release/den")), None);
         }
     }
+
+    #[test]
+    fn the_running_build_is_kept_beside_the_install() {
+        assert_eq!(kept(&Install::Bundle("/Applications/Den.app".into())), Path::new("/Applications/.Den.app.old"));
+        let exe = PathBuf::from("/home/u/.local/share/den/app/den");
+        assert_eq!(kept(&Install::Linux(exe)), Path::new("/home/u/.local/share/den/app/.previous"));
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -370,7 +419,8 @@ mod network {
         let relaunch = replace_bundle(&archive, &bundle, &unpack).unwrap();
         assert!(bundle.join("Contents/MacOS/den").is_file());
         assert!(!bundle.join("Contents/MacOS/old").exists());
-        assert!(!apps.join(".Den.app.old").exists() && !apps.join(".Den.app.update").exists());
+        // The old one stays until the next start, for the agents of the app still running.
+        assert!(apps.join(".Den.app.old/Contents/MacOS/old").exists() && !apps.join(".Den.app.update").exists());
         assert_eq!(relaunch[..2], ["open", "-a"]);
         let _ = std::fs::remove_dir_all(&work);
     }

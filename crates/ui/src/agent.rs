@@ -12,15 +12,30 @@ use gpui_kit::{AppContext as _, AsyncApp, Entity};
 use proto::{Event, Request, Response, TermId};
 use ui_term::{PtyEvent, Terminal, TerminalBackend};
 
-/// Connects to the local agent, starting it if needed. Its binary sits next
-/// to the app's.
+/// The folder with this build's agents (`den-agent`, and those uploaded to
+/// servers), read once: an update installed while it runs puts the next
+/// build's where this one's were, and keeps this one's aside until the
+/// restart (see `update`).
+static AGENTS: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Where this build's agents are: next to the app, as it was when it started.
+pub fn agents_dir() -> Result<PathBuf> {
+    let mut agents = AGENTS.lock().unwrap();
+    if agents.is_none() {
+        let exe = std::env::current_exe()?;
+        *agents = Some(exe.parent().context("the app is not in a folder")?.to_path_buf());
+    }
+    Ok(agents.clone().unwrap_or_default())
+}
+
+/// An update took this build's place: its agents are now in `dir`.
+pub fn agents_moved(dir: PathBuf) {
+    *AGENTS.lock().unwrap() = Some(dir);
+}
+
+/// Connects to the local agent, starting it if needed.
 pub fn connect() -> Result<Arc<Client>> {
-    let exe = std::env::current_exe()?;
-    let agent = exe
-        .parent()
-        .context("the app is not in a folder")?
-        .join(proto::AGENT_BIN);
-    Client::connect_local(&agent)
+    Client::connect_local(&agents_dir()?.join(proto::AGENT_BIN))
 }
 
 struct AgentBackend {
