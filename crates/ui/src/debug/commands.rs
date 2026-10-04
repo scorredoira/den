@@ -41,9 +41,9 @@ impl Debugger {
         }
     }
 
-    /// A VM is stopped and not resuming.
+    /// A VM is stopped and not resuming, nor asked to.
     fn stopped_now(&self) -> bool {
-        self.stops.values().any(|stop| !stop.resumed)
+        self.stops.values().any(|stop| !stop.resumed && !stop.going)
     }
 
     /// `den debug break`: a breakpoint at `line` (0-based) of `path`, if

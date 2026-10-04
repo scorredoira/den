@@ -123,20 +123,22 @@ impl Breakpoints {
 
     /// After the program placed a file's breakpoints (`placed[i]` is where
     /// the i-th enabled one went, and its error), moves them there. Two that
-    /// land on the same line become one.
+    /// land on the same line become one, the enabled one if either is: it's
+    /// the one the program has.
     pub fn placed(&mut self, path: &Path, placed: &[(u32, Option<String>)]) {
         let Some(ix) = self.files.iter().position(|(file, _)| file == path) else {
             return;
         };
         let list = std::mem::take(&mut self.files[ix].1);
         let mut moved = placed.iter();
-        for mut bp in list {
-            if bp.enabled
-                && let Some((line, error)) = moved.next()
-            {
+        let (mut enabled, disabled): (Vec<Breakpoint>, Vec<Breakpoint>) = list.into_iter().partition(|bp| bp.enabled);
+        for bp in &mut enabled {
+            if let Some((line, error)) = moved.next() {
                 bp.line = *line;
                 bp.error = error.clone();
             }
+        }
+        for bp in disabled.into_iter().chain(enabled) {
             self.put(path, bp);
         }
     }
@@ -223,6 +225,19 @@ mod tests {
         bps.placed(a, &[(4, None), (8, Some("bad condition".into()))]);
         assert_eq!(lines(&bps, a), vec![4, 5, 8]);
         assert_eq!(bps.at(a, 8).unwrap().error.as_deref(), Some("bad condition"));
+    }
+
+    #[test]
+    fn a_breakpoint_placed_on_a_disabled_one_stays_enabled() {
+        let a = Path::new("/w/a.ts");
+        let mut bps = Breakpoints::default();
+        bps.toggle(a, 3);
+        let mut disabled = Breakpoint::new(4);
+        disabled.enabled = false;
+        bps.put(a, disabled);
+        bps.placed(a, &[(4, None)]);
+        assert_eq!(lines(&bps, a), vec![4]);
+        assert!(bps.at(a, 4).unwrap().enabled);
     }
 
     #[test]

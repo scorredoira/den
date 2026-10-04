@@ -5,14 +5,25 @@
 use std::{
     io::{BufRead, BufReader, Write},
     net::{Shutdown, SocketAddr, TcpStream},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::{Context as _, Result};
 
+/// A program that stops reading fails a line after this long, rather than
+/// holding the request that sends it.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct Relay {
     stream: TcpStream,
+    writer: Writer,
 }
+
+/// What sends lines to a relay, apart from it: the agent takes it under its
+/// state lock and writes after letting the lock go.
+#[derive(Clone)]
+pub struct Writer(Arc<Mutex<TcpStream>>);
 
 impl Relay {
     /// Connects to `port` and calls `on_line` with each line read (from
@@ -26,6 +37,8 @@ impl Relay {
         let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))
             .with_context(|| format!("nothing listens on port {port}"))?;
         stream.set_nodelay(true)?;
+        stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+        let writer = Writer(Arc::new(Mutex::new(stream.try_clone()?)));
 
         let reader = stream.try_clone()?;
         std::thread::spawn(move || {
@@ -38,14 +51,21 @@ impl Relay {
             on_close();
         });
 
-        Ok(Relay { stream })
+        Ok(Relay { stream, writer })
     }
 
-    pub fn send(&mut self, line: &str) -> Result<()> {
+    pub fn writer(&self) -> Writer {
+        self.writer.clone()
+    }
+}
+
+impl Writer {
+    /// Writes `line`, whole: two at once don't mix.
+    pub fn send(&self, line: &str) -> Result<()> {
         let mut data = Vec::with_capacity(line.len() + 1);
         data.extend_from_slice(line.as_bytes());
         data.push(b'\n');
-        self.stream.write_all(&data)?;
+        self.0.lock().unwrap().write_all(&data)?;
         Ok(())
     }
 }
@@ -68,7 +88,7 @@ mod tests {
 
         let (lines_tx, lines) = mpsc::channel();
         let (closed_tx, closed) = mpsc::channel();
-        let mut relay = Relay::connect(
+        let relay = Relay::connect(
             port,
             move |line| lines_tx.send(line).unwrap(),
             move || closed_tx.send(()).unwrap(),
@@ -77,8 +97,8 @@ mod tests {
 
         // the other end echoes each line upper-cased, then closes
         let (server, _) = listener.accept().unwrap();
-        relay.send("hello").unwrap();
-        relay.send("world").unwrap();
+        relay.writer().send("hello").unwrap();
+        relay.writer().send("world").unwrap();
         let mut writer = server.try_clone().unwrap();
         let mut input = BufReader::new(server);
         for _ in 0..2 {

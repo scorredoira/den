@@ -202,6 +202,9 @@ struct VmStop {
     stop: Stop,
     serial: u64,
     resumed: bool,
+    /// Asked to go on (a step, continue), and not yet said it did: still
+    /// shown stopped, but no longer what `den debug wait` waits for.
+    going: bool,
 }
 
 #[derive(Clone)]
@@ -1050,7 +1053,7 @@ impl Debugger {
         self.locals = stop.locals.clone();
         self.globals = stop.globals;
         let show = stop.frames.first().map(|frame| (self.local_path(&frame.file), frame.line.saturating_sub(1)));
-        self.stops.insert(vm, VmStop { stop, serial: self.serial, resumed: false });
+        self.stops.insert(vm, VmStop { stop, serial: self.serial, resumed: false, going: false });
         self.focus = Some(vm);
         self.frame = 0;
         self.children.clear();
@@ -1128,8 +1131,20 @@ impl Debugger {
         let Some(vm) = self.focus.filter(|vm| self.stops.get(vm).is_some_and(|stop| !stop.resumed)) else {
             return;
         };
-        self.send(cmd, json!({ "vm": vm }), |this, result, cx| {
+        // From the moment it's asked: `den debug wait` right after `next`
+        // waits for the next stop, not the one it leaves.
+        let Some(stop) = self.stops.get_mut(&vm) else {
+            return;
+        };
+        stop.going = true;
+        let serial = stop.serial;
+        self.send(cmd, json!({ "vm": vm }), move |this, result, cx| {
             if let Err(error) = result {
+                // It didn't go on: still stopped where it was, however late
+                // the answer.
+                if let Some(stop) = this.stops.get_mut(&vm).filter(|stop| stop.serial == serial) {
+                    stop.going = false;
+                }
                 this.info(error, cx);
             }
         });
@@ -1658,8 +1673,12 @@ impl Debugger {
             .collect();
         let file = self.program_path(path);
         let path = path.to_path_buf();
+        let sent = self.breakpoints.of(&path).to_vec();
         self.send("setBreakpoints", json!({ "file": file, "breakpoints": list }), move |this, result, cx| {
             match result {
+                // Changed since: the reply places a list that's no longer
+                // there, and the one sent after it will place this one.
+                Ok(_) if this.breakpoints.of(&path) != sent.as_slice() => {}
                 Ok(body) => {
                     let placed: Vec<Value> = protocol::field(&body, "breakpoints").unwrap_or_default();
                     let placed: Vec<(u32, Option<String>)> = placed
