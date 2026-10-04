@@ -490,9 +490,25 @@ impl Render for SearchPanel {
                                             .child(div().bg(theme.warning.opacity(0.35)).child(matched))
                                             .child(after),
                                     )
-                                    .on_click(move |event, _, cx| {
-                                        let pin = event.click_count() >= 2;
-                                        view.update(cx, |this, cx| this.open(hit_ix, pin, cx));
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |event, _, cx| {
+                                            let pin = event.click_count() >= 2;
+                                            view.update(cx, |this, cx| this.open(hit_ix, pin, cx));
+                                        }
+                                    })
+                                    .context_menu({
+                                        let panel = view.downgrade();
+                                        let line = hit.text.clone();
+                                        move |menu, _, _| {
+                                            let line = line.clone();
+                                            menu.item(menu::item("Open", &panel, move |this, _, cx| this.open(hit_ix, true, cx)))
+                                                .item(menu::item("Copy Line", &panel, move |_, _, cx| {
+                                                    cx.write_to_clipboard(ClipboardItem::new_string(line.trim().to_string()))
+                                                }))
+                                                .separator()
+                                                .item(menu::hide_panel())
+                                        }
                                     })
                                     .into_any_element()
                             }
