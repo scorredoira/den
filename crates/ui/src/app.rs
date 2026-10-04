@@ -2651,11 +2651,6 @@ impl Den {
     fn render_task(&self, key: &TaskKey, task: &TaskInfo, cx: &mut Context<Self>) -> AnyElement {
         let active = self.active.as_ref() == Some(key);
         let (dot, color) = self.status(key, task, cx);
-        let state = match self.workspace_state(key, cx).2 {
-            _ if self.removing.contains(key) => "deleting",
-            "idle" => "",
-            state => state,
-        };
         let theme = cx.theme();
         let known = self
             .host(&key.host)
@@ -2715,14 +2710,14 @@ impl Den {
             .text_ui(cx)
             .when(active, |el| el.bg(theme.list_active))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
-            // Its agents' state, the same dot as in the Agents panel.
+            // Its agents' state, the same dot as in the Agents panel, and
+            // only the dot: no word for it ("working", "done"…), ever.
             .child(match dot {
                 "…" => spinner(color).into_any_element(),
                 _ => div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot).into_any_element(),
             })
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.clone()))
             .child(div().flex_1())
-            .child(div().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(state))
             .children(action)
             .on_drag(
                 TaskDrag {
