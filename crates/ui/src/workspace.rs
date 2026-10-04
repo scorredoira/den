@@ -419,6 +419,8 @@ impl Workspace {
                         this.show_panel(Panel::Terminals, cx);
                         this.terminals.update(cx, |terminals, cx| terminals.new_terminal_in(dir.clone(), window, cx));
                     }
+                    FileTreeEvent::OpenToSide { path } => this.open_to_side(path.clone(), window, cx),
+                    FileTreeEvent::FindInFolder { dir } => this.find_in_folder(dir, window, cx),
                     FileTreeEvent::Error(message) => {
                         this.message = Some(message.clone());
                         cx.notify();
@@ -453,6 +455,7 @@ impl Workspace {
                     let goto = Position::new(line.saturating_sub(1), *column);
                     this.open_at_with(this.root.join(file), goto, *pin, *pin, window, cx);
                 }
+                SearchEvent::Reveal { file } => this.reveal_in_tree(&this.root.join(file), cx),
                 SearchEvent::Replace { files } => {
                     let dirty: HashSet<PathBuf> = this.tabs.iter().filter(|tab| tab.dirty).map(|tab| tab.path.clone()).collect();
                     let (skipped, files): (Vec<String>, Vec<String>) =
@@ -466,6 +469,7 @@ impl Workspace {
                     let goto = Position::new(line.saturating_sub(1), *column);
                     this.open_at_with(this.root.join(file), goto, *pin, *pin, window, cx);
                 }
+                SearchEvent::Reveal { file } => this.reveal_in_tree(&this.root.join(file), cx),
                 SearchEvent::Replace { .. } => {}
             }),
         ];
@@ -1838,6 +1842,22 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Find in Folder: the search panel, searching only under `dir` (all of
+    /// the task for its folder).
+    fn find_in_folder(&mut self, dir: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let scope = dir
+            .strip_prefix(&self.root)
+            .ok()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .filter(|dir| !dir.is_empty());
+        self.show_panel(Panel::Search, cx);
+        self.search.update(cx, |search, cx| {
+            search.set_scope(scope, cx);
+            search.focus(window, cx);
+        });
+        cx.notify();
+    }
+
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
         self.show_panel(Panel::Terminals, cx);
         self.terminals
@@ -3012,6 +3032,27 @@ impl Workspace {
         self.activate(ix, window, cx);
     }
 
+    /// Open to the Side: `path` in the other group, splitting the editor if
+    /// it isn't; open on this side already, as a view of it.
+    fn open_to_side(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // With nothing open there's no side to put it beside.
+        if self.tabs.is_empty() {
+            return self.open(path, true, window, cx);
+        }
+        let other = 1 - self.group;
+        if let Some(ix) = self.tabs.iter().position(|tab| tab.shows_file(&path) && tab.group == other) {
+            self.tabs[ix].preview = false;
+            return self.activate(ix, window, cx);
+        }
+        self.editor_split.get_or_insert(Axis::Row);
+        if let Some(ix) = self.tabs.iter().position(|tab| tab.path == path && tab.is_file()) {
+            let view = self.new_view(ix, other, true, window, cx);
+            return self.activate(view, window, cx);
+        }
+        self.group = other;
+        self.open(path, true, window, cx);
+    }
+
     /// Markdown: the rendered view in the other group, next to the source,
     /// updating as you type.
     fn open_preview_to_side(&mut self, _: &OpenPreviewToSide, window: &mut Window, cx: &mut Context<Self>) {
@@ -3081,6 +3122,7 @@ impl Workspace {
                 self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
             }
             ChangesEvent::ToggleCommitFiles => self.toggle_commit_files_now(cx),
+            ChangesEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
         }
     }
 

@@ -59,6 +59,8 @@ pub enum ChangesEvent {
     OpenFileAt { commit: String, short: String, file: String },
     /// Show or hide the selected commit's files, wherever they are.
     ToggleCommitFiles,
+    /// Select `file` in the Files panel.
+    RevealInTree { file: String },
 }
 
 /// What a panel lists: the Changes panel what isn't committed, the History
@@ -435,8 +437,8 @@ impl ChangesPanel {
         let new = matches!(file.status, '?' | 'A');
         let local = self.local;
         move |menu, window, cx| {
-            let (diff, open, copy, history) = (path.clone(), path.clone(), path.clone(), path.clone());
-            let absolute = absolute.clone();
+            let (diff, open, copy, history, reveal) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
+            let (absolute, copy_absolute) = (absolute.clone(), absolute.to_string_lossy().into_owned());
             menu.item(menu::item("Open Changes", &panel, move |_, _, cx| {
                 cx.emit(ChangesEvent::OpenDiff { file: diff.clone(), pin: false })
             }))
@@ -449,9 +451,18 @@ impl ChangesPanel {
                     .disabled(new),
             )
             .separator()
+            .item(menu::item("Copy Path", &panel, move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy_absolute.clone()))
+            }))
             .item(menu::item("Copy Relative Path", &panel, move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
             }))
+            .item(
+                menu::item("Reveal in File Tree", &panel, move |_, _, cx| {
+                    cx.emit(ChangesEvent::RevealInTree { file: reveal.clone() })
+                })
+                .disabled(deleted),
+            )
             .item(
                 menu::item("Reveal in Finder", &panel, move |_, _, cx| cx.reveal_path(&absolute))
                     .disabled(deleted || !local),
@@ -493,10 +504,12 @@ impl ChangesPanel {
         files_shown: bool,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
+        // Deleted by the commit: not in the tree (unless it came back since).
+        let deleted = file.status == 'D';
         move |menu, window, cx| {
             let (diff_hash, diff_short, diff_path) = (hash.clone(), short.clone(), path.clone());
             let (at_hash, at_short, at_path) = (hash.clone(), short.clone(), path.clone());
-            let (open, copy) = (path.clone(), path.clone());
+            let (open, copy, copy_absolute, reveal) = (path.clone(), path.clone(), path.clone(), path.clone());
             menu.item(menu::item("Open Changes", &panel, move |_, _, cx| {
                 cx.emit(ChangesEvent::OpenCommitDiff {
                     commit: diff_hash.clone(),
@@ -510,9 +523,19 @@ impl ChangesPanel {
             }))
             .item(menu::item("Open File", &panel, move |_, _, cx| cx.emit(ChangesEvent::OpenFile { file: open.clone() })))
             .separator()
+            .item(menu::item("Copy Path", &panel, move |this, _, cx| {
+                let absolute = this.root.join(&copy_absolute).to_string_lossy().into_owned();
+                cx.write_to_clipboard(ClipboardItem::new_string(absolute))
+            }))
             .item(menu::item("Copy Relative Path", &panel, move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
             }))
+            .item(
+                menu::item("Reveal in File Tree", &panel, move |_, _, cx| {
+                    cx.emit(ChangesEvent::RevealInTree { file: reveal.clone() })
+                })
+                .disabled(deleted),
+            )
             .separator()
             .item(Self::files_item(files_shown, &panel))
             .panel_items(menu::hide_panel(), window, cx)

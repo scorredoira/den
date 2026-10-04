@@ -49,6 +49,10 @@ pub enum FileTreeEvent {
     ShowHistory { path: PathBuf, dir: bool },
     /// Open a terminal in a folder.
     OpenTerminal { dir: PathBuf },
+    /// Open a file in the other editor group, side by side.
+    OpenToSide { path: PathBuf },
+    /// Search in the files under a folder.
+    FindInFolder { dir: PathBuf },
     Error(SharedString),
 }
 
@@ -627,7 +631,15 @@ impl FileTree {
                 tree.update(cx, |tree, cx| action(tree, window, cx)).ok();
             })
         };
-        menu.item(item("New File…", {
+        let is_dir = dir == path;
+        menu.when(!is_dir, |menu| {
+            menu.item(item("Open to the Side", {
+                let path = path.clone();
+                Box::new(move |_, _, cx| cx.emit(FileTreeEvent::OpenToSide { path: path.clone() }))
+            }))
+            .separator()
+        })
+        .item(item("New File…", {
             let dir = dir.clone();
             Box::new(move |tree, window, cx| tree.start_edit(EditKind::NewFile { dir: dir.clone() }, window, cx))
         }))
@@ -667,11 +679,16 @@ impl FileTree {
             let dir = dir.clone();
             Box::new(move |_, _, cx| cx.emit(FileTreeEvent::OpenTerminal { dir: dir.clone() }))
         }))
+        .when(is_dir, |menu| {
+            menu.item(item("Find in Folder…", {
+                let dir = dir.clone();
+                Box::new(move |_, _, cx| cx.emit(FileTreeEvent::FindInFolder { dir: dir.clone() }))
+            }))
+        })
         .when(path != self.root, |menu| {
-            let dir = dir == path;
             menu.separator().item(item("Show History", {
                 let path = path.clone();
-                Box::new(move |_, _, cx| cx.emit(FileTreeEvent::ShowHistory { path: path.clone(), dir }))
+                Box::new(move |_, _, cx| cx.emit(FileTreeEvent::ShowHistory { path: path.clone(), dir: is_dir }))
             }))
         })
         .separator()
