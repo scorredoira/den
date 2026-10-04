@@ -5,8 +5,8 @@ the code. The mouse is a finger and the keyboard is the phone's, while Den's
 shortcuts stay Den's: a tap stops at a breakpoint and F10 steps from the panel.
 
 Den doesn't know iOS or Android. A device program serves the phones with the
-protocol below; `simview` (in the scl repo, `native/tools/simview`) serves the
-iOS simulator. The panel works only on macOS and for local workspaces: the
+protocol below; in the scl repo, `simview` (`native/tools/simview`) serves the
+iOS simulator and `emuview` (`native/tools/emuview`) the Android emulator. The panel works only on macOS and for local workspaces: the
 frames are IOSurfaces of this Mac.
 
 ## The device file
