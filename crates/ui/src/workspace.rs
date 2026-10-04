@@ -14,6 +14,7 @@ use gpui_kit::component::{
     ActiveTheme as _, h_flex, h_resizable, v_resizable,
     input::{self, Editor, EditorState, InputEvent, Position, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _},
     menu::{ContextMenuExt as _, PopupMenu},
+    native_menu::NativeMenu,
     resizable_panel,
     text::{TextView, TextViewState},
     tooltip::Tooltip,
@@ -28,11 +29,12 @@ use crate::{
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
+    DiffLayoutAutomatic, DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile,
     changes::{self, ChangesEvent, ChangesPanel},
     commit_view::{CommitView, CommitViewEvent},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
-    config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
+    config::{self, Config, DiffLayout, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, DebugView, Debugger, EditKind},
     device::{Device, DeviceEvent},
     notes::NotesPanel,
@@ -186,11 +188,46 @@ struct OldSide {
     inline_marks: Option<RangeDecorationCollection>,
     /// The width the diff had when last drawn.
     width: Rc<Cell<Pixels>>,
+    /// Whether the old side, the new one and the column have text selected,
+    /// for their menus' Copy (see `diff_menu`).
+    selected: [Rc<Cell<bool>>; 3],
     _subscriptions: Vec<Subscription>,
 }
 
-/// Narrower than this, a diff shows in one column.
-pub(crate) const SIDE_BY_SIDE_WIDTH: f32 = 1200.;
+/// Shows every diff as `layout` from now on, those open too.
+pub(crate) fn set_diff_layout(layout: DiffLayout, cx: &mut App) {
+    Config::update(cx, |config| config.diff_layout = layout);
+    cx.refresh_windows();
+}
+
+/// How diffs show, checked as chosen: their menus start with this.
+fn diff_layouts(cx: &App) -> [(&'static str, bool, Box<dyn Action>); 3] {
+    let layout = Config::get(cx).diff_layout;
+    [
+        ("Automatic", layout == DiffLayout::Automatic, Box::new(DiffLayoutAutomatic)),
+        ("Side by Side", layout == DiffLayout::SideBySide, Box::new(DiffLayoutSideBySide)),
+        ("One Column", layout == DiffLayout::OneColumn, Box::new(DiffLayoutOneColumn)),
+    ]
+}
+
+/// The right-click menu of a diff's text: how diffs show (`layouts`, if
+/// it has two sides), Open File (`open`) and what reads it; nothing that
+/// edits. The menu is built while the editor is mid-update and can't read
+/// it: whether it has text selected comes in `selected`, or Copy is always
+/// enabled.
+fn diff_menu(mut menu: NativeMenu, layouts: bool, open: bool, selected: Option<&Cell<bool>>, cx: &App) -> NativeMenu {
+    if layouts {
+        for (label, checked, action) in diff_layouts(cx) {
+            menu = menu.menu_with_check(label, checked, action);
+        }
+        menu = menu.separator();
+    }
+    if open {
+        menu = menu.menu("Open File", Box::new(OpenDiffFile)).separator();
+    }
+    menu.menu_with_disabled("Copy", selected.is_some_and(|selected| !selected.get()), Box::new(input::Copy))
+        .menu("Select All", Box::new(input::SelectAll))
+}
 
 /// `git blame` of a file: `lines[i]` indexes `commits`, `None` if uncommitted.
 struct Blame {
@@ -1087,23 +1124,35 @@ impl Workspace {
         let first = self.tabs[ix].old.is_none();
         if first {
             let editor = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).soft_wrap(false));
+            let inline = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).soft_wrap(false));
+            let selected: [Rc<Cell<bool>>; 3] = Default::default();
             let subscriptions = vec![
                 cx.observe(&editor, {
-                    let new = new.clone();
-                    move |_, old, cx| follow_scroll(&old, &new, cx)
+                    let (new, selected) = (new.clone(), selected[0].clone());
+                    move |_, old, cx| {
+                        follow_scroll(&old, &new, cx);
+                        selected.set(has_selection(&old, cx));
+                    }
                 }),
                 cx.observe(&new, {
-                    let old = editor.clone();
-                    move |_, new, cx| follow_scroll(&new, &old, cx)
+                    let (old, selected) = (editor.clone(), selected[1].clone());
+                    move |_, new, cx| {
+                        follow_scroll(&new, &old, cx);
+                        selected.set(has_selection(&new, cx));
+                    }
+                }),
+                cx.observe(&inline, {
+                    let selected = selected[2].clone();
+                    move |_, inline, cx| selected.set(has_selection(&inline, cx))
                 }),
             ];
-            let inline = cx.new(|cx| EditorState::new(window, cx).language(language).line_number(true).soft_wrap(false));
             self.tabs[ix].old = Some(OldSide {
                 editor,
                 marks: None,
                 inline,
                 inline_marks: None,
                 width: Rc::new(Cell::new(px(f32::MAX))),
+                selected,
                 _subscriptions: subscriptions,
             });
         }
@@ -3385,7 +3434,10 @@ impl Workspace {
                         .size_full()
                         .context_menu(move |menu, window, cx| {
                             let hash = hash.clone();
-                            let menu = menu
+                            let menu = diff_layouts(cx)
+                                .into_iter()
+                                .fold(menu, |menu, (label, checked, action)| menu.menu_with_check(label, checked, action))
+                                .separator()
                                 .item(menu::PopupMenuItem::new("Copy Hash").on_click(move |_, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))
                                 }))
@@ -3443,6 +3495,13 @@ impl Workspace {
                         let blame = file
                             .filter(|file| !file.dirty && tab.diff.is_none() && !stopped_here)
                             .and_then(|file| file.blame.clone());
+                        // A diff (not a file as it was) has its own menu, and
+                        // Open File opens the file it's of.
+                        let diff = tab.diff.as_ref().filter(|of| !of.source);
+                        let open_file = diff.filter(|of| !of.file.is_empty()).map(|_| tab.path.clone());
+                        let open = open_file.is_some();
+                        let layouts = tab.old.is_some();
+                        let diff_selected = diff.map(|_| tab.old.as_ref().map(|old| old.selected.clone()));
                         let editor = Editor::new(&tab.editor)
                             .bordered(false)
                             .readonly(readonly)
@@ -3452,6 +3511,9 @@ impl Workspace {
                             // read (GPUI aborts), so Cut and Copy are always
                             // enabled and do nothing without a selection.
                             .context_menu(move |menu, _, cx| {
+                                if let Some(selected) = &diff_selected {
+                                    return diff_menu(menu, layouts, open, selected.as_ref().map(|selected| &*selected[1]), cx);
+                                }
                                 let menu = if markdown {
                                     menu.menu("Show Preview", Box::new(ToggleMarkdownSource)).separator()
                                 } else {
@@ -3516,13 +3578,23 @@ impl Workspace {
                                     .filter(|hint| hint.editor == tab.editor)
                                     .and_then(|hint| signature::render(hint, cx)),
                             );
-                        match &tab.old {
-                            // No room for two sides: one column, VS Code's inline diff.
-                            Some(old) if old.width.get() < px(SIDE_BY_SIDE_WIDTH) => div()
+                        let side_menu = |selected: &Rc<Cell<bool>>| {
+                            let selected = selected.clone();
+                            move |menu, _: &mut Window, cx: &mut App| diff_menu(menu, true, open, Some(&selected), cx)
+                        };
+                        let body = match &tab.old {
+                            // No room for two sides (or one column chosen): VS Code's inline diff.
+                            Some(old) if !Config::get(cx).diff_side_by_side(old.width.get()) => div()
                                 .size_full()
                                 .relative()
                                 .child(measure_width(&old.width))
-                                .child(Editor::new(&old.inline).bordered(false).readonly(true).h_full())
+                                .child(
+                                    Editor::new(&old.inline)
+                                        .bordered(false)
+                                        .readonly(true)
+                                        .h_full()
+                                        .context_menu(side_menu(&old.selected[2])),
+                                )
                                 .into_any_element(),
                             Some(old) => h_flex()
                                 .size_full()
@@ -3535,11 +3607,26 @@ impl Workspace {
                                         .h_full()
                                         .border_r_1()
                                         .border_color(cx.theme().border)
-                                        .child(Editor::new(&old.editor).bordered(false).readonly(true).h_full()),
+                                        .child(
+                                            Editor::new(&old.editor)
+                                                .bordered(false)
+                                                .readonly(true)
+                                                .h_full()
+                                                .context_menu(side_menu(&old.selected[0])),
+                                        ),
                                 )
                                 .child(div().flex_1().min_w_0().h_full().child(code))
                                 .into_any_element(),
                             None => code.into_any_element(),
+                        };
+                        match open_file {
+                            // From any of the diff's editors, the menu's Open File.
+                            Some(path) => div()
+                                .size_full()
+                                .on_action(cx.listener(move |this, _: &OpenDiffFile, window, cx| this.open(path.clone(), true, window, cx)))
+                                .child(body)
+                                .into_any_element(),
+                            None => body,
                         }
                     }
                 },
@@ -4130,6 +4217,11 @@ fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, retrie
     editor.update(cx, |state, cx| state.set_scroll_offset(point(x, -(line_height * top)), cx));
 }
 
+/// Whether `editor` has text selected.
+fn has_selection(editor: &Entity<EditorState>, cx: &App) -> bool {
+    editor.read(cx).selections().iter().any(|(anchor, cursor)| anchor != cursor)
+}
+
 /// Keeps the other side of a diff at the same height.
 fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut App) {
     let y = from.read(cx).target_scroll_offset().y;
@@ -4144,8 +4236,8 @@ fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut 
 pub(crate) fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
     let width = width.clone();
     canvas(
-        move |bounds, window, _| {
-            let fits = |width: Pixels| width >= px(SIDE_BY_SIDE_WIDTH);
+        move |bounds, window, cx| {
+            let fits = |width: Pixels| Config::get(cx).diff_side_by_side(width);
             if fits(width.replace(bounds.size.width)) != fits(bounds.size.width) {
                 window.refresh();
             }

@@ -12,7 +12,7 @@ use crate::{
     config::{Config, TextArea, UiText as _},
     diff::{self, Kind},
     language,
-    workspace::{SIDE_BY_SIDE_WIDTH, measure_width},
+    workspace::measure_width,
 };
 
 /// Beyond this many rows a file's changes aren't drawn: its name opens them.
@@ -232,8 +232,8 @@ fn halves(side: &diff::Side, language: &str, word: Hsla, cx: &App) -> Vec<Half> 
 
 impl Render for CommitView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // No room for two sides: one column.
-        let narrow = self.width.get() < px(SIDE_BY_SIDE_WIDTH);
+        // No room for two sides (or one column chosen): one column.
+        let narrow = !Config::get(cx).diff_side_by_side(self.width.get());
         let rows = if narrow { self.inline.clone() } else { self.rows.clone() };
         let view = cx.entity().downgrade();
         let size = Config::get(cx).font_size(TextArea::Editor);

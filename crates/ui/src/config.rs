@@ -554,7 +554,43 @@ pub struct Config {
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,
+    /// Diffs side by side, in one column, or side by side when there's
+    /// room; chosen in a diff's menu or in Settings.
+    #[serde(deserialize_with = "lenient")]
+    pub diff_layout: DiffLayout,
+    /// The width under which an automatic diff goes to one column; unset,
+    /// `DEFAULT_SIDE_BY_SIDE_WIDTH`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side_by_side_width: Option<f32>,
 }
+
+/// How a diff shows its two sides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLayout {
+    /// Side by side when there's room for two, else in one column.
+    #[default]
+    Automatic,
+    SideBySide,
+    OneColumn,
+}
+
+impl DiffLayout {
+    /// Whether a diff `width` wide shows its two sides; automatic, from
+    /// `min` on.
+    pub fn side_by_side(self, width: Pixels, min: f32) -> bool {
+        match self {
+            Self::Automatic => width >= px(min),
+            Self::SideBySide => true,
+            Self::OneColumn => false,
+        }
+    }
+}
+
+/// Narrower than this, an automatic diff shows in one column.
+pub const DEFAULT_SIDE_BY_SIDE_WIDTH: f32 = 1200.;
+pub const MIN_SIDE_BY_SIDE_WIDTH: f32 = 600.;
+pub const MAX_SIDE_BY_SIDE_WIDTH: f32 = 3000.;
 
 /// What the icons at the top of the Outline show or hide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -618,6 +654,22 @@ impl Config {
     pub fn font_size(&self, area: TextArea) -> f32 {
         let mut sizes = self.font_sizes;
         area.slot(&mut sizes).unwrap_or(area.default_size()).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+
+    /// The width under which an automatic diff shows in one column.
+    pub fn side_by_side_width(&self) -> f32 {
+        self.side_by_side_width.unwrap_or(DEFAULT_SIDE_BY_SIDE_WIDTH).clamp(MIN_SIDE_BY_SIDE_WIDTH, MAX_SIDE_BY_SIDE_WIDTH)
+    }
+
+    /// `None` goes back to the default.
+    pub fn set_side_by_side_width(&mut self, width: Option<f32>) {
+        let width = width.map(|width| width.clamp(MIN_SIDE_BY_SIDE_WIDTH, MAX_SIDE_BY_SIDE_WIDTH));
+        self.side_by_side_width = width.filter(|width| *width != DEFAULT_SIDE_BY_SIDE_WIDTH);
+    }
+
+    /// Whether a diff `width` wide shows its two sides.
+    pub fn diff_side_by_side(&self, width: Pixels) -> bool {
+        self.diff_layout.side_by_side(width, self.side_by_side_width())
     }
 
     /// Whether it looks for new releases by itself.
@@ -802,6 +854,42 @@ mod load_tests {
         assert!(!whole);
         assert!(config.order.is_empty());
         assert!(Config::parse(br#"{ "order": ["/a"] }"#).1);
+    }
+
+    #[test]
+    fn diffs_go_to_one_column_when_narrow_unless_told() {
+        use super::{DEFAULT_SIDE_BY_SIDE_WIDTH, DiffLayout, MAX_SIDE_BY_SIDE_WIDTH};
+        use gpui_kit::px;
+        let mut config = Config::default();
+        assert_eq!(config.diff_layout, DiffLayout::Automatic);
+        assert_eq!(config.side_by_side_width(), DEFAULT_SIDE_BY_SIDE_WIDTH);
+        assert!(config.diff_side_by_side(px(1200.)) && !config.diff_side_by_side(px(1199.)));
+        config.set_side_by_side_width(Some(800.));
+        assert!(config.diff_side_by_side(px(900.)));
+        // The default isn't kept, and the width stays within its range.
+        config.set_side_by_side_width(Some(DEFAULT_SIDE_BY_SIDE_WIDTH));
+        assert_eq!(config.side_by_side_width, None);
+        config.set_side_by_side_width(Some(99999.));
+        assert_eq!(config.side_by_side_width(), MAX_SIDE_BY_SIDE_WIDTH);
+        config.diff_layout = DiffLayout::SideBySide;
+        assert!(config.diff_side_by_side(px(10.)));
+        config.diff_layout = DiffLayout::OneColumn;
+        assert!(!config.diff_side_by_side(px(10000.)));
+    }
+
+    #[test]
+    fn the_diff_layout_is_saved_and_an_unknown_one_reads_as_automatic() {
+        use super::DiffLayout;
+        let config = Config { diff_layout: DiffLayout::OneColumn, side_by_side_width: Some(900.), ..Config::default() };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""diff_layout":"one_column""#));
+        let (read, whole) = Config::parse(json.as_bytes());
+        assert!(whole);
+        assert_eq!((read.diff_layout, read.side_by_side_width), (DiffLayout::OneColumn, Some(900.)));
+        let (read, whole) = Config::parse(br#"{ "diff_layout": "sideways", "order": ["/a"] }"#);
+        assert!(whole);
+        assert_eq!(read.diff_layout, DiffLayout::Automatic);
+        assert_eq!(read.order, ["/a"]);
     }
 }
 
