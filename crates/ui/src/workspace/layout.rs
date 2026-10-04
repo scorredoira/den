@@ -305,6 +305,11 @@ impl Workspace {
         self.layout_changed(cx);
     }
 
+    /// The width of the workspaces column when shown, if it was ever sized.
+    pub(crate) fn workspaces_width(&self) -> Option<f32> {
+        self.layout.find(Panel::Workspaces).and_then(|(column, _)| self.layout.columns[column].width)
+    }
+
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         if panel == Panel::Workspaces && self.is_shown(panel, cx) {
             self.column_shown(false, cx);

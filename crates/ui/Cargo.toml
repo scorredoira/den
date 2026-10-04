@@ -29,6 +29,8 @@ tree-sitter = "0.26"
 # Already GPUI's: the Device panel opens a program's frames as its pixel buffers.
 core-video = "0.5"
 core-foundation = "0.10"
+# Already GPUI's: Cmd-E asks AppKit whether its key is held down.
+objc2 = "0.6"
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

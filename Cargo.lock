@@ -7667,6 +7667,7 @@ dependencies = [
  "gpui-kit",
  "lsp-types",
  "nucleo-matcher",
+ "objc2 0.6.4",
  "proto",
  "regex",
  "serde",
