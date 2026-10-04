@@ -62,7 +62,16 @@ fn atomic_write(path: &Path, write: impl FnOnce(&mut std::fs::File) -> std::io::
         Err(err) => return Err(err.into()),
     };
     let parent = resolved.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let mut temporary = tempfile::Builder::new().prefix(".den-save-").tempfile_in(parent)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".den-save-");
+    // A new file gets the usual mode (0666 minus the umask), not the
+    // temporary file's private 0600.
+    #[cfg(unix)]
+    if permissions.is_none() {
+        use std::os::unix::fs::PermissionsExt as _;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temporary = builder.tempfile_in(parent)?;
     write(temporary.as_file_mut())?;
     if let Some(permissions) = permissions {
         temporary.as_file().set_permissions(permissions)?;
@@ -109,10 +118,33 @@ pub fn list(dir: &Path) -> Result<Vec<DirEntryInfo>> {
 }
 
 pub fn rename(from: &Path, to: &Path) -> Result<()> {
-    if to.exists() {
+    // On a case-insensitive disk `README.md` exists when renaming
+    // `readme.md` to it: it's the same file, not another one to overwrite.
+    if std::fs::symlink_metadata(to).is_ok() && !same_file(from, to) {
         bail!("{} already exists", to.display());
     }
     Ok(std::fs::rename(from, to)?)
+}
+
+/// Whether both paths name the same entry on disk (not what a symlink
+/// points to: renaming onto a link to `from` would replace the link).
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
+}
+
+/// std has no stable file id on Windows: compare the real paths, which
+/// carry the case on disk.
+#[cfg(windows)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (dunce::canonicalize(a), dunce::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 pub fn create_file(path: &Path) -> Result<()> {
@@ -307,6 +339,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn new_files_get_the_default_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain");
+        std::fs::File::create(&plain).unwrap();
+        let saved = dir.path().join("saved");
+        write(&saved, b"new").unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&saved), mode(&plain));
+    }
+
+    #[test]
     fn lists_reads_writes_and_renames() {
         let dir = dir("ops");
         std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
@@ -329,6 +374,9 @@ mod tests {
         assert!(create_file(&dir.join("a.txt")).is_err());
         rename(&dir.join("a.txt"), &dir.join("c.txt")).unwrap();
         assert!(rename(&dir.join("b.txt"), &dir.join("c.txt")).is_err());
+        // Only the case changes: on a case-insensitive disk the target exists.
+        rename(&dir.join("c.txt"), &dir.join("C.txt")).unwrap();
+        assert!(std::fs::read_dir(&dir).unwrap().any(|entry| entry.unwrap().file_name() == "C.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

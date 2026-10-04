@@ -912,9 +912,9 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         Request::TermResize { term, cols, rows } => {
             let mut state = state.lock().unwrap();
             let entry = state.terms.get_mut(&term).ok_or_else(|| gone(term))?;
-            entry
-                .emulator
-                .resize(TermSize::new(cols.max(2) as usize, rows.max(1) as usize));
+            // Both get the same size, or the program and the screen disagree.
+            let (cols, rows) = (cols.max(2), rows.max(1));
+            entry.emulator.resize(TermSize::new(cols as usize, rows as usize));
             entry.pty.resize(cols, rows);
             Ok(Response::Ok)
         }

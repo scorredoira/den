@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{BinaryDetection, SearcherBuilder, sinks::UTF8};
 use ignore::{WalkBuilder, WalkState};
@@ -52,6 +52,8 @@ pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hi
         .case_insensitive(!case_sensitive)
         .fixed_strings(!regex)
         .build(query)?;
+    // One more than asked for tells whether there were more.
+    let limit = max_hits.saturating_add(1);
     let hits = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicUsize::new(0));
     walker(dir).build_parallel().run(|| {
@@ -63,7 +65,7 @@ pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hi
             .binary_detection(BinaryDetection::quit(0))
             .build();
         Box::new(move |entry| {
-            if count.load(Ordering::Relaxed) >= max_hits {
+            if count.load(Ordering::Relaxed) >= limit {
                 return WalkState::Quit;
             }
             let Ok(entry) = entry else {
@@ -99,7 +101,7 @@ pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hi
                         length,
                         text: line.trim_end_matches(['\n', '\r']).chars().take(400).collect(),
                     });
-                    Ok(count.fetch_add(1, Ordering::Relaxed) + 1 < max_hits)
+                    Ok(count.fetch_add(1, Ordering::Relaxed) + 1 < limit)
                 }),
             );
             hits.lock().unwrap().extend(found);
@@ -107,7 +109,7 @@ pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hi
         })
     });
     let mut hits = std::mem::take(&mut *hits.lock().unwrap());
-    let truncated = hits.len() >= max_hits;
+    let truncated = hits.len() > max_hits;
     hits.truncate(max_hits);
     hits.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
     Ok((hits, truncated))
@@ -116,6 +118,8 @@ pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hi
 /// Replaces the matches of `query` in `files` (relative to `dir`) and
 /// returns how many files changed and how many replacements were made.
 /// Matches the way `search` does: line by line, so a match never spans lines.
+/// A file it can't change (not UTF-8, unreadable…) doesn't stop the rest:
+/// the error then lists those and says what did change.
 pub fn replace(
     dir: &Path,
     files: &[String],
@@ -130,38 +134,57 @@ pub fn replace(
         .case_insensitive(!case_sensitive)
         .build()?;
     let (mut changed, mut total) = (0, 0);
+    let mut failed = Vec::new();
     for file in files {
-        let path = dir.join(file);
-        let text = std::fs::read_to_string(&path)?;
-        let mut count = 0;
-        let mut new = String::with_capacity(text.len());
-        // Match the searcher's LF-delimited records, excluding the terminator.
-        // `multi_line` only changes anchors; it does not stop `\s` or `(?s)`
-        // from consuming newlines when matching against the whole file.
-        for record in text.split_inclusive('\n') {
-            let line = record.strip_suffix('\n').unwrap_or(record);
-            let replaced = matcher.replace_all(line, |caps: &regex::Captures| {
-                count += 1;
-                let mut with = String::new();
-                if regex {
-                    caps.expand(replacement, &mut with);
-                } else {
-                    with.push_str(replacement);
-                }
-                if preserve_case { with_case_of(&caps[0], &with) } else { with }
-            });
-            new.push_str(&replaced);
-            if record.ends_with('\n') {
-                new.push('\n');
+        match replace_in(&dir.join(file), &matcher, regex, replacement, preserve_case) {
+            Ok(0) => {}
+            Ok(count) => {
+                changed += 1;
+                total += count;
             }
-        }
-        if count > 0 {
-            crate::fs::write(&path, new.as_bytes())?;
-            changed += 1;
-            total += count;
+            Err(err) => failed.push(format!("{file}: {err:#}")),
         }
     }
+    if !failed.is_empty() {
+        bail!(
+            "replaced {total} in {changed} file(s), but {} could not be changed:\n{}",
+            failed.len(),
+            failed.join("\n")
+        );
+    }
     Ok((changed, total))
+}
+
+/// `replace` in one file; returns how many replacements it made.
+fn replace_in(path: &Path, matcher: &regex::Regex, regex: bool, replacement: &str, preserve_case: bool) -> Result<usize> {
+    let bytes = std::fs::read(path)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| anyhow!("not UTF-8 text"))?;
+    let mut count = 0;
+    let mut new = String::with_capacity(text.len());
+    // Match the searcher's LF-delimited records, excluding the terminator.
+    // `multi_line` only changes anchors; it does not stop `\s` or `(?s)`
+    // from consuming newlines when matching against the whole file.
+    for record in text.split_inclusive('\n') {
+        let line = record.strip_suffix('\n').unwrap_or(record);
+        let replaced = matcher.replace_all(line, |caps: &regex::Captures| {
+            count += 1;
+            let mut with = String::new();
+            if regex {
+                caps.expand(replacement, &mut with);
+            } else {
+                with.push_str(replacement);
+            }
+            if preserve_case { with_case_of(&caps[0], &with) } else { with }
+        });
+        new.push_str(&replaced);
+        if record.ends_with('\n') {
+            new.push('\n');
+        }
+    }
+    if count > 0 {
+        crate::fs::write(path, new.as_bytes())?;
+    }
+    Ok(count)
 }
 
 /// `with`, in the case of `like`: all capitals, all lowercase, or with the
@@ -214,6 +237,30 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a.ts")).unwrap(), "call_invoice(Invoice, INVOICE)\n");
         assert_eq!(replace(&dir, &files, "a.b", false, true, "x", false).unwrap(), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_change_does_not_stop_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        std::fs::write(dir.join("a.txt"), "payment\n").unwrap();
+        std::fs::write(dir.join("latin1.txt"), b"payment caf\xe9\n").unwrap();
+        std::fs::write(dir.join("c.txt"), "payment\n").unwrap();
+        let files = ["a.txt", "latin1.txt", "missing.txt", "c.txt"].map(String::from);
+        let err = replace(dir, &files, "payment", false, true, "invoice", false).unwrap_err().to_string();
+        assert!(err.contains("replaced 2 in 2 file(s)"), "{err}");
+        assert!(err.contains("latin1.txt: not UTF-8") && err.contains("missing.txt"), "{err}");
+        assert_eq!(std::fs::read_to_string(dir.join("c.txt")).unwrap(), "invoice\n");
+        assert_eq!(std::fs::read(dir.join("latin1.txt")).unwrap(), b"payment caf\xe9\n");
+    }
+
+    #[test]
+    fn truncated_only_when_there_are_more() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x\nx\nx\n").unwrap();
+        assert!(!search(dir.path(), "x", false, true, 3).unwrap().1);
+        let (hits, truncated) = search(dir.path(), "x", false, true, 2).unwrap();
+        assert!(truncated && hits.len() == 2);
     }
 
     #[test]

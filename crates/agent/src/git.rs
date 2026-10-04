@@ -34,8 +34,12 @@ fn base(dir: &Path, uncommitted: bool) -> Result<(String, Option<String>)> {
     let Some(branch) = default_branch(dir) else {
         return Ok(("HEAD".into(), None));
     };
-    let base = git(dir, &["merge-base", "HEAD", &branch])?.trim().to_string();
-    Ok((base, Some(branch)))
+    // No common commit (an orphan branch like `gh-pages`): there's nothing
+    // to compare against, as when there's no main branch.
+    match git(dir, &["merge-base", "HEAD", &branch]) {
+        Ok(base) => Ok((base.trim().to_string(), Some(branch))),
+        Err(_) => Ok(("HEAD".into(), None)),
+    }
 }
 
 pub fn changes(dir: &Path, uncommitted: bool) -> Result<(Option<String>, Vec<ChangedFile>)> {
@@ -534,6 +538,20 @@ mod tests {
 
         assert!(diff(&dir, "a.txt", false).unwrap().contains("+three"));
         assert!(diff(&dir, "new.txt", false).unwrap().contains("+x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_branch_unrelated_to_master_compares_against_head() {
+        let dir = repo();
+        run(&dir, &["switch", "-q", "--orphan", "pages"]);
+        std::fs::write(dir.join("index.html"), "hi\n").unwrap();
+        commit(&dir, "pages");
+        std::fs::write(dir.join("index.html"), "hi\nthere\n").unwrap();
+        let (base, files) = changes(&dir, false).unwrap();
+        assert_eq!(base, None);
+        assert_eq!(paths(&files), [("index.html", 'M')]);
+        assert!(diff(&dir, "index.html", false).unwrap().contains("+there"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

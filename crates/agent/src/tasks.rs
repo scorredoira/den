@@ -4,6 +4,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -20,28 +21,52 @@ fn repos_file() -> Result<PathBuf> {
     Ok(proto::config_dir()?.join("repos.json"))
 }
 
+/// Held while `repos.json` is read and written back, so two changes at
+/// once don't lose one of them.
+static REPOS: Mutex<()> = Mutex::new(());
+
 /// Folders this agent knows about: a repo's main checkout, or any folder.
 pub fn repos() -> Vec<PathBuf> {
-    repos_file()
-        .ok()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    load_repos().unwrap_or_default()
+}
+
+/// The saved folders; none if the file isn't there yet. A file that can't
+/// be read is an error, so a change never writes over it as if it were empty.
+fn load_repos() -> Result<Vec<PathBuf>> {
+    let file = repos_file()?;
+    match std::fs::read(&file) {
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("could not read {}", file.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err).with_context(|| format!("could not read {}", file.display())),
+    }
+}
+
+/// Changes the saved folders with `change`, written whole (never a
+/// half-written file for someone reading it at the same time).
+fn update_repos(change: impl FnOnce(&mut Vec<PathBuf>)) -> Result<()> {
+    let _lock = REPOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut repos = load_repos()?;
+    let before = repos.clone();
+    change(&mut repos);
+    if repos != before {
+        let file = repos_file()?;
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        crate::fs::write(&file, &serde_json::to_vec_pretty(&repos)?)?;
+    }
+    Ok(())
 }
 
 /// Adds `path` (see `folder_for`) and returns what it added.
 pub fn add_repo(path: &Path) -> Result<PathBuf> {
     let main = folder_for(path)?;
-    let mut repos = repos();
-    if !repos.contains(&main) {
-        repos.push(main.clone());
-        repos.sort();
-        let file = repos_file()?;
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
+    update_repos(|repos| {
+        if !repos.contains(&main) {
+            repos.push(main.clone());
+            repos.sort();
         }
-        std::fs::write(file, serde_json::to_vec_pretty(&repos)?)?;
-    }
+    })?;
     Ok(main)
 }
 
@@ -65,11 +90,7 @@ pub fn expand_home(path: &Path) -> PathBuf {
 
 /// Forgets a folder (nothing on disk is touched).
 pub fn remove_repo(path: &Path) -> Result<()> {
-    let mut repos = repos();
-    repos.retain(|repo| repo != path);
-    let file = repos_file()?;
-    std::fs::write(file, serde_json::to_vec_pretty(&repos)?)?;
-    Ok(())
+    update_repos(|repos| repos.retain(|repo| repo != path))
 }
 
 /// Main checkout of the repo `path` belongs to.
@@ -205,20 +226,52 @@ pub fn remove(path: &Path, force: bool) -> Result<()> {
 /// Runs a repo script through the user's interactive login shell, so it gets
 /// the PATH of their terminal (swt, sim…) even if the app was opened from the
 /// Finder: many setups only extend PATH in the rc file (.zshrc), which a
-/// login shell alone does not read.
+/// login shell alone does not read. Shells that don't speak sh (fish, nu…)
+/// can't run the sh command line: from those only their PATH is taken.
 fn run_script(repo: &Path, script: &Path, args: &[&str]) -> Result<std::process::Output> {
     #[cfg(unix)]
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     #[cfg(unix)]
-    let mut command = {
+    let mut command = if is_posix(&shell) {
         let mut command = std::process::Command::new(shell);
         command.args(["-l", "-i", "-c", "\"$0\" \"$@\""]).arg(script);
+        command
+    } else {
+        let mut command = std::process::Command::new(script);
+        if let Some(path) = shell_path(&shell) {
+            command.env("PATH", path);
+        }
         command
     };
     #[cfg(windows)]
     let mut command = crate::platform::script_command(script);
     command.args(args);
     Ok(command.stdin(std::process::Stdio::null()).current_dir(repo).output()?)
+}
+
+/// A shell that runs sh command lines (`"$0" "$@"`).
+#[cfg(unix)]
+fn is_posix(shell: &str) -> bool {
+    let name = Path::new(shell).file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    ["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash"].contains(&name)
+}
+
+/// PATH as the user's interactive login `shell` sets it, asked of `env`
+/// (an external program, so any shell runs it the same way).
+#[cfg(unix)]
+fn shell_path(shell: &str) -> Option<String> {
+    let output = std::process::Command::new(shell)
+        .args(["-l", "-i", "-c", "/usr/bin/env"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    // The rc files may print things of their own first.
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("PATH="))
+        .map(str::to_string)
 }
 
 fn output_log(output: &std::process::Output) -> String {
@@ -340,6 +393,15 @@ mod tests {
         // force doesn't run the script: git removes it
         remove(&task.path, true).unwrap();
         assert!(!task.path.exists());
+    }
+
+    /// fish or nu can't run the sh command line: only their PATH is used.
+    #[test]
+    #[cfg(unix)]
+    fn tells_sh_shells_from_others() {
+        assert!(is_posix("/bin/zsh") && is_posix("/usr/local/bin/bash") && is_posix("sh"));
+        assert!(!is_posix("/opt/homebrew/bin/fish") && !is_posix("/usr/bin/nu"));
+        assert!(shell_path("/bin/sh").is_some_and(|path| !path.is_empty()));
     }
 
     #[test]
