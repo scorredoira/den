@@ -331,8 +331,8 @@ impl Workspace {
         let file_tree = cx.new(|cx| FileTree::new(root.clone(), agent.clone(), local, cx));
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
-        let changes = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::Uncommitted));
-        let history = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::History));
+        let changes = cx.new(|cx| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::Uncommitted, cx));
+        let history = cx.new(|cx| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::History, cx));
         let commit = cx.new(|cx| changes::CommitFilesPanel::new(history.clone(), cx));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
@@ -2978,6 +2978,7 @@ impl Workspace {
             ChangesEvent::OpenFileAt { commit, short, file } => {
                 self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
             }
+            ChangesEvent::ToggleCommitFiles => self.toggle_commit_files_now(cx),
         }
     }
 

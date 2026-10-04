@@ -22,9 +22,18 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, Request, Response};
 
 use crate::{
+    ToggleCommitFiles,
     config::{Config, UiText},
     menu,
 };
+
+actions!(history, [SelectPrev, SelectNext]);
+
+/// The history's shortcuts: they only apply while it has focus.
+pub fn keymap() -> Vec<KeyBinding> {
+    let context = Some("History");
+    vec![KeyBinding::new("up", SelectPrev, context), KeyBinding::new("down", SelectNext, context)]
+}
 
 /// Delay after a change on disk before asking git again.
 const DEBOUNCE: Duration = Duration::from_millis(400);
@@ -45,6 +54,8 @@ pub enum ChangesEvent {
     OpenCommit { commit: String, short: String, pin: bool },
     /// Show `file` as it was in a commit.
     OpenFileAt { commit: String, short: String, file: String },
+    /// Show or hide the selected commit's files, wherever they are.
+    ToggleCommitFiles,
 }
 
 /// What a panel lists: the Changes panel what isn't committed, the History
@@ -64,6 +75,8 @@ pub struct ChangesPanel {
     /// The commit's files share the history's place in the workspace's
     /// layout: they show under the commits.
     commit_in_history: bool,
+    /// In a place of their own, whether they show.
+    commit_shown: bool,
     /// Branch, distance from the remote and what's uncommitted.
     status: GitStatus,
     /// History view.
@@ -85,19 +98,22 @@ pub struct ChangesPanel {
     /// Needs rereading when the panel becomes visible.
     stale: bool,
     refresh: Option<Task<()>>,
+    focus_handle: FocusHandle,
+    scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<ChangesEvent> for ChangesPanel {}
 
 impl ChangesPanel {
-    pub fn new(root: PathBuf, client: Option<Arc<Client>>, local: bool, view: View) -> Self {
+    pub fn new(root: PathBuf, client: Option<Arc<Client>>, local: bool, view: View, cx: &mut Context<Self>) -> Self {
         Self {
             client,
             local,
             root,
             view,
             commit_in_history: true,
+            commit_shown: false,
             status: GitStatus::default(),
             commits: Vec::new(),
             file: None,
@@ -110,6 +126,8 @@ impl ChangesPanel {
             error: None,
             stale: true,
             refresh: None,
+            focus_handle: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
             _subscriptions: Vec::new(),
         }
     }
@@ -241,6 +259,47 @@ impl ChangesPanel {
             .ok();
         })
         .detach();
+    }
+
+    /// Up and down: the commit before or after the selected one, shown as
+    /// a click would (a file's changes in a file's history).
+    fn select_offset(&mut self, offset: isize, cx: &mut Context<Self>) {
+        let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
+        let current = self.commits.iter().position(|commit| match &file {
+            Some(_) => self.selected.as_deref() == Some(&format!("h:{}", commit.hash)),
+            None => self.commit.as_ref() == Some(&commit.hash),
+        });
+        let ix = match current {
+            Some(ix) => (ix as isize + offset).clamp(0, self.commits.len() as isize - 1) as usize,
+            None if self.commits.is_empty() => return,
+            None => 0,
+        };
+        if current == Some(ix) {
+            return;
+        }
+        let (hash, short) = (self.commits[ix].hash.clone(), self.commits[ix].short.clone());
+        // The search or the file's name is the list's first row.
+        let header = self.file.is_some() || self.query.is_some();
+        self.scroll.scroll_to_item(ix + header as usize);
+        match file {
+            Some(file) => {
+                self.selected = Some(format!("h:{hash}"));
+                cx.emit(ChangesEvent::OpenCommitDiff { commit: hash, short, file, pin: false });
+                cx.notify();
+            }
+            None => {
+                self.select_commit(hash.clone(), cx);
+                cx.emit(ChangesEvent::OpenCommit { commit: hash, short, pin: false });
+            }
+        }
+    }
+
+    fn select_prev(&mut self, _: &SelectPrev, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_offset(-1, cx);
+    }
+
+    fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_offset(1, cx);
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
@@ -434,6 +493,7 @@ impl ChangesPanel {
         panel: WeakEntity<Self>,
         commit: &CommitInfo,
         file: &ChangedFile,
+        files_shown: bool,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
         move |menu, _, _| {
@@ -457,6 +517,7 @@ impl ChangesPanel {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
             }))
             .separator()
+            .item(Self::files_item(files_shown, &panel))
             .item(menu::hide_panel())
         }
     }
@@ -508,8 +569,8 @@ impl ChangesPanel {
         }
         // In a file's history a commit is that file's changes, not a list of files.
         let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
-        // With the files under the commits: Hide Files or Show Files.
-        let files_item = self.has_commit_files().then(|| self.files_open(cx));
+        // Hide Files or Show Files, wherever they are.
+        let files_item = self.lists_commits().then(|| self.files_shown(cx));
         for (ix, commit) in self.commits.iter().enumerate() {
             let key = format!("h:{}", commit.hash);
             let selected = match file {
@@ -611,17 +672,23 @@ impl ChangesPanel {
         rows
     }
 
+    /// The history lists commits with files: not a file's history, where a
+    /// commit is that file's changes.
+    fn lists_commits(&self) -> bool {
+        self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir)
+    }
+
     /// The selected commit's files, under the commits while they share the
-    /// history's place; none in a file's history, where a commit is that
-    /// file's changes.
+    /// history's place.
     fn has_commit_files(&self) -> bool {
-        self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir) && self.commit_in_history
+        self.lists_commits() && self.commit_in_history
     }
 
     /// Where the workspace's layout puts the commit's files: with the history
-    /// or in a place of their own.
-    pub fn set_commit_in_history(&mut self, with_history: bool) {
+    /// or in a place of their own, and there whether they show.
+    pub fn set_commit_place(&mut self, with_history: bool, shown: bool) {
         self.commit_in_history = with_history;
+        self.commit_shown = shown;
     }
 
     /// Shows or hides the selected commit's files under the commits: hidden,
@@ -635,9 +702,23 @@ impl ChangesPanel {
         !Config::get(cx).history_files_hidden
     }
 
-    /// Hide Files or Show Files, in the history's right-click menus.
-    fn files_item(open: bool, panel: &WeakEntity<Self>) -> menu::PopupMenuItem {
-        menu::item(if open { "Hide Files" } else { "Show Files" }, panel, move |this, _, cx| this.show_files(!open, cx))
+    /// Show Files or Hide Files in the history's bar menu (`Some(shown)`),
+    /// when it lists commits with files.
+    pub fn files_in_menu(&self, cx: &App) -> Option<bool> {
+        self.lists_commits().then(|| self.files_shown(cx))
+    }
+
+    /// Whether the selected commit's files show: under the commits or in
+    /// their own place.
+    fn files_shown(&self, cx: &App) -> bool {
+        if self.commit_in_history { self.files_open(cx) } else { self.commit_shown }
+    }
+
+    /// Hide Files or Show Files, in every right-click menu of the history
+    /// and of the commit's files.
+    pub fn files_item(shown: bool, panel: &WeakEntity<Self>) -> menu::PopupMenuItem {
+        menu::item(if shown { "Hide Files" } else { "Show Files" }, panel, |_, _, cx| cx.emit(ChangesEvent::ToggleCommitFiles))
+            .action(Box::new(ToggleCommitFiles))
     }
 
     /// The bar over the selected commit's files.
@@ -673,6 +754,7 @@ impl ChangesPanel {
         let Some(files) = self.commit_files.get(&commit.hash) else {
             return note("…").into_any_element();
         };
+        let files_shown = self.files_shown(cx);
         v_flex()
             .id("commit-files")
             .size_full()
@@ -692,7 +774,7 @@ impl ChangesPanel {
                         });
                         cx.notify();
                     }))
-                    .context_menu(Self::commit_file_menu(cx.entity().downgrade(), commit, file))
+                    .context_menu(Self::commit_file_menu(cx.entity().downgrade(), commit, file, files_shown))
             }))
             .into_any_element()
     }
@@ -714,19 +796,20 @@ impl Render for ChangesPanel {
         let files_open = has_files && self.files_open(cx);
         let files = files_open.then(|| (self.render_files_bar(cx).into_any_element(), self.render_commit_files(cx)));
         // Right-click on the commits' empty space: show or hide the files.
-        let list_menu = has_files.then(|| cx.entity().downgrade());
+        let list_menu = self.lists_commits().then(|| (cx.entity().downgrade(), self.files_shown(cx)));
         let theme = cx.theme();
         let list = v_flex()
             .id("changes-list")
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .children(rows)
             .when_some(empty.filter(|_| !self.loading && self.error.is_none()), |el, empty| {
                 el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
             });
         let list = match list_menu {
-            Some(panel) => list
-                .context_menu(move |menu, _, _| menu.item(Self::files_item(files_open, &panel)).separator().item(menu::hide_panel()))
+            Some((panel, shown)) => list
+                .context_menu(move |menu, _, _| menu.item(Self::files_item(shown, &panel)).separator().item(menu::hide_panel()))
                 .into_any_element(),
             None => list.into_any_element(),
         };
@@ -741,6 +824,12 @@ impl Render for ChangesPanel {
             .size_full()
             .pt_1()
             .text_ui(cx)
+            .when(self.view == View::History, |el| {
+                el.key_context("History")
+                    .track_focus(&self.focus_handle)
+                    .on_action(cx.listener(Self::select_prev))
+                    .on_action(cx.listener(Self::select_next))
+            })
             .children(self.error.clone().map(|error| {
                 div()
                     .px_3()

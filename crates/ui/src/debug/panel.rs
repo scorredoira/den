@@ -540,7 +540,7 @@ impl Debugger {
                                 cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))
                             }));
                         }
-                        menu
+                        menu.separator().item(menu::item("Hide Panel", &entity, |_, _, cx| cx.emit(DebugEvent::Hide)))
                     }}),
             );
         }

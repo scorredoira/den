@@ -270,14 +270,20 @@ impl Workspace {
                 self.panels.set_column(visible);
             }
         }
-        let commit_in_history = self.layout.commit_in_history();
-        self.history.update(cx, |history, _| history.set_commit_in_history(commit_in_history));
+        self.place_commit_files(cx);
+    }
+
+    /// Tells the history where its commit's files are, and whether they
+    /// show there, for its menus' Show Files or Hide Files.
+    fn place_commit_files(&mut self, cx: &mut Context<Self>) {
+        let with_history = self.layout.commit_in_history();
+        let shown = !with_history && self.is_shown(Panel::Commit, cx);
+        self.history.update(cx, |history, _| history.set_commit_place(with_history, shown));
     }
 
     /// The layout or what shows changed: saved with what's open, and drawn.
     pub(crate) fn layout_changed(&mut self, cx: &mut Context<Self>) {
-        let commit_in_history = self.layout.commit_in_history();
-        self.history.update(cx, |history, _| history.set_commit_in_history(commit_in_history));
+        self.place_commit_files(cx);
         self.remember(cx);
         cx.notify();
     }
@@ -363,6 +369,11 @@ impl Workspace {
     /// history's place, else their own panel. With the history hidden, it
     /// shows with them.
     pub(super) fn toggle_commit_files(&mut self, _: &ToggleCommitFiles, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_commit_files_now(cx);
+    }
+
+    /// Show Files or Hide Files, from a right-click menu or the shortcut.
+    pub(super) fn toggle_commit_files_now(&mut self, cx: &mut Context<Self>) {
         if !self.layout.commit_in_history() {
             self.toggle_panel(Panel::Commit, cx);
         } else if !self.is_shown(Panel::History, cx) {
@@ -602,6 +613,13 @@ impl Workspace {
 
     fn render_stack_header(&self, active: Panel, cx: &mut Context<Self>) -> AnyElement {
         let workspace = cx.entity().downgrade();
+        // The history's and the commit's files': Show Files or Hide Files too.
+        let files = match active {
+            Panel::History => self.history.read(cx).files_in_menu(cx),
+            Panel::Commit => Some(true),
+            _ => None,
+        };
+        let history = self.history.downgrade();
         let theme = cx.theme();
         h_flex()
             .h(px(BAR_HEIGHT))
@@ -625,7 +643,8 @@ impl Workspace {
                     // Dragged, the panel moves, as by its icon.
                     .on_drag(PanelDrag(active), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
                     .context_menu(move |menu, _, _| {
-                        menu.item(menu::item("Hide Panel", &workspace, move |this, _, cx| this.hide_panel(active, cx)))
+                        menu.when_some(files, |menu, shown| menu.item(changes::ChangesPanel::files_item(shown, &history)))
+                            .item(menu::item("Hide Panel", &workspace, move |this, _, cx| this.hide_panel(active, cx)))
                     }),
             )
             .into_any_element()

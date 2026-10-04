@@ -298,6 +298,7 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
 /// while it has focus.
 fn bind_keys(cx: &mut App) {
     cx.bind_keys(file_tree::keymap());
+    cx.bind_keys(changes::keymap());
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-h", Hide, None),
