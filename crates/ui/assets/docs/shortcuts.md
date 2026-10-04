@@ -34,6 +34,7 @@ Right-click a workspace to hide it, remove it from the list (nothing on disk is 
 
 | Shortcut | Does |
 | --- | --- |
+| {{NewFile}} | New file, in the folder of the file open (the workspace's when none is): its name is typed in the files panel |
 | {{Save}} | Save |
 | {{CloseTab}} | Close the tab (or the terminal) |
 | {{CloseAllTabs}} | Close all tabs |
