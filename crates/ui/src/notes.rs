@@ -1,8 +1,8 @@
 //! The Notes panel: what's next in a workspace, as plain Markdown that Den
 //! keeps (in `notes.json` in its config folder, by workspace), never in the
-//! repo. By default a tab of the terminals'; its tab and its icon carry a dot
-//! while it has something. Cmd-E's notice shows its first line, and removing
-//! the worktree forgets it.
+//! repo. By default a tab of the terminals'; while it has something, its
+//! tab's note has lines and its icon a dot. Cmd-E's notice shows its first
+//! line, and removing the worktree forgets it.
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
@@ -102,6 +102,7 @@ impl NotesPanel {
             EditorState::new(window, cx)
                 .language("markdown")
                 .line_number(false)
+                .folding(false)
                 .soft_wrap(true)
                 .placeholder("What's next here…")
                 .default_value(text)
