@@ -98,7 +98,10 @@ The activity bar, on the window's left edge, has an icon for each panel but the 
 
 Under each workspace in the workspaces column, a row for every terminal running a coding agent (Claude Code, Codex, Gemini…): what it's on (Claude Code's title) and its state, working, waiting for an answer, or done while you weren't looking. A click goes to that terminal. A folded repo sums up its agents in a dot.
 
-Drag an icon onto a panel's bar to put them in the same place, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code takes the space the others leave and, as in any editor, stays put: it has no icon, and the others go around it. Its place never closes (hiding a panel that shares it shows the code), and opening a file brings it to the front. Cmd-B shows or hides the place with the files. Right-click a panel's title to hide its place; Reset Layout, in that menu, the activity bar's, the workspaces column's, the terminals', the debugger's and View, puts everything back. The places are the same for every workspace.
+Drag an icon onto a panel's bar to put them in the same place, one showing at a time; to the left or right edge of a panel for a column of its own; or to its top or bottom edge to go above or below it in that column. The code takes the space the others leave and, as in any editor, stays put: it has no icon, and the others go around it. Its place never closes (hiding a panel that shares it shows the code), and opening a file brings it to the front. Cmd-B shows or hides the place with the files. Right-click a panel's title to hide its place; Reset Layout, in that menu, the activity bar's, the workspaces column's, the terminals', the debugger's and View, puts this workspace's back. Each workspace has its own: where its panels are,
+their sizes and which show are saved with it, and a new one starts with the
+files, the code and the terminals. The workspaces column, which takes you from
+one to another, shows or hides in all of them at once.
 
 ## Debugging
 

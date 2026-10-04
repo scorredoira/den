@@ -31,7 +31,7 @@ use crate::{
     commit_view::{CommitView, CommitViewEvent},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
-    config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
+    config::{self, Config, Layout, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, Debugger, EditKind},
     device::{Device, DeviceEvent},
     notes::NotesPanel,
@@ -63,7 +63,7 @@ mod new_file_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
 pub(crate) use layout::PanelDrag;
-pub(crate) use layout::{WorkspacesPanel, column_shown, drop_panels, init_panels, reset_panels, set_column, title as panel_title};
+pub(crate) use layout::{WorkspacesPanel, column_shown, drop_panels, init_panels, set_column, title as panel_title};
 pub(crate) use activity::{ACTIVITY_WIDTH, Badge, OnActivity, TaskBadges, activity_bar, toggle_activity_icon};
 
 enum Content {
@@ -233,8 +233,12 @@ impl DiffOf {
 
 pub struct Workspace {
     root: PathBuf,
-    /// Its window, whose panels it shows (see `layout::Panels`).
+    /// Its window, whose workspaces column it shows.
     window_id: WindowId,
+    /// Where its panels are and their sizes, saved with what's open.
+    layout: Layout,
+    /// Which of its panels show (see `layout::Panels`).
+    panels: Panels,
     /// The task's key in `config.json`, to remember what was open.
     session_key: String,
     /// Last session's tabs were already reopened (nothing is saved before that).
@@ -324,7 +328,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let window_id = window.window_handle().window_id();
-        Panels::init(window_id, cx);
         let file_tree = cx.new(|cx| FileTree::new(root.clone(), agent.clone(), local, cx));
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
@@ -340,17 +343,16 @@ impl Workspace {
         let notes = cx.new(|cx| NotesPanel::new(session_key.clone(), window, cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
-        // A git panel that shows from the start reads now, not when shown.
-        for (panel, entity) in [(Panel::Changes, &changes), (Panel::History, &history)] {
-            if has_agent && Panels::of(window_id, cx).is_shown(&Config::get(cx).layout, panel) {
-                entity.update(cx, |entity, cx| entity.shown(cx));
-            }
-        }
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
-            cx.subscribe(&device, Self::on_device_event),
+            cx.subscribe_in(&device, window, Self::on_device_event),
             cx.subscribe_in(&outline, window, Self::on_outline),
-            cx.observe(&debugger, |_, _, cx| cx.notify()),
+            // The Device panel's play and stop are the session's, and it shows how it starts.
+            cx.observe(&debugger, |this, debugger, cx| {
+                let (on, starting) = debugger.read(cx).session();
+                this.device.update(cx, |device, cx| device.set_session(on, starting, cx));
+                cx.notify();
+            }),
             // Its icon, when the device file comes or goes.
             cx.observe(&device, |_, _, cx| cx.notify()),
             // The dot on its tab and icon, when it fills or empties.
@@ -442,6 +444,8 @@ impl Workspace {
         Self {
             root,
             window_id,
+            layout: Layout::default(),
+            panels: Panels::new(),
             session_key,
             restored: false,
             focus_handle,
@@ -551,6 +555,13 @@ impl Workspace {
             .cloned()
             .unwrap_or_default();
         self.editor_split = session.split;
+        self.restore_layout(session.layout, session.panels, cx);
+        // A git panel that shows from the start reads now, not when shown.
+        for (panel, entity) in [(Panel::Changes, self.changes.clone()), (Panel::History, self.history.clone())] {
+            if self.client.is_some() && self.is_shown(panel, cx) {
+                entity.update(cx, |entity, cx| entity.shown(cx));
+            }
+        }
         for saved in session.tabs {
             // The same file twice: the second is a view of the first.
             if let Some(file) = self.tabs.iter().position(|tab| tab.path == saved.path) {
@@ -583,7 +594,12 @@ impl Workspace {
 
     /// What is open now (excluding diff tabs).
     fn session(&self, cx: &App) -> Session {
-        let mut session = Session { split: self.editor_split, ..Session::default() };
+        let mut session = Session {
+            split: self.editor_split,
+            layout: Some(self.layout.clone()),
+            panels: Some(self.panels.saved()),
+            ..Session::default()
+        };
         for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.doc) {
             if self.active == Some(ix) {
                 session.active = Some(session.tabs.len());
@@ -616,11 +632,7 @@ impl Workspace {
             && saved.tabs.iter().map(|tab| (&tab.path, tab.group)).eq(session.tabs.iter().map(|tab| (&tab.path, tab.group)));
         let key = self.session_key.clone();
         let change = move |config: &mut Config| {
-            if session.tabs.is_empty() {
-                config.sessions.remove(&key);
-            } else {
-                config.sessions.insert(key, session);
-            }
+            config.sessions.insert(key, session);
         };
         if moved_only {
             Config::update_quietly(cx, change);
@@ -1749,7 +1761,7 @@ impl Workspace {
     }
 
     fn step_result(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let references = Panels::of(self.window_id, cx).stamp(Panel::References) > Panels::of(self.window_id, cx).stamp(Panel::Search);
+        let references = self.panels.stamp(Panel::References) > self.panels.stamp(Panel::Search);
         let panel = if references { &self.references } else { &self.search };
         panel.update(cx, |panel, cx| panel.step(delta, cx));
     }
@@ -1875,8 +1887,10 @@ impl Workspace {
     }
 
     /// Inspect on the phone goes to the program being debugged.
-    fn on_device_event(&mut self, device: Entity<Device>, event: &DeviceEvent, cx: &mut Context<Self>) {
+    fn on_device_event(&mut self, device: &Entity<Device>, event: &DeviceEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
+            DeviceEvent::Debug => self.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx)),
+            DeviceEvent::Stop => self.debugger.update(cx, |debugger, cx| debugger.stop(cx)),
             DeviceEvent::Inspect => {
                 let asked = self.debugger.update(cx, |debugger, _| debugger.inspect());
                 if !asked {
@@ -1938,6 +1952,10 @@ impl Workspace {
                 }
             }
             DebugEvent::Hide => self.hide_panel(Panel::Debugger, cx),
+            DebugEvent::Device(id) => {
+                self.show_panel(Panel::Device, cx);
+                self.device.update(cx, |device, cx| device.show_device(id.clone(), cx));
+            }
         }
     }
 

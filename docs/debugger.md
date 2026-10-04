@@ -27,7 +27,8 @@ F5 runs the command. If something already answers on `port`, it attaches to
 it instead of starting the command again; never with `${port}`, which is
 always started. If the command's terminal goes back to its shell before the
 program listens, the program ended (it didn't compile, its port was taken):
-Den says so instead of waiting. A command is never typed into a terminal that
+Den says so instead of waiting. While the command runs, Den waits for it as
+long as it takes (an app's build), and shows its last line. A command is never typed into a terminal that
 still runs something: it gets a new one. A program held before running
 (`waiting` in `hello`) is released with `entry`, so it stops at its entry, as
 Visual Studio's debugger does: where the program says (sim: the first line of
@@ -179,7 +180,7 @@ A stop carries everything needed to show it, so it costs no round trip.
 
 | cmd | arguments | result |
 |-----|-----------|--------|
-| `hello` | `version` | `version`, `cwd`, `waiting` (held before running), `running` (VMs running), `stopped: [Stop]`, `page?` (the program's page, above) |
+| `hello` | `version` | `version`, `cwd`, `waiting` (held before running), `running` (VMs running), `stopped: [Stop]`, `page?` (the program's page, above), `device?` (the device it runs on, which the Device panel shows: docs/device.md) |
 | `run` | `entry?` | Releases a program held before running. Idempotent. With `entry`, the program stops at its entry (reason `entry`): the start of the code being debugged, which it decides, not the first code it runs. |
 | `setBreakpoints` | `file`, `breakpoints: [{line, condition?, hit?, log?}]` | `breakpoints: [{line, error?}]`: where each one went, and why it was ignored |
 | `setExceptions` | `uncaught`, `all` | |

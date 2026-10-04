@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::*;
-use crate::config::{Layout, Panel, Side, Stack};
+use crate::config::{Layout, Panel, SavedPanels, Side, Stack};
 use crate::drag_drop::DropPlacement;
 
 /// A panel being moved: by its icon, its title or its tab among the
@@ -77,12 +77,12 @@ fn has_header(panel: Panel) -> bool {
     matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References | Panel::Outline | Panel::Notes)
 }
 
-/// Which panel each stack shows and the stacks closed: the same for every
-/// task of a window, as the places are, so going to another one only changes
-/// what the panels have in them (and picking a workspace from its column
-/// leaves the column there). Each window has its own. It goes by panel, not
+/// Which panel each stack shows and the stacks closed: each workspace's own,
+/// as its places are (`Workspace::layout`), saved with what it has open; a
+/// new one shows the files, the code and the terminals. It goes by panel, not
 /// by place, so it outlives moves. The code is never closed: in its stack, a
-/// closed panel gives way to it.
+/// closed panel gives way to it. The workspaces column is the window's, the
+/// same in every workspace: the app says whether it shows (`set_workspaces`).
 pub(super) struct Panels {
     /// When each was last shown: a stack shows its most recent one.
     shown: HashMap<Panel, u64>,
@@ -92,41 +92,50 @@ pub(super) struct Panels {
     /// Whether the app shows the workspaces column, as last told; unset
     /// until it says.
     workspaces: Option<bool>,
-    /// Showing or hiding the workspaces column is remembered (in
-    /// `config.tasks_column`); not in a window opened with `den -s`.
+}
+
+/// The workspaces column of a window: whether it shows, as last chosen by
+/// hand, and whether that's remembered (in `config.tasks_column`; not in a
+/// window opened with `den -s`).
+struct WindowColumn {
+    workspaces: Option<bool>,
     remember: bool,
 }
 
-/// The panels of each window.
+/// The workspaces column of each window.
 #[derive(Default)]
-struct WindowPanels(HashMap<WindowId, Panels>);
+struct WindowColumns(HashMap<WindowId, WindowColumn>);
 
-impl Global for WindowPanels {}
+impl Global for WindowColumns {}
+
+fn window_column(window: WindowId, cx: &mut App) -> &mut WindowColumn {
+    cx.default_global::<WindowColumns>().0.entry(window).or_insert(WindowColumn { workspaces: None, remember: true })
+}
 
 impl Panels {
-    pub fn of(window: WindowId, cx: &App) -> &Self {
-        cx.global::<WindowPanels>().0.get(&window).expect("made with the window's first task")
-    }
-
-    pub fn of_mut(window: WindowId, cx: &mut App) -> &mut Self {
-        cx.default_global::<WindowPanels>().0.entry(window).or_insert_with(|| Self::new(true))
-    }
-
-    /// The window's, made by its first task unless the app made them first
-    /// (see `init_panels`).
-    pub fn init(window: WindowId, cx: &mut App) {
-        Self::of_mut(window, cx);
-    }
-
-    fn new(remember: bool) -> Self {
+    /// A new workspace's: the files, the code and the terminals.
+    pub fn new() -> Self {
         Self {
             shown: HashMap::from([(Panel::Files, 1), (Panel::Code, 2)]),
             // The workspaces as the app says (see `set_workspaces`).
             closed: HashSet::from([Panel::Debugger, Panel::Device, Panel::Workspaces]),
             clock: 2,
             workspaces: None,
-            remember,
         }
+    }
+
+    /// As saved with the workspace; the workspaces column, as the app says.
+    pub fn restored(saved: SavedPanels) -> Self {
+        let mut closed: HashSet<Panel> = saved.closed.into_iter().collect();
+        closed.insert(Panel::Workspaces);
+        Self { shown: saved.shown, closed, clock: saved.clock, workspaces: None }
+    }
+
+    /// What is saved: all but the workspaces column, which is the window's.
+    pub fn saved(&self) -> SavedPanels {
+        let mut closed: Vec<Panel> = self.closed.iter().copied().filter(|panel| *panel != Panel::Workspaces).collect();
+        closed.sort();
+        SavedPanels { shown: self.shown.clone(), closed, clock: self.clock }
     }
 
     /// The panel `stack` shows: the last shown (the first, if none was).
@@ -208,48 +217,78 @@ fn side(placement: DropPlacement) -> Side {
     }
 }
 
-/// What shows goes back to how it starts, in every window: the files, the
-/// code and the terminals (Reset Layout).
-pub(crate) fn reset_panels(cx: &mut App) {
-    for panels in cx.default_global::<WindowPanels>().0.values_mut() {
-        *panels = Panels::new(panels.remember);
-    }
-}
-
-/// The panels of a window the app opens: with `remember`, showing or hiding
-/// the workspaces column is saved.
+/// The workspaces column of a window the app opens: with `remember`,
+/// showing or hiding it is saved.
 pub(crate) fn init_panels(window: WindowId, remember: bool, cx: &mut App) {
-    cx.default_global::<WindowPanels>().0.insert(window, Panels::new(remember));
+    cx.default_global::<WindowColumns>().0.insert(window, WindowColumn { workspaces: None, remember });
 }
 
 /// The window's workspaces column, as last shown or hidden: unset if it
 /// never was.
 pub(crate) fn column_shown(window: WindowId, cx: &App) -> Option<bool> {
-    cx.try_global::<WindowPanels>()?.0.get(&window)?.workspaces
+    cx.try_global::<WindowColumns>()?.0.get(&window)?.workspaces
 }
 
 /// Shows or hides the window's workspaces column while it has no task.
 pub(crate) fn set_column(window: WindowId, visible: bool, cx: &mut App) {
-    Panels::of_mut(window, cx).set_column(visible);
+    window_column(window, cx).workspaces = Some(visible);
 }
 
-/// Forgets a closed window's panels.
+/// Forgets a closed window's column.
 pub(crate) fn drop_panels(window: WindowId, cx: &mut App) {
-    cx.default_global::<WindowPanels>().0.remove(&window);
+    cx.default_global::<WindowColumns>().0.remove(&window);
 }
 
 impl Workspace {
-    pub(crate) fn is_shown(&self, panel: Panel, cx: &App) -> bool {
-        Panels::of(self.window_id, cx).is_shown(&Config::get(cx).layout, panel)
+    pub(crate) fn is_shown(&self, panel: Panel, _: &App) -> bool {
+        self.panels.is_shown(&self.layout, panel)
+    }
+
+    /// Every panel back in its place, and only the files, the code and the
+    /// terminals shown (Reset Layout).
+    pub(crate) fn reset_layout(&mut self, cx: &mut Context<Self>) {
+        let workspaces = self.panels.workspaces;
+        self.layout = Layout::default();
+        self.panels = Panels::new();
+        if let Some(visible) = workspaces {
+            self.panels.set_column(visible);
+        }
+        self.layout_changed(cx);
+    }
+
+    /// Its layout and what showed, as saved; the workspaces column stays as
+    /// the app says.
+    pub(crate) fn restore_layout(&mut self, layout: Option<Layout>, panels: Option<SavedPanels>, cx: &mut Context<Self>) {
+        if let Some(mut layout) = layout {
+            layout.repair();
+            self.layout = layout;
+        }
+        if let Some(panels) = panels {
+            let workspaces = self.panels.workspaces;
+            self.panels = Panels::restored(panels);
+            if let Some(visible) = workspaces {
+                self.panels.set_column(visible);
+            }
+        }
+        let commit_in_history = self.layout.commit_in_history();
+        self.history.update(cx, |history, _| history.set_commit_in_history(commit_in_history));
+    }
+
+    /// The layout or what shows changed: saved with what's open, and drawn.
+    pub(crate) fn layout_changed(&mut self, cx: &mut Context<Self>) {
+        let commit_in_history = self.layout.commit_in_history();
+        self.history.update(cx, |history, _| history.set_commit_in_history(commit_in_history));
+        self.remember(cx);
+        cx.notify();
     }
 
     /// Shows `panel` in its stack, opening the stack; focus doesn't move.
     pub(crate) fn show_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
-        if panel == Panel::Workspaces && Panels::of(self.window_id, cx).workspaces != Some(true) {
+        if panel == Panel::Workspaces && self.panels.workspaces != Some(true) {
             self.column_shown(true, cx);
         }
-        let panel = part_of(&Config::get(cx).layout, panel);
-        Panels::of_mut(self.window_id, cx).show(panel);
+        let panel = part_of(&self.layout, panel);
+        self.panels.show(panel);
         match panel {
             Panel::Changes => self.changes.update(cx, |changes, cx| changes.shown(cx)),
             Panel::History => self.history.update(cx, |history, cx| history.shown(cx)),
@@ -257,45 +296,45 @@ impl Workspace {
             Panel::Device => self.device.update(cx, |device, cx| device.shown(cx)),
             _ => {}
         }
-        cx.notify();
+        self.layout_changed(cx);
     }
 
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         if panel == Panel::Workspaces && self.is_shown(panel, cx) {
             self.column_shown(false, cx);
         }
-        let layout = Config::get(cx).layout.clone();
+        let layout = &self.layout;
         // The notes' tab stays: the terminals show instead.
-        if panel == Panel::Notes && with_terminals(&layout, panel) {
-            let panels = Panels::of_mut(self.window_id, cx);
-            if panels.is_shown(&layout, panel) {
-                panels.show(Panel::Terminals);
+        if panel == Panel::Notes && with_terminals(layout, panel) {
+            if self.panels.is_shown(layout, panel) {
+                self.panels.show(Panel::Terminals);
             }
-            cx.notify();
+            self.layout_changed(cx);
             return;
         }
-        if panel == Panel::Debugger && with_terminals(&layout, panel) {
+        if panel == Panel::Debugger && with_terminals(layout, panel) {
             // Its tab closes, and the terminals show if it was in front.
-            let panels = Panels::of_mut(self.window_id, cx);
-            if panels.is_shown(&layout, panel) {
-                panels.show(Panel::Terminals);
+            if self.panels.is_shown(layout, panel) {
+                self.panels.show(Panel::Terminals);
             }
-            panels.closed.insert(panel);
-            cx.notify();
+            self.panels.closed.insert(panel);
+            self.layout_changed(cx);
             return;
         }
-        Panels::of_mut(self.window_id, cx).hide(&layout, panel);
+        self.panels.hide(layout, panel);
         if panel == Panel::Terminals {
             self.terminals_maximized = false;
         }
-        cx.notify();
+        self.layout_changed(cx);
     }
 
-    /// The workspaces column shown or hidden by hand.
+    /// The workspaces column shown or hidden by hand: the window's, saved
+    /// unless the window says not to.
     fn column_shown(&mut self, visible: bool, cx: &mut Context<Self>) {
-        let panels = Panels::of_mut(self.window_id, cx);
-        panels.workspaces = Some(visible);
-        if panels.remember {
+        self.panels.workspaces = Some(visible);
+        let column = window_column(self.window_id, cx);
+        column.workspaces = Some(visible);
+        if column.remember {
             Config::update(cx, |config| config.tasks_column = Some(visible));
         }
     }
@@ -315,7 +354,7 @@ impl Workspace {
         if self.workspaces.is_none() {
             self.workspaces = Some(view.clone());
         }
-        if Panels::of_mut(self.window_id, cx).set_column(visible) {
+        if self.panels.set_column(visible) {
             cx.notify();
         }
     }
@@ -324,7 +363,7 @@ impl Workspace {
     /// history's place, else their own panel. With the history hidden, it
     /// shows with them.
     pub(super) fn toggle_commit_files(&mut self, _: &ToggleCommitFiles, _: &mut Window, cx: &mut Context<Self>) {
-        if !Config::get(cx).layout.commit_in_history() {
+        if !self.layout.commit_in_history() {
             self.toggle_panel(Panel::Commit, cx);
         } else if !self.is_shown(Panel::History, cx) {
             self.history.update(cx, |history, cx| history.show_files(true, cx));
@@ -336,9 +375,9 @@ impl Workspace {
 
     /// Cmd-B: the stack with the files, whichever panel it shows.
     pub(super) fn toggle_side_panel(&mut self, _: &ToggleSidePanel, _: &mut Window, cx: &mut Context<Self>) {
-        let layout = &Config::get(cx).layout;
+        let layout = &self.layout;
         if let Some((column, stack)) = layout.find(Panel::Files) {
-            let active = Panels::of(self.window_id, cx).active(&layout.columns[column].stacks[stack]);
+            let active = self.panels.active(&layout.columns[column].stacks[stack]);
             self.toggle_panel(active, cx);
         }
     }
@@ -350,7 +389,7 @@ impl Workspace {
         // change something.
         let on_bar = position.y < event.bounds.top() + px(BAR_HEIGHT);
         let next = DropPlacement::at(event.bounds, position, !on_bar)
-            .filter(|placement| Config::get(cx).layout.clone().move_panel(dragged, anchor, side(*placement)))
+            .filter(|placement| self.layout.clone().move_panel(dragged, anchor, side(*placement)))
             .map(|placement| (anchor, placement));
         // Every stack's listener sees the move. Only clear this stack's own indicator.
         if (next.is_some() || self.panel_drop.is_some_and(|(target, _)| target == anchor)) && self.panel_drop != next {
@@ -362,9 +401,7 @@ impl Workspace {
     pub(super) fn drop_panel(&mut self, drag: &PanelDrag, anchor: Panel, side: Side, cx: &mut Context<Self>) {
         self.panel_drop = None;
         let before = self.git_panels().map(|(panel, _)| self.is_shown(panel, cx));
-        let mut moved = false;
-        Config::update(cx, |config| moved = config.layout.move_panel(drag.0, anchor, side));
-        if moved {
+        if self.layout.move_panel(drag.0, anchor, side) {
             self.show_panel(drag.0, cx);
             // Left showing in the stack the dragged one left, they reread too.
             for ((panel, entity), shown) in self.git_panels().into_iter().zip(before) {
@@ -372,15 +409,13 @@ impl Workspace {
                     entity.clone().update(cx, |entity, cx| entity.shown(cx));
                 }
             }
-            // The other windows' tasks share the places.
-            cx.refresh_windows();
         }
-        cx.notify();
+        self.layout_changed(cx);
     }
 
     /// The columns, with the code taking the width the others leave.
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let layout = Config::get(cx).layout.clone();
+        let layout = self.layout.clone();
         self.shape_debugger(&layout, cx);
         if self.terminals_maximized
             && let Some((column, stack)) = layout.find(Panel::Terminals)
@@ -393,7 +428,7 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, column)| {
-                let stacks = (0..column.stacks.len()).filter(|&stack| Panels::of(self.window_id, cx).stack_open(&column.stacks[stack])).collect();
+                let stacks = (0..column.stacks.len()).filter(|&stack| self.panels.stack_open(&column.stacks[stack])).collect();
                 (ix, stacks)
             })
             .filter(|(_, stacks): &(usize, Vec<usize>)| !stacks.is_empty())
@@ -416,6 +451,7 @@ impl Workspace {
             .iter()
             .map(|(column, _)| (Some(*column) != code).then(|| layout.columns[*column].stacks[0].panels[0]))
             .collect();
+        let workspace = cx.entity().downgrade();
         let mut row = h_resizable("workspace-columns").with_state(&state);
         for (column, stacks) in &visible {
             let panel = resizable_panel();
@@ -429,15 +465,18 @@ impl Workspace {
         }
         row.on_resize(move |state, _, cx| {
             let sizes = state.read(cx).sizes().clone();
-            Config::update_quietly(cx, |config| {
-                for (size, id) in sizes.iter().zip(&ids) {
-                    if let Some(id) = id
-                        && let Some((column, _)) = config.layout.find(*id)
-                    {
-                        config.layout.columns[column].width = Some(f32::from(*size));
+            workspace
+                .update(cx, |this, cx| {
+                    for (size, id) in sizes.iter().zip(&ids) {
+                        if let Some(id) = id
+                            && let Some((column, _)) = this.layout.find(*id)
+                        {
+                            this.layout.columns[column].width = Some(f32::from(*size));
+                        }
                     }
-                }
-            });
+                    this.remember(cx);
+                })
+                .ok();
         })
         .into_any_element()
     }
@@ -457,6 +496,7 @@ impl Workspace {
         let key: Vec<&[Panel]> = stacks.iter().map(|&stack| col.stacks[stack].panels.as_slice()).collect();
         let state = self.column_splits[column].state(px(height), &key, cx).clone();
         let ids: Vec<Option<Panel>> = stacks.iter().map(|&stack| (stack != flexible).then(|| col.stacks[stack].panels[0])).collect();
+        let workspace = cx.entity().downgrade();
         let mut group = v_resizable(("workspace-column", column)).with_state(&state);
         for &stack in stacks {
             let panel = resizable_panel();
@@ -471,15 +511,18 @@ impl Workspace {
         group
             .on_resize(move |state, _, cx| {
                 let sizes = state.read(cx).sizes().clone();
-                Config::update_quietly(cx, |config| {
-                    for (size, id) in sizes.iter().zip(&ids) {
-                        if let Some(id) = id
-                            && let Some((column, stack)) = config.layout.find(*id)
-                        {
-                            config.layout.columns[column].stacks[stack].height = Some(f32::from(*size));
+                workspace
+                    .update(cx, |this, cx| {
+                        for (size, id) in sizes.iter().zip(&ids) {
+                            if let Some(id) = id
+                                && let Some((column, stack)) = this.layout.find(*id)
+                            {
+                                this.layout.columns[column].stacks[stack].height = Some(f32::from(*size));
+                            }
                         }
-                    }
-                });
+                        this.remember(cx);
+                    })
+                    .ok();
             })
             .into_any_element()
     }
@@ -487,7 +530,7 @@ impl Workspace {
     /// The panel a stack shows, and where a dragged panel would go if dropped
     /// on it.
     fn render_stack(&self, stack: &Stack, cx: &mut Context<Self>) -> AnyElement {
-        let active = Panels::of(self.window_id, cx).active(stack);
+        let active = self.panels.active(stack);
         let content = match active {
             Panel::Workspaces => match &self.workspaces {
                 Some(workspaces) => workspaces.clone().into_any_element(),
@@ -599,7 +642,7 @@ impl Workspace {
             debugger.tall = tall;
             debugger.tab = tab;
         });
-        let panels = Panels::of(self.window_id, cx);
+        let panels = &self.panels;
         let showing = |panel| {
             layout.find(panel).is_some_and(|(column, stack)| panels.active(&layout.columns[column].stacks[stack]) == panel)
         };
@@ -624,8 +667,8 @@ impl Workspace {
     }
 
     /// Whether the debugger is a tab of the terminals'.
-    pub(super) fn debugger_with_terminals(&self, cx: &App) -> bool {
-        with_terminals(&Config::get(cx).layout, Panel::Debugger)
+    pub(super) fn debugger_with_terminals(&self, _: &App) -> bool {
+        with_terminals(&self.layout, Panel::Debugger)
     }
 }
 

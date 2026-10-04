@@ -6,7 +6,7 @@ use std::rc::Rc;
 pub use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::{App, Context, Global, WeakEntity, Window};
 
-use crate::config::{Config, Layout};
+use crate::config::Config;
 
 pub fn item<T: 'static>(
     label: impl Into<gpui_kit::SharedString>,
@@ -38,22 +38,21 @@ pub fn hide_panel() -> PopupMenuItem {
     })
 }
 
-/// The item that puts every panel back where it starts.
+/// The item that puts the workspace's panels back where they start.
 pub fn reset_layout() -> PopupMenuItem {
-    PopupMenuItem::new("Reset Layout").on_click(|_, _, cx| reset_layout_now(cx))
+    PopupMenuItem::new("Reset Layout").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::ResetLayout), cx))
 }
 
-/// What Reset Layout does, from a right-click menu or View: every panel
-/// back in its place, and only the files, the code and the terminals shown.
+/// What Reset Layout does beyond the workspace's panels (`Workspace::
+/// reset_layout`): the workspaces column hidden and the activity bar as it
+/// starts.
 pub fn reset_layout_now(cx: &mut App) {
     Config::update(cx, |config| {
-        config.layout.columns = Layout::default().columns;
         config.tasks_column = Some(false);
         // The activity bar too: its order and the icons on it.
         config.activity = Vec::new();
         config.hidden_activity = None;
     });
-    crate::workspace::reset_panels(cx);
     // View > Activity Bar checks the icons.
     crate::app_menu::set(cx);
     cx.refresh_windows();

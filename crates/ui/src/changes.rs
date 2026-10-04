@@ -61,6 +61,9 @@ pub struct ChangesPanel {
     local: bool,
     root: PathBuf,
     view: View,
+    /// The commit's files share the history's place in the workspace's
+    /// layout: they show under the commits.
+    commit_in_history: bool,
     /// Branch, distance from the remote and what's uncommitted.
     status: GitStatus,
     /// History view.
@@ -94,6 +97,7 @@ impl ChangesPanel {
             local,
             root,
             view,
+            commit_in_history: true,
             status: GitStatus::default(),
             commits: Vec::new(),
             file: None,
@@ -505,7 +509,7 @@ impl ChangesPanel {
         // In a file's history a commit is that file's changes, not a list of files.
         let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
         // With the files under the commits: Hide Files or Show Files.
-        let files_item = self.has_commit_files(cx).then(|| self.files_open(cx));
+        let files_item = self.has_commit_files().then(|| self.files_open(cx));
         for (ix, commit) in self.commits.iter().enumerate() {
             let key = format!("h:{}", commit.hash);
             let selected = match file {
@@ -610,8 +614,14 @@ impl ChangesPanel {
     /// The selected commit's files, under the commits while they share the
     /// history's place; none in a file's history, where a commit is that
     /// file's changes.
-    fn has_commit_files(&self, cx: &App) -> bool {
-        self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir) && Config::get(cx).layout.commit_in_history()
+    fn has_commit_files(&self) -> bool {
+        self.view == View::History && !self.file.as_ref().is_some_and(|(_, dir)| !dir) && self.commit_in_history
+    }
+
+    /// Where the workspace's layout puts the commit's files: with the history
+    /// or in a place of their own.
+    pub fn set_commit_in_history(&mut self, with_history: bool) {
+        self.commit_in_history = with_history;
     }
 
     /// Shows or hides the selected commit's files under the commits: hidden,
@@ -700,7 +710,7 @@ impl Render for ChangesPanel {
             ),
             View::History => (self.render_history(cx), self.commits.is_empty().then_some("No commits")),
         };
-        let has_files = self.has_commit_files(cx);
+        let has_files = self.has_commit_files();
         let files_open = has_files && self.files_open(cx);
         let files = files_open.then(|| (self.render_files_bar(cx).into_any_element(), self.render_commit_files(cx)));
         // Right-click on the commits' empty space: show or hide the files.

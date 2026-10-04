@@ -30,7 +30,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
     AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleActivityIcon, ToggleTasks,
-    config::{self, Config, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
+    config::{self, Config, HostConfig, Layout, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
@@ -2333,7 +2333,8 @@ impl Den {
         });
         let icons = Config::get(cx).shown_activity().contains(&Panel::Workspaces).then_some((Panel::Workspaces, visible, badge));
         let bar = activity_bar(icons.into_iter().collect(), click, cx);
-        let layout = &Config::get(cx).layout;
+        // A new workspace's width for the column.
+        let layout = Layout::default();
         let width = layout.find(Panel::Workspaces).and_then(|(column, _)| layout.columns[column].width).unwrap_or(240.);
         let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [visible, true], cx).clone();
         let split = h_resizable("den-split")
@@ -2349,15 +2350,7 @@ impl Den {
                 Some(guide) => self.render_guide(guide, cx),
                 None => self.render_welcome(cx),
             }))
-            .on_resize(move |state, _, cx| {
-                if visible && let Some(width) = state.read(cx).sizes().first().copied() {
-                    Config::update_quietly(cx, |config| {
-                        if let Some((column, _)) = config.layout.find(Panel::Workspaces) {
-                            config.layout.columns[column].width = Some(f32::from(width));
-                        }
-                    });
-                }
-            });
+;
         h_flex().size_full().child(bar).child(div().flex_1().min_w_0().h_full().child(split)).into_any_element()
     }
 
@@ -2922,7 +2915,12 @@ impl Render for Den {
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
             .on_action(|action: &ToggleActivityIcon, _, cx| crate::workspace::toggle_activity_icon(action.0, cx))
-            .on_action(|_: &ResetLayout, _, cx| menu::reset_layout_now(cx))
+            .on_action(cx.listener(|this, _: &ResetLayout, _, cx| {
+                menu::reset_layout_now(cx);
+                if let Some(workspace) = this.active_workspace() {
+                    workspace.update(cx, |workspace, cx| workspace.reset_layout(cx));
+                }
+            }))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::open_remote_folder))
             .on_action(cx.listener(|this, _: &AddServer, window, cx| this.open_host_picker(window, cx)))
