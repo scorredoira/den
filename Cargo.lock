@@ -7661,6 +7661,8 @@ version = "2.4.1"
 dependencies = [
  "anyhow",
  "client",
+ "core-foundation 0.10.1",
+ "core-video",
  "gpui-base",
  "gpui-kit",
  "lsp-types",

@@ -42,6 +42,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Code => "icons/code.svg",
         Panel::Terminals => "icons/terminal.svg",
         Panel::Debugger => "icons/bug.svg",
+        Panel::Device => "icons/smartphone.svg",
     }
 }
 
@@ -59,6 +60,7 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Code => "Code",
         Panel::Terminals => "Terminals",
         Panel::Debugger => "Debugger",
+        Panel::Device => "Device",
     }
 }
 
@@ -116,7 +118,7 @@ impl Panels {
         Self {
             shown: HashMap::from([(Panel::Files, 1), (Panel::Code, 2)]),
             // The workspaces as the app says (see `set_workspaces`).
-            closed: HashSet::from([Panel::Debugger, Panel::Workspaces]),
+            closed: HashSet::from([Panel::Debugger, Panel::Device, Panel::Workspaces]),
             clock: 2,
             workspaces: None,
             remember,
@@ -248,6 +250,7 @@ impl Workspace {
             Panel::Changes => self.changes.update(cx, |changes, cx| changes.shown(cx)),
             Panel::History => self.history.update(cx, |history, cx| history.shown(cx)),
             Panel::Debugger => self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx)),
+            Panel::Device => self.device.update(cx, |device, cx| device.shown(cx)),
             _ => {}
         }
         cx.notify();
@@ -491,6 +494,7 @@ impl Workspace {
             // A tab of the terminals', when it's in their place.
             Panel::Debugger if stack.panels.contains(&Panel::Terminals) => self.terminals.clone().into_any_element(),
             Panel::Debugger => self.debugger.clone().into_any_element(),
+            Panel::Device => self.device.clone().into_any_element(),
         };
         let drop = self.panel_drop.filter(|(target, _)| *target == active && cx.has_active_drag());
         let header = has_header(active).then(|| self.render_stack_header(active, cx));

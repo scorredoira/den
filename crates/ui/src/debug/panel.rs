@@ -894,7 +894,7 @@ pub fn breakpoint_editor(debugger: &Entity<Debugger>, cx: &App) -> Option<AnyEle
 }
 
 /// A toolbar button.
-fn tool(
+pub(crate) fn tool(
     id: &'static str,
     icon: &'static str,
     tip: &'static str,
