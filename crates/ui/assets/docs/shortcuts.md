@@ -14,6 +14,8 @@ The shortcuts below are the current ones: change them in Settings → Keyboard S
 | {{OpenFileFinder}} | Go to a file by name |
 | {{OpenTaskPicker}} | Go to a workspace, on any server |
 | {{PreviousTask}} | Switch workspace, as Cmd-Tab: the previous one, then those with an agent, waiting ones first; holding Cmd, E again goes further, Shift-E back; let go to enter |
+| {{NextActiveTask}} | Go straight into the next workspace with an agent |
+| {{NextTask}} | Go straight into the next workspace |
 | {{OpenFolder}} | Open a folder |
 | {{OpenRemoteFolder}} | Open a folder on a server |
 | {{OpenRecent}} | Open a recent folder |
