@@ -2,7 +2,7 @@
 //! groups the results by file, and replaces them. The References panel is the
 //! same, without the boxes: its results (F12, Shift-F12) come from outside.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 
 use client::Client;
 use gpui_kit::component::{
@@ -27,6 +27,8 @@ pub enum SearchEvent {
     /// Replace All was confirmed for these files: the workspace leaves out
     /// those with unsaved changes and calls `replace`.
     Replace { files: Vec<String> },
+    /// Select `file` in the Files panel.
+    Reveal { file: String },
 }
 
 enum Row {
@@ -47,6 +49,10 @@ pub struct SearchPanel {
     replaced: Option<SharedString>,
     hits: Vec<SearchHit>,
     truncated: bool,
+    /// Find in Folder: the folder searched (relative to `root`), not all of it.
+    scope: Option<String>,
+    /// Files with some lines dismissed: Replace All still replaces those.
+    dismissed: BTreeSet<String>,
     selected: Option<usize>,
     searching: bool,
     error: Option<SharedString>,
@@ -78,6 +84,8 @@ impl SearchPanel {
             replaced: None,
             hits: Vec::new(),
             truncated: false,
+            scope: None,
+            dismissed: BTreeSet::new(),
             selected: None,
             searching: false,
             error: None,
@@ -111,6 +119,7 @@ impl SearchPanel {
         self.selected = None;
         self.searching = false;
         self.truncated = false;
+        self.dismissed.clear();
         match result {
             Ok(hits) => {
                 self.hits = hits;
@@ -143,6 +152,15 @@ impl SearchPanel {
         self.schedule(Duration::ZERO, cx);
     }
 
+    /// Searches only under `scope` (relative to the task's folder), or all of
+    /// the task with `None`.
+    pub fn set_scope(&mut self, scope: Option<String>, cx: &mut Context<Self>) {
+        if self.scope != scope {
+            self.scope = scope;
+            self.schedule(Duration::ZERO, cx);
+        }
+    }
+
     fn schedule(&mut self, delay: Duration, cx: &mut Context<Self>) {
         self.replaced = None;
         let query = self.input.read(cx).value().to_string();
@@ -158,8 +176,10 @@ impl SearchPanel {
             self.error = Some("No agent".into());
             return cx.notify();
         };
+        // The agent searches the folder, and the paths it finds are relative to it.
+        let scope = self.scope.clone();
         let request = Request::Search {
-            path: self.root.clone(),
+            path: scope.as_ref().map_or_else(|| self.root.clone(), |scope| self.root.join(scope)),
             query,
             regex: self.regex,
             case_sensitive: self.case_sensitive,
@@ -173,8 +193,14 @@ impl SearchPanel {
             this.update(cx, |this, cx| {
                 this.searching = false;
                 match response {
-                    Ok(Response::SearchResults { hits, truncated }) => {
+                    Ok(Response::SearchResults { mut hits, truncated }) => {
+                        if let Some(scope) = &scope {
+                            for hit in &mut hits {
+                                hit.path = format!("{scope}/{}", hit.path);
+                            }
+                        }
                         this.hits = hits;
+                        this.dismissed.clear();
                         this.truncated = truncated;
                         this.selected = None;
                         this.error = None;
@@ -208,8 +234,16 @@ impl SearchPanel {
             count(self.hits.len(), "line"),
             count(files.len(), "file")
         );
-        let detail = "Files with unsaved changes are left out. This can't be undone from here.";
-        let answer = window.prompt(PromptLevel::Warning, &message, Some(detail), &[PromptButton::new("Cancel"), PromptButton::new("Replace")], cx);
+        let dismissed = files.iter().filter(|file| self.dismissed.contains(*file)).count();
+        let detail = match dismissed {
+            0 => "Files with unsaved changes are left out. This can't be undone from here.".to_string(),
+            n => format!(
+                "Files with unsaved changes are left out. The lines dismissed in {} still listed are replaced too. \
+                 This can't be undone from here.",
+                count(n, "file")
+            ),
+        };
+        let answer = window.prompt(PromptLevel::Warning, &message, Some(&detail), &[PromptButton::new("Cancel"), PromptButton::new("Replace")], cx);
         cx.spawn(async move |this, cx| {
             if matches!(answer.await, Ok(1)) {
                 this.update(cx, |_, cx| cx.emit(SearchEvent::Replace { files })).ok();
@@ -282,6 +316,27 @@ impl SearchPanel {
         cx.notify();
     }
 
+    /// Dismiss on a match: takes it off the list.
+    fn dismiss_hit(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(hit) = self.hits.get(ix) else {
+            return;
+        };
+        let path = hit.path.clone();
+        self.selected = dismiss(&mut self.hits, self.selected, |at, _| at == ix);
+        // The file's other lines are still listed (and replaced).
+        if self.hits.iter().any(|hit| hit.path == path) {
+            self.dismissed.insert(path);
+        }
+        cx.notify();
+    }
+
+    /// Dismiss on a file: takes its matches off the list.
+    fn dismiss_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.selected = dismiss(&mut self.hits, self.selected, |_, hit| hit.path == path);
+        self.dismissed.remove(path);
+        cx.notify();
+    }
+
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         let mut ix = 0;
@@ -294,6 +349,24 @@ impl SearchPanel {
         }
         rows
     }
+}
+
+/// Removes the hits `remove` says (by index and hit) and returns where the
+/// selected one is now, if it's still there.
+fn dismiss(hits: &mut Vec<SearchHit>, selected: Option<usize>, remove: impl Fn(usize, &SearchHit) -> bool) -> Option<usize> {
+    let mut kept = Vec::with_capacity(hits.len());
+    let mut now = None;
+    for (ix, hit) in std::mem::take(hits).into_iter().enumerate() {
+        if remove(ix, &hit) {
+            continue;
+        }
+        if selected == Some(ix) {
+            now = Some(kept.len());
+        }
+        kept.push(hit);
+    }
+    *hits = kept;
+    now
 }
 
 /// "1 file", "3 files".
@@ -351,6 +424,31 @@ impl SearchPanel {
                             }),
                     ),
             )
+            // Find in Folder: where it searches, with × to search everywhere again.
+            .children(self.scope.clone().map(|scope| {
+                h_flex()
+                    .gap_1()
+                    .text_ui_small(cx)
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(format!("In {scope}")),
+                    )
+                    .child(
+                        div()
+                            .id("search-scope-clear")
+                            .px_1()
+                            .rounded(theme.radius)
+                            .hover(|style| style.text_color(theme.sidebar_foreground))
+                            .child("×")
+                            .on_click(cx.listener(|this, _, _, cx| this.set_scope(None, cx))),
+                    )
+            }))
     }
 }
 
@@ -433,7 +531,8 @@ impl Render for SearchPanel {
                                     let panel = view.downgrade();
                                     let path = path.clone();
                                     move |menu, window, cx| {
-                                        let (open, copy) = (path.clone(), path.clone());
+                                        let (open, copy, relative, reveal, dismiss) =
+                                            (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
                                         menu.item(menu::item("Open File", &panel, move |_, _, cx| {
                                             cx.emit(SearchEvent::Open {
                                                 file: open.clone(),
@@ -442,8 +541,18 @@ impl Render for SearchPanel {
                                                 pin: true,
                                             })
                                         }))
+                                        .item(menu::item("Dismiss", &panel, move |this, _, cx| this.dismiss_file(&dismiss, cx)))
+                                        .separator()
+                                        // References outside the task are absolute already.
+                                        .item(menu::item("Copy Path", &panel, move |this, _, cx| {
+                                            let absolute = this.root.join(&copy).to_string_lossy().into_owned();
+                                            cx.write_to_clipboard(ClipboardItem::new_string(absolute))
+                                        }))
                                         .item(menu::item("Copy Relative Path", &panel, move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                                            cx.write_to_clipboard(ClipboardItem::new_string(relative.clone()))
+                                        }))
+                                        .item(menu::item("Reveal in File Tree", &panel, move |_, _, cx| {
+                                            cx.emit(SearchEvent::Reveal { file: reveal.clone() })
                                         }))
                                         .separator()
                                         .panel_items(menu::hide_panel(), window, cx)
@@ -504,6 +613,7 @@ impl Render for SearchPanel {
                                         move |menu, window, cx| {
                                             let line = line.clone();
                                             menu.item(menu::item("Open", &panel, move |this, _, cx| this.open(hit_ix, true, cx)))
+                                                .item(menu::item("Dismiss", &panel, move |this, _, cx| this.dismiss_hit(hit_ix, cx)))
                                                 .item(menu::item("Copy Line", &panel, move |_, _, cx| {
                                                     cx.write_to_clipboard(ClipboardItem::new_string(line.trim().to_string()))
                                                 }))
@@ -519,5 +629,25 @@ impl Render for SearchPanel {
                 .flex_1()
                 .min_h_0(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SearchHit, dismiss};
+
+    fn hit(path: &str, line: u32) -> SearchHit {
+        SearchHit { path: path.into(), line, column: 0, length: 1, text: String::new() }
+    }
+
+    #[test]
+    fn dismissing_keeps_the_selection_on_the_same_match() {
+        let mut hits = vec![hit("a", 1), hit("a", 2), hit("b", 1), hit("c", 1)];
+        assert_eq!(dismiss(&mut hits, Some(2), |ix, _| ix == 0), Some(1));
+        assert_eq!(hits.len(), 3);
+        assert_eq!(dismiss(&mut hits, Some(1), |_, hit| hit.path == "b"), None);
+        assert_eq!(hits.iter().map(|hit| (hit.path.as_str(), hit.line)).collect::<Vec<_>>(), [("a", 2), ("c", 1)]);
+        assert_eq!(dismiss(&mut hits, None, |_, hit| hit.path == "a"), None);
+        assert_eq!(hits.len(), 1);
     }
 }
