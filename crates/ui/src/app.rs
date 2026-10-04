@@ -472,6 +472,8 @@ pub struct Den {
     adding_host: Option<SharedString>,
     /// Cmd-Alt-E held: the workspaces to go through.
     switcher: Option<switcher::Switcher>,
+    /// What Cmd-E just entered, shown while Cmd is down.
+    notice: Option<switcher::Notice>,
     /// Cmd-K: jump to a task by name.
     task_picker: Option<(Entity<Picker>, Subscription)>,
     /// Cmd-Shift-P and F1: run any command, with its shortcut beside it.
@@ -542,6 +544,7 @@ impl Den {
             pending_last: None,
             previous: None,
             switcher: None,
+            notice: None,
             adding_host: None,
             task_picker: None,
             command_palette: None,
@@ -2003,6 +2006,7 @@ impl Den {
                             c.own_worktrees.retain(|other| other != &config);
                             c.sessions.remove(&config);
                         });
+                        crate::notes::forget(&config, cx);
                         if this.active.as_ref() == Some(&key) {
                             this.active = None;
                             if let Some(next) = this.ordered(cx).first().map(|(key, _)| key.clone()) {
@@ -2716,7 +2720,7 @@ impl Den {
                     .path(kind_icon(task))
                     .size(px(14.))
                     .flex_none()
-                    .text_color(if active { theme.sidebar_foreground } else { theme.muted_foreground }),
+                    .text_color(workspace_color(key)),
             )
             .child(
                 div()
@@ -2906,6 +2910,7 @@ impl Render for Den {
         }
         let tasks_visible = self.tasks_shown(cx);
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| self.title());
+        let color = self.active.as_ref().map(workspace_color);
         v_flex()
             .id("den")
             .key_context("Den")
@@ -2954,8 +2959,11 @@ impl Render for Den {
                             // Centered on the window: as much on the right
                             // as the traffic lights take on the left.
                             .pr(px(80.))
+                            .items_center()
+                            .gap_2()
                             .text_ui(cx)
                             .text_color(cx.theme().muted_foreground)
+                            .children(color.map(|color| div().flex_none().size(px(8.)).rounded_full().bg(color)))
                             .child(title),
                     )
                     .when(self.unkept(cx), |bar| {
@@ -3012,6 +3020,7 @@ impl Render for Den {
             }))
             .children(self.settings.as_ref().map(|settings| self.render_settings(settings, cx)))
             .children(self.render_switcher(cx))
+            .children(self.render_notice(cx))
             .children(
                 self.host_picker
                     .as_ref()
@@ -3151,6 +3160,19 @@ fn column_label(task: &TaskInfo) -> SharedString {
         (Some(branch), false) => branch.clone().into(),
         _ => folder_name(&task.path).into(),
     }
+}
+
+/// A workspace's own color, to tell it at a glance: one of a few hues
+/// apart from the states' red and green, picked by its server and path, so
+/// it keeps it however the column is ordered.
+fn workspace_color(key: &TaskKey) -> Hsla {
+    const HUES: [f32; 6] = [215., 172., 265., 42., 330., 290.];
+    // FNV-1a: the same on every run and every Rust.
+    let hash = key.host.bytes().chain([0]).chain(key.path.as_os_str().as_encoded_bytes().iter().copied()).fold(
+        0xcbf29ce484222325u64,
+        |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3),
+    );
+    hsla(HUES[(hash % HUES.len() as u64) as usize] / 360., 0.6, 0.55, 1.)
 }
 
 fn kind_icon(task: &TaskInfo) -> &'static str {

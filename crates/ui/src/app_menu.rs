@@ -102,6 +102,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Toggle Workspaces Column", ToggleTasks),
             MenuItem::action("Toggle Terminals", ToggleTerminals),
             MenuItem::action("Maximize Terminals", MaximizeTerminals),
+            MenuItem::action("Toggle Notes", ToggleNotes),
             MenuItem::separator(),
             MenuItem::submenu(activity),
             MenuItem::action("Reset Layout", ResetLayout),

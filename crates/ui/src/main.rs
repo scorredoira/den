@@ -18,6 +18,7 @@ mod completion;
 mod file_tree;
 mod language;
 mod menu;
+mod notes;
 mod folder_picker;
 mod guide;
 mod picker;
@@ -116,6 +117,7 @@ actions!(
         RunToCursor,
         SetNextStatement,
         ToggleDebugPanel,
+        ToggleNotes,
         ResetLayout,
     ]
 );

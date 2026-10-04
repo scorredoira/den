@@ -94,6 +94,7 @@ shortcuts![
     (RunToCursor, "Debug: Run to Cursor", "ctrl-f10"),
     (SetNextStatement, "Debug: Set Next Statement", "ctrl-shift-f10"),
     (ToggleDebugPanel, "Debug: Toggle Panel", "secondary-shift-d"),
+    (ToggleNotes, "Toggle Notes", "secondary-alt-n"),
 ];
 
 /// `mac` on the Mac; `other` on Linux and Windows, for the shortcuts used from

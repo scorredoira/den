@@ -8,8 +8,10 @@ use super::*;
 use crate::config::{Layout, Panel, Side, Stack};
 use crate::drag_drop::DropPlacement;
 
+/// A panel being moved: by its icon, its title or its tab among the
+/// terminals'.
 #[derive(Clone)]
-pub(super) struct PanelDrag(pub Panel);
+pub(crate) struct PanelDrag(pub Panel);
 
 /// The app's workspaces column, drawn where its panel is placed.
 pub(crate) struct WorkspacesPanel {
@@ -43,6 +45,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Terminals => "icons/terminal.svg",
         Panel::Debugger => "icons/bug.svg",
         Panel::Device => "icons/smartphone.svg",
+        Panel::Notes => "icons/notebook-pen.svg",
     }
 }
 
@@ -61,6 +64,7 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Terminals => "Terminals",
         Panel::Debugger => "Debugger",
         Panel::Device => "Device",
+        Panel::Notes => "Notes",
     }
 }
 
@@ -70,7 +74,7 @@ const BAR_HEIGHT: f32 = 34.;
 /// The panels with no bar of their own, which their stack's header gives
 /// them: their title.
 fn has_header(panel: Panel) -> bool {
-    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References | Panel::Outline)
+    matches!(panel, Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References | Panel::Outline | Panel::Notes)
 }
 
 /// Which panel each stack shows and the stacks closed: the same for every
@@ -261,7 +265,16 @@ impl Workspace {
             self.column_shown(false, cx);
         }
         let layout = Config::get(cx).layout.clone();
-        if panel == Panel::Debugger && with_terminals(&layout) {
+        // The notes' tab stays: the terminals show instead.
+        if panel == Panel::Notes && with_terminals(&layout, panel) {
+            let panels = Panels::of_mut(self.window_id, cx);
+            if panels.is_shown(&layout, panel) {
+                panels.show(Panel::Terminals);
+            }
+            cx.notify();
+            return;
+        }
+        if panel == Panel::Debugger && with_terminals(&layout, panel) {
             // Its tab closes, and the terminals show if it was in front.
             let panels = Panels::of_mut(self.window_id, cx);
             if panels.is_shown(&layout, panel) {
@@ -495,9 +508,12 @@ impl Workspace {
             Panel::Debugger if stack.panels.contains(&Panel::Terminals) => self.terminals.clone().into_any_element(),
             Panel::Debugger => self.debugger.clone().into_any_element(),
             Panel::Device => self.device.clone().into_any_element(),
+            Panel::Notes if stack.panels.contains(&Panel::Terminals) => self.terminals.clone().into_any_element(),
+            Panel::Notes => self.notes.clone().into_any_element(),
         };
         let drop = self.panel_drop.filter(|(target, _)| *target == active && cx.has_active_drag());
-        let header = has_header(active).then(|| self.render_stack_header(active, cx));
+        // The terminals' tabs are the bar of what's a tab of theirs.
+        let header = (has_header(active) && !stack.panels.contains(&Panel::Terminals)).then(|| self.render_stack_header(active, cx));
         let content = div().id("panel-stack-content").flex_1().min_h_0().child(content);
         // Its own menus end with Hide Panel; elsewhere in it, that alone.
         let content = if has_header(active) {
@@ -563,6 +579,8 @@ impl Workspace {
                     .text_color(theme.muted_foreground)
                     // As the workspaces column's.
                     .child(title(active).to_uppercase())
+                    // Dragged, the panel moves, as by its icon.
+                    .on_drag(PanelDrag(active), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
                     .context_menu(move |menu, _, _| {
                         menu.item(menu::item("Hide Panel", &workspace, move |this, _, cx| this.hide_panel(active, cx)))
                     }),
@@ -571,31 +589,47 @@ impl Workspace {
     }
 
     /// The debugger is tall in a column of its own, wide in the code's; in
-    /// the terminals' place, a tab after theirs while it's open.
+    /// the terminals' place, a tab after theirs while it's open. The notes
+    /// there, a tab always.
     fn shape_debugger(&mut self, layout: &Layout, cx: &mut Context<Self>) {
         let column = |panel| layout.find(panel).map(|(column, _)| column);
         let tall = column(Panel::Debugger) != column(Panel::Code);
-        let tab = with_terminals(layout);
+        let tab = with_terminals(layout, Panel::Debugger);
         self.debugger.update(cx, |debugger, _| {
             debugger.tall = tall;
             debugger.tab = tab;
         });
         let panels = Panels::of(self.window_id, cx);
-        let tab = (tab && !panels.closed.contains(&Panel::Debugger)).then(|| {
-            let showing = layout.find(Panel::Debugger).is_some_and(|(column, stack)| {
-                panels.active(&layout.columns[column].stacks[stack]) == Panel::Debugger
-            });
-            (AnyView::from(self.debugger.clone()), showing)
-        });
-        self.terminals.update(cx, |terminals, cx| terminals.set_debug_tab(tab, cx));
+        let showing = |panel| {
+            layout.find(panel).is_some_and(|(column, stack)| panels.active(&layout.columns[column].stacks[stack]) == panel)
+        };
+        let tab = |panel, view: AnyView, dot, closable| PanelTab {
+            panel,
+            view,
+            icon: icon(panel),
+            title: if panel == Panel::Debugger { "Debug" } else { title(panel) },
+            showing: showing(panel),
+            dot,
+            closable,
+        };
+        let mut tabs = Vec::new();
+        if with_terminals(layout, Panel::Debugger) && !panels.closed.contains(&Panel::Debugger) {
+            tabs.push(tab(Panel::Debugger, self.debugger.clone().into(), false, true));
+        }
+        // The notes' tab is always there.
+        if with_terminals(layout, Panel::Notes) {
+            tabs.push(tab(Panel::Notes, self.notes.clone().into(), self.notes.read(cx).filled(), false));
+        }
+        self.terminals.update(cx, |terminals, cx| terminals.set_panel_tabs(tabs, cx));
     }
 
     /// Whether the debugger is a tab of the terminals'.
     pub(super) fn debugger_with_terminals(&self, cx: &App) -> bool {
-        with_terminals(&Config::get(cx).layout)
+        with_terminals(&Config::get(cx).layout, Panel::Debugger)
     }
 }
 
-fn with_terminals(layout: &Layout) -> bool {
-    layout.find(Panel::Debugger).is_some() && layout.find(Panel::Debugger) == layout.find(Panel::Terminals)
+/// Whether `panel` is a tab of the terminals'.
+fn with_terminals(layout: &Layout, panel: Panel) -> bool {
+    layout.find(panel).is_some() && layout.find(panel) == layout.find(Panel::Terminals)
 }

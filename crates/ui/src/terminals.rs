@@ -5,7 +5,8 @@
 mod drag;
 
 use drag::{Source, TerminalDrag};
-use crate::drag_drop::DropPlacement;
+use crate::drag_drop::{DropPlacement, TabDragPreview};
+use crate::workspace::PanelDrag;
 
 use std::{
     cell::Cell,
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for};
 
 use crate::{
-    config::UiText,
+    config::{Panel, UiText},
     CloseTab, NewTerminal, SplitDown, SplitRight, agent, menu,
     splits::{Axis, Direction, Tree},
 };
@@ -42,10 +43,31 @@ pub enum TerminalAreaEvent {
     },
     /// A message for the status bar.
     Message(SharedString),
-    /// Its tab, the debugger's: show it (true) or go back to the terminals.
-    ShowDebugger(bool),
-    /// The debugger's tab closed.
-    CloseDebugger,
+    /// A panel's tab after the terminals' (the debugger's, the notes'):
+    /// show it, or (`None`) go back to the terminals.
+    ShowPanel(Option<Panel>),
+    /// A panel's tab closed.
+    ClosePanel(Panel),
+}
+
+/// A panel in the terminals' place: a tab after theirs.
+pub struct PanelTab {
+    pub panel: Panel,
+    pub view: AnyView,
+    pub icon: &'static str,
+    pub title: &'static str,
+    /// The one showing, rather than the terminals.
+    pub showing: bool,
+    /// A dot on its icon: it has something (the notes).
+    pub dot: bool,
+    /// With a close button (the debugger's), or always there (the notes').
+    pub closable: bool,
+}
+
+impl PanelTab {
+    fn key(&self) -> (Panel, EntityId, bool, bool, bool) {
+        (self.panel, self.view.entity_id(), self.showing, self.dot, self.closable)
+    }
 }
 
 struct TerminalTab {
@@ -79,9 +101,8 @@ pub struct TerminalArea {
     body_size: Rc<Cell<Option<Size<Pixels>>>>,
     /// Terminals on this machine (not on a server).
     local: bool,
-    /// The debugger, when it's in the terminals' place: a tab after
-    /// theirs, and whether it's the one showing.
-    debug_tab: Option<(AnyView, bool)>,
+    /// The panels in the terminals' place, a tab each after theirs.
+    panel_tabs: Vec<PanelTab>,
     /// For right-click menus.
     weak: WeakEntity<Self>,
     _subscriptions: Vec<Subscription>,
@@ -103,7 +124,7 @@ impl TerminalArea {
             drag_origin: None,
             body_size: Rc::default(),
             local,
-            debug_tab: None,
+            panel_tabs: Vec::new(),
             weak: cx.entity().downgrade(),
             _subscriptions: Vec::new(),
         }
@@ -420,16 +441,16 @@ impl TerminalArea {
         }
     }
 
-    pub fn set_debug_tab(&mut self, tab: Option<(AnyView, bool)>, cx: &mut Context<Self>) {
-        let key = |tab: &Option<(AnyView, bool)>| tab.as_ref().map(|(view, showing)| (view.entity_id(), *showing));
-        if key(&tab) != key(&self.debug_tab) {
-            self.debug_tab = tab;
+    pub fn set_panel_tabs(&mut self, tabs: Vec<PanelTab>, cx: &mut Context<Self>) {
+        if !tabs.iter().map(PanelTab::key).eq(self.panel_tabs.iter().map(PanelTab::key)) {
+            self.panel_tabs = tabs;
             cx.notify();
         }
     }
 
-    fn debugger_showing(&self) -> bool {
-        self.debug_tab.as_ref().is_some_and(|(_, showing)| *showing)
+    /// The panel's tab showing rather than the terminals, if one is.
+    fn panel_showing(&self) -> Option<&PanelTab> {
+        self.panel_tabs.iter().find(|tab| tab.showing)
     }
 
     /// Opens a terminal in a new tab and focuses it.
@@ -633,7 +654,7 @@ impl TerminalArea {
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let debug_tab = self.debug_tab.as_ref().map(|(_, showing)| self.render_debug_tab(*showing, cx));
+        let panel_tabs: Vec<AnyElement> = self.panel_tabs.iter().map(|tab| self.render_panel_tab(tab, cx)).collect();
         let theme = cx.theme();
         h_flex()
             .id("terminal-tabs")
@@ -645,7 +666,7 @@ impl TerminalArea {
             .overflow_x_scroll()
             .on_drop(cx.listener(|this, drag: &TerminalDrag, window, cx| this.drop_on_bar(drag, None, window, cx)))
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
-                let active = ix == self.active && !self.debugger_showing();
+                let active = ix == self.active && self.panel_showing().is_none();
                 let title = self
                     .views
                     .get(&tab.active)
@@ -704,8 +725,8 @@ impl TerminalArea {
                             })),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if this.debugger_showing() {
-                            cx.emit(TerminalAreaEvent::ShowDebugger(false));
+                        if this.panel_showing().is_some() {
+                            cx.emit(TerminalAreaEvent::ShowPanel(None));
                         }
                         this.activate_tab(ix, window, cx)
                     }))
@@ -739,7 +760,7 @@ impl TerminalArea {
                         }
                     })
             }))
-            .children(debug_tab)
+            .children(panel_tabs)
             .child(
                 div()
                     .id("new-terminal")
@@ -751,8 +772,8 @@ impl TerminalArea {
                     .hover(|style| style.text_color(theme.foreground))
                     .child("+")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        if this.debugger_showing() {
-                            cx.emit(TerminalAreaEvent::ShowDebugger(false));
+                        if this.panel_showing().is_some() {
+                            cx.emit(TerminalAreaEvent::ShowPanel(None));
                         }
                         this.new_terminal(window, cx)
                     })),
@@ -774,13 +795,19 @@ impl TerminalArea {
             )
     }
 
-    /// The debugger's tab, after the terminals'.
-    fn render_debug_tab(&self, showing: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// A panel's tab, after the terminals'.
+    fn render_panel_tab(&self, tab: &PanelTab, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
+        let (panel, showing) = (tab.panel, tab.showing);
+        let name = match panel {
+            Panel::Debugger => "debug",
+            _ => tab.title,
+        };
+        let group = SharedString::from(format!("{name}-tab"));
         h_flex()
-            .id("debug-tab")
-            .when(cfg!(test), |el| el.debug_selector(|| "debug-tab".into()))
-            .group("debug-tab")
+            .id(SharedString::from(format!("{name}-tab")))
+            .when(cfg!(test), |el| el.debug_selector(move || format!("{name}-tab")))
+            .group(group.clone())
             .h_full()
             .flex_none()
             .pl_3()
@@ -791,12 +818,30 @@ impl TerminalArea {
             .border_color(theme.border)
             .when(showing, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
             .when(!showing, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
-            .child(svg().path("icons/bug.svg").size(px(14.)).text_color(theme.muted_foreground))
-            .child("Debug")
             .child(
                 div()
-                    .id("debug-tab-close")
-                    .when(cfg!(test), |el| el.debug_selector(|| "debug-tab-close".into()))
+                    .relative()
+                    .flex_none()
+                    .child(svg().path(tab.icon).size(px(14.)).text_color(theme.muted_foreground))
+                    .when(tab.dot, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .top(px(-2.))
+                                .right(px(-3.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(theme.primary),
+                        )
+                    }),
+            )
+            .child(tab.title)
+            // The notes' tab, with no close button, takes the same room.
+            .when(!tab.closable, |el| el.pr_3())
+            .when(tab.closable, |el| el.child(
+                div()
+                    .id(SharedString::from(format!("{name}-tab-close")))
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("{name}-tab-close")))
                     .flex_none()
                     .size(px(20.))
                     .flex()
@@ -809,18 +854,24 @@ impl TerminalArea {
                             .path("icons/tab-close.svg")
                             .size(px(14.))
                             .text_color(theme.muted_foreground)
-                            .when(!showing, |el| el.invisible().group_hover("debug-tab", |s| s.visible())),
+                            .when(!showing, |el| el.invisible().group_hover(group, |s| s.visible())),
                     )
-                    .on_click(cx.listener(|_, _, _, cx| {
+                    .on_click(cx.listener(move |_, _, _, cx| {
                         cx.stop_propagation();
-                        cx.emit(TerminalAreaEvent::CloseDebugger);
+                        cx.emit(TerminalAreaEvent::ClosePanel(panel));
                     })),
-            )
-            .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalAreaEvent::ShowDebugger(true))))
+            ))
+            .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(panel)))))
+            // Dragged, the panel moves as by its icon: below the terminals,
+            // say, or to a column of its own.
+            .on_drag(PanelDrag(panel), |drag: &PanelDrag, _, _, cx| {
+                cx.new(|_| TabDragPreview(crate::workspace::panel_title(drag.0).into()))
+            })
             .context_menu({
-                let area = self.weak.clone();
-                move |menu, _, _| {
-                    menu.item(menu::item("Hide Panel", &area, |_, _, cx| cx.emit(TerminalAreaEvent::CloseDebugger)))
+                let (area, closable) = (self.weak.clone(), tab.closable);
+                move |menu, _, _| match closable {
+                    true => menu.item(menu::item("Hide Panel", &area, move |_, _, cx| cx.emit(TerminalAreaEvent::ClosePanel(panel)))),
+                    false => menu,
                 }
             })
             .into_any_element()
@@ -850,9 +901,8 @@ impl TerminalArea {
                         this.drop_on_pane(drag, term, window, cx);
                     }))
                     .when(split, |el| {
-                        // The pane with the focus, by its title: in the
-                        // text's color, with a line on top like the active
-                        // tab's; the rest muted.
+                        // The pane with the focus, by its title in the
+                        // text's color; the rest muted. A hairline apart.
                         let active = term == tab.active;
                         let title = view.read(cx).title(cx);
                         el.child(self.draggable(
@@ -864,8 +914,8 @@ impl TerminalArea {
                                 .px_2()
                                 .text_ui_small(cx)
                                 .bg(theme.tab_bar)
-                                .border_t_2()
-                                .border_color(if active { theme.primary } else { theme.tab_bar })
+                                .border_b_1()
+                                .border_color(theme.border)
                                 .text_color(if active { theme.foreground } else { theme.muted_foreground })
                                 .overflow_hidden()
                                 .whitespace_nowrap()
@@ -907,7 +957,7 @@ impl Render for TerminalArea {
             self.cancel_drag(window, cx);
         }
         let body = match self.tabs.get(self.active) {
-            _ if self.debugger_showing() => self.debug_tab.as_ref().map(|(view, _)| view.clone().into_any_element()).unwrap_or_else(|| div().into_any_element()),
+            _ if let Some(tab) = self.panel_showing() => tab.view.clone().into_any_element(),
             None => {
                 let theme = cx.theme();
                 div()
