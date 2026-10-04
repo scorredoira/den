@@ -63,12 +63,17 @@ Events:
 Commands:
 
 - `{"touch":"down"|"move"|"up","x":…,"y":…}`: a finger at a point of the
-  screen, in fractions from its top left.
+  screen as shown, in fractions from its top left. With `"x2"` and `"y2"`, a
+  second finger: a pinch. The panel pinches while Option is held, the second
+  finger mirrored through the screen's centre, as Simulator.app does.
 - `{"text":"…"}`: typed characters.
 - `{"key":"enter","shift":false,"alt":false,"ctrl":false,"cmd":false}`: a key,
   one of `enter escape backspace tab space home pageup delete end pagedown
   right left down up`, or a single character, with the modifiers held.
 - `{"button":"home"}`.
+- `{"rotate":"left"|"right"}`: the device turned a quarter. The program sends
+  its screen as held from then on, with a new `size` first, and takes points
+  of the screen as shown.
 
 ## Keys
 
