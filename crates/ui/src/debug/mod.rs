@@ -1686,6 +1686,12 @@ impl Debugger {
         }
     }
 
+    pub fn remove_all_watches(&mut self, cx: &mut Context<Self>) {
+        self.watches.clear();
+        self.save(cx);
+        cx.notify();
+    }
+
     fn submit_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let expr = self.console_input.read(cx).value().trim().to_string();
         if expr.is_empty() {

@@ -450,6 +450,10 @@ impl Debugger {
                             }))
                             .item(menu::item("Remove Breakpoint", &debugger, move |this, _, cx| this.remove_breakpoint(&remove, line, cx)))
                             .separator()
+                            .item(edit_item("Edit Condition…", EditKind::Condition, &menu_path, line, &debugger))
+                            .item(edit_item("Edit Hit Count…", EditKind::Hit, &menu_path, line, &debugger))
+                            .item(edit_item("Edit Log Message…", EditKind::Log, &menu_path, line, &debugger))
+                            .separator()
                             .item(menu::item("Enable All Breakpoints", &debugger, |this, _, cx| this.enable_all_breakpoints(true, cx)))
                             .item(menu::item("Disable All Breakpoints", &debugger, |this, _, cx| this.enable_all_breakpoints(false, cx)))
                             .item(menu::item("Remove All Breakpoints", &debugger, |this, _, cx| this.remove_all_breakpoints(cx)))
@@ -602,7 +606,9 @@ impl Debugger {
                             }));
                         }
                         if let Some(ix) = watch {
-                            menu = menu.item(menu::item("Remove Watch", &entity, move |this, _, cx| this.remove_watch(ix, cx)));
+                            menu = menu
+                                .item(menu::item("Remove Watch", &entity, move |this, _, cx| this.remove_watch(ix, cx)))
+                                .item(remove_watches_item(&entity));
                         }
                         menu.separator().panel_items(hide_item(&entity), window, cx)
                     }}),
@@ -850,13 +856,20 @@ impl Debugger {
                     .into_any_element();
             }
         };
+        let panel_menu = self.panel_menu(cx);
+        let watches = part == DebugPart::Watch && !self.watches.is_empty();
+        let debugger = cx.entity().downgrade();
         div()
             .id(id)
             .size_full()
             .overflow_y_scroll()
             .text_ui(cx)
             .child(body)
-            .context_menu(self.panel_menu(cx))
+            // the Watch panel's own first
+            .context_menu(move |menu, window, cx| {
+                let menu = menu.when(watches, |menu| menu.item(remove_watches_item(&debugger)).separator());
+                panel_menu(menu, window, cx)
+            })
             .into_any_element()
     }
 }
@@ -880,6 +893,26 @@ impl Render for DebugView {
         let part = self.part;
         self.debugger.update(cx, |debugger, cx| debugger.render_part(part, cx))
     }
+}
+
+/// A breakpoint's menu item that opens its editor, under its line: the file
+/// shows there first, without the focus, which goes to the editor's input.
+fn edit_item(
+    label: &'static str,
+    kind: EditKind,
+    path: &Path,
+    line: u32,
+    debugger: &WeakEntity<Debugger>,
+) -> menu::PopupMenuItem {
+    let path = path.to_path_buf();
+    menu::item(label, debugger, move |this, window, cx| {
+        cx.emit(DebugEvent::Show { path: path.clone(), line, focus: false });
+        this.edit_breakpoint(path.clone(), line, kind, window, cx)
+    })
+}
+
+fn remove_watches_item(debugger: &WeakEntity<Debugger>) -> menu::PopupMenuItem {
+    menu::item("Remove All Watches", debugger, |this, _, cx| this.remove_all_watches(cx))
 }
 
 /// Hide Panel: the Run and Debug group closes.
