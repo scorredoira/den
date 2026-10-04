@@ -622,12 +622,16 @@ impl Debugger {
                 });
             },
         )
+        // Over the whole card: without a place, it would sit after the list.
         .absolute()
+        .top_0()
+        .left_0()
         .size_full();
         Some(
             deferred(
                 anchored().position(point(anchor.left(), anchor.bottom())).snap_to_window_with_margin(px(8.)).child(
                     div()
+                        .when(cfg!(test), |el| el.debug_selector(|| "debug-hover-card".into()))
                         .relative()
                         .occlude()
                         // the card scrolls first; what it doesn't use stops here

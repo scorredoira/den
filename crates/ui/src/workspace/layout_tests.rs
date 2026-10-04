@@ -366,3 +366,50 @@ fn typing_in_the_preview_edits_the_markdown(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("x");
     assert!(source(cx), "typing switches to the source");
 }
+
+/// The wheel over a value's card in the code stays in the card: the code
+/// under it doesn't scroll, and the card stays.
+#[gpui_kit::test]
+fn the_wheel_over_a_values_card_leaves_the_code(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/hover-test"), None, true, "hover-test".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        let mut tab = workspace.new_tab(PathBuf::from("/hover-test/a.ts"), false, window, cx);
+        tab.content = Content::Ready;
+        let code = (0..400).map(|line| format!("let value{line} = {line}\n")).collect::<String>();
+        tab.editor.update(cx, |state, cx| state.set_value(code, window, cx));
+        workspace.tabs.push(tab);
+        workspace.activate(0, window, cx);
+        workspace
+    });
+    cx.run_until_parked();
+    let code = bounds(cx, "editor-body-0");
+    let anchor = Bounds::new(code.origin + point(px(80.), px(40.)), size(px(40.), px(16.)));
+    workspace.update(cx, |workspace, cx| {
+        workspace.debugger.update(cx, |debugger, cx| {
+            let var = |name: &str| crate::debug::protocol::Var { name: name.into(), value: "1".into(), kind: "number".into(), reference: 0, count: 0 };
+            debugger.hover = Some(crate::debug::HoverValue { var: var("value3"), anchor });
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    let card = bounds(cx, "debug-hover-card");
+    let offset = |cx: &mut VisualTestContext| workspace.read_with(cx, |workspace, cx| workspace.tabs[0].editor.read(cx).scroll_offset());
+    let before = offset(cx);
+    cx.simulate_mouse_move(card.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, cx| assert!(workspace.debugger.read(cx).hover.is_some(), "the card stays after the move {card:?}"));
+    cx.simulate_event(ScrollWheelEvent {
+        position: card.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    assert_eq!(offset(cx), before, "the code didn't scroll");
+    workspace.read_with(cx, |workspace, cx| assert!(workspace.debugger.read(cx).hover.is_some(), "the card stays"));
+}
