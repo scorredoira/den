@@ -652,7 +652,11 @@ impl TerminalArea {
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let panel_tabs: Vec<AnyElement> = self.panel_tabs.iter().map(|tab| self.render_panel_tab(tab, cx)).collect();
+        // The ones that close (the debugger's) after the terminals'; the
+        // ones always there (the notes') apart, at the far end.
+        let (closable, fixed): (Vec<_>, Vec<_>) = self.panel_tabs.iter().partition(|tab| tab.closable);
+        let closable: Vec<AnyElement> = closable.into_iter().map(|tab| self.render_panel_tab(tab, cx)).collect();
+        let fixed: Vec<AnyElement> = fixed.into_iter().map(|tab| self.render_panel_tab(tab, cx)).collect();
         let theme = cx.theme();
         h_flex()
             .id("terminal-tabs")
@@ -758,7 +762,7 @@ impl TerminalArea {
                         }
                     })
             }))
-            .children(panel_tabs)
+            .children(closable)
             .child(
                 div()
                     .id("new-terminal")
@@ -791,6 +795,7 @@ impl TerminalArea {
                         }
                     }),
             )
+            .children(fixed)
     }
 
     /// A panel's tab, after the terminals'.
@@ -812,7 +817,9 @@ impl TerminalArea {
             .pr_1()
             .gap_1()
             .text_ui(cx)
-            .border_r_1()
+            // At the far end, the line on its left.
+            .when(tab.closable, |el| el.border_r_1())
+            .when(!tab.closable, |el| el.border_l_1())
             .border_color(theme.border)
             .when(showing, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
             .when(!showing, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
