@@ -187,6 +187,49 @@ impl Device {
         .detach();
     }
 
+    /// `den where`: the programs, the devices they listed (when the panel
+    /// last asked: `booted` may be old), the one on screen and how it goes.
+    pub fn state(&self) -> serde_json::Value {
+        let device = |choice: &Choice| {
+            serde_json::json!({
+                "program": choice.program,
+                "id": choice.device.id,
+                "name": choice.device.name,
+                "booted": choice.device.booted,
+            })
+        };
+        let programs = match &self.programs {
+            Programs::None => return serde_json::json!({ "available": false }),
+            Programs::Listed(programs) => serde_json::json!(programs),
+            Programs::Broken(error) => serde_json::json!({ "error": error }),
+        };
+        let status = match &self.status {
+            Status::Idle => "idle".to_string(),
+            Status::Starting => "starting".to_string(),
+            Status::Running => "running".to_string(),
+            Status::Failed(why) => format!("failed: {why}"),
+        };
+        let mut out = serde_json::json!({
+            "available": true,
+            "programs": programs,
+            "status": status,
+            "debugging": self.debugging,
+        });
+        if let Some(devices) = &self.devices {
+            out["devices"] = devices.iter().map(device).collect();
+        }
+        if let Some(chosen) = &self.chosen {
+            out["chosen"] = device(chosen);
+        }
+        if !self.list_errors.is_empty() {
+            out["listErrors"] = serde_json::json!(self.list_errors);
+        }
+        if let Some(warning) = &self.warning {
+            out["warning"] = serde_json::json!(warning);
+        }
+        out
+    }
+
     /// The panel came to the front: the devices are asked for the first time.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
         if self.devices.is_none() {

@@ -84,6 +84,30 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
+            ["where"] => {
+                let terminal = here(self, false, window, cx).ok().map(|(root, _)| root);
+                self.whereabouts(terminal, cx)
+            }
+            ["workspace", target] => self.switch_workspace(&host, target, &cwd, window, cx),
+            ["close", "--all"] => here(self, false, window, cx).and_then(|(_, workspace)| {
+                workspace.update(cx, |workspace, cx| workspace.close_files(None, window, cx)).map(|()| String::new())
+            }),
+            ["close", file] => here(self, false, window, cx).and_then(|(_, workspace)| {
+                let path = normalize(&cwd.join(file));
+                workspace.update(cx, |workspace, cx| workspace.close_files(Some(&path), window, cx)).map(|()| String::new())
+            }),
+            ["panel", action @ ("show" | "hide"), name] => match parse_panel(name) {
+                Ok(panel) => here(self, *action == "show", window, cx).map(|(_, workspace)| {
+                    workspace.update(cx, |workspace, cx| workspace.set_panel(panel, *action == "show", cx));
+                    String::new()
+                }),
+                Err(err) => Err(err),
+            },
+            ["reveal", file] => here(self, true, window, cx).map(|(_, workspace)| {
+                let path = normalize(&cwd.join(file));
+                workspace.update(cx, |workspace, cx| workspace.reveal_file(&path, cx));
+                String::new()
+            }),
             ["notes", rest @ ..] => {
                 let key = self.command_key(host.clone(), group.as_deref(), &cwd);
                 self.notes_command(key, rest, window, cx)
@@ -236,6 +260,61 @@ impl Den {
         Ok(String::new())
     }
 
+    /// `den where`: the workspace in front of the window, as JSON: its
+    /// server, path, repo and branch, whether it's a worktree, and what it
+    /// shows (`Workspace::whereabouts`). `terminal` is the workspace of the
+    /// terminal the command ran in, said when it's another.
+    fn whereabouts(&self, terminal: Option<PathBuf>, cx: &App) -> Answer {
+        let key = self.active.as_ref().ok_or("no workspace is open")?;
+        let workspace = self.workspaces.get(key).ok_or("the workspace in front isn't open")?;
+        let mut out = workspace.read(cx).whereabouts(cx);
+        out["server"] = key.host.to_string().into();
+        if let Some(task) = self.task(key) {
+            out["repo"] = json!(task.repo);
+            out["worktree"] = (!task.main).into();
+            if out.get("branch").is_none()
+                && let Some(branch) = &task.branch
+            {
+                out["branch"] = branch.clone().into();
+            }
+        }
+        if let Some(terminal) = terminal.filter(|path| path != &key.path) {
+            out["terminal"] = json!(terminal);
+        }
+        serde_json::to_string_pretty(&out).map_err(|err| err.to_string())
+    }
+
+    /// `den workspace <target>`: brings the workspace to the front. The
+    /// target is its path (relative to `cwd`), its folder's name or its
+    /// branch; one of the terminal's server wins over the others'.
+    fn switch_workspace(&mut self, host: &SharedString, target: &str, cwd: &Path, window: &mut Window, cx: &mut Context<Self>) -> Answer {
+        let path = normalize(&cwd.join(target));
+        let mut found: Vec<TaskKey> = Vec::new();
+        for server in &self.hosts {
+            for task in server.tasks.iter().chain(&server.loose) {
+                let hit = task.path == path || folder_name(&task.path) == target || task.branch.as_deref() == Some(target);
+                let key = TaskKey { host: server.name.clone(), path: task.path.clone() };
+                if hit && !found.contains(&key) {
+                    found.push(key);
+                }
+            }
+        }
+        if found.len() > 1 && found.iter().any(|key| &key.host == host) {
+            found.retain(|key| &key.host == host);
+        }
+        let key = match found.as_slice() {
+            [] => return Err(format!("{target}: no such workspace; see den workspaces")),
+            [key] => key.clone(),
+            keys => {
+                let names: Vec<String> = keys.iter().map(|key| format!("{} {}", key.host, key.path.display())).collect();
+                return Err(format!("{target}: more than one workspace: {}", names.join(", ")));
+            }
+        };
+        let path = key.path.display().to_string();
+        self.activate(key, window, cx);
+        Ok(path)
+    }
+
     /// `den workspaces`: one per line, `*` the active one.
     fn workspace_list(&self, cx: &App) -> String {
         let mut out = String::new();
@@ -252,9 +331,20 @@ impl Den {
     }
 }
 
+/// A panel by the name `den panel` takes: as the layout saves it
+/// (files, terminals, debugger, device, changes, notes…).
+fn parse_panel(name: &str) -> Result<Panel, String> {
+    let panel: Option<Panel> = serde_json::from_value(json!(name.to_lowercase())).ok();
+    panel.filter(|panel| Panel::ALL.contains(panel)).ok_or_else(|| {
+        let names: Vec<String> =
+            Panel::ALL.iter().map(|panel| json!(panel).as_str().unwrap_or_default().to_string()).collect();
+        format!("{name}: not a panel; one of {}", names.join(", "))
+    })
+}
+
 const NOTES_USAGE: &str = "den notes: [add <text> | set <text>], or the text from stdin";
 
-const DEBUG_USAGE: &str = "den debug: state | start [<file>] | stop | continue | next | in | out | pause \
+const DEBUG_USAGE: &str = "den debug: state | inspect | start [<file>] | stop | continue | next | in | out | pause \
     | break <file>:<line> | clear [<file>:<line>] | eval <expr> | wait [stop|connected|idle] [<seconds>]";
 
 /// How long `den debug wait` waits when not told.
@@ -275,6 +365,13 @@ fn debug_command(
     };
     let answer = match args {
         ["state"] => Ok(debugger.read(cx).state().to_string()),
+        ["inspect"] => {
+            if debugger.update(cx, |debugger, _| debugger.inspect()) {
+                Ok(String::new())
+            } else {
+                Err("nothing is being debugged: den debug start first".to_string())
+            }
+        }
         ["start", file @ ..] if file.len() <= 1 => {
             if debugger.read(cx).is_active() {
                 Err("a session is active: den debug stop first".to_string())
@@ -418,7 +515,16 @@ mod tests {
 
     use gpui_kit::component::input::Position;
 
-    use super::parse_target;
+    use super::{parse_panel, parse_target};
+    use crate::config::Panel;
+
+    #[test]
+    fn panels_by_name() {
+        assert_eq!(parse_panel("files"), Ok(Panel::Files));
+        assert_eq!(parse_panel("Device"), Ok(Panel::Device));
+        assert!(parse_panel("agents").is_err());
+        assert!(parse_panel("nothing").unwrap_err().contains("terminals"));
+    }
 
     #[test]
     fn targets() {

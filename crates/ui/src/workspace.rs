@@ -1923,6 +1923,7 @@ impl Workspace {
                     path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/")
                 });
                 let line = debug::command_line(line, file.as_deref());
+                debugger.update(cx, |debugger, _| debugger.set_ran(line.clone()));
                 // A tab with the terminals, the debugger stays in front.
                 if !self.debugger_with_terminals(cx) {
                     self.show_panel(Panel::Terminals, cx);
