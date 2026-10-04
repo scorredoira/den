@@ -94,7 +94,7 @@ impl Den {
     }
 
     /// The Agents panel: every agent, on every server, under its workspace
-    /// (in the column's order), with what it's on and its state.
+    /// (in the column's order), with what it's on and its state's dot.
     pub(super) fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<AnyElement> = Vec::new();
         let several = self.agents.values().filter(|agents| !agents.is_empty()).count() > 1;
@@ -168,8 +168,9 @@ impl Den {
             .px_3()
             .gap_2()
             .text_ui(cx)
-            .when(active, |el| el.bg(theme.sidebar_accent))
-            .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
+            // Where you are, not a selection: bold rather than the selection's band.
+            .when(active, |el| el.font_weight(FontWeight::SEMIBOLD))
+            .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
             .child(svg().path(icon).size(px(14.)).flex_none().text_color(workspace_color(key)))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
             .tooltip({
@@ -181,7 +182,7 @@ impl Den {
     }
 
     fn render_agent(&self, host: &SharedString, agent: &AgentInfo, cx: &mut Context<Self>) -> AnyElement {
-        let (dot, color, state) = self.agent_status(host, agent, cx);
+        let (dot, color, _) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);
         let (host, group, term) = (host.clone(), agent.group.clone(), agent.term);
@@ -196,8 +197,6 @@ impl Den {
             .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
             .child(div().flex_none().w(px(12.)).text_color(color).child(dot))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title.clone()))
-            .child(div().flex_1())
-            .child(div().flex_none().text_color(color).child(state))
             .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, window, cx| this.open_agent(host.clone(), group.clone(), term, window, cx)))
             .into_any_element()

@@ -1,5 +1,14 @@
 use gpui_kit::{component::ThemeConfig, rgb};
 
+/// VS Code's selection: a blue band, outlined in a stronger blue where the
+/// list has the keyboard.
+pub(super) fn selection(config: &mut ThemeConfig, dark: bool) {
+    let colors = &mut config.colors;
+    let (band, outline) = if dark { ("#04395e", "#0078d4") } else { ("#e4e6f1", "#005fb8") };
+    colors.list_active = Some(band.into());
+    colors.list_active_border = Some(outline.into());
+}
+
 /// Store the palette in the dark configuration so manual and system theme
 /// changes also project these colors onto the editor and base components.
 pub(super) fn dark_surfaces(config: &mut ThemeConfig) {

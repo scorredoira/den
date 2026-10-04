@@ -344,7 +344,7 @@ impl Render for OutlinePanel {
                         .pr_2()
                         .text_ui(cx)
                         .text_color(theme.sidebar_foreground)
-                        .when(current == Some(ix), |el| el.bg(theme.sidebar_accent))
+                        .when(current == Some(ix), |el| el.bg(theme.list_active))
                         .when(current != Some(ix), |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
                         .child(div().w(px(14.)).flex_none().children(chevron))
                         .child(svg().path(icon).size(px(14.)).flex_none().text_color(color))

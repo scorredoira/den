@@ -1067,6 +1067,7 @@ impl Den {
             if mode == "dark" {
                 theme::dark_surfaces(&mut updated);
             }
+            theme::selection(&mut updated, mode == "dark");
             *config = Rc::new(updated);
         }
     }
@@ -2721,7 +2722,7 @@ impl Den {
             .px_3()
             .gap_2()
             .text_ui(cx)
-            .when(active, |el| el.bg(theme.sidebar_accent))
+            .when(active, |el| el.bg(theme.list_active))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
             .when(fold.is_some(), |row| row.pl(px(ROW_INDENT)))
             // What it is: a folder, or a repo's worktree.
@@ -2740,13 +2741,11 @@ impl Den {
                     .text_ellipsis()
                     .child(label.clone()),
             )
-            // Its agents' state: one waiting for an answer, red; one working,
-            // yellow; done unseen, green; none or all idle, an empty circle.
+            // Its agents' state, the same dot as in the Agents panel.
             .map(|row| match dot {
                 _ if !shows_dot => row,
                 "…" => row.child(spinner(color)),
-                "○" => row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)),
-                _ => row.child(div().flex_none().text_ui_small(cx).text_color(color).child("●")),
+                _ => row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)),
             })
             .child(div().flex_1())
             .children(branch.map(|branch| {
