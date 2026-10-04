@@ -9,6 +9,11 @@ impl Workspace {
         self.debugger.clone()
     }
 
+    /// `den device`: the workspace's Device panel.
+    pub fn device(&self) -> Entity<Device> {
+        self.device.clone()
+    }
+
     /// `den show`: `path` with the cursor at `from` or, with `to`, the range
     /// between them selected. Without `focus`, the keyboard stays where it was.
     pub fn show(&mut self, path: PathBuf, from: Position, to: Option<Position>, focus: bool, window: &mut Window, cx: &mut Context<Self>) {

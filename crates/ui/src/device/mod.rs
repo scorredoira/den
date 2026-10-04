@@ -127,6 +127,9 @@ pub struct Device {
     /// The device the program being debugged runs on, to show once the
     /// programs have listed it.
     wanted: Option<String>,
+    /// `den device show` without a device: serve the chosen one once the
+    /// programs have listed theirs.
+    serve_chosen: bool,
     /// A debugging session is on: the play is its stop.
     debugging: bool,
     /// What the session does while it starts the program.
@@ -155,6 +158,7 @@ impl Device {
             bounds: Rc::new(Cell::new(Bounds::default())),
             touching: None,
             wanted: None,
+            serve_chosen: false,
             debugging: false,
             starting: None,
         };
@@ -265,7 +269,8 @@ impl Device {
                     this.chosen = devices.first().cloned();
                 }
                 this.devices = Some(devices);
-                match wanted {
+                let chosen = this.chosen.clone().filter(|_| std::mem::take(&mut this.serve_chosen));
+                match wanted.or(chosen) {
                     Some(choice) => this.choose(choice, cx),
                     None => cx.notify(),
                 }
@@ -284,6 +289,22 @@ impl Device {
             Some(choice) => self.choose(choice, cx),
             None => {
                 self.wanted = Some(id);
+                self.refresh(cx);
+            }
+        }
+    }
+
+    /// `den device show`: serves the device `id`, or the one chosen (the
+    /// first booted) once the programs have listed theirs.
+    pub fn serve(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        if let Some(id) = id {
+            self.show_device(id, cx);
+            return;
+        }
+        match self.chosen.clone().filter(|_| self.devices.is_some()) {
+            Some(choice) => self.choose(choice, cx),
+            None => {
+                self.serve_chosen = true;
                 self.refresh(cx);
             }
         }
@@ -478,6 +499,16 @@ impl Device {
     pub fn warn(&mut self, text: &str, cx: &mut Context<Self>) {
         self.warning = Some(text.to_string());
         cx.notify();
+    }
+
+    /// `den device …`: a command of the protocol, as the panel's mouse and
+    /// keyboard send them; an error when no device is on screen.
+    pub fn input(&self, command: String) -> Result<(), String> {
+        if self.serving.is_none() {
+            return Err("no device is on screen: den device show, or start an app (F5)".to_string());
+        }
+        self.send(command);
+        Ok(())
     }
 
     fn send(&self, command: String) {

@@ -89,8 +89,8 @@ keyboard stays in the terminal unless --focus.
   den debug inspect   lets the user pick a widget on the app being debugged;
                       the line that made it opens, and `den debug state`
                       gives it as `revealed`.
-  den debug stop | continue | next | in | out | pause
-                      Shift-F5, F5, F10, F11, Shift-F11 and F6.
+  den debug stop | restart | continue | next | in | out | pause
+                      Shift-F5, Cmd-Shift-F5, F5, F10, F11, Shift-F11 and F6.
   den debug break <file>:<line>
                       sets a breakpoint there.
   den debug clear [<file>:<line>]
@@ -101,6 +101,24 @@ keyboard stays in the terminal unless --focus.
                       waits for a VM to stop (or for the session to
                       connect, or to end), 30 seconds at most, and prints
                       the state. A session that fails ends the wait too.
+
+  den device show [<id>]
+                      shows the Device panel serving that device (an id
+                      `den where` lists), or the one it has: the first
+                      booted. `den where` says when it is running.
+  den device tap <x> <y>
+                      a finger on the device the Device panel shows, at a
+                      point of its screen in fractions from its top left
+                      (0.5 0.5 is the centre).
+  den device swipe <x> <y> <x2> <y2>
+                      a finger moved from one point to the other.
+  den device text <text>...
+                      types the text.
+  den device key <name> [shift] [alt] [ctrl] [cmd]
+                      a key: one character, or enter, escape, backspace,
+                      tab, space, home, pageup, delete, end, pagedown,
+                      right, left, down or up.
+  den device home     the home button.
 ";
 
 /// Folder holding the `den` link, which the agent puts in its terminals' PATH.

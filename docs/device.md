@@ -42,6 +42,25 @@ pick a widget on the phone; the line that made it opens in the editor
 `den debug inspect` does the same, and `den debug state` gives the line
 revealed last; `den where` says which device the panel has and how it goes.
 
+## From a terminal
+
+`den device` does what the mouse and the keyboard do on the panel, so an
+agent can test an app on the phone (with `den debug` to stop in its code):
+
+```sh
+den device show                 # the panel, serving the first booted device
+den device tap 0.5 0.23         # a finger at a point, in fractions from the top left
+den device swipe 0.5 0.8 0.5 0.2
+den device text Pádel           # typed; the field needs the focus (a tap)
+den device key enter
+den device home
+```
+
+`show` takes a device's id (`den where` lists them) and serves it; `den
+where` says when it runs. The others need a device on screen, and fail
+saying so otherwise. A tap is a finger down and up 80 ms later; a swipe goes
+through 12 points 25 ms apart.
+
 ## The protocol
 
 JSON, one object per line.
