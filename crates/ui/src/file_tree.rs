@@ -690,9 +690,11 @@ impl Render for FileTree {
                         .pr_2()
                         .text_ui(cx)
                         .text_color(theme.sidebar_foreground)
-                        .when(is_selected, |el| {
-                            el.bg(if focused { theme.sidebar_accent } else { theme.sidebar_accent.opacity(0.6) })
-                        })
+                        // VS Code's: the selection filled, and outlined while the tree has the keyboard.
+                        .border_1()
+                        .border_color(transparent_black())
+                        .when(is_selected, |el| el.bg(theme.list_active))
+                        .when(is_selected && focused, |el| el.border_color(theme.list_active_border))
                         .when(!is_selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
                         .child(div().w(px(14.)).flex_none().children(chevron.map(|path| {
                             svg().path(path).size(px(14.)).text_color(theme.muted_foreground)

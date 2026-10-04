@@ -379,7 +379,7 @@ fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: 
         .pl(px(12. + indent))
         .pr_3()
         .gap_2()
-        .when(selected, |el| el.bg(theme.sidebar_accent))
+        .when(selected, |el| el.bg(theme.list_active))
         .when(!selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
         .child(
             div()
@@ -588,7 +588,7 @@ impl ChangesPanel {
                     .px_3()
                     .py_1()
                     .gap_0p5()
-                    .when(selected, |el| el.bg(theme.sidebar_accent))
+                    .when(selected, |el| el.bg(theme.list_active))
                     .when(!selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
                     .child(
                         div()

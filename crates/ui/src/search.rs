@@ -470,7 +470,7 @@ impl Render for SearchPanel {
                                     .pr_2()
                                     .gap_2()
                                     .text_ui_small(cx)
-                                    .when(is_selected, |el| el.bg(theme.sidebar_accent))
+                                    .when(is_selected, |el| el.bg(theme.list_active))
                                     .when(!is_selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
                                     .child(
                                         div()
