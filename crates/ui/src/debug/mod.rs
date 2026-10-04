@@ -41,7 +41,7 @@ const LAUNCH_TEMPLATE: &str = r#"{
 }
 "#;
 
-/// How often to look whether the program listens on the port of `open`.
+/// How often to look whether the program listens on the port of its page.
 const OPEN_POLL: Duration = Duration::from_millis(100);
 
 /// How long a value's card waits, once the pointer leaves its name, before
@@ -69,11 +69,6 @@ pub struct Launch {
     pub command: Option<String>,
     #[serde(default = "default_port")]
     pub port: u16,
-    /// A URL of the loopback to open in the browser once something started
-    /// by `command` listens on its port: a server's page, which a script run
-    /// by the same command never opens.
-    #[serde(default)]
-    pub open: Option<String>,
 }
 
 fn default_port() -> u16 {
@@ -129,12 +124,17 @@ pub fn parse_launch_file(text: &str) -> Result<LaunchFile, String> {
     if file.launch.command.is_none() && !file.configurations.is_empty() {
         file.launch = file.configurations.remove(0);
     }
-    if let Some(url) = &file.launch.open
-        && Client::loopback_port(url).is_none()
-    {
-        return Err(format!("{LAUNCH_FILE}: open must be an http(s) URL of localhost: {url}"));
-    }
     Ok(file)
+}
+
+/// The program's page in its `hello`, a URL of the loopback: a server's,
+/// opened once it listens there. Any other address is not opened.
+fn page_of(hello: &Map<String, Value>) -> Option<String> {
+    hello
+        .get("page")
+        .and_then(Value::as_str)
+        .filter(|url| Client::loopback_port(url).is_some())
+        .map(str::to_string)
 }
 
 /// A configuration's `command` as it is run: `${file}` is the open file,
@@ -285,9 +285,9 @@ pub struct Debugger {
     /// The terminal the launch command runs in, reused by the next launch.
     term: Option<TermId>,
     launched: bool,
-    /// The program stops at its entry: a test or a script, not a server
-    /// (a launch with `open`), which runs and shows its page right away.
-    stop_at_entry: bool,
+    /// The program's page (`page` in its `hello`) opens once it listens:
+    /// a launch started it, and not a restart.
+    open_page: bool,
     running: u64,
     stops: BTreeMap<u64, VmStop>,
     serial: u64,
@@ -372,7 +372,7 @@ impl Debugger {
             conn: None,
             generation: 0,
             launched: false,
-            stop_at_entry: true,
+            open_page: false,
             running: 0,
             stops: BTreeMap::new(),
             serial: 0,
@@ -557,7 +557,7 @@ impl Debugger {
         }
         self.generation += 1;
         self.launching_test = Some((path, test));
-        self.begin(Launch { command: Some(command), port, open: None }, false, window, cx);
+        self.begin(Launch { command: Some(command), port }, false, window, cx);
     }
 
     /// Reads the launch file again: its problems show in the panel, its
@@ -611,14 +611,13 @@ impl Debugger {
         path
     }
 
-    /// With `open_page`, the launch's `open` is opened once the program listens.
+    /// With `open_page`, the program's page is opened once it listens.
     fn begin(&mut self, launch: Launch, open_page: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.console.clear();
         self.launched = false;
-        self.stop_at_entry = launch.open.is_none();
+        self.open_page = open_page;
         self.status = Status::Connecting(format!("Connecting to port {}…", launch.port));
-        let open = launch.open.filter(|_| open_page);
-        self.connect(launch.port, launch.command, open, window, cx);
+        self.connect(launch.port, launch.command, window, cx);
         cx.notify();
     }
 
@@ -633,13 +632,11 @@ impl Debugger {
     /// command started ends. A program that already listens is attached to;
     /// otherwise `command` starts it. A command with `${port}` listens on a
     /// free port of its own: it is always started, never attached to
-    /// another program, a debugger of another window included. `open` is
-    /// opened once what `command` started listens on its port.
+    /// another program, a debugger of another window included.
     fn connect(
         &mut self,
         port: u16,
         mut command: Option<String>,
-        mut open: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -698,9 +695,6 @@ impl Debugger {
                                 // what still runs in its terminal would read the line as its input
                                 let term = if busy { None } else { this.term };
                                 cx.emit(DebugEvent::Run { term, line: command });
-                                if let Some(url) = open.take() {
-                                    this.open_when_listening(url, cx);
-                                }
                                 cx.notify();
                             })
                             .ok();
@@ -835,9 +829,19 @@ impl Debugger {
         }
         self.send_exceptions();
         // As Visual Studio does, a program that starts stops at its entry,
-        // wherever the program says that is; a server just runs.
+        // wherever the program says that is; a server, which has a page,
+        // just runs.
+        let page = page_of(&body);
         if body.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
-            self.send("run", json!({ "entry": self.stop_at_entry }), |_, _, _| {});
+            self.send("run", json!({ "entry": page.is_none() }), |_, _, _| {});
+        }
+        // the page of a program this launch started, which an attached one
+        // or a restart doesn't open again
+        if let Some(url) = page
+            && self.launched
+            && std::mem::take(&mut self.open_page)
+        {
+            self.open_when_listening(url, cx);
         }
         let stops: Vec<Stop> = protocol::field(&body, "stopped").unwrap_or_default();
         for stop in stops {
@@ -1835,7 +1839,8 @@ pub fn expression_span(line: &str, offset: usize) -> Option<std::ops::Range<usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{changed_locals, child_path, command_line, expression_span, is_assignment, names_in, parse_launch_file, starts_function};
+    use super::{changed_locals, child_path, command_line, expression_span, is_assignment, names_in, page_of, parse_launch_file, starts_function};
+    use serde_json::{Map, Value};
     use super::protocol::{Frame, Stop, Var};
 
     #[test]
@@ -1876,19 +1881,15 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_opens_only_a_page_of_localhost() {
-        let launch = parse_launch_file(r#"{"command":"scl -d ${file}","open":"http://localhost:9092/platform/tenants"}"#)
-            .unwrap()
-            .launch;
-        assert_eq!(launch.open.as_deref(), Some("http://localhost:9092/platform/tenants"));
-        assert_eq!(parse_launch_file(r#"{"command":"scl"}"#).unwrap().launch.open, None);
-        let launch = parse_launch_file(r#"{"configurations":[{"name":"Debug","open":"http://localhost:8080/main/tenants","command":"sim -d ${file}"}]}"#)
-            .unwrap()
-            .launch;
-        assert_eq!(launch.open.as_deref(), Some("http://localhost:8080/main/tenants"));
-        let error = parse_launch_file(r#"{"command":"scl","open":"https://example.com/"}"#).err().unwrap();
-        assert!(error.contains("open must be an http(s) URL of localhost"), "{error}");
-        assert!(parse_launch_file(r#"{"command":"scl","open":"file:///etc/passwd"}"#).is_err());
+    fn a_program_opens_only_a_page_of_localhost() {
+        let hello = |text: &str| serde_json::from_str::<Map<String, Value>>(text).unwrap();
+        assert_eq!(
+            page_of(&hello(r#"{"cwd":"/","page":"http://localhost:9092/platform/tenants"}"#)).as_deref(),
+            Some("http://localhost:9092/platform/tenants")
+        );
+        assert_eq!(page_of(&hello(r#"{"cwd":"/"}"#)), None);
+        assert_eq!(page_of(&hello(r#"{"page":"https://example.com/"}"#)), None);
+        assert_eq!(page_of(&hello(r#"{"page":"file:///etc/passwd"}"#)), None);
     }
 
     #[test]
