@@ -667,6 +667,7 @@ fn own_separators(request: &mut Request) {
         | Request::ReadFile { path }
         | Request::WriteFile { path, .. }
         | Request::ListDir { path }
+        | Request::ListDirAll { path }
         | Request::CreateFile { path }
         | Request::CreateDir { path }
         | Request::Trash { path }
@@ -737,6 +738,7 @@ fn is_slow(request: &Request) -> bool {
             | Request::ReadFile { .. }
             | Request::WriteFile { .. }
             | Request::ListDir { .. }
+            | Request::ListDirAll { .. }
             | Request::Trash { .. }
             | Request::Git { .. }
             | Request::Lsp { .. }
@@ -822,7 +824,8 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
             fs::write(&path, &data)?;
             Ok(Response::Ok)
         }
-        Request::ListDir { path } => Ok(Response::Dir(fs::list(&tasks::expand_home(&path))?)),
+        Request::ListDir { path } => Ok(Response::Dir(fs::list(&tasks::expand_home(&path), false)?)),
+        Request::ListDirAll { path } => Ok(Response::Dir(fs::list(&tasks::expand_home(&path), true)?)),
         Request::Trash { path } => {
             fs::trash(&path)?;
             Ok(Response::Ok)
@@ -959,6 +962,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         | Request::ReadFile { .. }
         | Request::WriteFile { .. }
         | Request::ListDir { .. }
+        | Request::ListDirAll { .. }
         | Request::Trash { .. }
         | Request::Git { .. }
         | Request::Lsp { .. }

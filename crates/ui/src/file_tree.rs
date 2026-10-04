@@ -19,7 +19,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use crate::menu::PanelItems as _;
 
-use crate::{CollapseFileTree, config::UiText};
+use crate::{CollapseFileTree, config::{Config, UiText}};
 
 actions!(
     file_tree,
@@ -47,6 +47,8 @@ pub enum FileTreeEvent {
     Trashed { path: PathBuf },
     /// Show the commits that changed a file or folder.
     ShowHistory { path: PathBuf, dir: bool },
+    /// Open a terminal in a folder.
+    OpenTerminal { dir: PathBuf },
     Error(SharedString),
 }
 
@@ -110,6 +112,9 @@ pub struct FileTree {
     menu_target: Option<PathBuf>,
     focus_handle: FocusHandle,
     scroll: UniformListScrollHandle,
+    /// What git ignores is listed too (Show Ignored Files), as read.
+    ignored: bool,
+    _config: Subscription,
 }
 
 impl EventEmitter<FileTreeEvent> for FileTree {}
@@ -135,6 +140,18 @@ impl FileTree {
             menu_target: None,
             focus_handle: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
+            ignored: Config::get(cx).show_ignored,
+            // Show Ignored Files changes every window's trees.
+            _config: cx.observe_global::<Config>(|tree: &mut Self, cx| {
+                let ignored = Config::get(cx).show_ignored;
+                if tree.ignored != ignored {
+                    tree.ignored = ignored;
+                    tree.children.clear();
+                    tree.loading.clear();
+                    tree.rebuild(cx);
+                    cx.notify();
+                }
+            }),
         };
         tree.rebuild(cx);
         tree
@@ -234,8 +251,16 @@ impl FileTree {
         if !self.loading.insert(dir.clone()) {
             return;
         }
+        let ignored = self.ignored;
         cx.spawn(async move |this, cx| {
-            let response = client.request(Request::ListDir { path: dir.clone() }).await;
+            let mut response = Err(anyhow::anyhow!("not asked"));
+            if ignored {
+                response = client.request(Request::ListDirAll { path: dir.clone() }).await;
+            }
+            // An agent from before Show Ignored Files lists what it can.
+            if response.is_err() {
+                response = client.request(Request::ListDir { path: dir.clone() }).await;
+            }
             this.update(cx, |this, cx| {
                 this.loading.remove(&dir);
                 let entries = match response {
@@ -638,6 +663,10 @@ impl FileTree {
                 Box::new(move |_, _, cx| cx.reveal_path(&path))
             }))
         })
+        .item(item("Open in Terminal", {
+            let dir = dir.clone();
+            Box::new(move |_, _, cx| cx.emit(FileTreeEvent::OpenTerminal { dir: dir.clone() }))
+        }))
         .when(path != self.root, |menu| {
             let dir = dir == path;
             menu.separator().item(item("Show History", {
@@ -647,6 +676,10 @@ impl FileTree {
         })
         .separator()
         .item(item("Collapse All Folders", Box::new(|tree, _, cx| tree.collapse_all(cx))).action(Box::new(CollapseFileTree)))
+        .item(item("Show Ignored Files", Box::new(|tree, _, cx| {
+            let show = !tree.ignored;
+            Config::update(cx, |config| config.show_ignored = show);
+        })).checked(self.ignored))
     }
 }
 

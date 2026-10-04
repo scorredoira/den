@@ -283,7 +283,7 @@ impl TerminalArea {
 
     /// Creates a terminal in the agent and places it; once it arrives, it gets focus.
     fn open(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_running(place, None, true, window, cx).detach();
+        self.open_running(place, None, None, true, window, cx).detach();
     }
 
     /// Like `open`, typing `line` and Enter into its shell once it exists.
@@ -291,6 +291,7 @@ impl TerminalArea {
     fn open_running(
         &mut self,
         place: Place,
+        dir: Option<PathBuf>,
         line: Option<String>,
         focus: bool,
         window: &mut Window,
@@ -318,9 +319,10 @@ impl TerminalArea {
             Place::NewTab => None,
         };
         cx.spawn_in(window, async move |this, cx| {
-            let inherited = match beside {
-                Some(term) => agent::cwd(&client, term).await.ok().flatten().filter(|dir| *dir != cwd),
-                None => None,
+            let inherited = match (dir, beside) {
+                (Some(dir), _) => Some(dir).filter(|dir| *dir != cwd),
+                (None, Some(term)) => agent::cwd(&client, term).await.ok().flatten().filter(|dir| *dir != cwd),
+                (None, None) => None,
             };
             let result = match inherited {
                 // The directory may be gone: then the task's folder.
@@ -389,7 +391,7 @@ impl TerminalArea {
             self.select(term, cx);
             return Task::ready(Some(term));
         }
-        self.open_running(Place::NewTab, Some(line), false, window, cx)
+        self.open_running(Place::NewTab, None, Some(line), false, window, cx)
     }
 
     /// `den term new`: a terminal in a new tab, or split from `beside` (the
@@ -407,7 +409,7 @@ impl TerminalArea {
             self.select(term, cx);
         }
         let place = split.map_or(Place::NewTab, Place::Split);
-        self.open_running(place, line, focus, window, cx)
+        self.open_running(place, None, line, focus, window, cx)
     }
 
     /// The terminals by tab, with their titles and whether each is the active one.
@@ -456,6 +458,11 @@ impl TerminalArea {
     /// Opens a terminal in a new tab and focuses it.
     pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(Place::NewTab, window, cx);
+    }
+
+    /// Opens a terminal in a new tab in `dir` (Open in Terminal), and focuses it.
+    pub fn new_terminal_in(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_running(Place::NewTab, Some(dir), None, true, window, cx).detach();
     }
 
     /// Splits the active terminal: to the right (`Row`) or below (`Column`).
