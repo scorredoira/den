@@ -431,13 +431,15 @@ fn diff_with(dir: &Path, file: &str, uncommitted: bool, context: Option<&str>) -
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     // Reading never writes the index (`git status` refreshes it when it can):
     // the index is watched, and each write would ask for another read.
-    let output = crate::platform::command("git")
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        // A file's name is the file, not a pattern: `a[12].txt` isn't `a1.txt`.
-        .env("GIT_LITERAL_PATHSPECS", "1")
-        .current_dir(dir)
-        .output()?;
+    let mut command = crate::platform::command("git");
+    command.args(args).env("GIT_OPTIONAL_LOCKS", "0");
+    // A file's name is the file, not a pattern: `a[12].txt` isn't `a1.txt`.
+    // Not for what runs the repo's hooks, which would inherit it and find
+    // nothing with their own patterns.
+    if !matches!(args.first(), Some(&("commit" | "switch"))) {
+        command.env("GIT_LITERAL_PATHSPECS", "1");
+    }
+    let output = command.current_dir(dir).output()?;
     if !output.status.success() {
         bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim());
     }

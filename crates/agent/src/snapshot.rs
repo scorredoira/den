@@ -25,11 +25,13 @@ use alacritty_terminal::{
 /// processes it and the UIs receive it as output, so every view clears alike.
 /// A CAN first ends an escape sequence the output may have left halfway. In
 /// the alternate screen (vim, htop) the screen is the application's: only
-/// the history goes.
+/// the history goes. Under ConPTY (Windows) too: ConPTY keeps a screen of
+/// its own and redraws it at absolute rows, so a screen moved behind its
+/// back would come back garbled.
 pub fn clear<T: EventListener>(term: &Term<T>) -> Vec<u8> {
     let line = term.grid().cursor.point.line.0;
     let mut out = String::from("\x18");
-    if line > 0 && !term.mode().contains(TermMode::ALT_SCREEN) {
+    if line > 0 && !term.mode().contains(TermMode::ALT_SCREEN) && !cfg!(windows) {
         // Scrolling the lines above into the history, then dropping it.
         let _ = write!(out, "\x1b[{line}S\x1b[{line}A");
     }
@@ -282,8 +284,13 @@ mod tests {
         let data = clear(&term);
         parser.advance(&mut term, &data);
 
-        assert_eq!(screen(&term), vec!["$ ls", "", ""]);
         assert_eq!(term.grid().history_size(), 0);
-        assert_eq!(term.grid().cursor.point, alacritty_terminal::index::Point::new(Line(0), Column(4)));
+        if cfg!(windows) {
+            // Under ConPTY the screen stays as ConPTY has it.
+            assert_eq!(screen(&term), vec!["three", "four", "$ ls"]);
+        } else {
+            assert_eq!(screen(&term), vec!["$ ls", "", ""]);
+            assert_eq!(term.grid().cursor.point, alacritty_terminal::index::Point::new(Line(0), Column(4)));
+        }
     }
 }
