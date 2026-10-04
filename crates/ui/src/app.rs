@@ -274,7 +274,23 @@ pub fn open_server_window(destination: String, path: Option<PathBuf>, cx: &mut A
 /// `den -n <path>` from a terminal of `host`: `root`, with `file` open in
 /// it, in a window of its own; in the window it's open in, if it is.
 pub fn open_new_window(host: SharedString, destination: Option<String>, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
+    open_new_window_except(host, destination, root, file, None, cx)
+}
+
+/// `open_new_window`, but never in the window of `except`: a workspace's
+/// Open in New Window, asked from the window it's open in.
+fn open_new_window_except(
+    host: SharedString,
+    destination: Option<String>,
+    root: PathBuf,
+    file: Option<PathBuf>,
+    except: Option<EntityId>,
+    cx: &mut App,
+) {
     let open = windows(cx).into_iter().find(|(_, den)| {
+        if Some(den.entity_id()) == except {
+            return false;
+        }
         let den = den.read(cx);
         let key = TaskKey { host: host.clone(), path: den.workspace_containing(&host, &root) };
         den.workspaces.contains_key(&key)
@@ -2733,6 +2749,7 @@ impl Den {
                 let repo = task.repo.clone();
                 let repo_name = repo_name.clone();
                 let main = task.main;
+                let branch = task.branch.clone();
                 // Closing would lose unsaved changes: save them first.
                 let unsaved = self
                     .workspaces
@@ -2742,6 +2759,7 @@ impl Den {
                     let (create, copy, finder, init, remove, close, add) =
                         (key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone());
                     let (repo, folder) = (repo.clone(), repo.clone());
+                    let (window_key, branch) = (key.clone(), branch.clone());
                     menu.when(git, |menu| {
                         menu.item(
                             menu::item(format!("New Worktree in {repo_name}…"), &weak, move |this, window, cx| {
@@ -2773,9 +2791,23 @@ impl Den {
                         )
                         .separator()
                     })
+                    // What `den -n <path>` does: a window with only it (and
+                    // its server).
+                    .item(menu::item("Open in New Window", &weak, move |this, _, cx| {
+                        let key = window_key.clone();
+                        let destination = this.host(&key.host).and_then(|host| host.destination.clone());
+                        let except = cx.entity_id();
+                        cx.defer(move |cx| open_new_window_except(key.host, destination, key.path, None, Some(except), cx));
+                    }))
+                    .separator()
                     .item(menu::item("Copy Path", &weak, move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy.path.to_string_lossy().into_owned()))
                     }))
+                    .when_some(branch, |menu, branch| {
+                        menu.item(menu::item("Copy Branch Name", &weak, move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()))
+                        }))
+                    })
                     .item(
                         menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path))
                             .disabled(!local),
