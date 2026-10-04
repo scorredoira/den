@@ -375,6 +375,10 @@ impl Workspace {
                     FileTreeEvent::Renamed { from, to } => this.renamed(from, to, cx),
                     FileTreeEvent::Trashed { path } => this.trashed(path, window, cx),
                     FileTreeEvent::ShowHistory { path, dir } => this.show_history(path, *dir, cx),
+                    FileTreeEvent::OpenTerminal { dir } => {
+                        this.show_panel(Panel::Terminals, cx);
+                        this.terminals.update(cx, |terminals, cx| terminals.new_terminal_in(dir.clone(), window, cx));
+                    }
                     FileTreeEvent::Error(message) => {
                         this.message = Some(message.clone());
                         cx.notify();

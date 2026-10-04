@@ -530,6 +530,9 @@ pub struct Config {
     pub font_sizes: FontSizes,
     /// Long lines wrap in the editor (Opt-Z).
     pub word_wrap: bool,
+    /// The files panel shows what git ignores too (`target/`,
+    /// `node_modules`…).
+    pub show_ignored: bool,
     /// Save edited files when their editor loses focus.
     pub auto_save_on_focus_loss: bool,
     /// Extensions (`json`, `ts`…) formatted on saving.

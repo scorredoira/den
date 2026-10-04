@@ -59,6 +59,7 @@ pub type TermId = u64;
     LspWorkspaceSymbols { root: PathBuf, path: Option<PathBuf>, text: String, query: String }
     AgentList
     TaskForceRemove { path: PathBuf }
+    ListDirAll { path: PathBuf }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)] pub enum LspOp {
     Definition

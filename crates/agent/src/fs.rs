@@ -81,14 +81,15 @@ fn atomic_write(path: &Path, write: impl FnOnce(&mut std::fs::File) -> std::io::
     Ok(())
 }
 
-/// A folder, honoring `.gitignore` (including those of parent folders):
-/// folders first and then files, by name.
-pub fn list(dir: &Path) -> Result<Vec<DirEntryInfo>> {
+/// A folder, honoring `.gitignore` (including those of parent folders)
+/// unless `ignored`: folders first and then files, by name.
+pub fn list(dir: &Path, ignored: bool) -> Result<Vec<DirEntryInfo>> {
     if !dir.is_dir() {
         bail!("{} is not a folder", dir.display());
     }
     let walk = ignore::WalkBuilder::new(dir)
         .max_depth(Some(1))
+        .standard_filters(!ignored)
         .hidden(false)
         .require_git(false)
         .filter_entry(|entry| !HIDDEN.contains(&entry.file_name().to_string_lossy().as_ref()))
@@ -360,7 +361,7 @@ mod tests {
         create_file(&dir.join("b.txt")).unwrap();
         write(&dir.join("a.txt"), b"hello").unwrap();
 
-        let names: Vec<(String, bool)> = list(&dir).unwrap().into_iter().map(|e| (e.name, e.is_dir)).collect();
+        let names: Vec<(String, bool)> = list(&dir, false).unwrap().into_iter().map(|e| (e.name, e.is_dir)).collect();
         assert_eq!(
             names,
             vec![
@@ -370,6 +371,9 @@ mod tests {
                 ("b.txt".into(), false)
             ]
         );
+        // With what git ignores, too.
+        let names: Vec<String> = list(&dir, true).unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["src", "target", ".gitignore", "a.txt", "b.txt"]);
         assert_eq!(read(&dir.join("a.txt")).unwrap(), b"hello");
         assert!(create_file(&dir.join("a.txt")).is_err());
         rename(&dir.join("a.txt"), &dir.join("c.txt")).unwrap();
