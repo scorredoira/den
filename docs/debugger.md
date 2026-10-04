@@ -15,7 +15,9 @@ the agent, so a program on a server is debugged like a local one.
 - `command`: a shell line run in a terminal of the workspace (its output stays
   there). `${file}` is the open file, relative to the workspace: there is one
   command, which debugs whatever is open, and the program decides what that
-  means (a script, a test file, the server it is part of). Without `command`,
+  means (a script, a test file, the server it is part of). With no file open
+  `${file}` is empty, and the program decides what to debug without one (sim:
+  the server). Without `command`,
   F5 attaches to a program already running.
 - `port`: where the program listens, on the loopback of the agent's machine.
   4444 when missing. A command with `${port}` doesn't need it: Den asks the
