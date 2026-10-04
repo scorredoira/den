@@ -51,6 +51,8 @@ const HOVER_GRACE: Duration = Duration::from_millis(300);
 /// How long to keep trying to reach a program that is starting.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const CONNECT_RETRY: Duration = Duration::from_millis(100);
+/// How often the command's last line is read while it starts the program.
+const PROGRESS_POLL: Duration = Duration::from_millis(500);
 
 /// A VM that resumes keeps showing its stop this long, dimmed: a step that
 /// stops again right away replaces it without the views blinking empty.
@@ -175,6 +177,9 @@ pub enum DebugEvent {
     Refocus,
     /// Show the panel (it started or stopped somewhere).
     Reveal,
+    /// The program runs on a device, by the id the Device panel's programs
+    /// give it (`device` in `hello`): show its screen.
+    Device(String),
     /// Its close button.
     Hide,
 }
@@ -667,6 +672,7 @@ impl Debugger {
             // known, `term` is the one before.
             let mut seen_running = false;
             let mut watched = None;
+            let mut last_read = Instant::now();
             loop {
                 let (tx, rx) = smol::channel::unbounded::<RelayUpdate>();
                 match client.connect_relay(port, move |update| {
@@ -706,6 +712,24 @@ impl Debugger {
                         }
                         if busy {
                             seen_running = true;
+                            // what the command says it's doing (building an app takes a while)
+                            if let Some(term) = term
+                                && last_read.elapsed() >= PROGRESS_POLL
+                            {
+                                last_read = Instant::now();
+                                if let Ok(Response::Text(text)) = client.request(Request::TermRead { term, lines: 8 }).await
+                                    && let Some(line) = text.lines().rev().map(str::trim).find(|line| !line.is_empty())
+                                {
+                                    let line = line.to_string();
+                                    this.update(cx, |this, cx| {
+                                        if this.generation == generation {
+                                            this.status = Status::Connecting(format!("Starting: {line}"));
+                                            cx.notify();
+                                        }
+                                    })
+                                    .ok();
+                                }
+                            }
                         } else if seen_running {
                             this.update(cx, |this, cx| {
                                 this.fail(format!("The program ended without listening on port {port}: see its terminal"), cx)
@@ -713,7 +737,8 @@ impl Debugger {
                             .ok();
                             return;
                         }
-                        if started.elapsed() > CONNECT_TIMEOUT {
+                        // a command still at work (a build) is waited for; Stop ends it
+                        if started.elapsed() > CONNECT_TIMEOUT && !busy {
                             this.update(cx, |this, cx| {
                                 this.fail(format!("Nothing answered on port {port}: {error:#}"), cx)
                             })
@@ -832,6 +857,9 @@ impl Debugger {
         // wherever the program says that is; a server, which has a page,
         // just runs.
         let page = page_of(&body);
+        if let Some(device) = body.get("device").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+            cx.emit(DebugEvent::Device(device.to_string()));
+        }
         if body.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
             self.send("run", json!({ "entry": page.is_none() }), |_, _, _| {});
         }
@@ -912,6 +940,16 @@ impl Debugger {
         self.end("", cx);
         self.console.push(ConsoleLine::Error(error));
         cx.notify();
+    }
+
+    /// Whether a session is on (starting, or connected), and what it does
+    /// while it starts the program: what the Device panel shows of it.
+    pub fn session(&self) -> (bool, Option<String>) {
+        match &self.status {
+            Status::Idle => (false, None),
+            Status::Connecting(what) => (true, Some(what.clone())),
+            Status::Connected => (true, None),
+        }
     }
 
     /// Asks the program to let the person pick a widget on its screen (its

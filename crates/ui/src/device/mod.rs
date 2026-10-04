@@ -64,6 +64,10 @@ pub enum DeviceEvent {
     /// Pick a widget on the phone: the program being debugged shows the
     /// line that made it.
     Inspect,
+    /// Its play: debug, as F5 does.
+    Debug,
+    /// Its stop: stop debugging, as Shift-F5 does.
+    Stop,
 }
 
 impl EventEmitter<DeviceEvent> for Device {}
@@ -118,6 +122,13 @@ pub struct Device {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// A finger is down; with true, two (a pinch).
     touching: Option<bool>,
+    /// The device the program being debugged runs on, to show once the
+    /// programs have listed it.
+    wanted: Option<String>,
+    /// A debugging session is on: the play is its stop.
+    debugging: bool,
+    /// What the session does while it starts the program.
+    starting: Option<String>,
 }
 
 impl Device {
@@ -141,6 +152,9 @@ impl Device {
             frame: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             touching: None,
+            wanted: None,
+            debugging: false,
+            starting: None,
         };
         device.load(cx);
         device
@@ -200,20 +214,50 @@ impl Device {
                         Err(err) => this.list_errors.push(format!("{program}: {err:#}")),
                     }
                 }
+                let wanted = this.wanted.take().and_then(|id| devices.iter().find(|choice| choice.device.id == id).cloned());
                 if this.chosen.as_ref().is_none_or(|chosen| !devices.contains(chosen)) && this.serving.is_none() {
                     // The booted first: a program lists them so.
                     this.chosen = devices.first().cloned();
                 }
                 this.devices = Some(devices);
-                cx.notify();
+                match wanted {
+                    Some(choice) => this.choose(choice, cx),
+                    None => cx.notify(),
+                }
             })
             .ok();
         })
         .detach();
     }
 
+    /// Shows the device the program being debugged runs on, by its id: at
+    /// once if it's listed, else once the programs list it again (a device
+    /// booted since).
+    pub fn show_device(&mut self, id: String, cx: &mut Context<Self>) {
+        let listed = self.devices.as_ref().and_then(|devices| devices.iter().find(|choice| choice.device.id == id).cloned());
+        match listed {
+            Some(choice) => self.choose(choice, cx),
+            None => {
+                self.wanted = Some(id);
+                self.refresh(cx);
+            }
+        }
+    }
+
+    /// The debugging session: on or not, and what it does while it starts.
+    pub fn set_session(&mut self, on: bool, starting: Option<String>, cx: &mut Context<Self>) {
+        if self.debugging != on || self.starting != starting {
+            self.debugging = on;
+            self.starting = starting;
+            cx.notify();
+        }
+    }
+
+    /// Serves `choice`, unless it is the device on screen already (by its
+    /// program and id: what `list` says of it, booted or not, may differ).
     fn choose(&mut self, choice: Choice, cx: &mut Context<Self>) {
-        if self.chosen.as_ref() == Some(&choice) && self.serving.is_some() {
+        let same = self.chosen.as_ref().is_some_and(|chosen| chosen.program == choice.program && chosen.device.id == choice.device.id);
+        if same && self.serving.is_some() {
             return;
         }
         self.chosen = Some(choice);
@@ -473,8 +517,9 @@ impl Device {
         };
         let this = cx.entity().downgrade();
         let devices = self.devices.clone().unwrap_or_default();
-        let status: Option<SharedString> = match &self.status {
-            Status::Starting => Some("Starting…".into()),
+        let status: Option<SharedString> = match (&self.starting, &self.status) {
+            (Some(starting), _) => Some(starting.clone().into()),
+            (None, Status::Starting) => Some("Starting…".into()),
             _ => self.warning.clone().map(Into::into),
         };
         h_flex()
@@ -492,13 +537,13 @@ impl Device {
                     .icon(Icon::default().path("icons/chevron-down.svg"))
                     .dropdown_menu(move |menu, _, _| pick_menu(menu, &devices, &this)),
             )
-            .child(if running {
-                tool("device-stop", "icons/square.svg", "Stop", true, theme.danger, cx)
-                    .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+            .child(if self.debugging {
+                tool("device-stop", "icons/square.svg", "Stop Debugging (Shift-F5)", true, theme.danger, cx)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DeviceEvent::Stop)))
                     .into_any_element()
             } else {
-                tool("device-start", "icons/play.svg", "Start", self.chosen.is_some(), theme.success, cx)
-                    .on_click(cx.listener(|this, _, _, cx| this.start(cx)))
+                tool("device-start", "icons/play.svg", "Debug (F5)", true, theme.success, cx)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DeviceEvent::Debug)))
                     .into_any_element()
             })
             .child(
@@ -535,6 +580,7 @@ impl Device {
     /// What there is instead of a screen.
     fn render_message(&self, cx: &App) -> Option<AnyElement> {
         let text = match (&self.status, &self.devices) {
+            (Status::Idle, _) if let Some(starting) = &self.starting => starting.clone(),
             (Status::Failed(why), _) => why.clone(),
             (Status::Running, _) => return None,
             (Status::Starting, _) => return None,
@@ -552,7 +598,7 @@ impl Device {
                 }
                 text
             }
-            (Status::Idle, Some(_)) => "Press Start, or pick a device.".into(),
+            (Status::Idle, Some(_)) => "Debug the app (F5), or pick a device to see its screen.".into(),
         };
         Some(
             div()
@@ -566,7 +612,10 @@ impl Device {
 
     /// The phone: its screen, the edge around it with its rounded corners
     /// (over the screen's square ones), and a line around it, the focus's
-    /// color when the keys go to it.
+    /// color when the keys go to it. A rounded edge covers only what is
+    /// inside it: the screen's corners that reach past its curve are covered
+    /// by a band of the panel's background around it, wide enough (more than
+    /// 0.414 of the radius) to reach them.
     #[cfg(target_os = "macos")]
     fn render_phone(&self, focused: bool, cx: &App) -> Option<AnyElement> {
         let frame = self.frame.clone()?;
@@ -584,11 +633,15 @@ impl Device {
         let radius = screen.radius as f32 * placed.scale;
         let line = px(1.);
         let around = Bounds::new(placed.phone.origin - point(line, line), placed.phone.size + size(line * 2., line * 2.));
+        let band = px(radius / 2.);
+        let covered = Bounds::new(placed.phone.origin - point(band, band), placed.phone.size + size(band * 2., band * 2.));
         let theme = cx.theme();
         Some(
             div()
                 .size_full()
+                .overflow_hidden()
                 .child(at(placed.screen).child(surface(frame).size_full()))
+                .child(bordered(at(covered).rounded(px(radius) + band).border_color(theme.background), band))
                 .child(bordered(at(placed.phone).rounded(px(radius)).border_color(black()), px(screen.bezel as f32 * placed.scale)))
                 .child(
                     bordered(at(around).rounded(px(radius) + line), line)

@@ -119,7 +119,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{ShowReferences}} | References |
 | {{ShowOutline}} | Outline: the classes, functions, constants… of the file in front, not what's inside the functions |
 
-Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there. Right-click anywhere in a panel to hide it. Right-click the bar, or go to View > Activity Bar, to take an icon off it; View > Reset Layout puts every panel back where it starts.
+Each panel has an icon in the activity bar, on the left: a click shows or hides it wherever it's placed. Drag an icon up or down to reorder the bar, or onto a panel to place it there. Right-click anywhere in a panel to hide it. Right-click the bar, or go to View > Activity Bar, to take an icon off it; View > Reset Layout puts every panel back where it starts. Each workspace keeps its own panels, where they are and which show; a new one starts with the files, the code and the terminals.
 
 ## Terminals
 

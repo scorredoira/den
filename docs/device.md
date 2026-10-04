@@ -25,16 +25,20 @@ A program gets itself ready: a script that builds what's missing before running
 it keeps Den out of building. Den runs it in the workspace's folder.
 
 The panel asks each program for its devices when it first shows (Refresh in
-the device menu asks again) and picks the first one listed. Start serves it;
-the device menu serves another. Each workspace has its own panel; a program
-keeps running while its workspace is open.
+the device menu asks again) and picks the first one listed. Picking one in
+the device menu serves it. Each workspace has its own panel; a program keeps
+running while its workspace is open.
 
 Building and opening the app on the device, and debugging it, belong in the
-debugger's launch file (`docs/debugger.md`), not here: the panel only shows
-the device and drives it. Its Inspect button asks the program being debugged
-(the debugger's `inspect`) to let the person pick a widget on the phone; the
-line that made it opens in the editor (`reveal`). With nothing being
-debugged, the panel says so.
+debugger's launch file (`docs/debugger.md`), not here. The panel's play and
+stop are the debugger's (F5 and Shift-F5), and while the launch command starts
+the program the panel shows its last line ("building the app…"). A program
+that runs on a device names it in its `hello` (`device`, the id this file's
+programs list it by): Den shows the panel and serves that device, booted or
+not, so F5 alone brings up the phone with the app on it. Its Inspect button
+asks the program being debugged (the debugger's `inspect`) to let the person
+pick a widget on the phone; the line that made it opens in the editor
+(`reveal`). With nothing being debugged, the panel says so.
 
 ## The protocol
 

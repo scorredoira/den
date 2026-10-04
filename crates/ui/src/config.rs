@@ -20,42 +20,16 @@ pub enum ThemeChoice {
     Dark,
 }
 
-/// Where the panels go and their sizes, the same for every task.
+/// Where the panels go and their sizes: each workspace's own (its `Session`).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
-    /// Left to right. Missing (a config from before the columns), it's made
-    /// from the old fields below.
-    #[serde(default)]
+    /// Left to right.
     pub columns: Vec<Column>,
-    // Read to carry an older layout over; never written.
-    #[serde(skip_serializing)]
-    tasks: Option<f32>,
-    #[serde(skip_serializing)]
-    side: Option<f32>,
-    #[serde(skip_serializing)]
-    terminals: Option<f32>,
-    #[serde(skip_serializing)]
-    debug: Option<f32>,
-    #[serde(skip_serializing)]
-    debug_at: Option<PanelAt>,
-    #[serde(skip_serializing)]
-    debug_width: Option<f32>,
-    #[serde(skip_serializing)]
-    terminals_at: Option<PanelAt>,
-    #[serde(skip_serializing)]
-    terminals_height: Option<f32>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum PanelAt {
-    Bottom,
-    Right,
 }
 
 /// What can be placed in a column.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Panel {
     Workspaces,
@@ -163,61 +137,26 @@ pub enum Side {
 }
 
 impl Default for Layout {
+    /// The workspaces, the files' place, the code, the terminals with the
+    /// debugger and the notes as their tabs, and the device on the right.
     fn default() -> Self {
         let mut layout = Self {
-            columns: Vec::new(),
-            tasks: None,
-            side: None,
-            terminals: None,
-            debug: None,
-            debug_at: None,
-            debug_width: None,
-            terminals_at: None,
-            terminals_height: None,
+            columns: vec![
+                Column::of(Some(260.), vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Search, Panel::References, Panel::Outline])]),
+                Column::of(None, vec![Stack::of(&[Panel::Code])]),
+                Column::of(None, vec![Stack::of(&[Panel::Terminals, Panel::Debugger, Panel::Notes])]),
+            ],
         };
-        layout.carry_over();
+        layout.repair();
         layout
     }
 }
 
 impl Layout {
-    /// The columns as the fields before them said (or the defaults), and
-    /// every panel exactly once.
-    fn carry_over(&mut self) {
-        if self.columns.is_empty() {
-            let mut code = vec![Stack::of(&[Panel::Code])];
-            let mut columns = vec![Column::of(
-                Some(self.side.unwrap_or(260.)),
-                vec![Stack::of(&[Panel::Files, Panel::Changes, Panel::History, Panel::Commit, Panel::Search, Panel::References, Panel::Outline])],
-            )];
-            // The debugger, a tab of the terminals' unless it was placed;
-            // the notes, one too.
-            let terminals = match self.debug_at {
-                None => vec![Panel::Terminals, Panel::Debugger, Panel::Notes],
-                Some(_) => vec![Panel::Terminals, Panel::Notes],
-            };
-            if self.terminals_at == Some(PanelAt::Bottom) {
-                code.push(Stack { height: Some(self.terminals_height.unwrap_or(280.)), panels: terminals.clone() });
-            }
-            if self.debug_at == Some(PanelAt::Bottom) {
-                code.push(Stack { height: Some(self.debug.unwrap_or(260.)), panels: vec![Panel::Debugger] });
-            }
-            columns.push(Column::of(None, code));
-            if self.terminals_at != Some(PanelAt::Bottom) {
-                columns.push(Column::of(self.terminals, vec![Stack { height: None, panels: terminals }]));
-            }
-            if self.debug_at == Some(PanelAt::Right) {
-                columns.push(Column::of(Some(self.debug_width.unwrap_or(420.)), vec![Stack::of(&[Panel::Debugger])]));
-            }
-            self.columns = columns;
-        }
-        self.repair();
-    }
-
-    /// Mends a layout edited by hand: each panel once, nothing empty. The
-    /// workspaces, missing (a config from before they were a panel), are a
-    /// column on the left. The agents' old panel goes.
-    fn repair(&mut self) {
+    /// Mends a layout edited by hand: each panel once, nothing empty, every
+    /// panel placed (the workspaces, a column on the left). The agents' old
+    /// panel goes.
+    pub(crate) fn repair(&mut self) {
         let mut seen = Vec::new();
         for stack in self.columns.iter_mut().flat_map(|column| &mut column.stacks) {
             stack.panels.retain(|panel| {
@@ -255,7 +194,7 @@ impl Layout {
             }
         }
         if !seen.contains(&Panel::Workspaces) {
-            self.columns.insert(0, Column::of(Some(self.tasks.unwrap_or(240.)), vec![Stack::of(&[Panel::Workspaces])]));
+            self.columns.insert(0, Column::of(Some(240.), vec![Stack::of(&[Panel::Workspaces])]));
         }
     }
 
@@ -397,6 +336,22 @@ pub struct Session {
     /// The code area split in two, side by side or one above the other.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub split: Option<crate::splits::Axis>,
+    /// Where its panels are and their sizes; unset, as a new one's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Layout>,
+    /// Which panels show; unset, as a new one's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panels: Option<SavedPanels>,
+}
+
+/// Which panels of a workspace show: when each was last shown (a stack
+/// shows its most recent) and those closed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedPanels {
+    pub shown: HashMap<Panel, u64>,
+    pub closed: Vec<Panel>,
+    pub clock: u64,
 }
 
 /// The debugger's state of a task: what survives closing the app.
@@ -460,7 +415,6 @@ pub struct Config {
     /// `order`, the checkout's).
     pub collapsed: Vec<String>,
     pub hosts: Vec<HostConfig>,
-    pub layout: Layout,
     pub window: Option<SavedWindow>,
     /// What's open in each task (same keys as `order`).
     pub sessions: HashMap<String, Session>,
@@ -651,10 +605,6 @@ impl Config {
         Self::path()
             .and_then(|path| std::fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
-            .map(|mut config| {
-                config.layout.carry_over();
-                config
-            })
             .unwrap_or_default()
     }
 
@@ -839,31 +789,10 @@ mod layout_tests {
     use Panel::*;
 
     #[test]
-    fn an_older_layout_carries_over() {
-        let old = r#"{"tasks": 200, "side": 300, "terminals": 500, "debug_at": "right", "debug_width": 380, "terminals_at": "bottom", "terminals_height": 220}"#;
-        let mut layout: Layout = serde_json::from_str(old).unwrap();
-        layout.carry_over();
-        assert_eq!(
-            places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code], vec![Terminals, Notes]], vec![vec![Debugger]], vec![vec![Device]]]
-        );
-        assert_eq!(layout.columns[0].width, Some(200.));
-        assert_eq!(layout.columns[1].width, Some(300.));
-        assert_eq!(layout.columns[2].stacks[1].height, Some(220.));
-        assert_eq!(layout.columns[3].width, Some(380.));
-        // Written again, only the columns are.
-        let written = serde_json::to_string(&layout).unwrap();
-        assert!(!written.contains("terminals_at"), "{written}");
-        let mut again: Layout = serde_json::from_str(&written).unwrap();
-        again.carry_over();
-        assert_eq!(places(&again), places(&layout));
-    }
-
-    #[test]
     fn a_layout_edited_by_hand_is_mended() {
         let edited = r#"{"columns": [{"stacks": [{"panels": ["files", "code", "files"]}, {"panels": ["search"]}]}, {"stacks": []}]}"#;
         let mut layout: Layout = serde_json::from_str(edited).unwrap();
-        layout.carry_over();
+        layout.repair();
         // The missing ones go with a panel other than the code; the
         // workspaces and the device, a column of their own.
         assert_eq!(
@@ -871,12 +800,12 @@ mod layout_tests {
             [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Search, Changes, History, Commit, References, Outline, Terminals, Debugger, Notes]], vec![vec![Device]]]
         );
         let mut layout: Layout = serde_json::from_str(r#"{"columns": [{"stacks": [{"panels": ["files"]}]}]}"#).unwrap();
-        layout.carry_over();
+        layout.repair();
         assert!(layout == Layout::default(), "without the code, it starts again");
         // The agents' old panel goes, and its place if it's left empty.
         let old = r#"{"columns": [{"stacks": [{"panels": ["files"]}, {"panels": ["agents"]}]}, {"stacks": [{"panels": ["code", "terminals"]}]}]}"#;
         let mut layout: Layout = serde_json::from_str(old).unwrap();
-        layout.carry_over();
+        layout.repair();
         assert_eq!(places(&layout)[1], [vec![Files, Search, Changes, History, Commit, References, Outline, Debugger]]);
     }
 
