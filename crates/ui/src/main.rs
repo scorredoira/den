@@ -53,6 +53,8 @@ actions!(
         ShowChanges,
         ShowHistory,
         ToggleCommitFiles,
+        OpenChanges,
+        ShowFileHistory,
         ShowSearch,
         ShowReferences,
         ShowOutline,
