@@ -73,6 +73,8 @@ pub enum Panel {
     Code,
     Terminals,
     Debugger,
+    /// The screen of a phone (see `device`).
+    Device,
     /// Configs from when the agents had a panel of their own (they're in
     /// the workspaces column now) name it: it's dropped on reading.
     Agents,
@@ -80,7 +82,7 @@ pub enum Panel {
 
 impl Panel {
     /// In the activity bar's order, unless it's dragged.
-    pub const ALL: [Panel; 11] = [
+    pub const ALL: [Panel; 12] = [
         Panel::Workspaces,
         Panel::Files,
         Panel::Search,
@@ -92,6 +94,7 @@ impl Panel {
         Panel::Code,
         Panel::Terminals,
         Panel::Debugger,
+        Panel::Device,
     ];
 
     /// The width of a column of its own when it gets one: the lists' and
@@ -101,6 +104,7 @@ impl Panel {
         match self {
             Panel::Workspaces | Panel::Agents | Panel::Files | Panel::Changes | Panel::History | Panel::Commit | Panel::Search | Panel::References | Panel::Outline => Some(260.),
             Panel::Debugger => Some(420.),
+            Panel::Device => Some(400.),
             Panel::Code | Panel::Terminals => None,
         }
     }
@@ -223,6 +227,12 @@ impl Layout {
             return;
         }
         for panel in Panel::ALL.into_iter().filter(|panel| !seen.contains(panel) && !matches!(panel, Panel::Workspaces | Panel::Agents)) {
+            // The device, a column of its own on the right, as a phone beside
+            // the code.
+            if panel == Panel::Device {
+                self.columns.push(Column::of(panel.width(), vec![Stack::of(&[panel])]));
+                continue;
+            }
             // The commit's files, missing (a config from before they were a
             // panel), go in the history.
             let home = if panel == Panel::Commit { Panel::History } else { Panel::Code };
@@ -557,11 +567,12 @@ impl Config {
     }
 
     /// The activity bar's icons, top to bottom: each panel once, but the
-    /// code, which as in any editor stays put and never closes.
+    /// code, which as in any editor stays put and never closes, and the
+    /// device, which only a workspace with a device file has (it goes last).
     pub fn activity(&self) -> Vec<Panel> {
         let mut order: Vec<Panel> = Vec::new();
         for panel in self.activity.iter().chain(&Panel::ALL) {
-            if !matches!(panel, Panel::Code | Panel::Agents) && !order.contains(panel) {
+            if !matches!(panel, Panel::Code | Panel::Agents | Panel::Device) && !order.contains(panel) {
                 order.push(*panel);
             }
         }
@@ -825,7 +836,7 @@ mod layout_tests {
         layout.carry_over();
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code], vec![Terminals]], vec![vec![Debugger]], vec![vec![Device]]]
         );
         assert_eq!(layout.columns[0].width, Some(200.));
         assert_eq!(layout.columns[1].width, Some(300.));
@@ -845,10 +856,10 @@ mod layout_tests {
         let mut layout: Layout = serde_json::from_str(edited).unwrap();
         layout.carry_over();
         // The missing ones go with a panel other than the code; the
-        // workspaces, a column of their own.
+        // workspaces and the device, a column of their own.
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Search, Changes, History, Commit, References, Outline, Terminals, Debugger]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Code], vec![Search, Changes, History, Commit, References, Outline, Terminals, Debugger]], vec![vec![Device]]]
         );
         let mut layout: Layout = serde_json::from_str(r#"{"columns": [{"stacks": [{"panels": ["files"]}]}]}"#).unwrap();
         layout.carry_over();
@@ -865,7 +876,7 @@ mod layout_tests {
         let mut layout = Layout::default();
         assert_eq!(
             places(&layout),
-            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code]], vec![vec![Terminals, Debugger]]]
+            [vec![vec![Workspaces]], vec![vec![Files, Changes, History, Commit, Search, References, Outline]], vec![vec![Code]], vec![vec![Terminals, Debugger]], vec![vec![Device]]]
         );
         // The changes, a column of their own after the files.
         assert!(layout.move_panel(Changes, Files, Side::Right));
@@ -874,7 +885,7 @@ mod layout_tests {
         // Back as a tab, before the search.
         assert!(layout.move_panel(Changes, Search, Side::Tab(Some(Search))));
         assert_eq!(places(&layout)[1], [vec![Files, History, Commit, Changes, Search, References, Outline]]);
-        assert_eq!(layout.columns.len(), 4, "the empty column goes");
+        assert_eq!(layout.columns.len(), 5, "the empty column goes");
         // Under the files, in their column.
         assert!(layout.move_panel(References, Files, Side::Bottom));
         assert_eq!(places(&layout)[1], [vec![Files, History, Commit, Changes, Search, Outline], vec![References]]);

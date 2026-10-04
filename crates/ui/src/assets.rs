@@ -5,6 +5,8 @@ use gpui_kit::{AssetSource, Result, SharedString};
 /// The app's own icons; everything else is served by gpui-kit's assets.
 const ICONS: &[(&str, &[u8])] = &[
     ("icons/files.svg", include_bytes!("../assets/icons/files.svg")),
+    ("icons/smartphone.svg", include_bytes!("../assets/icons/smartphone.svg")),
+    ("icons/house.svg", include_bytes!("../assets/icons/house.svg")),
     ("icons/git-branch.svg", include_bytes!("../assets/icons/git-branch.svg")),
     ("icons/text-search.svg", include_bytes!("../assets/icons/text-search.svg")),
     ("icons/references.svg", include_bytes!("../assets/icons/references.svg")),

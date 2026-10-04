@@ -33,6 +33,7 @@ use crate::{
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, Debugger, EditKind},
+    device::Device,
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
     AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel,
     diff,
@@ -299,6 +300,7 @@ pub struct Workspace {
     signature_task: Task<()>,
     debugger: Entity<Debugger>,
     debug_hover: Entity<debug::hover::HoverCard>,
+    device: Entity<Device>,
     /// The terminal the tests run in, reused by the next one.
     test_term: Option<proto::TermId>,
     _subscriptions: Vec<Subscription>,
@@ -329,6 +331,7 @@ impl Workspace {
         let outline = cx.new(|_| OutlinePanel::new());
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
+        let device = cx.new(|cx| Device::new(root.clone(), local, cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         // A git panel that shows from the start reads now, not when shown.
@@ -341,6 +344,8 @@ impl Workspace {
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
             cx.subscribe_in(&outline, window, Self::on_outline),
             cx.observe(&debugger, |_, _, cx| cx.notify()),
+            // Its icon, when the device file comes or goes.
+            cx.observe(&device, |_, _, cx| cx.notify()),
             // The count on the changes' icon.
             cx.observe(&changes, {
                 let mut last = 0;
@@ -471,6 +476,7 @@ impl Workspace {
             signature_task: Task::ready(()),
             debugger,
             debug_hover,
+            device,
             test_term: None,
             _subscriptions: subscriptions,
         }
@@ -2266,6 +2272,7 @@ impl Workspace {
         let den = self.root.join(".den");
         if paths.iter().any(|path| path.starts_with(&den)) {
             self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
+            self.device.update(cx, |device, cx| device.load(cx));
         }
         // `root/.git`: a commit, checkout or reset (HEAD moved): the blame of
         // every open file may have changed.

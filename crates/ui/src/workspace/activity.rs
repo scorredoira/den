@@ -161,7 +161,11 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 
 impl Workspace {
     pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let icons = Config::get(cx).shown_activity().into_iter().map(|panel| (panel, self.is_shown(panel, cx), self.badge(panel, cx))).collect();
+        let mut panels = Config::get(cx).shown_activity();
+        if self.device.read(cx).available() {
+            panels.push(Panel::Device);
+        }
+        let icons = panels.into_iter().map(|panel| (panel, self.is_shown(panel, cx), self.badge(panel, cx))).collect();
         let workspace = cx.entity().downgrade();
         let click: OnActivity = Rc::new(move |panel, window, cx| {
             workspace.update(cx, |this, cx| this.click_activity(panel, window, cx)).ok();

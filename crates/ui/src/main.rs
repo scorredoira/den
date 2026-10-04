@@ -8,6 +8,7 @@ mod browser;
 mod config;
 mod crash;
 mod debug;
+mod device;
 mod drag_drop;
 mod diff;
 mod editing;
