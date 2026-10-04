@@ -521,7 +521,7 @@ impl Workspace {
                                 let hide: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
                                     hide.update(cx, |this, cx| this.hide_panel(Panel::Device, cx)).ok();
                                 });
-                                menu::set_panel_under(Some(hide), cx);
+                                menu::set_panel_under(Some(hide), None, cx);
                             }
                         },
                     )),
@@ -713,6 +713,7 @@ impl Workspace {
             _ => self.debug_views.get(&panel).map(|view| view.clone().into_any_element()),
         };
         let hide = workspace.clone();
+        let hide_workspace = workspace.clone();
         let content = div()
             .id(("side-content", panel as usize))
             .flex_1()
@@ -721,11 +722,20 @@ impl Workspace {
             .children(content)
             .capture_any_mouse_down(move |event: &MouseDownEvent, _, cx| {
                 if event.button == MouseButton::Right {
-                    let hide = hide.clone();
+                    let workspace = hide.clone();
                     let hide: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
-                        hide.update(cx, |this, cx| this.remove_panel(panel, cx)).ok();
+                        workspace.update(cx, |this, cx| this.remove_panel(panel, cx)).ok();
                     });
-                    menu::set_panel_under(Some(hide), cx);
+                    // Its own icon, if it has company where it is.
+                    let layout = &Config::get(cx).layout;
+                    let company = layout.place_of(panel).is_some_and(|place| layout.panels(place).len() > 1);
+                    let workspace = hide_workspace.clone();
+                    let own_icon: Option<Rc<dyn Fn(&mut App)>> = company.then(|| {
+                        Rc::new(move |cx: &mut App| {
+                            workspace.update(cx, |this, cx| this.own_place(panel, cx)).ok();
+                        }) as Rc<dyn Fn(&mut App)>
+                    });
+                    menu::set_panel_under(Some(hide), own_icon, cx);
                 }
             });
         let section = section.child(content);

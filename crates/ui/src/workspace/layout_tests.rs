@@ -417,3 +417,15 @@ fn the_wheel_over_a_values_card_leaves_the_code(cx: &mut TestAppContext) {
     assert_eq!(offset(cx), before, "the code didn't scroll");
     workspace.read_with(cx, |workspace, cx| assert!(workspace.debugger.read(cx).hover.is_some(), "the card stays"));
 }
+
+#[gpui_kit::test]
+fn the_outline_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update(cx, |workspace, cx| workspace.own_place(Panel::Outline, cx));
+    cx.run_until_parked();
+    // The column shows it alone; the files are behind the explorer's icon.
+    assert!(cx.debug_bounds("stack-Files").is_none());
+    assert!(bounds(cx, "stack-Outline").size.height > bounds(cx, "side-column").size.height / 2.);
+    let places = cx.update(|_, cx| Config::get(cx).layout.places());
+    assert!(places.contains(&Place(Panel::Outline)), "{places:?}");
+}
