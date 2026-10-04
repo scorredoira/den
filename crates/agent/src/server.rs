@@ -1399,7 +1399,23 @@ fn session_id(id: &str) -> bool {
 /// `--resume` lets the user pick the session, rather than `--continue`
 /// guessing one: two terminals in the same folder would get the same.
 fn resume_command(args: &str, session: Option<&ClaudeSession>) -> Option<String> {
-    let words: Vec<&str> = args.split_whitespace().collect();
+    resume_command_in(if cfg!(windows) { Shell::PowerShell } else { Shell::Posix }, args, session)
+}
+
+/// The shell a resumed command is typed into.
+#[derive(Clone, Copy)]
+enum Shell {
+    Posix,
+    PowerShell,
+}
+
+fn resume_command_in(shell: Shell, args: &str, session: Option<&ClaudeSession>) -> Option<String> {
+    let words = match shell {
+        // `ps` joins the arguments with spaces and loses their quoting.
+        Shell::Posix => args.split_whitespace().map(str::to_string).collect(),
+        // Windows keeps the command line as typed, quotes and all.
+        Shell::PowerShell => windows_words(args),
+    };
     let start = words.iter().position(|word| {
         let word = word.trim_matches('"');
         matches!(word.rsplit(['/', '\\']).next(), Some("claude" | "claude.exe" | "claude.cmd"))
@@ -1418,7 +1434,7 @@ fn resume_command(args: &str, session: Option<&ClaudeSession>) -> Option<String>
     let mut after_option = false;
     while let Some(word) = rest.next() {
         let option = word.starts_with('-');
-        match *word {
+        match word.as_str() {
             "-c" | "--continue" | "--fork-session" => {}
             "-r" | "--resume" | "--session-id" => {
                 if let Some(value) = rest.next_if(|value| !value.starts_with('-')) {
@@ -1427,9 +1443,8 @@ fn resume_command(args: &str, session: Option<&ClaudeSession>) -> Option<String>
             }
             _ => match word.strip_prefix("--resume=").or_else(|| word.strip_prefix("--session-id=")) {
                 Some(value) => resumed = Some(value.to_string()),
-                // `ps` joins the arguments with spaces and loses their
-                // quoting: each word goes quoted, so none can be a command.
-                None if option || after_option => command.push(shell_word(word)),
+                // Each word goes quoted, so none can be a command.
+                None if option || after_option => command.push(shell_word(shell, word)),
                 None => {}
             },
         }
@@ -1441,11 +1456,50 @@ fn resume_command(args: &str, session: Option<&ClaudeSession>) -> Option<String>
     Some(command.join(" "))
 }
 
-/// `value` as one word for a POSIX shell, quoted only if it needs it.
-fn shell_word(value: &str) -> String {
-    let plain = !value.is_empty()
-        && value.chars().all(|ch| ch.is_ascii_alphanumeric() || "-_=./:,@+%".contains(ch));
-    if plain { value.to_string() } else { shell_quote(value) }
+/// `value` as one word for `shell`, quoted only if it needs it.
+fn shell_word(shell: Shell, value: &str) -> String {
+    let safe = match shell {
+        Shell::Posix => "-_=./:,@+%",
+        // `,` makes a list and `@` a splat there.
+        Shell::PowerShell => "-_=./:\\",
+    };
+    let plain = !value.is_empty() && value.chars().all(|ch| ch.is_ascii_alphanumeric() || safe.contains(ch));
+    match shell {
+        _ if plain => value.to_string(),
+        Shell::Posix => shell_quote(value),
+        // PowerShell's single quotes: nothing in them is special but `'`, doubled.
+        Shell::PowerShell => format!("'{}'", value.replace('\'', "''")),
+    }
+}
+
+/// A Windows command line's words: spaces split them except inside double
+/// quotes, which go.
+fn windows_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let (mut quoted, mut started) = (false, false);
+    for ch in line.chars() {
+        match ch {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            ' ' | '\t' if !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+            }
+            _ => {
+                word.push(ch);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
 }
 
 /// `value` as one word for a POSIX shell.
@@ -1600,7 +1654,7 @@ mod blocked_tests {
 
 #[cfg(test)]
 mod restart_tests {
-    use super::{ClaudeSession, agent_name, claude_title, resume_command, resumed_session};
+    use super::{ClaudeSession, Shell, agent_name, claude_title, resume_command_in, resumed_session, windows_words};
 
     #[test]
     fn tells_the_agents_apart() {
@@ -1618,7 +1672,7 @@ mod restart_tests {
 
     #[test]
     fn resumes_claude_code_with_its_options() {
-        let resume = |args| resume_command(args, None);
+        let resume = |args| resume_command_in(Shell::Posix, args, None);
         assert_eq!(resume("claude").as_deref(), Some("claude --resume"));
         assert_eq!(
             resume("claude --dangerously-skip-permissions").as_deref(),
@@ -1649,6 +1703,25 @@ mod restart_tests {
     }
 
     #[test]
+    fn resumes_claude_code_in_powershell_with_its_quotes() {
+        let resume = |args| resume_command_in(Shell::PowerShell, args, None);
+        assert_eq!(
+            windows_words(r#""C:\Program Files\claude.exe" --append-system-prompt "be brief" -c"#),
+            [r"C:\Program Files\claude.exe", "--append-system-prompt", "be brief", "-c"]
+        );
+        assert_eq!(
+            resume(r#"claude.exe --append-system-prompt "be brief" --add-dir "C:\My Projects" --model opus"#).as_deref(),
+            Some(r"claude --append-system-prompt 'be brief' --add-dir 'C:\My Projects' --model opus --resume")
+        );
+        // A quote inside is doubled: the word can't end early and run the rest.
+        assert_eq!(resume(r#"claude --name "x';calc;'""#).as_deref(), Some("claude --name 'x'';calc;''' --resume"));
+        // `,` and `@` mean something to PowerShell.
+        assert_eq!(resume("claude --tools a,b").as_deref(), Some("claude --tools 'a,b' --resume"));
+        // The prompt it began with isn't typed again.
+        assert_eq!(resume(r#"claude "fix it; then rm -rf x""#).as_deref(), Some("claude --resume"));
+    }
+
+    #[test]
     fn resumes_the_session_the_process_ran_in_its_config_folder() {
         let session = ClaudeSession {
             id: Some("d09e204f-44b6-45ed-8293-f4bf208351c4".to_string()),
@@ -1656,16 +1729,16 @@ mod restart_tests {
             config_dir: Some("/Users/me/my claude's".to_string()),
         };
         assert_eq!(
-            resume_command("claude --dangerously-skip-permissions -c", Some(&session)).as_deref(),
+            resume_command_in(Shell::Posix, "claude --dangerously-skip-permissions -c", Some(&session)).as_deref(),
             Some(r"CLAUDE_CONFIG_DIR='/Users/me/my claude'\''s' claude --dangerously-skip-permissions --resume d09e204f-44b6-45ed-8293-f4bf208351c4")
         );
         // The session file wins over the id it was started with (`--fork-session` makes another).
         assert_eq!(
-            resume_command("claude --resume abc --fork-session", Some(&session)).as_deref(),
+            resume_command_in(Shell::Posix, "claude --resume abc --fork-session", Some(&session)).as_deref(),
             Some(r"CLAUDE_CONFIG_DIR='/Users/me/my claude'\''s' claude --resume d09e204f-44b6-45ed-8293-f4bf208351c4")
         );
         let unknown = ClaudeSession { id: None, cwd: None, config_dir: None };
-        assert_eq!(resume_command("claude", Some(&unknown)).as_deref(), Some("claude --resume"));
+        assert_eq!(resume_command_in(Shell::Posix, "claude", Some(&unknown)).as_deref(), Some("claude --resume"));
     }
 
     #[test]

@@ -1845,11 +1845,7 @@ impl Workspace {
     /// Find in Folder: the search panel, searching only under `dir` (all of
     /// the task for its folder).
     fn find_in_folder(&mut self, dir: &Path, window: &mut Window, cx: &mut Context<Self>) {
-        let scope = dir
-            .strip_prefix(&self.root)
-            .ok()
-            .map(|dir| dir.to_string_lossy().into_owned())
-            .filter(|dir| !dir.is_empty());
+        let scope = self.repo_path(dir).filter(|dir| !dir.is_empty());
         self.show_panel(Panel::Search, cx);
         self.search.update(cx, |search, cx| {
             search.set_scope(scope, cx);
@@ -2728,17 +2724,23 @@ impl Workspace {
     /// The uncommitted changes of `path`, side by side, as the Changes panel
     /// and `den diff` show them.
     fn open_changes(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
-        if let Ok(relative) = path.strip_prefix(&self.root) {
-            let file = relative.to_string_lossy().into_owned();
+        if let Some(file) = self.repo_path(path) {
             self.open_diff(DiffOf { file, commit: None, source: false }, true, window, cx);
         }
+    }
+
+    /// `path` from the task's folder with `/`, as git and a server name it:
+    /// a Windows path's `\` would name nothing on a Linux server.
+    fn repo_path(&self, path: &Path) -> Option<String> {
+        let relative = path.strip_prefix(&self.root).ok()?;
+        Some(relative.to_string_lossy().replace('\\', "/"))
     }
 
     /// Whether `path` has uncommitted changes, as the Changes panel last read
     /// them: for a menu, built when it opens.
     fn has_changes(&self, path: &Path) -> impl Fn(&App) -> bool + 'static {
         let changes = self.changes.downgrade();
-        let file = path.strip_prefix(&self.root).ok().map(|relative| relative.to_string_lossy().into_owned());
+        let file = self.repo_path(path);
         move |cx| {
             file.as_ref()
                 .zip(changes.upgrade())
@@ -3133,10 +3135,9 @@ impl Workspace {
 
     /// The History panel with the commits that changed `path`.
     fn show_history(&mut self, path: &Path, dir: bool, cx: &mut Context<Self>) {
-        let Ok(relative) = path.strip_prefix(&self.root) else {
+        let Some(file) = self.repo_path(path) else {
             return;
         };
-        let file = relative.to_string_lossy().into_owned();
         self.show_panel(Panel::History, cx);
         self.history.update(cx, |history, cx| history.show_history(Some((file, dir)), cx));
         cx.notify();
