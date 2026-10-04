@@ -2523,8 +2523,9 @@ impl Den {
             .into_any_element()
     }
 
-    /// A repo's workspaces: its checkout and, folded under it, its worktrees.
-    /// A repo without worktrees is a single row.
+    /// A repo's workspaces: under its name, which folds them, its checkout
+    /// and its worktrees, each a row of its own with its state. A repo
+    /// without worktrees is a single row.
     fn render_repo(&self, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
         let (head, worktrees) = match group {
             [(key, task), rest @ ..] if task.main => (Some((key, *task)), rest),
@@ -2544,10 +2545,9 @@ impl Den {
         let fold_key = TaskKey { host: first.host.clone(), path: first_task.repo.clone() }.config();
         let collapsed = Config::get(cx).collapsed.contains(&fold_key);
         let header = match head {
-            // Only its new worktree under it: nothing to fold yet.
-            Some((key, task)) if worktrees.is_empty() => self.render_task(key, task, Some(None), &[], cx),
-            // Folded, its dot sums up its worktrees' too.
-            Some((key, task)) => self.render_task(key, task, Some(Some((fold_key, collapsed))), worktrees, cx),
+            // The repo's name, with its checkout's menu; folded, its dot sums
+            // up its workspaces'.
+            Some((key, task)) => self.render_task(key, task, Some(Some((fold_key, collapsed))), group, cx),
             // Its checkout isn't among them: the repo's name, which only folds.
             None => {
                 let theme = cx.theme();
@@ -2569,8 +2569,8 @@ impl Den {
         let rows: Vec<AnyElement> = if collapsed {
             Vec::new()
         } else {
-            worktrees
-                .iter()
+            head.into_iter()
+                .chain(worktrees.iter().map(|(key, task)| (key, *task)))
                 .map(|(key, task)| self.render_task(key, task, None, &[], cx))
                 .chain(new_task)
                 .collect()
@@ -2604,10 +2604,10 @@ impl Den {
         (dot, color)
     }
 
-    /// A workspace's row. `fold` is set on the column's own rows (not a
-    /// repo's worktrees): `Some((key, collapsed))` for a checkout with
-    /// worktrees; `folded`, those worktrees, whose state shows on it while
-    /// they're hidden.
+    /// A workspace's row. `fold` is set on the column's own rows (not those
+    /// under a repo's name): `Some((key, collapsed))` for that name, which
+    /// a checkout with worktrees gets above them and itself; `folded`, the
+    /// workspaces under it, whose state shows on it while they're hidden.
     fn render_task(
         &self,
         key: &TaskKey,
@@ -2617,16 +2617,23 @@ impl Den {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let folder: SharedString = folder_name(&task.path).into();
+        // The repo's name above its workspaces, and its checkout under it,
+        // which goes by its branch like the worktrees.
+        let header = matches!(fold, Some(Some(_)));
+        let child_checkout = task.main && fold.is_none();
+        let label = match &task.branch {
+            Some(branch) if child_checkout => branch.clone().into(),
+            _ => column_label(task),
+        };
         // A checkout off its main branch has the branch beside it.
-        let label = column_label(task);
         let branch = task
             .branch
             .clone()
-            .filter(|branch| task.main && *branch != *label && !matches!(branch.as_str(), "master" | "main"));
-        let active = self.active.as_ref() == Some(key);
+            .filter(|branch| task.main && !header && *branch != *label && !matches!(branch.as_str(), "master" | "main"));
+        let active = !header && self.active.as_ref() == Some(key);
         let (mut dot, mut color) = self.status(key, task, cx);
-        if let Some(Some((_, true))) = &fold {
-            // Folded: the most urgent of its worktrees, if more than its own.
+        if header {
+            // The most urgent of its workspaces; it shows only folded.
             for (key, task) in folded {
                 let (other, other_color) = self.status(key, task, cx);
                 if urgency(other, other_color, cx) > urgency(dot, color, cx) {
@@ -2634,6 +2641,8 @@ impl Den {
                 }
             }
         }
+        let shows_dot = !header || matches!(fold, Some(Some((_, true))));
+        let header_fold = fold.clone().flatten().map(|(fold_key, _)| fold_key);
         let theme = cx.theme();
         let known = self
             .host(&key.host)
@@ -2653,7 +2662,7 @@ impl Den {
                 }));
         // On hover, as in its menu: a repo makes a worktree, a worktree is
         // deleted.
-        let action = if git && task.main && connected {
+        let action = if git && task.main && connected && !child_checkout {
             let (host, repo) = (key.host.clone(), task.repo.clone());
             Some(row_action(
                 format!("task-new-{}", key.config()),
@@ -2696,7 +2705,7 @@ impl Den {
             // What it is: a folder, or a repo's worktree.
             .child(
                 svg()
-                    .path(kind_icon(task))
+                    .path(if child_checkout && task.branch.is_some() { "icons/git-branch.svg" } else { kind_icon(task) })
                     .size(px(14.))
                     .flex_none()
                     .text_color(workspace_color(key)),
@@ -2712,6 +2721,7 @@ impl Den {
             // Its agents' state: one waiting for an answer, red; one working,
             // yellow; done unseen, green; none or all idle, an empty circle.
             .map(|row| match dot {
+                _ if !shows_dot => row,
                 "…" => row.child(spinner(color)),
                 "○" => row.child(div().flex_none().text_ui_small(cx).text_color(color).child(dot)),
                 _ => row.child(div().flex_none().text_ui_small(cx).text_color(color).child("●")),
@@ -2752,9 +2762,14 @@ impl Den {
                 let key = key.clone();
                 move |this, drag: &TaskDrag, _, cx| this.move_task(&drag.key, &key, cx)
             }))
+            // The repo's name folds; its checkout is the row under it.
             .on_click(cx.listener({
                 let key = key.clone();
-                move |this, _, window, cx| this.activate(key.clone(), window, cx)
+                let fold_key = header_fold.clone();
+                move |this, _, window, cx| match &fold_key {
+                    Some(fold_key) => this.toggle_fold(fold_key, cx),
+                    None => this.activate(key.clone(), window, cx),
+                }
             }))
             .when(!known || label != folder, |row| {
                 let path = key.path.display().to_string();
@@ -2838,10 +2853,12 @@ impl Den {
             });
 
 
+        // Under the checkout's own row; under the repo's name only while
+        // that row is folded away.
         let error = self
             .error
             .as_ref()
-            .filter(|(target, _)| target == key)
+            .filter(|(target, _)| shows_dot && target == key)
             .map(|(_, error)| div().mx_3().mb_1().child(error_text(error.clone(), cx)));
 
         v_flex().child(row).children(error).into_any_element()
