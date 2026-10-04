@@ -23,7 +23,7 @@ impl HoverProvider for DebugHover {
         let start = text.line_start_offset(row);
         let line = text.slice_line(row).to_string();
         let span = expression_span(&line, offset - start)
-            .filter(|_| debugger.read(cx).is_stopped())
+            .filter(|_| debugger.read(cx).is_halted())
             // keywords are names too, but have no value
             .filter(|span| {
                 !matches!(&line[span.clone()], "let" | "const" | "var" | "function" | "return" | "if" | "else" | "for" | "while" | "new" | "export" | "import" | "true" | "false" | "null" | "undefined")

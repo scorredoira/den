@@ -27,7 +27,7 @@ use proto::{Request, Response, TermId};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-pub use breakpoints::{Breakpoint, Breakpoints};
+pub use breakpoints::{Breakpoint, Breakpoints, LineEdit};
 pub use commands::WaitFor;
 pub use panel::{DebugPart, DebugView};
 use protocol::{Event, Message, Stop, Var};
@@ -54,6 +54,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const CONNECT_RETRY: Duration = Duration::from_millis(100);
 /// How often the command's last line is read while it starts the program.
 const PROGRESS_POLL: Duration = Duration::from_millis(500);
+
+/// How long Restart waits for the program it stopped to free its terminal
+/// and its port.
+const RESTART_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often the VMs running are counted: they come and go (a server's
+/// requests) without events.
+const THREADS_POLL: Duration = Duration::from_secs(1);
 
 /// A VM that resumes keeps showing its stop this long, dimmed: a step that
 /// stops again right away replaces it without the views blinking empty.
@@ -169,9 +177,10 @@ pub enum DebugEvent {
     /// Breakpoints or the line stopped at changed: the editors redraw their
     /// marks.
     Marks,
-    /// Run `line` in the debugger's terminal (`term` if it's still open);
-    /// the workspace answers with `set_terminal`.
-    Run { term: Option<TermId>, line: String },
+    /// Run `line` in the debugger's terminal (`term` if it's still open)
+    /// for the session `session`; the workspace answers with `set_ran` and
+    /// `set_terminal`.
+    Run { session: u64, term: Option<TermId>, line: String },
     /// Stop what runs in the debugger's terminal.
     Interrupt { term: TermId },
     /// The breakpoint editor closed: the keys go back to the code.
@@ -207,10 +216,14 @@ struct VmStop {
     going: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Children {
     vars: Vec<Var>,
-    total: u64,
+    /// The last page came back full: there may be more, for a value whose
+    /// `count` isn't known (the module's).
+    more: bool,
+    /// Why the last page couldn't be had: shown instead of loading forever.
+    error: Option<String>,
 }
 
 struct Watch {
@@ -222,8 +235,21 @@ enum ConsoleLine {
     Info(String),
     Output { text: String, path: Option<PathBuf>, line: u32 },
     Input(String),
-    Result(Var),
+    /// A value and the VM it was evaluated in: its `ref` is cleared once
+    /// that VM goes on, as it no longer names anything.
+    Result(Var, u64),
     Error(String),
+}
+
+/// How a session started, which Restart starts again.
+#[derive(Clone)]
+struct Started {
+    launch: Launch,
+    /// The test it debugs, launched from the code.
+    test: Option<(PathBuf, String)>,
+    /// What `${file}` was when its command ran (`None` until it ran): the
+    /// file open then, not the one a stop opened since.
+    file: Option<Option<String>>,
 }
 
 /// What the session is doing.
@@ -293,6 +319,10 @@ pub struct Debugger {
     generation: u64,
     /// The terminal the launch command runs in, reused by the next launch.
     term: Option<TermId>,
+    /// The session whose command went to a terminal not known yet (a new
+    /// one), and whether Stop was asked meanwhile: that terminal is
+    /// interrupted once known, not the one before.
+    term_unknown: Option<(u64, bool)>,
     launched: bool,
     /// The program's page (`page` in its `hello`) opens once it listens:
     /// a launch started it, and not a restart.
@@ -331,8 +361,8 @@ pub struct Debugger {
     hover_change: Option<(Option<(String, Bounds<Pixels>)>, Task<()>)>,
     /// The test (its file and name) launched from the code, until it connects.
     launching_test: Option<(PathBuf, String)>,
-    /// A restart: the program started again doesn't open `open` again.
-    restarting: bool,
+    /// How the session started, for Restart.
+    started: Option<Started>,
     /// The line the launch ran in its terminal, `${file}` replaced: what
     /// `den debug state` says is being debugged.
     ran: Option<String>,
@@ -377,6 +407,7 @@ impl Debugger {
             uncaught: saved.uncaught,
             all: saved.all,
             term: saved.terminal,
+            term_unknown: None,
             root,
             session_key,
             client,
@@ -410,7 +441,7 @@ impl Debugger {
             hover_inside: false,
             hover_change: None,
             launching_test: None,
-            restarting: false,
+            started: None,
             ran: None,
             page: None,
             device: None,
@@ -448,6 +479,16 @@ impl Debugger {
 
     pub fn is_stopped(&self) -> bool {
         self.current().is_some()
+    }
+
+    /// The focused VM is stopped, and neither resuming nor asked to go on:
+    /// it can be evaluated in, run to a line or jumped.
+    pub fn is_halted(&self) -> bool {
+        self.halted().is_some()
+    }
+
+    fn halted(&self) -> Option<u64> {
+        self.focus.filter(|vm| self.stops.get(vm).is_some_and(|stop| !stop.resumed && !stop.going))
     }
 
     /// The test `test` of `path` was launched and its program isn't connected yet.
@@ -517,7 +558,7 @@ impl Debugger {
             return;
         };
         cx.emit(DebugEvent::Reveal);
-        let open_page = !std::mem::take(&mut self.restarting);
+        self.started = None;
         self.status = Status::Connecting("Reading the launch file…".into());
         self.generation += 1;
         let generation = self.generation;
@@ -538,7 +579,7 @@ impl Debugger {
                     Ok(file) => {
                         this.tests = file.tests;
                         this.launch_error = None;
-                        this.begin(file.launch, open_page, window, cx);
+                        this.begin(file.launch, true, window, cx);
                     }
                     Err(error) => {
                         this.launch_error = Some(error.clone());
@@ -635,6 +676,7 @@ impl Debugger {
         self.revealed = None;
         self.launched = false;
         self.open_page = open_page;
+        self.started = Some(Started { launch: launch.clone(), test: self.launching_test.clone(), file: None });
         self.status = Status::Connecting(format!("Connecting to port {}…", launch.port));
         self.connect(launch.port, launch.command, window, cx);
         cx.notify();
@@ -646,12 +688,28 @@ impl Debugger {
         self.on_line(line, cx);
     }
 
-    /// The launch's line as its terminal runs it (`ran`).
-    pub fn set_ran(&mut self, line: String) {
+    /// The launch's line as its terminal runs it (`ran`), and the file its
+    /// `${file}` was, which a restart of the session debugs again.
+    pub fn set_ran(&mut self, session: u64, line: String, file: Option<String>) {
+        if session != self.generation {
+            return;
+        }
         self.ran = Some(line);
+        if let Some(started) = &mut self.started
+            && started.file.is_none()
+        {
+            started.file = Some(file);
+        }
     }
 
-    pub fn set_terminal(&mut self, term: Option<TermId>, cx: &mut Context<Self>) {
+    /// The terminal the command of `session` went to, once it is known.
+    pub fn set_terminal(&mut self, session: u64, term: Option<TermId>, cx: &mut Context<Self>) {
+        if let Some((_, interrupt)) = self.term_unknown.take_if(|(unknown, _)| *unknown == session)
+            && interrupt
+            && let Some(term) = term
+        {
+            cx.emit(DebugEvent::Interrupt { term });
+        }
         if term.is_some() && term != self.term {
             self.term = term;
             self.save(cx);
@@ -681,11 +739,11 @@ impl Debugger {
                 let free = match client.request(Request::FreePort).await {
                     Ok(Response::Port(free)) => free,
                     Ok(other) => {
-                        this.update(cx, |this, cx| this.fail(format!("unexpected response {other:?}"), cx)).ok();
+                        this.update(cx, |this, cx| this.fail_session(generation, format!("unexpected response {other:?}"), cx)).ok();
                         return;
                     }
                     Err(error) => {
-                        this.update(cx, |this, cx| this.fail(format!("No free port: {error:#}"), cx)).ok();
+                        this.update(cx, |this, cx| this.fail_session(generation, format!("No free port: {error:#}"), cx)).ok();
                         return;
                     }
                 };
@@ -718,17 +776,25 @@ impl Debugger {
                             Some(term) => matches!(client.request(Request::TermBusy { term }).await, Ok(Response::Busy(true))),
                             None => false,
                         };
+                        // every await above may have outlived the session
                         if let Some(command) = command.take() {
-                            this.update(cx, |this, cx| {
+                            let ran = this.update(cx, |this, cx| {
+                                if this.generation != generation {
+                                    return false;
+                                }
                                 this.launched = true;
                                 this.info(format!("$ {command}"), cx);
                                 this.status = Status::Connecting("Starting the program…".into());
                                 // what still runs in its terminal would read the line as its input
                                 let term = if busy { None } else { this.term };
-                                cx.emit(DebugEvent::Run { term, line: command });
+                                this.term_unknown = Some((generation, false));
+                                cx.emit(DebugEvent::Run { session: generation, term, line: command });
                                 cx.notify();
-                            })
-                            .ok();
+                                true
+                            });
+                            if !matches!(ran, Ok(true)) {
+                                return;
+                            }
                             continue;
                         }
                         if term != watched {
@@ -757,7 +823,8 @@ impl Debugger {
                             }
                         } else if seen_running {
                             this.update(cx, |this, cx| {
-                                this.fail(format!("The program ended without listening on port {port}: see its terminal"), cx)
+                                let error = format!("The program ended without listening on port {port}: see its terminal");
+                                this.fail_session(generation, error, cx)
                             })
                             .ok();
                             return;
@@ -765,7 +832,7 @@ impl Debugger {
                         // a command still at work (a build) is waited for; Stop ends it
                         if started.elapsed() > CONNECT_TIMEOUT && !busy {
                             this.update(cx, |this, cx| {
-                                this.fail(format!("Nothing answered on port {port}: {error:#}"), cx)
+                                this.fail_session(generation, format!("Nothing answered on port {port}: {error:#}"), cx)
                             })
                             .ok();
                             return;
@@ -857,6 +924,33 @@ impl Debugger {
             }
         })
         .detach();
+        // `running` in `hello` is only how many ran then
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(THREADS_POLL).await;
+                let alive = this
+                    .update(cx, |this, _| {
+                        if this.generation != generation {
+                            return false;
+                        }
+                        if this.status == Status::Connected {
+                            this.send("threads", json!({}), |this, result, cx| {
+                                let running = result.ok().and_then(|body| body.get("running").and_then(Value::as_u64));
+                                if let Some(running) = running.filter(|running| *running != this.running) {
+                                    this.running = running;
+                                    cx.notify();
+                                }
+                            });
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
         self.send("hello", json!({ "version": protocol::VERSION }), |this, result, cx| match result {
             Ok(body) => this.on_hello(body, cx),
             Err(error) => this.fail(format!("The program refused the debugger: {error}"), cx),
@@ -913,26 +1007,94 @@ impl Debugger {
         if self.status == Status::Idle {
             return;
         }
-        if self.launched
-            && let Some(term) = self.term
-        {
-            cx.emit(DebugEvent::Interrupt { term });
+        if self.launched {
+            match &mut self.term_unknown {
+                // the command went to a terminal not known yet: that one, once it is
+                Some((session, interrupt)) if *session == self.generation => *interrupt = true,
+                _ => {
+                    if let Some(term) = self.term {
+                        cx.emit(DebugEvent::Interrupt { term });
+                    }
+                }
+            }
         }
         self.end("Stopped", cx);
     }
 
+    /// Stops the session and starts it again as it started: the same
+    /// command, test and file, not the one open now (a stop opens others).
     pub fn restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let was = self.status != Status::Idle;
+        let started = self.started.clone().filter(|_| self.status != Status::Idle);
+        let launched = self.launched;
         self.stop(cx);
-        self.restarting = was;
-        if !was {
+        // nothing to repeat, or not past reading the launch file: F5's start
+        let Some(started) = started else {
             self.start(window, cx);
             return;
-        }
-        // let the program interrupted free its port first
+        };
+        self.launched = false;
+        self.status = Status::Connecting("Restarting…".into());
+        let generation = self.generation;
+        // A program it started frees its terminal first, and its port when
+        // the command has no `${port}`: what still answers there is the
+        // program before, which the new session would attach to.
+        let port = started
+            .launch
+            .command
+            .as_ref()
+            .filter(|command| launched && !command.contains("${port}"))
+            .map(|_| started.launch.port);
+        let client = self.client.clone();
+        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(500)).await;
-            this.update_in(cx, |this, window, cx| this.start(window, cx)).ok();
+            let deadline = Instant::now() + RESTART_TIMEOUT;
+            loop {
+                let Ok(Some(term)) = this.update(cx, |this, _| (this.generation == generation).then_some(this.term)) else {
+                    return;
+                };
+                let busy = match (launched, term, &client) {
+                    (true, Some(term), Some(client)) => {
+                        matches!(client.request(Request::TermBusy { term }).await, Ok(Response::Busy(true)))
+                    }
+                    _ => false,
+                };
+                let held = match (port, &client) {
+                    (Some(port), Some(client)) => match client.connect_relay(port, |_: RelayUpdate| {}).await {
+                        Ok(relay) => {
+                            client.close_relay(relay);
+                            true
+                        }
+                        Err(_) => false,
+                    },
+                    _ => false,
+                };
+                if !busy && !held {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    if let Some(port) = port.filter(|_| held) {
+                        let error = format!("The program before still listens on port {port}: see its terminal");
+                        this.update(cx, |this, cx| this.fail_session(generation, error, cx)).ok();
+                        return;
+                    }
+                    // a terminal still busy: the command goes to a new one
+                    break;
+                }
+                cx.background_executor().timer(CONNECT_RETRY).await;
+            }
+            this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                let mut launch = started.launch;
+                if let (Some(command), Some(file)) = (&mut launch.command, &started.file) {
+                    *command = command_line(command, file.as_deref());
+                }
+                this.launching_test = started.test;
+                // the page is open already
+                this.begin(launch, false, window, cx);
+            })
+            .ok();
         })
         .detach();
     }
@@ -952,6 +1114,7 @@ impl Debugger {
         self.children.clear();
         self.hover = None;
         self.loading.clear();
+        self.forget_console_refs(None);
         self.running = 0;
         for watch in &mut self.watches {
             watch.result = None;
@@ -967,6 +1130,14 @@ impl Debugger {
         self.end("", cx);
         self.console.push(ConsoleLine::Error(error));
         cx.notify();
+    }
+
+    /// `fail`, if `generation` is still the session: an older one's work
+    /// that comes back late ends nothing.
+    fn fail_session(&mut self, generation: u64, error: String, cx: &mut Context<Self>) {
+        if self.generation == generation {
+            self.fail(error, cx);
+        }
     }
 
     /// Whether a session is on (starting, or connected), and what it does
@@ -1049,6 +1220,7 @@ impl Debugger {
         if let Some(exc) = &stop.exception {
             self.console.push(ConsoleLine::Error(format!("Exception: {}", exc.message)));
         }
+        self.forget_console_refs(Some(vm));
         self.changed = changed_locals(self.stops.get(&vm).map(|previous| &previous.stop), &stop);
         self.locals = stop.locals.clone();
         self.globals = stop.globals;
@@ -1079,6 +1251,7 @@ impl Debugger {
         if self.focus == Some(vm) {
             self.hover = None;
         }
+        self.forget_console_refs(Some(vm));
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(RESUME_GRACE).await;
@@ -1095,6 +1268,18 @@ impl Debugger {
             .ok();
         })
         .detach();
+    }
+
+    /// The console's values of `vm` (of every VM, without one) can't be
+    /// opened any more: a ref is valid only while its VM stays stopped.
+    fn forget_console_refs(&mut self, vm: Option<u64>) {
+        for line in &mut self.console {
+            if let ConsoleLine::Result(var, from) = line
+                && vm.is_none_or(|vm| vm == *from)
+            {
+                var.reference = 0;
+            }
+        }
     }
 
     /// After the focused VM went on, shows another one still stopped.
@@ -1128,7 +1313,8 @@ impl Debugger {
     // ---- controlling the focused VM ----
 
     fn resume(&mut self, cmd: &str, cx: &mut Context<Self>) {
-        let Some(vm) = self.focus.filter(|vm| self.stops.get(vm).is_some_and(|stop| !stop.resumed)) else {
+        // asked twice, the second one's error would undo `going` of the first
+        let Some(vm) = self.halted() else {
             return;
         };
         // From the moment it's asked: `den debug wait` right after `next`
@@ -1177,7 +1363,7 @@ impl Debugger {
     /// Resumes the focused VM until it reaches `line` of `path`.
     pub fn run_to(&mut self, path: &Path, line: u32) {
         let file = self.program_path(path);
-        let Some(vm) = self.focus.filter(|_| self.is_stopped()) else {
+        let Some(vm) = self.halted() else {
             return;
         };
         self.send("runTo", json!({ "vm": vm, "file": file, "line": line + 1 }), |this, result, cx| {
@@ -1189,7 +1375,7 @@ impl Debugger {
 
     /// Makes `line` the next statement of the focused VM.
     pub fn jump(&mut self, line: u32) {
-        let Some(vm) = self.focus.filter(|_| self.is_stopped()) else {
+        let Some(vm) = self.halted() else {
             return;
         };
         self.send("jump", json!({ "vm": vm, "line": line + 1 }), move |this, result, cx| match result {
@@ -1354,6 +1540,10 @@ impl Debugger {
     pub fn toggle_expanded(&mut self, key: String, reference: u64, cx: &mut Context<Self>) {
         if !self.expanded.remove(&key) {
             self.expanded.insert(key);
+            // opening it again asks again for children it couldn't have
+            if self.children.get(&reference).is_some_and(|children| children.vars.is_empty() && children.error.is_some()) {
+                self.children.remove(&reference);
+            }
             if !self.children.contains_key(&reference) {
                 self.fetch(reference, 0);
             }
@@ -1365,21 +1555,26 @@ impl Debugger {
         if reference == 0 || !self.loading.insert(reference) {
             return;
         }
-        let generation = self.generation;
+        let (generation, serial) = (self.generation, self.serial);
         self.send("expand", json!({ "ref": reference, "start": start, "count": PAGE }), move |this, result, cx| {
-            this.loading.remove(&reference);
-            if this.generation != generation {
+            // a stop since cleared what was loading, and the ref may name another value now
+            if this.generation != generation || this.serial != serial {
                 return;
             }
-            if let Ok(body) = result {
-                let vars: Vec<Var> = protocol::field(&body, "vars").unwrap_or_default();
-                let children = this.children.entry(reference).or_insert(Children { vars: Vec::new(), total: 0 });
-                children.vars.truncate(start as usize);
-                children.vars.extend(vars);
-                children.total = children.total.max(children.vars.len() as u64);
-                this.refetch();
-                cx.notify();
+            this.loading.remove(&reference);
+            let children = this.children.entry(reference).or_default();
+            match result {
+                Ok(body) => {
+                    let vars: Vec<Var> = protocol::field(&body, "vars").unwrap_or_default();
+                    children.more = vars.len() as u64 >= PAGE;
+                    children.error = None;
+                    children.vars.truncate(start as usize);
+                    children.vars.extend(vars);
+                    this.refetch();
+                }
+                Err(error) => children.error = Some(error),
             }
+            cx.notify();
         });
     }
 
@@ -1411,6 +1606,14 @@ impl Debugger {
                 walk.push((format!("w{ix}"), var.clone()));
             }
         }
+        for (ix, line) in self.console.iter().enumerate() {
+            if let ConsoleLine::Result(var, _) = line {
+                walk.push((format!("c{ix}"), var.clone()));
+            }
+        }
+        if let Some(hover) = &self.hover {
+            walk.push(("h".into(), hover.var.clone()));
+        }
         while let Some((key, var)) = walk.pop() {
             if var.reference == 0 || !self.expanded.contains(&key) {
                 continue;
@@ -1435,7 +1638,7 @@ impl Debugger {
         expr: String,
         reply: impl FnOnce(&mut Debugger, Result<Var, String>, &mut Context<Debugger>) + 'static,
     ) {
-        let Some(vm) = self.focus.filter(|_| self.is_stopped()) else {
+        let Some(vm) = self.halted() else {
             return;
         };
         self.send("eval", json!({ "vm": vm, "frame": self.frame, "expr": expr }), move |this, result, cx| {
@@ -1498,15 +1701,21 @@ impl Debugger {
     /// Writes `expr` and its value in the console.
     pub fn evaluate_in_console(&mut self, expr: String, cx: &mut Context<Self>) {
         self.console.push(ConsoleLine::Input(expr.clone()));
-        if !self.is_stopped() {
+        let Some((vm, serial)) = self.halted().and_then(|vm| Some((vm, self.stops.get(&vm)?.serial))) else {
             self.console.push(ConsoleLine::Error("Nothing is stopped to evaluate in".into()));
             cx.notify();
             return;
-        }
+        };
         let assigns = is_assignment(&expr);
         self.evaluate(expr, move |this, result, cx| {
             match result {
-                Ok(var) => this.console.push(ConsoleLine::Result(var)),
+                Ok(mut var) => {
+                    // the VM went on before the answer: its ref names nothing
+                    if !this.stops.get(&vm).is_some_and(|stop| stop.serial == serial && !stop.resumed) {
+                        var.reference = 0;
+                    }
+                    this.console.push(ConsoleLine::Result(var, vm));
+                }
                 Err(error) => this.console.push(ConsoleLine::Error(error)),
             }
             if assigns {
@@ -1638,8 +1847,8 @@ impl Debugger {
 
     /// Follows an edit of a file: see `Breakpoints::shift`. The program gets
     /// the new lines when the file is saved.
-    pub fn shift_breakpoints(&mut self, path: &Path, at: u32, delta: i64, cx: &mut Context<Self>) {
-        if self.breakpoints.shift(path, at, delta) {
+    pub fn shift_breakpoints(&mut self, path: &Path, edit: LineEdit, cx: &mut Context<Self>) {
+        if self.breakpoints.shift(path, edit) {
             self.save(cx);
             cx.emit(DebugEvent::Marks);
             cx.notify();
