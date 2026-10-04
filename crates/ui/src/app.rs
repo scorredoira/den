@@ -2550,9 +2550,8 @@ impl Den {
     fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
         let ordered = self.ordered(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
-        for (ix, host) in self.hosts.iter().enumerate() {
-            // Each server well apart from the one above.
-            sections.push(div().when(ix > 0, |el| el.mt_3()).child(self.render_host_header(host, cx)).into_any_element());
+        for host in &self.hosts {
+            sections.push(self.render_host_header(host, cx));
             let entries: Vec<(TaskKey, &TaskInfo)> =
                 ordered.iter().filter(|(key, _)| key.host == host.name).cloned().collect();
             for group in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo) {
