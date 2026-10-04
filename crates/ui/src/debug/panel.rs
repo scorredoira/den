@@ -11,6 +11,7 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     v_flex,
 };
+use gpui_base::SelectableText;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use super::{ConsoleLine, DebugEvent, Debugger, EditKind, Status, Var, child_path};
@@ -686,34 +687,47 @@ impl Debugger {
     fn render_console(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut list = v_flex().w_full().font_family(theme.mono_font_family.clone()).text_ui_small(cx);
+        // every line selectable, as one text: a drag goes across lines
+        let text = |ix: usize, text: String| SelectableText::new(("console-text", ix), text).document_order(ix as u64);
         for (ix, line) in self.console.iter().enumerate() {
             list = list.child(match line {
-                ConsoleLine::Info(text) => div().px_2().text_color(theme.muted_foreground).child(text.clone()).into_any_element(),
-                ConsoleLine::Input(text) => div().px_2().text_color(theme.foreground).child(format!("› {text}")).into_any_element(),
-                ConsoleLine::Error(text) => {
-                    div().px_2().text_color(theme.danger).whitespace_normal().child(text.clone()).into_any_element()
+                ConsoleLine::Info(line) => {
+                    div().px_2().text_color(theme.muted_foreground).child(text(ix, line.clone())).into_any_element()
                 }
-                ConsoleLine::Output { text, path, line } => {
-                    let place = path.clone().map(|path| (path, *line));
-                    h_flex()
-                        .id(("console-out", ix))
-                        .px_2()
-                        .gap_2()
-                        .child(div().flex_1().min_w_0().whitespace_normal().text_color(theme.foreground).child(text.clone()))
-                        .children(place.clone().map(|(path, line)| {
-                            div().flex_none().text_color(theme.muted_foreground).child(format!(
-                                "{}:{}",
-                                short_file(&path.to_string_lossy()),
-                                line
-                            ))
-                        }))
-                        .when_some(place, |el, (path, line)| {
-                            el.hover(|style| style.bg(theme.secondary)).on_click(cx.listener(move |_, _, _, cx| {
+                ConsoleLine::Input(line) => {
+                    div().px_2().text_color(theme.foreground).child(text(ix, format!("› {line}"))).into_any_element()
+                }
+                ConsoleLine::Error(line) => div()
+                    .px_2()
+                    .text_color(theme.danger)
+                    .whitespace_normal()
+                    .child(text(ix, line.clone()))
+                    .into_any_element(),
+                ConsoleLine::Output { text: output, path, line } => h_flex()
+                    .px_2()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_color(theme.foreground)
+                            .child(text(ix, output.clone())),
+                    )
+                    // the place it was written from, which opens it
+                    .children(path.clone().map(|path| {
+                        let line = *line;
+                        div()
+                            .id(("console-out", ix))
+                            .flex_none()
+                            .text_color(theme.muted_foreground)
+                            .hover(|style| style.text_color(theme.link).cursor_pointer())
+                            .child(format!("{}:{}", short_file(&path.to_string_lossy()), line))
+                            .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(super::DebugEvent::Show { path: path.clone(), line: line.saturating_sub(1), focus: true })
                             }))
-                        })
-                        .into_any_element()
-                }
+                    }))
+                    .into_any_element(),
                 ConsoleLine::Result(var) => {
                     let mut rows = Vec::new();
                     self.tree(&mut rows, format!("c{ix}"), 0, &Var { name: String::new(), ..var.clone() }, None);
