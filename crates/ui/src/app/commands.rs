@@ -84,6 +84,10 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
+            ["notes", rest @ ..] => {
+                let key = self.command_key(host.clone(), group.as_deref(), &cwd);
+                self.notes_command(key, rest, window, cx)
+            }
             ["debug", rest @ ..] => match here(self, false, window, cx) {
                 Ok((_, workspace)) => return debug_command(rest, &cwd, workspace, window, cx),
                 Err(err) => Err(err),
@@ -190,11 +194,7 @@ impl Den {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(PathBuf, Entity<Workspace>), String> {
-        let path = match group {
-            Some(group) => PathBuf::from(group),
-            None => self.workspace_containing(&host, cwd),
-        };
-        let key = TaskKey { host, path };
+        let key = self.command_key(host, group, cwd);
         if activate && self.active.as_ref() != Some(&key) {
             self.activate(key.clone(), window, cx);
         }
@@ -202,6 +202,38 @@ impl Den {
             Some(workspace) => Ok((key.path, workspace.clone())),
             None => Err(format!("{} isn't open in den", key.path.display())),
         }
+    }
+
+    /// The workspace of the terminal a command ran in or, outside den's
+    /// terminals, the one containing `cwd`, open or not.
+    fn command_key(&self, host: SharedString, group: Option<&str>, cwd: &Path) -> TaskKey {
+        let path = match group {
+            Some(group) => PathBuf::from(group),
+            None => self.workspace_containing(&host, cwd),
+        };
+        TaskKey { host, path }
+    }
+
+    /// `den notes [add | set] <text>`: prints the workspace's notes, adds a
+    /// line to them or replaces them, in its panel if it's open. Without
+    /// one, they're kept for when it is.
+    fn notes_command(&mut self, key: TaskKey, args: &[&str], window: &mut Window, cx: &mut Context<Self>) -> Answer {
+        let config = key.config();
+        let text = match args {
+            [] => return Ok(crate::notes::get(&config, cx)),
+            ["add", line] => match crate::notes::get(&config, cx).trim_end() {
+                "" => format!("{}\n", line.trim_end()),
+                notes => format!("{notes}\n{}\n", line.trim_end()),
+            },
+            ["set", text] => text.to_string(),
+            _ => return Err(NOTES_USAGE.to_string()),
+        };
+        if let Some(workspace) = self.workspaces.get(&key) {
+            let notes = workspace.read(cx).notes();
+            notes.update(cx, |notes, cx| notes.set_text(text.clone(), window, cx));
+        }
+        crate::notes::set(&config, text, cx);
+        Ok(String::new())
     }
 
     /// `den workspaces`: one per line, `*` the active one.
@@ -219,6 +251,8 @@ impl Den {
         out
     }
 }
+
+const NOTES_USAGE: &str = "den notes: [add <text> | set <text>], or the text from stdin";
 
 const DEBUG_USAGE: &str = "den debug: state | start [<file>] | stop | continue | next | in | out | pause \
     | break <file>:<line> | clear [<file>:<line>] | eval <expr> | wait [stop|connected|idle] [<seconds>]";

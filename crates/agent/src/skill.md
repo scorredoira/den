@@ -20,6 +20,9 @@ full list; the main ones:
 - `den selection` prints the file, the range and the text the user has
   selected: what they mean by "this". `den tabs` lists the open files.
 - `den message <text>` shows a short message in the status bar.
+- `den notes` prints the workspace's notes: what's next there, kept by Den
+  outside the repo. `den notes add <text>` adds a line (e.g. what's left
+  when you stop), `echo ... | den notes set` replaces them.
 - `den term new [--right|--down] [<command>...]` opens a terminal next to
   this one and prints its id; `den term list`, `den term read <id> [<lines>]`,
   `den term send <id> <text>` (types it and Enter), `den term focus <id>`,

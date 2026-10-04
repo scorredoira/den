@@ -2,7 +2,8 @@
 //! keeps (in `notes.json` in its config folder, by workspace), never in the
 //! repo. By default a tab of the terminals'; while it has something, its
 //! tab's note has lines and its icon a dot. Cmd-E's notice shows its first
-//! line, and removing the worktree forgets it.
+//! line, and removing the worktree forgets it. `den notes` reads and writes
+//! them from a terminal.
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
@@ -66,7 +67,8 @@ pub fn first_line(key: &str, cx: &mut App) -> Option<String> {
         .map(str::to_string)
 }
 
-fn set(key: &str, text: String, cx: &mut App) {
+/// Writes workspace `key`'s notes (none, if blank).
+pub fn set(key: &str, text: String, cx: &mut App) {
     let notes = all(cx);
     if text.trim().is_empty() {
         if notes.remove(key).is_none() {
@@ -118,6 +120,14 @@ impl NotesPanel {
     /// Whether it has something: its tab and icon say so.
     pub fn filled(&self) -> bool {
         self.filled
+    }
+
+    /// Replaces what it shows: `den notes` wrote them.
+    pub fn set_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.save = Task::ready(());
+        self.filled = !text.trim().is_empty();
+        self.editor.update(cx, |editor, cx| editor.set_value(text, window, cx));
+        cx.notify();
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
