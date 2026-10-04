@@ -1,10 +1,11 @@
 //! The activity bar, on the window's left edge: an icon for each group of
-//! the side column, which shows it or, if it's the one showing, closes the
-//! column; the device's while there's one; and at the bottom the notes,
-//! connecting to a server and Settings.
+//! the side column and each panel with an icon of its own, which shows it
+//! or, if it's the one showing, closes the column; the device's while
+//! there's one; and at the bottom the notes, connecting to a server and
+//! Settings. Its right-click menu, as Show Panel, lists every panel.
 use super::*;
-use super::layout::{group_icon, icon};
-use crate::config::{Group, Panel};
+use super::layout::{PanelDrag, group_icon, icon, title};
+use crate::config::{Group, Panel, Place};
 
 pub(crate) const ACTIVITY_WIDTH: f32 = 48.;
 
@@ -26,27 +27,49 @@ pub(crate) enum Badge {
 /// What an icon of the bar shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Item {
-    Group(Group),
+    Place(Place),
     Device,
     Notes,
 }
 
 impl Item {
-    fn icon(self) -> &'static str {
-        match self {
-            Item::Group(group) => group_icon(group),
-            Item::Device => icon(Panel::Device),
-            Item::Notes => icon(Panel::Notes),
+    /// What a place goes by: the panel it has alone, or else the group its
+    /// panels stand for (see `Layout::kind`), or else its first panel.
+    fn stands_for(self, cx: &App) -> Result<Panel, Group> {
+        let Item::Place(place) = self else {
+            return Ok(if self == Item::Device { Panel::Device } else { Panel::Notes });
+        };
+        let layout = &Config::get(cx).layout;
+        match (&layout.panels(place)[..], layout.kind(place)) {
+            ([panel], _) => Ok(*panel),
+            (_, Some(group)) => Err(group),
+            _ => Ok(place.0),
         }
     }
 
-    pub(crate) fn title(self) -> &'static str {
-        match self {
-            Item::Group(group) => group.title(),
-            Item::Device => "Device",
-            Item::Notes => "Notes",
+    fn icon(self, cx: &App) -> &'static str {
+        match self.stands_for(cx) {
+            Ok(panel) => icon(panel),
+            Err(group) => group_icon(group),
         }
     }
+
+    pub(crate) fn title(self, cx: &App) -> &'static str {
+        match self.stands_for(cx) {
+            Ok(panel) => title(panel),
+            Err(group) => group.title(),
+        }
+    }
+}
+
+/// An icon of a place being dragged to another spot on the bar.
+#[derive(Clone)]
+pub(crate) struct PlaceDrag(pub Place);
+
+/// Puts `place`'s icon before `before`'s (or last), in every window.
+fn move_place(place: Place, before: Option<Place>, cx: &mut App) {
+    Config::update(cx, |config| config.layout.move_place(place, before));
+    cx.refresh_windows();
 }
 
 /// An icon: what it shows, whether it shows and its badge.
@@ -65,8 +88,30 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: O
             .child(
                 activity_button(item, shown, cx)
                     .when(cfg!(test), |el| el.debug_selector(move || format!("activity-{item:?}")))
-                    .tooltip(move |window, cx| Tooltip::new(item.title()).build(window, cx))
-                    .on_click(move |_, window, cx| click(item, window, cx)),
+                    .tooltip(move |window, cx| Tooltip::new(item.title(cx)).build(window, cx))
+                    .on_click(move |_, window, cx| click(item, window, cx))
+                    // A place's icon drags up or down the bar.
+                    .map(|el| match item {
+                        Item::Place(place) => el
+                            .on_drag(PlaceDrag(place), move |_, _, _, cx| {
+                                let title = item.title(cx);
+                                cx.new(|_| TabDragPreview(title.into()))
+                            })
+                            .drag_over::<PlaceDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
+                            .on_drop(move |drag: &PlaceDrag, _, cx| {
+                                cx.stop_propagation();
+                                move_place(drag.0, Some(place), cx);
+                            })
+                            // A panel dropped on it goes into that place.
+                            .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
+                            // The column stays on what it shows.
+                            .on_drop(move |drag: &PanelDrag, _, cx| {
+                                cx.stop_propagation();
+                                Config::update(cx, |config| config.layout.move_panel(drag.0, place, None));
+                                cx.refresh_windows();
+                            }),
+                        _ => el,
+                    }),
             )
             .children(badge.map(|badge| render_badge(badge, cx)))
     };
@@ -83,12 +128,13 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: O
         .border_r_1()
         .border_color(theme.sidebar_border)
         .children(icons.into_iter().map(|icon| button(icon, cx)))
-        .child(div().flex_1())
+        // Past the icons, it goes last.
+        .child(div().flex_1().w_full().on_drop(|drag: &PlaceDrag, _, cx| move_place(drag.0, None, cx)))
         .children(bottom.into_iter().map(|icon| button(icon, cx)))
         // At the bottom, as in VS Code: connecting to a server, and Settings.
         .child(bottom_button("activity-remote", "icons/satellite-dish.svg", ADD_SERVER, Box::new(crate::AddServer), cx))
         .child(bottom_button("activity-settings", "icons/settings.svg", "Settings", Box::new(crate::OpenSettings), cx))
-        .context_menu(|popup, _, _| popup.item(menu::reset_layout()))
+        .context_menu(menu::panels_menu)
         .into_any_element()
 }
 
@@ -107,7 +153,7 @@ fn activity_button(item: Item, shown: bool, cx: &App) -> Stateful<Div> {
         .when(shown, |el| {
             el.child(div().absolute().left(px(-4.)).top(px(8.)).bottom(px(8.)).w(px(2.)).rounded_full().bg(theme.primary))
         })
-        .child(svg().path(thin(item.icon())).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
+        .child(svg().path(thin(item.icon(cx))).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
 }
 
 const ADD_SERVER: &str = if cfg!(windows) { "Add Server or WSL Distro…" } else { "Add Server…" };
@@ -154,13 +200,18 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 
 impl Workspace {
     pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let side = self.side_group();
-        let mut icons: Vec<Activity> =
-            Group::ALL.into_iter().map(|group| (Item::Group(group), side == Some(group), self.badge(Item::Group(group), cx))).collect();
+        let side = self.side_place(cx);
+        let mut icons: Vec<Activity> = Config::get(cx)
+            .layout
+            .places()
+            .into_iter()
+            .map(|place| (Item::Place(place), side == Some(place), self.badge(place, cx)))
+            .collect();
         if self.device.read(cx).available() {
             icons.push((Item::Device, self.is_shown(Panel::Device, cx), None));
         }
-        let bottom = vec![(Item::Notes, self.is_shown(Panel::Notes, cx), self.badge(Item::Notes, cx))];
+        let notes = self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary));
+        let bottom = vec![(Item::Notes, self.is_shown(Panel::Notes, cx), notes)];
         let workspace = cx.entity().downgrade();
         let click: OnActivity = Rc::new(move |item, window, cx| {
             workspace.update(cx, |this, cx| this.click_activity(item, window, cx)).ok();
@@ -168,23 +219,41 @@ impl Workspace {
         activity_bar(icons, bottom, click, cx)
     }
 
-    /// What Show Panel lists: the groups, the terminals, the device and the
-    /// notes, and whether each shows.
-    pub(crate) fn menu_items(&self, cx: &App) -> Vec<(Item, bool)> {
-        let side = self.side_group();
-        let mut items: Vec<(Item, bool)> = Group::ALL.into_iter().map(|group| (Item::Group(group), side == Some(group))).collect();
+    /// What Show Panel and the activity bar's menu list: every side panel,
+    /// checked while it's in the place the column shows; the terminals,
+    /// the device and the notes, while they show.
+    pub(crate) fn menu_panels(&self, cx: &App) -> Vec<(Panel, bool)> {
+        let layout = &Config::get(cx).layout;
+        let here = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
+        let mut panels: Vec<(Panel, bool)> =
+            Group::ALL.into_iter().flat_map(|group| group.panels()).map(|panel| (*panel, here.contains(panel))).collect();
+        panels.push((Panel::Terminals, self.is_shown(Panel::Terminals, cx)));
         if self.device.read(cx).available() {
-            items.push((Item::Device, self.is_shown(Panel::Device, cx)));
+            panels.push((Panel::Device, self.is_shown(Panel::Device, cx)));
         }
-        items.push((Item::Notes, self.is_shown(Panel::Notes, cx)));
-        items
+        panels.push((Panel::Notes, self.is_shown(Panel::Notes, cx)));
+        panels
     }
 
-    fn badge(&self, item: Item, cx: &App) -> Option<Badge> {
-        match item {
-            Item::Group(Group::Explorer) => self.badges.workspaces.or(self.badges.agents).map(Badge::Dot),
-            Item::Group(Group::Git) => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
-            Item::Group(Group::Debug) => {
+    /// A panel of that menu: a side panel comes to the place the column
+    /// shows, from wherever it is, or goes off it; the others show or hide.
+    pub(crate) fn toggle_from_menu(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
+        match panel {
+            Panel::Terminals => self.set_terminals_visible(!self.is_shown(panel, cx), window, cx),
+            Panel::Notes => self.click_activity(Item::Notes, window, cx),
+            Panel::Device => self.toggle_panel(panel, cx),
+            _ if self.in_side(panel, cx) => self.remove_panel(panel, cx),
+            _ => self.bring_panel(panel, None, cx),
+        }
+    }
+
+    /// What goes on `place`'s icon: the first of its panels' news.
+    fn badge(&self, place: Place, cx: &App) -> Option<Badge> {
+        Config::get(cx).layout.panels(place).into_iter().find_map(|panel| match panel {
+            Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
+            Panel::Agents => self.badges.agents.map(Badge::Dot),
+            Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
+            Panel::CallStack => {
                 let debugger = self.debugger.read(cx);
                 if debugger.is_stopped() {
                     Some(Badge::Dot(cx.theme().warning))
@@ -192,20 +261,19 @@ impl Workspace {
                     debugger.is_active().then(|| Badge::Dot(cx.theme().success))
                 }
             }
-            Item::Group(Group::Search) | Item::Device => None,
-            Item::Notes => self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary)),
-        }
+            _ => None,
+        })
     }
 
-    /// A group shows, or closes the side column if it's the one showing;
+    /// A place shows, or closes the side column if it's the one showing;
     /// the device and the notes show or hide. The search gets the focus,
     /// as its key does.
     pub(crate) fn click_activity(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
         match item {
-            Item::Group(Group::Search) if self.side_group() != Some(Group::Search) => {
+            Item::Place(place) if self.side_place(cx) != Some(place) && Config::get(cx).layout.panels(place).contains(&Panel::Search) => {
                 self.show_search(&ShowSearch, window, cx)
             }
-            Item::Group(group) => self.click_group(group, cx),
+            Item::Place(place) => self.click_place(place, cx),
             Item::Device => self.toggle_panel(Panel::Device, cx),
             Item::Notes if self.is_shown(Panel::Notes, cx) => {
                 self.hide_panel(Panel::Notes, cx);

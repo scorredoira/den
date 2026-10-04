@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{Dock, Group};
+use crate::config::{Dock, Place};
 use core::prelude::v1::test;
 
 /// Draws a workspace with a file open, as a new one shows: the explorer,
@@ -44,10 +44,12 @@ fn the_side_column_the_code_and_the_terminals(cx: &mut TestAppContext) {
     assert!(side.right() <= code.left(), "{side:?} {code:?}");
     assert!(terminals.left() >= code.right(), "{terminals:?} {code:?}");
     // The explorer's panels one above the other, the outline folded.
-    let agents = bounds(cx, "stack-Agents");
-    assert!(agents.bottom() <= files.top(), "{agents:?} {files:?}");
+    let workspaces = bounds(cx, "stack-Workspaces");
+    assert!(workspaces.bottom() <= files.top(), "{workspaces:?} {files:?}");
+    // The agents are off it until shown.
+    assert!(cx.debug_bounds("stack-Agents").is_none());
     let outline = bounds(cx, "stack-Outline");
-    assert!(outline.top() >= files.bottom() && outline.size.height <= px(24.), "{outline:?}");
+    assert!(outline.top() >= files.bottom() && outline.size.height <= px(27.), "{outline:?}");
 }
 
 #[gpui_kit::test]
@@ -68,7 +70,7 @@ fn the_terminals_go_under_the_code(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_group_icon_shows_its_group_or_closes_the_column(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    click(cx, "activity-Group(Git)");
+    click(cx, "activity-Place(Place(Changes))");
     assert!(cx.debug_bounds("stack-Files").is_none());
     bounds(cx, "stack-Changes");
     bounds(cx, "stack-History");
@@ -78,7 +80,7 @@ fn a_group_icon_shows_its_group_or_closes_the_column(cx: &mut TestAppContext) {
     });
     // Its icon again: the column closes and the code takes its width.
     let code = bounds(cx, "editor-body-0");
-    click(cx, "activity-Group(Git)");
+    click(cx, "activity-Place(Place(Changes))");
     assert!(cx.debug_bounds("side-column").is_none());
     assert!(bounds(cx, "editor-body-0").left() < code.left());
     // Cmd-B brings it back with the same group.
@@ -91,20 +93,54 @@ fn a_group_icon_shows_its_group_or_closes_the_column(cx: &mut TestAppContext) {
 fn a_panel_folds_by_its_header(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     let files = bounds(cx, "stack-Files");
-    click(cx, "title-Agents");
-    assert!(!workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Agents, cx)));
+    click(cx, "title-Workspaces");
+    assert!(!workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Workspaces, cx)));
     // Folded, the others take its room.
     assert!(bounds(cx, "stack-Files").top() < files.top());
     // Showing it unfolds it.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Agents, cx));
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
     cx.run_until_parked();
-    assert!(workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Agents, cx)));
+    assert!(workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Workspaces, cx)));
     // Showing a panel of another group shows that group.
     workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Watch, cx));
     cx.run_until_parked();
     bounds(cx, "stack-Watch");
     bounds(cx, "debugger");
     assert!(cx.debug_bounds("stack-Files").is_none());
+}
+
+#[gpui_kit::test]
+fn a_panel_hides_or_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    // Hide Panel takes it off the column; the others stay.
+    workspace.update(cx, |workspace, cx| workspace.remove_panel(Panel::Workspaces, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("stack-Workspaces").is_none());
+    bounds(cx, "stack-Files");
+    // Shown again, it's back where it was.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "stack-Workspaces").bottom() <= bounds(cx, "stack-Files").top());
+    // With an icon of its own, it has the column to itself.
+    workspace.update(cx, |workspace, cx| workspace.own_place(Panel::Workspaces, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("stack-Files").is_none());
+    let alone = bounds(cx, "stack-Workspaces");
+    assert!(alone.size.height > bounds(cx, "side-column").size.height / 2., "{alone:?}");
+    click(cx, "activity-Place(Place(Files))");
+    bounds(cx, "stack-Files");
+    assert!(cx.debug_bounds("stack-Workspaces").is_none());
+    click(cx, "activity-Place(Place(Workspaces))");
+    bounds(cx, "stack-Workspaces");
+    // The menu checks what's in this place; the files, from the menu, come here.
+    let panels = workspace.read_with(cx, |workspace, cx| workspace.menu_panels(cx));
+    assert!(panels.contains(&(Panel::Workspaces, true)) && panels.contains(&(Panel::Files, false)), "{panels:?}");
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_from_menu(Panel::Files, window, cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "stack-Workspaces").bottom() <= bounds(cx, "stack-Files").top());
+    // Clicking a workspace, going to another, moves nothing.
+    let other = workspace.update_in(cx, |_, window, cx| cx.new(|cx| Workspace::new(PathBuf::from("/other"), None, true, "other".into(), window, cx)));
+    other.read_with(cx, |other, cx| assert_eq!(other.side_place(cx), Some(Place(Panel::Workspaces))));
 }
 
 #[gpui_kit::test]
@@ -159,20 +195,23 @@ fn the_notes_open_over_the_window(cx: &mut TestAppContext) {
     assert!(!workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Notes, cx)));
 }
 
+/// The side column is the same in every workspace: going from one to
+/// another doesn't move it. The terminals and the device are each one's.
 #[gpui_kit::test]
-fn each_workspace_has_its_own_panels(cx: &mut TestAppContext) {
+fn the_side_column_stays_from_workspace_to_workspace(cx: &mut TestAppContext) {
     let (first, cx) = draw(cx, |_| {});
     let second = first.update_in(cx, |_, window, cx| cx.new(|cx| Workspace::new(PathBuf::from("/other"), None, true, "other".into(), window, cx)));
     first.update(cx, |workspace, cx| workspace.show_panel(Panel::Changes, cx));
-    assert!(!second.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Changes, cx)));
-    // A new one shows the explorer, the code and the terminals, nothing else.
     second.read_with(cx, |workspace, cx| {
-        for panel in [Panel::Files, Panel::Agents, Panel::Code, Panel::Terminals] {
-            assert!(workspace.is_shown(panel, cx), "{panel:?}");
-        }
-        for panel in [Panel::Debugger, Panel::Device, Panel::Changes, Panel::Outline, Panel::Notes] {
-            assert!(!workspace.is_shown(panel, cx), "{panel:?}");
-        }
+        assert!(workspace.is_shown(Panel::Changes, cx));
+        assert!(!workspace.is_shown(Panel::Files, cx));
+    });
+    first.update(cx, |workspace, cx| workspace.hide_panel(Panel::Changes, cx));
+    assert_eq!(second.read_with(cx, |workspace, cx| workspace.side_place(cx)), None);
+    // A new one shows the terminals, nothing else of its own.
+    second.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::Terminals, cx));
+        assert!(!workspace.is_shown(Panel::Device, cx));
     });
     second.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
     assert!(first.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Terminals, cx)));
@@ -199,13 +238,13 @@ fn a_workspace_reopens_with_its_panels(cx: &mut TestAppContext) {
         })
     });
     again.read_with(cx, |workspace, cx| {
-        assert_eq!(workspace.side_group(), Some(Group::Git));
+        assert_eq!(workspace.side_place(cx), Some(Place(Panel::Changes)));
         assert!(!workspace.is_shown(Panel::Terminals, cx));
     });
     // Reset Layout puts it back as a new one's.
     again.update(cx, |workspace, cx| workspace.reset_layout(cx));
     again.read_with(cx, |workspace, cx| {
-        assert_eq!(workspace.side_group(), Some(Group::Explorer));
+        assert_eq!(workspace.side_place(cx), Some(Place(Panel::Workspaces)));
         assert!(workspace.is_shown(Panel::Terminals, cx));
     });
 }

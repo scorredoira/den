@@ -4,7 +4,7 @@ use gpui_kit::{component::ThemeConfig, rgb};
 /// list has the keyboard.
 pub(super) fn selection(config: &mut ThemeConfig, dark: bool) {
     let colors = &mut config.colors;
-    let (band, outline) = if dark { ("#04395e", "#0078d4") } else { ("#e4e6f1", "#005fb8") };
+    let (band, outline) = if dark { ("#04395e", "#0078d4") } else { ("#cfe0fa", "#005fb8") };
     colors.list_active = Some(band.into());
     colors.list_active_border = Some(outline.into());
 }

@@ -62,7 +62,7 @@ mod layout_tests;
 mod new_file_tests;
 use tab_drag::{EditorDrop, TabDrag, TabDragPreview};
 use layout::Panels;
-pub(crate) use layout::WorkspacesPanel;
+pub(crate) use layout::{WorkspacesPanel, title as panel_title};
 pub(crate) use activity::{ACTIVITY_WIDTH, Badge, Item, OnActivity, TaskBadges, activity_bar};
 
 enum Content {
@@ -547,7 +547,7 @@ impl Workspace {
             .cloned()
             .unwrap_or_default();
         self.editor_split = session.split;
-        self.restore_panels(session.shows, cx);
+        self.restore_panels(session.shows);
         // A git panel that shows from the start reads now, not when shown.
         for (panel, entity) in [(Panel::Changes, self.changes.clone()), (Panel::History, self.history.clone())] {
             if self.client.is_some() && self.is_shown(panel, cx) {

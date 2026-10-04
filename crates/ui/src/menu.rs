@@ -45,22 +45,25 @@ pub trait PanelItems {
 
 impl PanelItems for PopupMenu {
     fn panel_items(self, hide: PopupMenuItem, window: &mut Window, cx: &mut Context<PopupMenu>) -> Self {
-        self.item(hide).submenu("Show Panel", window, cx, |menu, window, cx| show_panel_menu(menu, window, cx))
+        self.item(hide).submenu("Show Panel", window, cx, panels_menu)
     }
 }
 
-/// What the activity bar shows, checked while it shows: a click shows or
-/// hides it, as its icon does. And Reset Layout.
-fn show_panel_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+/// Every panel, checked while it's on: a click puts it on or takes it
+/// off. And Reset Layout. Show Panel's, and the activity bar's menu.
+pub fn panels_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     let Some(workspace) = crate::app::window_workspace(window, cx) else {
         return menu.item(reset_layout());
     };
-    let items = workspace.read(cx).menu_items(cx);
+    let panels = workspace.read(cx).menu_panels(cx);
     let weak = workspace.downgrade();
-    items
+    panels
         .into_iter()
-        .fold(menu, |menu, (activity, shown)| {
-            menu.item(item(activity.title(), &weak, move |this, window, cx| this.click_activity(activity, window, cx)).checked(shown))
+        .fold(menu, |menu, (panel, shown)| {
+            menu.item(
+                item(crate::workspace::panel_title(panel), &weak, move |this, window, cx| this.toggle_from_menu(panel, window, cx))
+                    .checked(shown),
+            )
         })
         .separator()
         .item(reset_layout())

@@ -31,7 +31,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
     AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleTasks,
-    config::{self, Config, Group, HostConfig, Panel, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
+    config::{self, Config, HostConfig, Panel, Place, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
     picker::{Picker, PickerEvent},
@@ -2351,10 +2351,7 @@ impl Den {
             .px_3()
             .border_b_1()
             .border_color(theme.sidebar_border)
-            .text_ui_small(cx)
-            .font_semibold()
-            .text_color(theme.muted_foreground)
-            .child(div().flex_1().child("WORKSPACES"))
+            .child(div().flex_1().text_ui_small(cx).text_color(theme.muted_foreground).child("WORKSPACES"))
             .child(tasks_add_button(&weak))
             .context_menu(move |menu, window, cx| column_menu(menu, &weak, window, cx))
             .into_any_element()
@@ -2365,7 +2362,7 @@ impl Den {
     fn render_without_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
         let click: OnActivity = Rc::new(|_, _, _| {});
-        let bar = activity_bar(vec![(Item::Group(Group::Explorer), true, badge)], Vec::new(), click, cx);
+        let bar = activity_bar(vec![(Item::Place(Place(Panel::Workspaces)), true, badge)], Vec::new(), click, cx);
         let width = Config::get(cx).layout.side_width;
         let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [true, true], cx).clone();
         let split = h_resizable("den-split")

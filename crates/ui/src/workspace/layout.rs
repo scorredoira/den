@@ -6,7 +6,8 @@
 use std::rc::Rc;
 
 use super::*;
-use crate::config::{Dock, Group, Layout, Panel, SavedPanels};
+use crate::config::{Dock, Group, Layout, Panel, Place, SavedPanels};
+use super::activity::PlaceDrag;
 use crate::debug::{DebugPart, DebugView};
 use crate::menu::PanelItems as _;
 
@@ -89,18 +90,14 @@ pub(crate) fn title(panel: Panel) -> &'static str {
     }
 }
 
-/// How tall the side column's title is, as the terminals' tabs.
-const BAR_HEIGHT: f32 = 34.;
 /// How tall a side panel's header is.
-const HEADER_HEIGHT: f32 = 22.;
+const HEADER_HEIGHT: f32 = 26.;
 /// The least a side panel shows under its header.
 const MIN_BODY: f32 = 40.;
 
 /// What of a workspace shows besides the code (see `SavedPanels`), and
 /// what isn't saved: the notes, the debugger's console.
 pub(super) struct Panels {
-    group: Group,
-    side: bool,
     terminals: bool,
     device: bool,
     /// The notes, over the window.
@@ -110,6 +107,9 @@ pub(super) struct Panels {
     console_front: bool,
     /// Search or References, whichever showed last: F4 steps through it.
     pub results: Panel,
+    /// The place of the side column this workspace last drew: another
+    /// one, its panels read what they show.
+    seen: Option<Place>,
 }
 
 impl Panels {
@@ -119,21 +119,25 @@ impl Panels {
 
     fn restored(saved: SavedPanels) -> Self {
         Self {
-            group: saved.group,
-            side: saved.side,
             terminals: saved.terminals,
             device: saved.device,
             notes: false,
             console: false,
             console_front: false,
             results: Panel::Search,
+            seen: None,
         }
     }
 
     pub fn saved(&self) -> SavedPanels {
-        SavedPanels { group: self.group, side: self.side, terminals: self.terminals, device: self.device }
+        SavedPanels { terminals: self.terminals, device: self.device }
     }
 }
+
+/// A side panel dragged by its header: onto another's header it goes above
+/// it, onto a place's icon into that place.
+#[derive(Clone)]
+pub(crate) struct PanelDrag(pub Panel);
 
 /// A side panel's lower edge, dragged to size it.
 #[derive(Clone)]
@@ -159,6 +163,9 @@ pub(super) fn debug_views(debugger: &Entity<Debugger>, cx: &mut App) -> HashMap<
     .collect()
 }
 
+/// The debugger's parts in the side column.
+const DEBUG_PANELS: [Panel; 4] = [Panel::CallStack, Panel::Variables, Panel::Watch, Panel::Breakpoints];
+
 impl Workspace {
     pub(crate) fn is_shown(&self, panel: Panel, cx: &App) -> bool {
         let panels = &self.panels;
@@ -169,17 +176,21 @@ impl Workspace {
             Panel::Device => panels.device && self.device.read(cx).available(),
             Panel::Notes => panels.notes,
             Panel::Commit => self.is_shown(Panel::History, cx),
-            Panel::Debugger => panels.side && panels.group == Group::Debug,
-            _ => {
-                Group::of(panel).is_some_and(|group| panels.side && panels.group == group)
-                    && !Config::get(cx).layout.collapsed.contains(&panel)
-            }
+            Panel::Debugger => DEBUG_PANELS.into_iter().any(|panel| self.in_side(panel, cx)),
+            _ => self.in_side(panel, cx) && !Config::get(cx).layout.collapsed.contains(&panel),
         }
     }
 
-    /// The group the side column shows, if it shows.
-    pub(crate) fn side_group(&self) -> Option<Group> {
-        self.panels.side.then_some(self.panels.group)
+    /// Whether the side column shows `panel`, folded or not.
+    pub(super) fn in_side(&self, panel: Panel, cx: &App) -> bool {
+        let layout = &Config::get(cx).layout;
+        layout.side && layout.place_of(panel).is_some() && layout.place_of(panel) == layout.current() && !layout.hidden.contains(&panel)
+    }
+
+    /// What the side column shows, if it shows.
+    pub(crate) fn side_place(&self, cx: &App) -> Option<Place> {
+        let layout = &Config::get(cx).layout;
+        layout.side.then(|| layout.current()).flatten()
     }
 
     /// Everything where it starts, and only the files, the code and the
@@ -192,12 +203,9 @@ impl Workspace {
     }
 
     /// What showed, as saved with the workspace.
-    pub(crate) fn restore_panels(&mut self, saved: Option<SavedPanels>, cx: &mut Context<Self>) {
+    pub(crate) fn restore_panels(&mut self, saved: Option<SavedPanels>) {
         if let Some(saved) = saved {
             self.panels = Panels::restored(saved);
-        }
-        if self.panels.side {
-            self.group_shown(self.panels.group, cx);
         }
     }
 
@@ -207,20 +215,31 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Its panels read what they show when they come into sight.
-    fn group_shown(&mut self, group: Group, cx: &mut Context<Self>) {
-        match group {
-            Group::Git => {
-                self.changes.update(cx, |changes, cx| changes.shown(cx));
-                self.history.update(cx, |history, cx| history.shown(cx));
-            }
-            Group::Debug => self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx)),
-            Group::Explorer | Group::Search => {}
+    /// Its panels read what they show when they come into sight: the side
+    /// column changed, or this workspace came to the front with it.
+    fn place_shown(&mut self, cx: &mut Context<Self>) {
+        let place = self.side_place(cx);
+        if self.panels.seen == place {
+            return;
+        }
+        self.panels.seen = place;
+        let Some(place) = place else {
+            return;
+        };
+        let panels = Config::get(cx).layout.panels(place);
+        if panels.contains(&Panel::Changes) {
+            self.changes.update(cx, |changes, cx| changes.shown(cx));
+        }
+        if panels.contains(&Panel::History) {
+            self.history.update(cx, |history, cx| history.shown(cx));
+        }
+        if panels.iter().any(|panel| DEBUG_PANELS.contains(panel)) {
+            self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         }
     }
 
-    /// Shows `panel`: its group in the side column, unfolded; focus doesn't
-    /// move.
+    /// Shows `panel`: where it is in the side column, unfolded and back if
+    /// it was hidden; focus doesn't move.
     pub(crate) fn show_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         let panels = &mut self.panels;
         match panel {
@@ -240,27 +259,32 @@ impl Workspace {
             }
             Panel::Notes => panels.notes = true,
             _ => {
-                let Some(group) = Group::of(panel) else {
-                    return;
+                // The debugger is its call stack's place; the commit's files, the history.
+                let panel = match panel {
+                    Panel::Debugger => Panel::CallStack,
+                    Panel::Commit => Panel::History,
+                    panel => panel,
                 };
-                let came = !panels.side || panels.group != group;
-                panels.side = true;
-                panels.group = group;
                 if matches!(panel, Panel::Search | Panel::References) {
                     panels.results = panel;
                 }
-                if Config::get(cx).layout.collapsed.contains(&panel) {
-                    Config::update(cx, |config| config.layout.collapsed.retain(|other| *other != panel));
+                let layout = &Config::get(cx).layout;
+                if layout.collapsed.contains(&panel) || layout.hidden.contains(&panel) {
+                    Config::update(cx, |config| {
+                        config.layout.collapsed.retain(|other| *other != panel);
+                        config.layout.hidden.retain(|other| *other != panel);
+                    });
                 }
-                if came {
-                    self.group_shown(group, cx);
-                }
+                let Some(place) = Config::get(cx).layout.place_of(panel) else {
+                    return;
+                };
+                set_side(true, place, cx);
             }
         }
         self.layout_changed(cx);
     }
 
-    /// Hides `panel`: a side panel's group closes the side column.
+    /// Hides `panel`: a side panel's place closes the side column.
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         let panels = &mut self.panels;
         match panel {
@@ -276,8 +300,8 @@ impl Workspace {
             Panel::Device => panels.device = false,
             Panel::Notes => panels.notes = false,
             _ => {
-                if Group::of(panel) == Some(panels.group) {
-                    panels.side = false;
+                if self.is_shown(panel, cx) || self.in_side(panel, cx) {
+                    close_side(cx);
                 }
             }
         }
@@ -293,15 +317,59 @@ impl Workspace {
         }
     }
 
-    /// A group's icon: shows it, or closes the side column if it's the one
+    /// Takes a side panel off the column (Hide Panel) until it's shown
+    /// again; the column closes if that leaves it empty.
+    pub(crate) fn remove_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        Config::update(cx, |config| {
+            if !config.layout.hidden.contains(&panel) {
+                config.layout.hidden.push(panel);
+            }
+        });
+        // Nothing left where it was: the column closes rather than jump.
+        let layout = &Config::get(cx).layout;
+        if layout.place_of(layout.place.0).is_none_or(|place| layout.panels(place).is_empty()) {
+            close_side(cx);
+        }
+        self.layout_changed(cx);
+        cx.refresh_windows();
+    }
+
+    /// Gives a side panel an icon of its own, where it shows alone.
+    pub(super) fn own_place(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.layout.own_place(panel));
+        self.show_panel(panel, cx);
+        cx.refresh_windows();
+    }
+
+    /// Brings a side panel to the place the column shows, from wherever it
+    /// is (or hidden), above `before` or last.
+    pub(crate) fn bring_panel(&mut self, panel: Panel, before: Option<Panel>, cx: &mut Context<Self>) {
+        let Some(place) = Config::get(cx).layout.current() else {
+            return;
+        };
+        Config::update(cx, |config| config.layout.move_panel(panel, place, before));
+        self.show_panel(panel, cx);
+        cx.refresh_windows();
+    }
+
+    /// Puts a place's panels in the one the column shows.
+    fn merge_place(&mut self, from: Place, cx: &mut Context<Self>) {
+        let Some(into) = Config::get(cx).layout.current() else {
+            return;
+        };
+        Config::update(cx, |config| config.layout.merge(from, into));
+        set_side(true, into, cx);
+        self.layout_changed(cx);
+        cx.refresh_windows();
+    }
+
+    /// A place's icon: shows it, or closes the side column if it's the one
     /// showing.
-    pub(crate) fn click_group(&mut self, group: Group, cx: &mut Context<Self>) {
-        if self.side_group() == Some(group) {
-            self.panels.side = false;
+    pub(crate) fn click_place(&mut self, place: Place, cx: &mut Context<Self>) {
+        if self.side_place(cx) == Some(place) {
+            close_side(cx);
         } else {
-            self.panels.side = true;
-            self.panels.group = group;
-            self.group_shown(group, cx);
+            set_side(true, place, cx);
         }
         self.layout_changed(cx);
     }
@@ -367,21 +435,25 @@ impl Workspace {
         }
     }
 
-    /// Cmd-B: the side column, with the group it last showed.
+    /// Cmd-B: the side column, with what it last showed (or the first
+    /// place, if that's gone).
     pub(super) fn toggle_side_panel(&mut self, _: &ToggleSidePanel, _: &mut Window, cx: &mut Context<Self>) {
-        self.click_group(self.panels.group, cx);
+        if let Some(place) = Config::get(cx).layout.current() {
+            self.click_place(place, cx);
+        }
     }
 
     /// The columns: the side one, the code (with the terminals under it, if
     /// that's their place), the terminals and the device.
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.shape_terminals(cx);
+        self.place_shown(cx);
         let terminals = self.panels.terminals;
         if self.terminals_maximized && terminals {
             return self.terminals.clone().into_any_element();
         }
         let layout = Config::get(cx).layout.clone();
-        let side = self.panels.side;
+        let side = self.side_place(cx).is_some();
         let right = terminals && layout.dock == Dock::Right;
         let device = self.is_shown(Panel::Device, cx);
         let state = self.split.state(self.width, [side, right, device], cx).clone();
@@ -466,46 +538,37 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The side column: its group's title (the debugger's toolbar under the
-    /// Run and Debug one) and panels, one above the other. The group's
-    /// filler, or else the last open one, takes the height the others leave.
+    /// The side column: its place's panels, one above the other, under the
+    /// debugger's toolbar if they're its parts. One open panel takes the
+    /// height the others leave (see `Layout::filler`). A place's icon
+    /// dropped on it brings its panels.
     fn render_side(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let group = self.panels.group;
         let layout = Config::get(cx).layout.clone();
-        let open: Vec<Panel> = group.panels().iter().copied().filter(|panel| !layout.collapsed.contains(panel)).collect();
-        let filler = Some(group.filler()).filter(|filler| open.contains(filler)).or(open.last().copied());
-        let bar = (group == Group::Debug).then(|| self.debugger.update(cx, |debugger, cx| debugger.render_bar(cx)));
-        let sections: Vec<AnyElement> = group
-            .panels()
+        let panels = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
+        let open: Vec<Panel> = panels.iter().copied().filter(|panel| !layout.collapsed.contains(panel)).collect();
+        let filler = Layout::filler(&open);
+        let debug = panels.iter().any(|panel| DEBUG_PANELS.contains(panel));
+        let bar = debug.then(|| self.debugger.update(cx, |debugger, cx| debugger.render_bar(cx)));
+        // The first one's header needs no line above it, unless the
+        // debugger's toolbar is there.
+        let sections: Vec<AnyElement> = panels
             .iter()
-            .map(|&panel| {
+            .enumerate()
+            .map(|(ix, &panel)| {
                 let height = (!layout.collapsed.contains(&panel) && Some(panel) != filler).then(|| layout.height(panel));
-                self.render_section(panel, open.contains(&panel), height, window, cx)
+                self.render_section(panel, open.contains(&panel), height, ix > 0 || debug, window, cx)
             })
             .collect();
         let theme = cx.theme();
-        let workspace = cx.entity().downgrade();
         v_flex()
             .id("side-column")
             .when(cfg!(test), |el| el.debug_selector(|| "side-column".into()))
             .size_full()
+            .overflow_hidden()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
-            .child(
-                h_flex()
-                    .id("side-title")
-                    .h(px(BAR_HEIGHT))
-                    .flex_none()
-                    .px_3()
-                    .text_ui_small(cx)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.muted_foreground)
-                    .child(group.title().to_uppercase())
-                    .context_menu(move |menu, window, cx| {
-                        let hide = menu::item("Hide Side Bar", &workspace, move |this, _, cx| this.click_group(group, cx));
-                        menu.panel_items(hide, window, cx)
-                    }),
-            )
+            .drag_over::<PlaceDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.1)))
+            .on_drop(cx.listener(|this, drag: &PlaceDrag, _, cx| this.merge_place(drag.0, cx)))
             .children(bar)
             .children(sections)
             // Every panel folded: the space below them.
@@ -515,7 +578,15 @@ impl Workspace {
 
     /// A side panel: its header, which folds it, and while open its content;
     /// `height` it has unless it takes what the others leave.
-    fn render_section(&mut self, panel: Panel, open: bool, height: Option<f32>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_section(
+        &mut self,
+        panel: Panel,
+        open: bool,
+        height: Option<f32>,
+        line: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme().clone();
         let workspace = cx.entity().downgrade();
         let actions = match panel {
@@ -533,10 +604,9 @@ impl Workspace {
             .pl_1()
             .pr_2()
             .gap_1()
-            .border_t_1()
+            .when(line, |el| el.border_t_1())
             .border_color(theme.sidebar_border)
             .text_ui_small(cx)
-            .font_weight(FontWeight::SEMIBOLD)
             .child(
                 svg()
                     .path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" })
@@ -544,15 +614,42 @@ impl Workspace {
                     .flex_none()
                     .text_color(theme.muted_foreground),
             )
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(title(panel).to_uppercase()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    // The files go by their folder, as in VS Code.
+                    .child(match panel {
+                        Panel::Files => folder_label(&self.root),
+                        _ => title(panel).to_uppercase(),
+                    }),
+            )
             .children(actions.map(|actions| div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(actions)))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapsed(panel, cx)))
+            .on_drag(PanelDrag(panel), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
+            .drag_over::<PanelDrag>(|style, _, _, cx| style.border_t_2().border_color(cx.theme().primary))
+            .on_drop(cx.listener(move |this, drag: &PanelDrag, _, cx| {
+                cx.stop_propagation();
+                this.bring_panel(drag.0, Some(panel), cx);
+            }))
             .context_menu({
                 let workspace = workspace.clone();
                 move |menu, window, cx| {
+                    // Its own icon, if it has company where it is.
+                    let layout = &Config::get(cx).layout;
+                    let company = layout.place_of(panel).is_some_and(|place| layout.panels(place).len() > 1);
                     let fold = menu::item(if open { "Collapse" } else { "Expand" }, &workspace, move |this, _, cx| this.toggle_collapsed(panel, cx));
-                    let hide = menu::item("Hide Side Bar", &workspace, move |this, _, cx| this.hide_panel(panel, cx));
-                    menu.item(fold).separator().panel_items(hide, window, cx)
+                    let remove = menu::item("Hide Panel", &workspace, move |this, _, cx| this.remove_panel(panel, cx));
+                    let side = menu::item("Hide Side Bar", &workspace, move |this, _, cx| this.hide_panel(panel, cx));
+                    menu.item(fold)
+                        .item(remove)
+                        .when(company, |menu| {
+                            menu.item(menu::item("Move to Its Own Icon", &workspace, move |this, _, cx| this.own_place(panel, cx)))
+                        })
+                        .separator()
+                        .panel_items(side, window, cx)
                 }
             });
         let section = v_flex()
@@ -579,12 +676,13 @@ impl Workspace {
             .id(("side-content", panel as usize))
             .flex_1()
             .min_h_0()
+            .pt_1()
             .children(content)
             .capture_any_mouse_down(move |event: &MouseDownEvent, _, cx| {
                 if event.button == MouseButton::Right {
                     let hide = hide.clone();
                     let hide: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
-                        hide.update(cx, |this, cx| this.hide_panel(panel, cx)).ok();
+                        hide.update(cx, |this, cx| this.remove_panel(panel, cx)).ok();
                     });
                     menu::set_panel_under(Some(hide), cx);
                 }
@@ -697,4 +795,22 @@ impl Workspace {
             self.layout_changed(cx);
         }
     }
+}
+
+/// A folder's name as a header says it.
+fn folder_label(root: &Path) -> String {
+    root.file_name().map(|name| name.to_string_lossy().to_uppercase()).unwrap_or_else(|| root.display().to_string())
+}
+
+/// The side column shows `place`, in every workspace.
+fn set_side(side: bool, place: Place, cx: &mut App) {
+    Config::update(cx, |config| {
+        config.layout.side = side;
+        config.layout.place = place;
+    });
+}
+
+/// The side column closes, in every workspace.
+fn close_side(cx: &mut App) {
+    Config::update(cx, |config| config.layout.side = false);
 }
