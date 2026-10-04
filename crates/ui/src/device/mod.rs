@@ -107,7 +107,8 @@ pub struct Device {
     frame: Option<core_video::pixel_buffer::CVPixelBuffer>,
     /// Where the screen was last painted, to turn the mouse into a point of it.
     bounds: Rc<Cell<Bounds<Pixels>>>,
-    touching: bool,
+    /// A finger is down; with true, two (a pinch).
+    touching: Option<bool>,
 }
 
 impl Device {
@@ -130,7 +131,7 @@ impl Device {
             #[cfg(target_os = "macos")]
             frame: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
-            touching: false,
+            touching: None,
         };
         device.load(cx);
         device
@@ -330,7 +331,7 @@ impl Device {
         self.status = Status::Idle;
         self.warning = None;
         self.screen = None;
-        self.touching = false;
+        self.touching = None;
         #[cfg(target_os = "macos")]
         {
             self.surfaces.clear();
@@ -387,6 +388,8 @@ impl Device {
         fit(self.bounds.get(), self.screen?, position)
     }
 
+    /// A finger, or with Option held two, the second mirrored through the
+    /// screen's centre, as Simulator.app pinches.
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
         let Some((x, y)) = self.point(event.position) else {
@@ -395,26 +398,27 @@ impl Device {
         if !(0. ..=1.).contains(&x) || !(0. ..=1.).contains(&y) {
             return;
         }
-        self.touching = true;
-        self.send(protocol::touch(Touch::Down, x, y));
+        self.touching = Some(event.modifiers.alt);
+        self.send(protocol::touch(Touch::Down, (x, y), mirror(x, y, event.modifiers.alt)));
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, _: &mut Context<Self>) {
-        if !self.touching {
+        let Some(pinch) = self.touching else {
             return;
-        }
+        };
         if let Some((x, y)) = self.point(event.position) {
-            self.send(protocol::touch(Touch::Move, x.clamp(0., 1.), y.clamp(0., 1.)));
+            let (x, y) = (x.clamp(0., 1.), y.clamp(0., 1.));
+            self.send(protocol::touch(Touch::Move, (x, y), mirror(x, y, pinch)));
         }
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
-        if !self.touching {
+        let Some(pinch) = self.touching.take() else {
             return;
-        }
-        self.touching = false;
+        };
         if let Some((x, y)) = self.point(event.position) {
-            self.send(protocol::touch(Touch::Up, x.clamp(0., 1.), y.clamp(0., 1.)));
+            let (x, y) = (x.clamp(0., 1.), y.clamp(0., 1.));
+            self.send(protocol::touch(Touch::Up, (x, y), mirror(x, y, pinch)));
         }
     }
 
@@ -485,6 +489,14 @@ impl Device {
             .child(
                 tool("device-home", "icons/house.svg", "Home", running, theme.foreground, cx)
                     .on_click(cx.listener(|this, _, _, _| this.send(protocol::home()))),
+            )
+            .child(
+                tool("device-rotate-left", "icons/rotate-ccw.svg", "Rotate Left", running, theme.foreground, cx)
+                    .on_click(cx.listener(|this, _, _, _| this.send(protocol::rotate(false)))),
+            )
+            .child(
+                tool("device-rotate-right", "icons/rotate-cw.svg", "Rotate Right", running, theme.foreground, cx)
+                    .on_click(cx.listener(|this, _, _, _| this.send(protocol::rotate(true)))),
             )
             .child(
                 div()
@@ -675,6 +687,11 @@ fn bordered(mut el: Div, width: Pixels) -> Div {
     let width = AbsoluteLength::from(width);
     el.style().border_widths = EdgesRefinement { top: Some(width), right: Some(width), bottom: Some(width), left: Some(width) };
     el
+}
+
+/// The second finger of a pinch: the first mirrored through the centre.
+fn mirror(x: f32, y: f32, pinch: bool) -> Option<(f32, f32)> {
+    pinch.then(|| (1. - x, 1. - y))
 }
 
 /// What a key without Cmd sends: a character as text, unless Ctrl is held; a

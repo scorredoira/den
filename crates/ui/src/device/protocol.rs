@@ -75,14 +75,26 @@ pub enum Touch {
     Up,
 }
 
-/// A finger at `x`, `y`: fractions of the screen from its top left.
-pub fn touch(phase: Touch, x: f32, y: f32) -> String {
+/// A finger at `at`, and a second one at `second` for a pinch: fractions of
+/// the screen as shown, from its top left.
+pub fn touch(phase: Touch, at: (f32, f32), second: Option<(f32, f32)>) -> String {
     let phase = match phase {
         Touch::Down => "down",
         Touch::Move => "move",
         Touch::Up => "up",
     };
-    json!({ "touch": phase, "x": x, "y": y }).to_string()
+    let mut command = json!({ "touch": phase, "x": at.0, "y": at.1 });
+    if let Some((x2, y2)) = second {
+        command["x2"] = json!(x2);
+        command["y2"] = json!(y2);
+    }
+    command.to_string()
+}
+
+/// The device turned a quarter clockwise (`right`) or the other way; the
+/// frames that follow are its screen as held, a new size first.
+pub fn rotate(right: bool) -> String {
+    json!({ "rotate": if right { "right" } else { "left" } }).to_string()
 }
 
 pub fn text(text: &str) -> String {
@@ -153,7 +165,13 @@ mod tests {
     #[test]
     fn commands() {
         let parse = |line: String| serde_json::from_str::<Value>(&line).unwrap();
-        assert_eq!(parse(touch(Touch::Move, 0.5, 0.25)), json!({ "touch": "move", "x": 0.5, "y": 0.25 }));
+        assert_eq!(parse(touch(Touch::Move, (0.5, 0.25), None)), json!({ "touch": "move", "x": 0.5, "y": 0.25 }));
+        assert_eq!(
+            parse(touch(Touch::Down, (0.25, 0.5), Some((0.75, 0.5)))),
+            json!({ "touch": "down", "x": 0.25, "y": 0.5, "x2": 0.75, "y2": 0.5 })
+        );
+        assert_eq!(parse(rotate(true)), json!({ "rotate": "right" }));
+        assert_eq!(parse(rotate(false)), json!({ "rotate": "left" }));
         assert_eq!(parse(text("Hé")), json!({ "text": "Hé" }));
         assert_eq!(
             parse(key("left", Modifiers { shift: true, ..Default::default() })),
