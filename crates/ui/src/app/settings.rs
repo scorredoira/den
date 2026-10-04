@@ -11,6 +11,9 @@ use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 /// Sections, in index order.
 const SECTIONS: [&str; 5] = ["Appearance", "Editor", "Workspaces", "Updates", "Keyboard Shortcuts"];
 
+/// What − and + change the width under which diffs go to one column.
+const DIFF_WIDTH_STEP: f32 = 100.;
+
 pub(super) struct Settings {
     focus: FocusHandle,
     search: Entity<InputState>,
@@ -300,38 +303,16 @@ impl Den {
             .chain(sizes.iter().map(|(_, title, _)| title))
             .any(|text| matches(text));
         let current = Config::get(cx).theme;
-        let theme = cx.theme();
         let choices = h_flex().gap_2().children(
             [(ThemeChoice::System, "System"), (ThemeChoice::Light, "Light"), (ThemeChoice::Dark, "Dark")]
                 .into_iter()
                 .map(|(choice, label)| {
-                    let selected = current == choice;
-                    div()
-                        .id(label)
-                        .px_3()
-                        .py_1()
-                        .rounded(theme.radius)
-                        .border_1()
-                        .border_color(theme.border)
-                        .when(selected, |el| el.bg(theme.accent).font_semibold())
-                        .hover(|style| style.bg(theme.accent))
-                        .child(label)
+                    chip(label, label, current == choice, cx)
                         .on_click(cx.listener(move |this, _, window, cx| this.set_theme(choice, window, cx)))
                 }),
         );
         let step = |id: String, label: &'static str, area: TextArea, size: f32| {
-            div()
-                .id(SharedString::from(id))
-                .w(px(28.))
-                .py_1()
-                .flex()
-                .justify_center()
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(theme.border)
-                .hover(|style| style.bg(theme.accent))
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_font_size(area, Some(size), cx)))
+            step(id, label, cx).on_click(cx.listener(move |this, _, _, cx| this.set_font_size(area, Some(size), cx)))
         };
         let mut rows = vec![setting("Theme", "Light, dark, or match the system.", choices, cx)];
         for (ix, (area, title, description)) in sizes.into_iter().enumerate() {
@@ -353,8 +334,32 @@ impl Den {
     }
 
     fn render_editor(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[1], "Auto Save", "autosave", "focus", "Format on Save", "Format Document", "json"]
+        let visible = [SECTIONS[1], "Auto Save", "autosave", "focus", "Format on Save", "Format Document", "json", "Diff Layout", "Side by Side", "One Column", "One-Column Width", "Automatic"]
             .iter().any(|text| matches(text));
+        let layout = Config::get(cx).diff_layout;
+        let layouts = h_flex().gap_2().children(
+            [(DiffLayout::Automatic, "Automatic"), (DiffLayout::SideBySide, "Side by Side"), (DiffLayout::OneColumn, "One Column")]
+                .into_iter()
+                .map(|(choice, label)| {
+                    chip(label, label, layout == choice, cx)
+                        .on_click(cx.listener(move |_, _, _, cx| crate::workspace::set_diff_layout(choice, cx)))
+                }),
+        );
+        let width = Config::get(cx).side_by_side_width();
+        let set_width = |width: Option<f32>| {
+            cx.listener(move |_, _, _, cx| {
+                Config::update(cx, |config| config.set_side_by_side_width(width));
+                cx.refresh_windows();
+            })
+        };
+        let one_column_width = h_flex()
+            .gap_2()
+            .child(step("diff-width-smaller".into(), "−", cx).on_click(set_width(Some(width - DIFF_WIDTH_STEP))))
+            .child(div().w(px(64.)).flex().justify_center().child(format!("{width} px")))
+            .child(step("diff-width-larger".into(), "+", cx).on_click(set_width(Some(width + DIFF_WIDTH_STEP))))
+            .when(width != config::DEFAULT_SIDE_BY_SIDE_WIDTH, |el| {
+                el.child(link("diff-width-reset", "↺", cx).on_click(set_width(None)))
+            });
         let input = div().max_w(px(480.)).child(Input::new(&settings.format_on_save));
         let auto_save = Switch::new("auto-save-on-focus-loss")
             .accessibility_label("Auto Save on Focus Loss")
@@ -372,6 +377,16 @@ impl Den {
             "Format on Save",
             "File types formatted when saved, separated by commas. Formatting (also Format Document, Shift-Opt-F) uses the repo's .den/format if it has one, else the language server; JSON works without either.",
             input,
+            cx,
+        ), setting(
+            "Diff Layout",
+            "Diffs side by side, in one column, or Automatic: side by side when there's room for two. Also in a diff's right-click menu.",
+            layouts,
+            cx,
+        ), setting(
+            "One-Column Width",
+            "Narrower than this, an Automatic diff shows in one column.",
+            one_column_width,
             cx,
         )];
         Self::section(SECTIONS[1], rows, visible, cx)
@@ -524,6 +539,37 @@ fn setting(title: &'static str, description: &'static str, control: impl IntoEle
         .child(div().text_color(theme.muted_foreground).child(description))
         .child(div().pt_1().child(control))
         .into_any_element()
+}
+
+/// One of a row of choices, highlighted if it's the current one.
+fn chip(id: &'static str, label: &'static str, selected: bool, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    div()
+        .id(id)
+        .px_3()
+        .py_1()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .when(selected, |el| el.bg(theme.accent).font_semibold())
+        .hover(|style| style.bg(theme.accent))
+        .child(label)
+}
+
+/// The − or + beside a number.
+fn step(id: String, label: &'static str, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    div()
+        .id(SharedString::from(id))
+        .w(px(28.))
+        .py_1()
+        .flex()
+        .justify_center()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .hover(|style| style.bg(theme.accent))
+        .child(label)
 }
 
 fn link(id: impl Into<SharedString>, label: &'static str, cx: &App) -> Stateful<Div> {
