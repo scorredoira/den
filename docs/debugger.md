@@ -87,7 +87,8 @@ den debug next                            # then wait again
 den debug continue
 ```
 
-`den debug state` is the session (`idle`, `connecting: …`, `connected`), the
+`den debug restart` is Cmd-Shift-F5: it stops the session and starts it
+again. `den debug state` is the session (`idle`, `connecting: …`, `connected`), the
 stopped VMs, the focused stop (file, line, frames, locals, exception), the
 breakpoints and the last lines of the console. `wait [stop|connected|idle]
 [<seconds>]` waits for that (30 seconds at most) and prints the state; a

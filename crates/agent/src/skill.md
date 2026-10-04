@@ -50,7 +50,13 @@ full list; the main ones:
   `den debug inspect` lets the user pick a widget in the app being
   debugged; the line that made it opens, and is `revealed` in the state. To test
   a program, start it, trigger what reaches the breakpoint (a request, a
-  test) and wait.
+  test) and wait. `den debug restart` stops it and starts it again.
+- `den device ...` uses the phone of the Device panel like the mouse and the
+  keyboard do: `den device show` (serves the first booted device),
+  `den device tap <x> <y>` and `den device swipe <x> <y> <x2> <y2>` (fractions
+  of the screen from its top left), `den device text <text>` (tap the field
+  first), `den device key <name>`, `den device home`. With `den debug`, a tap
+  reaches a breakpoint in the app's code.
 
 Lines and columns start at 1. A command that fails prints why and exits
 with an error.
