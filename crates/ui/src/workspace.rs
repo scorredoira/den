@@ -2079,6 +2079,10 @@ impl Workspace {
         self.toggle_panel(Panel::Debugger, cx);
     }
 
+    pub fn notes(&self) -> Entity<NotesPanel> {
+        self.notes.clone()
+    }
+
     /// The notes, with the focus to write in them.
     fn show_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_panel(Panel::Notes, cx);

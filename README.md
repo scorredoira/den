@@ -70,6 +70,7 @@ In Den's terminals, more commands act on the workspace of the terminal they run 
 | `den doc [<title>]` | Shows the Markdown read from stdin in a tab. |
 | `den selection`, `den tabs` | Print what's selected in the editor, and the open files. |
 | `den message <text>` | Shows a message in the status bar. |
+| `den notes [add \| set] [<text>]` | Prints the workspace's notes, adds a line to them or replaces them (the text, or stdin). |
 | `den workspaces` | Lists the workspaces and whether each is working, waiting for an answer or finished. |
 | `den term new [--right\|--down] [<command>]` | Opens a terminal, runs the command in its shell and prints its id. |
 | `den term list`, `read <id>`, `send <id> <text>`, `focus <id>`, `close <id>` | Lists, reads, types in, shows and closes terminals. |

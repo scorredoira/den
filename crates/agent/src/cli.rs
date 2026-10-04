@@ -43,6 +43,12 @@ keyboard stays in the terminal unless --focus.
   den tabs            lists the files open in the editor, the active one
                       with its cursor.
   den message <text>  shows a message in the status bar.
+  den notes           prints the workspace's notes (its Notes panel).
+  den notes add [<text>]
+                      adds a line to them: the text, or stdin.
+  den notes set [<text>]
+                      replaces them with the text, or stdin; with ''
+                      it clears them.
   den workspaces      lists the workspaces open on every server: working,
                       waiting (asking something) or finished unseen.
   den term list       the workspace's terminals: id, title, `*` the active.
@@ -278,6 +284,19 @@ pub fn command(args: &[String]) -> Result<()> {
             title => title,
         };
         args = vec!["doc".into(), title, text];
+    }
+    // `den notes add|set`: the words, or stdin.
+    if args[0] == "notes" && args.len() >= 2 && matches!(args[1].as_str(), "add" | "set") {
+        let text = if args.len() > 2 {
+            args[2..].join(" ")
+        } else if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            text
+        } else {
+            bail!("the text? den notes {} <text>, or pipe it in", args[1]);
+        };
+        args = vec!["notes".into(), args[1].clone(), text];
     }
     let client = connect()?;
     let response = smol::block_on(client.request(Request::Command {
