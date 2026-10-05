@@ -152,10 +152,7 @@ impl TerminalArea {
         cx.spawn_in(window, async move |this, cx| {
             let result: Result<(Vec<Tree>, Vec<(TermId, Entity<Terminal>)>)> = async {
                 let mut alive: HashSet<TermId> = agent::list(&client, group.clone()).await?.into_iter().collect();
-                let mut terminals = Vec::new();
-                if let Some(term) = debug_term.filter(|term| alive.remove(term)) {
-                    terminals.push((term, agent::attach(client.clone(), term, cx).await?));
-                }
+                let debug = debug_term.filter(|term| alive.remove(term));
                 let saved = SavedLayouts::load().groups.remove(&group).unwrap_or_default();
                 let mut trees: Vec<Tree> = saved
                     .tabs
@@ -169,8 +166,10 @@ impl TerminalArea {
                 orphans.sort();
                 trees.extend(orphans.into_iter().map(Tree::Leaf));
 
-                for term in trees.iter().flat_map(Tree::leaves) {
-                    terminals.push((term, agent::attach(client.clone(), term, cx).await?));
+                let terms: Vec<TermId> = debug.into_iter().chain(trees.iter().flat_map(Tree::leaves)).collect();
+                let mut terminals = Vec::new();
+                for (term, terminal) in agent::attach_all(&client, &terms, cx).await {
+                    terminals.push((term, terminal?));
                 }
                 Ok((trees, terminals))
             }
@@ -222,22 +221,18 @@ impl TerminalArea {
             .collect();
         cx.spawn_in(window, async move |this, cx| {
             let alive: HashSet<TermId> = agent::list(&client, group).await.unwrap_or_default().into_iter().collect();
-            let mut gone = Vec::new();
-            for (term, terminal) in terminals {
-                if !alive.contains(&term) || agent::reattach(client.clone(), term, &terminal, cx).await.is_err() {
-                    gone.push(term);
-                }
-            }
+            let (living, dead): (Vec<_>, Vec<_>) = terminals.into_iter().partition(|(term, _)| alive.contains(term));
+            let mut gone: Vec<TermId> = dead.into_iter().map(|(term, _)| term).collect();
+            gone.extend(agent::reattach_all(&client, living, cx).await);
             // Read now: one opened here meanwhile is already in `views`.
             let known: HashSet<TermId> = this.update(cx, |this, _| this.views.keys().copied().collect()).unwrap_or_default();
             let mut new: Vec<TermId> = alive.difference(&known).copied().collect();
             new.sort();
-            let mut added = Vec::new();
-            for term in new {
-                if let Ok(terminal) = agent::attach(client.clone(), term, cx).await {
-                    added.push((term, terminal));
-                }
-            }
+            let added: Vec<(TermId, Entity<Terminal>)> = agent::attach_all(&client, &new, cx)
+                .await
+                .into_iter()
+                .filter_map(|(term, terminal)| Some((term, terminal.ok()?)))
+                .collect();
             this.update_in(cx, |this, window, cx| {
                 for term in gone {
                     this.remove(term, window, cx);

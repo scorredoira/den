@@ -548,15 +548,23 @@ pub fn build_id(bytes: &[u8]) -> String {
 }
 
 pub fn write_frame<T: Serialize>(writer: &mut impl Write, message: &T) -> Result<()> {
+    writer.write_all(&encode_frame(message)?)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// A message as `write_frame` writes it: its length, then its body. Too
+/// large is rejected here, before anything is written, so the next frame is
+/// still readable.
+pub fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>> {
     let body = rmp_serde::to_vec(message)?;
-    // Reject before writing even the header, so the next frame is still readable.
     if body.len() > MAX_FRAME {
         return Err(FrameTooLarge(body.len()).into());
     }
-    writer.write_all(&(body.len() as u32).to_le_bytes())?;
-    writer.write_all(&body)?;
-    writer.flush()?;
-    Ok(())
+    let mut frame = Vec::with_capacity(4 + body.len());
+    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&body);
+    Ok(frame)
 }
 
 /// What was read from a frame that may carry something this side doesn't know.

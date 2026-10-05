@@ -85,7 +85,9 @@ pub struct Client {
     /// The connected agent is from a different build than the one that would be launched now.
     outdated: std::sync::atomic::AtomicBool,
     connected: Arc<std::sync::atomic::AtomicBool>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// What goes to the agent, written by a thread of its own: sending never
+    /// waits for the connection, and keys get ahead of large requests.
+    outgoing: Arc<Outgoing>,
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, Callback>>>,
     /// Several per terminal (two windows may show the same one), each with
@@ -140,11 +142,61 @@ impl Drop for Client {
     }
 }
 
+/// The frames waiting to be written.
+#[derive(Default)]
+struct Outgoing {
+    queues: Mutex<Queues>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct Queues {
+    /// A terminal's keys and size: what someone is waiting to see.
+    urgent: std::collections::VecDeque<Vec<u8>>,
+    normal: std::collections::VecDeque<Vec<u8>>,
+    closed: bool,
+}
+
+impl Outgoing {
+    fn push(&self, frame: Vec<u8>, urgent: bool) {
+        let mut queues = self.queues.lock().unwrap();
+        // Disconnected: nobody would write it.
+        if queues.closed {
+            return;
+        }
+        match urgent {
+            true => queues.urgent.push_back(frame),
+            false => queues.normal.push_back(frame),
+        }
+        self.ready.notify_one();
+    }
+
+    fn close(&self) {
+        self.queues.lock().unwrap().closed = true;
+        self.ready.notify_one();
+    }
+
+    /// The next frame to write, the urgent ones first; `None` once closed.
+    fn next(&self) -> Option<Vec<u8>> {
+        let mut queues = self.queues.lock().unwrap();
+        loop {
+            if queues.closed {
+                return None;
+            }
+            if let Some(frame) = queues.urgent.pop_front().or_else(|| queues.normal.pop_front()) {
+                return Some(frame);
+            }
+            queues = self.ready.wait(queues).unwrap();
+        }
+    }
+}
+
 impl Client {
     /// Close only this connection. The agent keeps its terminals, and the UI
     /// can reattach from snapshots after a transport or output overflow.
     pub fn disconnect(&self) {
         self.connected.store(false, Ordering::Relaxed);
+        self.outgoing.close();
         // Closing just the writer leaves the reader's cloned socket alive.
         // Shut down both directions to wake the reader and notify the agent.
         if let Some(close) = self.close_stream.lock().unwrap().take() {
@@ -206,7 +258,7 @@ impl Client {
             close_stream: Mutex::new(close_stream),
             outdated: std::sync::atomic::AtomicBool::new(false),
             connected: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            writer: Mutex::new(writer),
+            outgoing: Arc::default(),
             next_id: AtomicU64::new(1),
             pending: Arc::default(),
             subscribers: Arc::default(),
@@ -223,6 +275,20 @@ impl Client {
         let connected = client.connected.clone();
         let on_disconnect = client.on_disconnect.clone();
         let relays = client.relays.clone();
+        let outgoing = client.outgoing.clone();
+        let this = Arc::downgrade(&client);
+        std::thread::spawn(move || {
+            let mut writer = writer;
+            while let Some(frame) = outgoing.next() {
+                if writer.write_all(&frame).and_then(|_| writer.flush()).is_err() {
+                    // The reader finds out too, and fails what's pending.
+                    if let Some(client) = this.upgrade() {
+                        client.disconnect();
+                    }
+                    break;
+                }
+            }
+        });
         let this = Arc::downgrade(&client);
         std::thread::spawn(move || {
             let mut reader = reader;
@@ -381,8 +447,10 @@ impl Client {
     }
 
     fn send(&self, id: Option<u64>, request: Request) -> Result<()> {
-        let mut writer = self.writer.lock().unwrap();
-        proto::write_frame(&mut *writer, &ClientMessage { id, request })
+        let urgent = matches!(request, Request::TermInput { .. } | Request::TermResize { .. });
+        let frame = proto::encode_frame(&ClientMessage { id, request })?;
+        self.outgoing.push(frame, urgent);
+        Ok(())
     }
 
     /// Sends a request and calls `callback` with the response (from another thread).

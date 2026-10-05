@@ -219,7 +219,7 @@ impl Workspace {
 
     /// Its panels read what they show when they come into sight: the side
     /// column changed, or this workspace came to the front with it.
-    fn place_shown(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn place_shown(&mut self, cx: &mut Context<Self>) {
         let layout = &Config::get(cx).layout;
         let open: Vec<Panel> = self
             .side_place(cx)
@@ -475,11 +475,9 @@ impl Workspace {
     /// The columns: the side one, the code (with the terminals under it, if
     /// that's their place), the terminals and the device.
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        self.shape_terminals(cx);
-        self.place_shown(cx);
         let terminals = self.panels.terminals;
         if self.terminals_maximized && terminals {
-            return self.terminals.clone().into_any_element();
+            return self.terminals.clone().cached(StyleRefinement::default().size_full()).into_any_element();
         }
         let layout = Config::get(cx).layout.clone();
         let side = self.side_place(cx).is_some();
@@ -504,7 +502,7 @@ impl Workspace {
                 resizable_panel()
                     .size(config::width(layout.dock_width.unwrap_or(half), 200., 4000.))
                     .size_range(px(200.)..px(4000.))
-                    .child(self.terminals.clone()),
+                    .child(self.terminals.clone().cached(StyleRefinement::default().size_full())),
             );
         }
         if device {
@@ -570,7 +568,7 @@ impl Workspace {
                 resizable_panel()
                     .size(px(layout.dock_height.unwrap_or(height / 3.).clamp(120., 4000.)))
                     .size_range(px(120.)..px(4000.))
-                    .child(self.terminals.clone()),
+                    .child(self.terminals.clone().cached(StyleRefinement::default().size_full())),
             )
             .on_resize(|state, _, cx| {
                 if let Some(size) = state.read(cx).sizes().get(1).copied() {
@@ -702,16 +700,19 @@ impl Workspace {
         if !open {
             return section.flex_none().into_any_element();
         }
+        // The panels are drawn again only when they change, not with every
+        // frame of a terminal or every blink of the cursor.
+        let cached = || StyleRefinement::default().size_full();
         let content = match panel {
             Panel::Workspaces => self.workspaces.clone().map(|view| view.into_any_element()),
             Panel::Agents => self.agents.clone().map(|view| view.into_any_element()),
-            Panel::Files => Some(self.file_tree.clone().into_any_element()),
-            Panel::Outline => Some(self.outline.clone().into_any_element()),
-            Panel::Search => Some(self.search.clone().into_any_element()),
-            Panel::References => Some(self.references.clone().into_any_element()),
-            Panel::Changes => Some(self.changes.clone().into_any_element()),
-            Panel::History => Some(self.history.clone().into_any_element()),
-            _ => self.debug_views.get(&panel).map(|view| view.clone().into_any_element()),
+            Panel::Files => Some(self.file_tree.clone().cached(cached()).into_any_element()),
+            Panel::Outline => Some(self.outline.clone().cached(cached()).into_any_element()),
+            Panel::Search => Some(self.search.clone().cached(cached()).into_any_element()),
+            Panel::References => Some(self.references.clone().cached(cached()).into_any_element()),
+            Panel::Changes => Some(self.changes.clone().cached(cached()).into_any_element()),
+            Panel::History => Some(self.history.clone().cached(cached()).into_any_element()),
+            _ => self.debug_views.get(&panel).map(|view| view.clone().cached(cached()).into_any_element()),
         };
         let hide = workspace.clone();
         let hide_workspace = workspace.clone();
@@ -771,7 +772,7 @@ impl Workspace {
     }
 
     /// The debugger's console, a tab after the terminals' once shown.
-    fn shape_terminals(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn shape_terminals(&mut self, cx: &mut Context<Self>) {
         let mut tabs = Vec::new();
         if self.panels.console
             && let Some(view) = self.debug_views.get(&Panel::Console)

@@ -754,7 +754,7 @@ impl Debugger {
                     .into_any_element(),
                 ConsoleLine::Result(var, _) => {
                     let mut rows = Vec::new();
-                    self.tree(&mut rows, format!("c{ix}"), 0, &Var { name: String::new(), ..var.clone() }, None);
+                    self.tree(&mut rows, format!("c{}", self.console_dropped + ix), 0, &Var { name: String::new(), ..var.clone() }, None);
                     self.render_rows("console", rows, None, cx)
                 }
             });
@@ -853,8 +853,8 @@ impl Debugger {
             DebugPart::Watch => ("debug-watch", self.render_watches(cx)),
             DebugPart::Breakpoints => ("debug-breakpoints", self.render_breakpoints(cx)),
             DebugPart::Console => {
-                if self.console.len() != self.console_seen {
-                    self.console_seen = self.console.len();
+                if self.console_written != self.console_seen {
+                    self.console_seen = self.console_written;
                     self.console_scroll.scroll_to_bottom();
                 }
                 let console = self.render_console(cx);

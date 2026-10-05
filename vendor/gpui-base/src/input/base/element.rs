@@ -2587,6 +2587,24 @@ impl<M: InputModeKind> Element for TextElement<M> {
         }
 
         let line_height = window.line_height();
+        // (den) A row to center, now that the size is known.
+        if self.state.read(cx).center_row.is_some() {
+            let height = bounds.size.height;
+            self.state.update(cx, |state, _| {
+                let Some(row) = state.center_row.take() else {
+                    return;
+                };
+                let display_row = state
+                    .display_map
+                    .buffer_pos_to_display_pos(crate::input::BufferPoint::new(row, 0))
+                    .row as f32;
+                let rows = height / line_height;
+                let last_top = (state.display_map.wrap_row_count() as f32 - rows + 1.).max(0.);
+                let top = (display_row - (rows - 1.) / 2.).clamp(0., last_top);
+                let x = state.deferred_scroll_offset.map_or(state.scroll_handle.offset().x, |offset| offset.x);
+                state.deferred_scroll_offset = Some(point(x, -(line_height * top)));
+            });
+        }
         let token_elements = self.measure_tokens(
             (bounds.size.width - line_number_width - RIGHT_MARGIN).max(px(1.)),
             line_height,

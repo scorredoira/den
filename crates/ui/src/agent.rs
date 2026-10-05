@@ -138,15 +138,15 @@ pub async fn create(
     Ok((term, attach(client, term, cx).await?))
 }
 
-/// Subscribes to an agent terminal's output and requests its snapshot.
-async fn join(
-    client: Arc<Client>,
-    term: TermId,
-) -> Result<(Rc<AgentBackend>, smol::channel::Receiver<PtyEvent>, u16, u16, Vec<u8>)> {
-    // Agent output comes in chunks of at most 64 KiB: at most 8 MiB can
-    // wait for this terminal's UI. Never block the connection's reader,
-    // which also delivers the snapshot awaited below.
-    let (tx, rx) = smol::channel::bounded(128);
+type Joined = (Rc<AgentBackend>, smol::channel::Receiver<PtyEvent>, u16, u16, Vec<u8>);
+
+/// Subscribes to an agent terminal's output and requests its snapshot, right
+/// away (several are asked for at once): the snapshot comes in the future.
+fn join(client: Arc<Client>, term: TermId) -> impl std::future::Future<Output = Result<Joined>> {
+    // Agent output comes in chunks of at most 256 KiB, usually far less: a
+    // UI busy for a moment doesn't lose the terminal. Never block the
+    // connection's reader, which also delivers the snapshot awaited below.
+    let (tx, rx) = smol::channel::bounded(1024);
     let overflow_rx = rx.downgrade();
     let weak = Arc::downgrade(&client);
     let subscription = client.subscribe(term, move |update| {
@@ -170,11 +170,14 @@ async fn join(
         subscription,
         cwd: Arc::default(),
     });
-    let response = client.request(Request::TermAttach { term }).await?;
-    let Response::TermSnapshot { cols, rows, data } = response else {
-        bail!("unexpected response from the agent: {response:?}");
-    };
-    Ok((backend, rx, cols, rows, data))
+    let response = client.request(Request::TermAttach { term });
+    async move {
+        let response = response.await?;
+        let Response::TermSnapshot { cols, rows, data } = response else {
+            bail!("unexpected response from the agent: {response:?}");
+        };
+        Ok((backend, rx, cols, rows, data))
+    }
 }
 
 /// On overflow the partial screen is no longer trustworthy. Tell the
@@ -197,11 +200,36 @@ pub async fn attach(client: Arc<Client>, term: TermId, cx: &mut AsyncApp) -> Res
     Ok(cx.new(|cx| Terminal::new(backend, rx, cols, rows, &data, cx)))
 }
 
+/// Attaches to several terminals at once: all are asked for together, so
+/// they take one round trip, not one each.
+pub async fn attach_all(client: &Arc<Client>, terms: &[TermId], cx: &mut AsyncApp) -> Vec<(TermId, Result<Entity<Terminal>>)> {
+    let pending: Vec<_> = terms.iter().map(|&term| (term, join(client.clone(), term))).collect();
+    let mut attached = Vec::new();
+    for (term, joined) in pending {
+        let terminal = match joined.await {
+            Ok((backend, rx, cols, rows, data)) => Ok(cx.new(|cx| Terminal::new(backend, rx, cols, rows, &data, cx))),
+            Err(err) => Err(err),
+        };
+        attached.push((term, terminal));
+    }
+    attached
+}
+
 /// Reattaches a terminal to its process over a new connection.
-pub async fn reattach(client: Arc<Client>, term: TermId, terminal: &Entity<Terminal>, cx: &mut AsyncApp) -> Result<()> {
-    let (backend, rx, cols, rows, data) = join(client, term).await?;
-    terminal.update(cx, |terminal, cx| terminal.reconnect(backend, rx, cols, rows, &data, cx));
-    Ok(())
+/// Reattaches terminals to their processes after reconnecting, all asked
+/// for at once. Returns those that couldn't be.
+pub async fn reattach_all(client: &Arc<Client>, terminals: Vec<(TermId, Entity<Terminal>)>, cx: &mut AsyncApp) -> Vec<TermId> {
+    let pending: Vec<_> = terminals.into_iter().map(|(term, terminal)| (term, terminal, join(client.clone(), term))).collect();
+    let mut gone = Vec::new();
+    for (term, terminal, joined) in pending {
+        match joined.await {
+            Ok((backend, rx, cols, rows, data)) => {
+                terminal.update(cx, |terminal, cx| terminal.reconnect(backend, rx, cols, rows, &data, cx));
+            }
+            Err(_) => gone.push(term),
+        }
+    }
+    gone
 }
 
 /// The directory a terminal's shell (or what runs in it) is in.

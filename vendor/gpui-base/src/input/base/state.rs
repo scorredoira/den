@@ -447,6 +447,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
+    /// (den) A buffer row to center once laid out, see [`Self::center_row`].
+    pub(crate) center_row: Option<usize>,
     /// (den) How each line looks, by buffer line; see [`LineStyle`].
     pub(crate) line_styles: Vec<LineStyle>,
     /// (den) A column for debugger marks before the line numbers, its
@@ -796,6 +798,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
+            center_row: None,
             line_styles: Vec::new(),
             gutter_column: false,
             gutter_marks: Vec::new(),
@@ -3020,6 +3023,14 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// The offset will be clamped to the valid range, and applied after the next layout.
     pub fn set_scroll_offset(&mut self, offset: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         self.deferred_scroll_offset = Some(offset);
+        cx.notify();
+    }
+
+    /// (den) Centers buffer `row` in the viewport on the next layout, even the
+    /// first one: a freshly opened editor is drawn there from its first frame
+    /// instead of moving there on a later one.
+    pub fn center_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.center_row = Some(row);
         cx.notify();
     }
 

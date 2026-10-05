@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// Maximum bytes processed in one go before repainting.
-const MAX_BATCH: usize = 1024 * 1024;
+const MAX_BATCH: usize = 256 * 1024;
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -164,6 +164,9 @@ impl Terminal {
                     disconnected = lost;
                     break;
                 }
+                // A flood of output doesn't keep the window from drawing
+                // or from handling keys: they go between batches.
+                smol::future::yield_now().await;
             }
             this.update(cx, |this, cx| {
                 if disconnected {

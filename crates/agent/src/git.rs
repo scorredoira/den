@@ -52,7 +52,8 @@ pub fn changes(dir: &Path, uncommitted: bool) -> Result<(Option<String>, Vec<Cha
 
 /// Files from a `git diff` (or `diff-tree`) with their added and removed
 /// lines: `args` is the command without `--numstat` or `--name-status`.
-fn changed(dir: &Path, args: &[&str]) -> Result<Vec<ChangedFile>> {
+/// Lines added and removed by each file of a `git diff` (`args`).
+fn numstat(dir: &Path, args: &[&str]) -> Result<HashMap<String, (u32, u32)>> {
     let mut counts: HashMap<String, (u32, u32)> = HashMap::new();
     for line in git(dir, &[args, &["--numstat", "-z"]].concat())?.split('\0').filter(|line| !line.is_empty()) {
         let mut parts = line.splitn(3, '\t');
@@ -62,6 +63,11 @@ fn changed(dir: &Path, args: &[&str]) -> Result<Vec<ChangedFile>> {
         // Binaries show up as "-".
         counts.insert(path.to_string(), (added.parse().unwrap_or(0), removed.parse().unwrap_or(0)));
     }
+    Ok(counts)
+}
+
+fn changed(dir: &Path, args: &[&str]) -> Result<Vec<ChangedFile>> {
+    let counts = numstat(dir, args)?;
     let mut files = Vec::new();
     // With -z Git emits unquoted status/path pairs, even for tabs and newlines.
     let raw = git(dir, &[args, &["--name-status", "-z"]].concat())?;
@@ -225,7 +231,16 @@ fn strs(files: &[String]) -> Vec<&str> {
 /// and what isn't.
 fn status(dir: &Path) -> Result<GitStatus> {
     let mut status = GitStatus::default();
-    let raw = git(dir, &["status", "--porcelain=v2", "--branch", "--no-renames", "--untracked-files=all", "-z"])?;
+    // The three at once: what changed, and the lines of what's staged and
+    // of what isn't.
+    let (raw, staged_counts, unstaged_counts) = std::thread::scope(|scope| {
+        let staged = scope.spawn(|| numstat(dir, &["diff", "--cached", "--no-renames"]));
+        let unstaged = scope.spawn(|| numstat(dir, &["diff", "--no-renames"]));
+        let raw = git(dir, &["status", "--porcelain=v2", "--branch", "--no-renames", "--untracked-files=all", "-z"]);
+        let counts = |thread: std::thread::ScopedJoinHandle<Result<_>>| thread.join().ok().and_then(Result::ok).unwrap_or_default();
+        (raw, counts(staged), counts(unstaged))
+    });
+    let raw = raw?;
     let (mut staged, mut unstaged) = (Vec::new(), Vec::new());
     for entry in raw.split('\0').filter(|entry| !entry.is_empty()) {
         if let Some(header) = entry.strip_prefix("# ") {
@@ -257,24 +272,15 @@ fn status(dir: &Path) -> Result<GitStatus> {
             _ => {}
         }
     }
-    let counts = |args: &[&str]| -> HashMap<String, (u32, u32)> {
-        changed(dir, args)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|file| (file.path, (file.added, file.removed)))
-            .collect()
-    };
-    let staged_counts = counts(&["diff", "--cached", "--no-renames"]);
-    let unstaged_counts = counts(&["diff", "--no-renames"]);
-    let untracked_counts: HashMap<String, (u32, u32)> = untracked(dir)?
-        .into_iter()
-        .map(|file| (file.path, (file.added, 0)))
-        .collect();
     let build = |files: Vec<(String, char)>, counts: &HashMap<String, (u32, u32)>| -> Vec<ChangedFile> {
         let mut files: Vec<ChangedFile> = files
             .into_iter()
             .map(|(path, status)| {
-                let (added, removed) = counts.get(&path).or_else(|| untracked_counts.get(&path)).copied().unwrap_or_default();
+                // Untracked: all its lines are new.
+                let (added, removed) = match status {
+                    '?' => (untracked_lines(&dir.join(&path)), 0),
+                    _ => counts.get(&path).copied().unwrap_or_default(),
+                };
                 ChangedFile { path, status, added, removed }
             })
             .collect();

@@ -734,21 +734,40 @@ impl Config {
         (serde_json::from_value(serde_json::Value::Object(read)).unwrap_or_default(), false)
     }
 
+    /// Saves it now (on quit: nothing would be left to write it later).
     fn save(&self) {
-        let Some(path) = Self::path() else {
+        if let Some(bytes) = self.to_save() {
+            write_config(bytes);
+        }
+    }
+
+    /// Saves it on a thread of its own: the disk never holds up the window.
+    fn save_later(&self) {
+        let Some(bytes) = self.to_save() else {
             return;
         };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let Ok(bytes) = serde_json::to_vec_pretty(self) else {
-            return;
-        };
-        // Whole or not at all: a crash halfway leaves the one before.
-        let temp = path.with_extension("json.tmp");
-        if std::fs::write(&temp, bytes).is_ok() && std::fs::rename(&temp, &path).is_err() {
-            let _ = std::fs::remove_file(&temp);
-        }
+        static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(u64, Vec<u8>)>> = std::sync::OnceLock::new();
+        let writer = WRITER.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<(u64, Vec<u8>)>();
+            std::thread::spawn(move || {
+                while let Ok(mut latest) = rx.recv() {
+                    // Only the newest of those waiting is written.
+                    while let Ok(newer) = rx.try_recv() {
+                        latest = newer;
+                    }
+                    write_generation(latest.0, latest.1);
+                }
+            });
+            tx
+        });
+        let _ = writer.send(bytes);
+    }
+
+    /// The config as it's written, numbered so an older one never replaces
+    /// a newer one.
+    fn to_save(&self) -> Option<(u64, Vec<u8>)> {
+        let bytes = serde_json::to_vec_pretty(self).ok()?;
+        Some((SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed), bytes))
     }
 
     pub fn get(cx: &App) -> &Self {
@@ -759,11 +778,15 @@ impl Config {
     pub fn update(cx: &mut App, change: impl FnOnce(&mut Self)) {
         let config = cx.global_mut::<Self>();
         change(config);
-        config.save();
+        config.save_later();
+        // The panels drawn from cache read it too.
+        cx.refresh_windows();
     }
 
-    /// Changes something that moves often (panel sizes, the window): it's
-    /// saved with the next change or on quit.
+    /// Changes something that moves often (panel sizes, the window, the
+    /// session's cursor): it's saved with the next change or on quit. Nothing
+    /// drawn from cache reads these (sizes change the bounds, which redraws
+    /// it anyway), so windows aren't redrawn whole for it, with every key.
     pub fn update_quietly(cx: &mut App, change: impl FnOnce(&mut Self)) {
         change(cx.global_mut::<Self>());
     }
@@ -777,6 +800,34 @@ impl Config {
         })
         .detach();
     }
+}
+
+/// How many times the config was prepared for saving: each save's number.
+static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn write_config((generation, bytes): (u64, Vec<u8>)) {
+    write_generation(generation, bytes);
+}
+
+/// Writes `bytes` unless a newer save was written already.
+fn write_generation(generation: u64, bytes: Vec<u8>) {
+    static WRITTEN: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+    let mut written = WRITTEN.lock().unwrap_or_else(|err| err.into_inner());
+    if written.is_some_and(|written| written > generation) {
+        return;
+    }
+    let Some(path) = Config::path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Whole or not at all: a crash halfway leaves the one before.
+    let temp = path.with_extension("json.tmp");
+    if std::fs::write(&temp, bytes).is_ok() && std::fs::rename(&temp, &path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    *written = Some(generation);
 }
 
 /// Interface text at the size chosen in Settings.

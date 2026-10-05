@@ -3,9 +3,13 @@
 //! the lines highlighted as the file's language. Read-only rows in one list;
 //! a file's name opens that file's diff in its own tab.
 
-use std::{cell::Cell, ops::Range, rc::Rc};
+use std::{cell::Cell, ops::Range, rc::Rc, sync::Arc};
 
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, highlighter::SyntaxHighlighter, input::Rope};
+use gpui_kit::component::{
+    ActiveTheme as _, StyledExt as _, h_flex,
+    highlighter::{HighlightTheme, SyntaxHighlighter},
+    input::Rope,
+};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -57,17 +61,54 @@ struct Half {
     highlights: Vec<(Range<usize>, HighlightStyle)>,
 }
 
-impl CommitView {
-    /// From `git show --format=fuller --patch` of the commit.
-    pub fn new(show: &str, cx: &mut Context<Self>) -> Self {
-        let rows = rows(show, cx);
+/// A commit's rows, in two columns and in one, worked out away from the UI
+/// thread: highlighting every file of a big commit takes a while.
+pub struct Prepared {
+    rows: Vec<Row>,
+    inline: Vec<Row>,
+}
+
+/// Prepares `git show --format=fuller --patch` of a commit in the background.
+pub fn prepare(show: String, cx: &App) -> Task<Prepared> {
+    let theme = cx.theme();
+    let colors = Colors {
+        removed: theme.danger.opacity(0.3),
+        added: theme.success.opacity(0.3),
+        syntax: theme.highlight_theme.clone(),
+    };
+    cx.background_spawn(async move {
+        let rows = rows(&show, &colors);
         let inline = inline(&rows);
+        Prepared { rows, inline }
+    })
+}
+
+/// What `rows` needs of the theme, to run off the UI thread.
+struct Colors {
+    removed: Hsla,
+    added: Hsla,
+    syntax: Arc<HighlightTheme>,
+}
+
+impl CommitView {
+    /// `width`: the room it has, if known, so its first frame already has
+    /// one column or two.
+    pub fn new(prepared: Prepared, width: Pixels) -> Self {
         Self {
-            rows: Rc::new(rows),
-            inline: Rc::new(inline),
+            rows: Rc::new(prepared.rows),
+            inline: Rc::new(prepared.inline),
             scroll: UniformListScrollHandle::new(),
-            width: Rc::new(Cell::new(px(f32::MAX))),
+            width: Rc::new(Cell::new(width)),
         }
+    }
+
+    /// Shows another commit in its place, from the top: no new view, so it
+    /// keeps its width and doesn't go blank in between.
+    pub fn set(&mut self, prepared: Prepared, cx: &mut Context<Self>) {
+        self.rows = Rc::new(prepared.rows);
+        self.inline = Rc::new(prepared.inline);
+        self.scroll = UniformListScrollHandle::new();
+        cx.notify();
     }
 }
 
@@ -106,14 +147,12 @@ fn inline(rows: &[Row]) -> Vec<Row> {
     out
 }
 
-fn rows(show: &str, cx: &App) -> Vec<Row> {
+fn rows(show: &str, colors: &Colors) -> Vec<Row> {
     let (header, patch) = match show.find("\ndiff --git ") {
         Some(at) => (&show[..at], &show[at + 1..]),
         None => (show, ""),
     };
     let mut rows = header_rows(header);
-    let theme = cx.theme();
-    let word = (theme.danger.opacity(0.3), theme.success.opacity(0.3));
     for section in patch.split("\ndiff --git ").filter(|section| !section.trim().is_empty()) {
         let path = section_path(section);
         rows.push(Row::Blank);
@@ -130,8 +169,8 @@ fn rows(show: &str, cx: &App) -> Vec<Row> {
             continue;
         }
         let language = language::for_path(std::path::Path::new(&path));
-        let old = halves(&sides.old, language, word.0, cx);
-        let new = halves(&sides.new, language, word.1, cx);
+        let old = halves(&sides.old, language, colors.removed, &colors.syntax);
+        let new = halves(&sides.new, language, colors.added, &colors.syntax);
         let mut last: Option<(Option<u32>, Option<u32>)> = None;
         for (old, new) in old.into_iter().zip(new) {
             if let Some((old_last, new_last)) = last {
@@ -190,13 +229,12 @@ fn section_path(section: &str) -> String {
 }
 
 /// Each line of a side, with its syntax colors and what changed within it.
-fn halves(side: &diff::Side, language: &str, word: Hsla, cx: &App) -> Vec<Half> {
+fn halves(side: &diff::Side, language: &str, word: Hsla, theme: &HighlightTheme) -> Vec<Half> {
     let highlighter = (side.text.len() <= MAX_HIGHLIGHTED).then(|| {
         let mut highlighter = SyntaxHighlighter::new(language);
         highlighter.update(None, &Rope::from(side.text.as_str()), None);
         highlighter
     });
-    let theme = cx.theme().highlight_theme.clone();
     let mut start = 0;
     side.text
         .split('\n')
@@ -207,7 +245,7 @@ fn halves(side: &diff::Side, language: &str, word: Hsla, cx: &App) -> Vec<Half> 
             let relative = |absolute: &Range<usize>| absolute.start.max(range.start) - range.start..absolute.end.min(range.end) - range.start;
             let syntax: Vec<(Range<usize>, HighlightStyle)> = highlighter
                 .as_ref()
-                .map(|highlighter| highlighter.styles(&range, theme.as_ref()))
+                .map(|highlighter| highlighter.styles(&range, theme))
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(absolute, style)| (relative(&absolute), style))
