@@ -23,7 +23,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    CloseAllTabs, CloseTab, CollapseFileTree, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
+    CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
     OpenChanges, ShowFileHistory,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
@@ -3879,6 +3879,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| this.close_others(None, window, cx)))
             .on_action(cx.listener(|this, _: &CollapseFileTree, _, cx| {
                 this.file_tree.update(cx, |tree, cx| tree.collapse_all(cx))
+            }))
+            .on_action(cx.listener(|this, _: &RefreshFiles, _, cx| {
+                this.file_tree.update(cx, |tree, cx| tree.refresh(cx))
             }))
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::prev_tab))

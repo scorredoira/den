@@ -143,6 +143,25 @@ pub fn restart(cx: &mut App) {
     crate::app::quit(cx);
 }
 
+/// Reload Window: quits as Cmd-Q does (asking about unsaved files) and
+/// starts again, the update if one is waiting, else this same build.
+pub fn reload(cx: &mut App) {
+    let updates = cx.default_global::<Updates>();
+    if updates.relaunch.is_none() {
+        updates.relaunch = this_app();
+    }
+    restart(cx);
+}
+
+/// How to start this build again.
+fn this_app() -> Option<Vec<String>> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    Some(match install_of(&exe) {
+        Some(Install::Bundle(bundle)) => vec!["open".into(), "-a".into(), bundle.to_string_lossy().into_owned()],
+        _ => vec![exe.to_string_lossy().into_owned()],
+    })
+}
+
 /// The quit dialog was cancelled: no restart until asked again.
 pub fn cancel_restart(cx: &mut App) {
     cx.default_global::<Updates>().restarting = false;
@@ -157,10 +176,30 @@ pub fn relaunch_if_restarting(cx: &App) {
     let (true, Some(relaunch)) = (updates.restarting, &updates.relaunch) else {
         return;
     };
-    let script = r#"pid=$1; shift; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; exec "$@""#;
-    let spawned = Command::new("sh")
-        .args(["-c", script, "sh", &std::process::id().to_string()])
-        .args(relaunch)
+    #[cfg(not(windows))]
+    let mut command = {
+        let script = r#"pid=$1; shift; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; exec "$@""#;
+        let mut command = Command::new("sh");
+        command.args(["-c", script, "sh", &std::process::id().to_string()]).args(relaunch);
+        command
+    };
+    // No `sh` on Windows (Reload Window; updates there are by hand).
+    #[cfg(windows)]
+    let mut command = {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let quote = |arg: &String| format!("'{}'", arg.replace('\'', "''"));
+        let (exe, args) = relaunch.split_first().expect("something to start");
+        let mut start = format!("Start-Process -FilePath {}", quote(exe));
+        if !args.is_empty() {
+            start += &format!(" -ArgumentList {}", args.iter().map(quote).collect::<Vec<_>>().join(","));
+        }
+        let script = format!("Wait-Process -Id {} -ErrorAction SilentlyContinue; {start}", std::process::id());
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", &script]).creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+    let spawned = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

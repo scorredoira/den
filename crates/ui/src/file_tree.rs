@@ -203,6 +203,8 @@ pub struct FileTree {
     drop_target: Option<PathBuf>,
     /// Opens the closed folder held under a drag.
     _open_on_hover: Option<Task<()>>,
+    /// A row took the mouse press the container sees next.
+    row_pressed: bool,
     /// Row the right-click menu was opened on; `None` is the empty space (the
     /// task's folder).
     menu_target: Option<PathBuf>,
@@ -239,6 +241,7 @@ impl FileTree {
             undo: Vec::new(),
             drop_target: None,
             _open_on_hover: None,
+            row_pressed: false,
             menu_target: None,
             focus_handle: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
@@ -311,22 +314,30 @@ impl FileTree {
     }
 
     fn push_rows(&mut self, dir: &Path, depth: usize, rows: &mut Vec<Row>, cx: &mut Context<Self>) {
-        if !self.children.contains_key(dir) {
+        // A new item's name is typed where it will be once made: among its
+        // folder's, in their order, moving as the name changes.
+        let mut new = match &self.edit {
+            Some(Edit { kind: EditKind::NewFile { dir: target }, input, .. }) if target == dir => {
+                Some(order(false, input.read(cx).value().trim()))
+            }
+            Some(Edit { kind: EditKind::NewFolder { dir: target }, input, .. }) if target == dir => {
+                Some(order(true, input.read(cx).value().trim()))
+            }
+            _ => None,
+        };
+        let Some(entries) = self.children.get(dir).cloned() else {
             // Ask the agent; rebuild when it arrives.
             self.load_dir(dir.to_path_buf(), cx);
+            if new.is_some() {
+                rows.push(Row { kind: RowKind::New, depth });
+            }
             return;
-        }
-        // New items are typed at the top of their folder.
-        if let Some(Edit {
-            kind: EditKind::NewFile { dir: target } | EditKind::NewFolder { dir: target },
-            ..
-        }) = &self.edit
-            && target == dir
-        {
-            rows.push(Row { kind: RowKind::New, depth });
-        }
-        let entries = self.children[dir].clone();
+        };
         for entry in entries {
+            if new.as_ref().is_some_and(|new| *new <= order(entry.is_dir, &entry.name)) {
+                new = None;
+                rows.push(Row { kind: RowKind::New, depth });
+            }
             let expand = entry.is_dir && self.expanded.contains(&entry.path);
             let path = entry.path.clone();
             rows.push(Row {
@@ -337,6 +348,35 @@ impl FileTree {
                 self.push_rows(&path, depth + 1, rows, cx);
             }
         }
+        if new.is_some() {
+            rows.push(Row { kind: RowKind::New, depth });
+        }
+    }
+
+    /// Puts `entry` in its folder's list, in its place, if the folder was read.
+    fn insert_entry(&mut self, entry: DirEntry) {
+        let Some(entries) = entry.path.parent().and_then(|dir| self.children.get_mut(dir)) else {
+            return;
+        };
+        if entries.iter().any(|other| other.path == entry.path) {
+            return;
+        }
+        let key = order(entry.is_dir, &entry.name);
+        let ix = entries.iter().position(|other| order(other.is_dir, &other.name) > key).unwrap_or(entries.len());
+        entries.insert(ix, entry);
+    }
+
+    /// Refresh: rereads every folder shown, also one whose listing never
+    /// came back.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.loading.clear();
+        self.children.retain(|dir, _| self.expanded.contains(dir));
+        let dirs: Vec<PathBuf> = self.children.keys().cloned().collect();
+        for dir in dirs {
+            self.load_dir(dir, cx);
+        }
+        self.rebuild(cx);
+        cx.notify();
     }
 
     /// Switches to a new connection with the agent: everything is reread.
@@ -386,30 +426,6 @@ impl FileTree {
                 this.children.insert(dir, entries);
                 this.rebuild(cx);
                 this.scroll_to_selected();
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Sends an operation to the agent; if it succeeds, runs `then`.
-    fn fs_op(
-        &mut self,
-        request: Request,
-        then: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(client) = self.client.clone() else {
-            return cx.emit(FileTreeEvent::Error("No agent".into()));
-        };
-        cx.spawn(async move |this, cx| {
-            let response = client.request(request).await;
-            this.update(cx, |this, cx| {
-                match response {
-                    Ok(_) => then(this, cx),
-                    Err(err) => cx.emit(FileTreeEvent::Error(format!("{err:#}").into())),
-                }
                 cx.notify();
             })
             .ok();
@@ -592,13 +608,6 @@ impl FileTree {
 
     /// Types a new file's name at the top of `dir`, its folders open.
     pub fn new_file_in(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let mut open = Some(dir.as_path());
-        while let Some(d) = open
-            && d.starts_with(&self.root)
-        {
-            self.expanded.insert(d.to_path_buf());
-            open = d.parent();
-        }
         self.start_edit(EditKind::NewFile { dir }, window, cx);
     }
 
@@ -611,13 +620,23 @@ impl FileTree {
             _ => String::new(),
         };
         if let EditKind::NewFile { dir } | EditKind::NewFolder { dir } = &kind {
-            self.expanded.insert(dir.clone());
+            let mut open = Some(dir.as_path());
+            while let Some(d) = open
+                && d.starts_with(&self.root)
+            {
+                self.expanded.insert(d.to_path_buf());
+                open = d.parent();
+            }
         }
         let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
-        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
-            if let InputEvent::Blur = event {
-                this.cancel_edit(cx);
+        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
+            InputEvent::Blur => this.cancel_edit(cx),
+            // The new item's row follows its name to its place.
+            InputEvent::Change if matches!(this.edit.as_ref().map(|edit| &edit.kind), Some(EditKind::NewFile { .. } | EditKind::NewFolder { .. })) => {
+                this.rebuild(cx);
+                cx.notify();
             }
+            _ => {}
         });
         input.update(cx, |input, cx| {
             input.focus(window, cx);
@@ -661,30 +680,58 @@ impl FileTree {
                 }
                 self.run(vec![Op::Move { from, to }], true, None, cx);
             }
-            EditKind::NewFile { dir } => {
-                let path = dir.join(&name);
-                self.fs_op(
-                    Request::CreateFile { path: path.clone() },
-                    move |this, cx| {
-                        this.after_change(&[&path], Some(path.clone()), cx);
-                        this.push_undo(vec![Done::Created(path.clone())]);
-                        cx.emit(FileTreeEvent::Open { path, pin: true });
-                    },
-                    cx,
-                );
-            }
-            EditKind::NewFolder { dir } => {
-                let path = dir.join(&name);
-                self.fs_op(
-                    Request::CreateDir { path: path.clone() },
-                    move |this, cx| {
-                        this.after_change(&[&path], Some(path.clone()), cx);
-                        this.push_undo(vec![Done::Created(path)]);
-                    },
-                    cx,
-                );
-            }
+            EditKind::NewFile { dir } => self.create(dir.join(&name), false, cx),
+            EditKind::NewFolder { dir } => self.create(dir.join(&name), true, cx),
         }
+    }
+
+    /// Makes the new item, shown already where its name was typed so it
+    /// doesn't move; taken out again if the agent can't.
+    fn create(&mut self, path: PathBuf, is_dir: bool, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return cx.emit(FileTreeEvent::Error("No agent".into()));
+        };
+        let name: SharedString = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default().into();
+        let exists = self.entry(&path).is_some();
+        if !exists {
+            self.insert_entry(DirEntry { path: path.clone(), name, is_dir });
+        }
+        self.select_only(path.clone());
+        self.rebuild(cx);
+        self.scroll_to_selected();
+        cx.notify();
+        let request = match is_dir {
+            true => Request::CreateDir { path: path.clone() },
+            false => Request::CreateFile { path: path.clone() },
+        };
+        cx.spawn(async move |this, cx| {
+            let response = client.request(request).await;
+            this.update(cx, |this, cx| {
+                match response {
+                    Ok(_) => {
+                        this.push_undo(vec![Done::Created(path.clone())]);
+                        if !is_dir {
+                            cx.emit(FileTreeEvent::Open { path: path.clone(), pin: true });
+                        }
+                    }
+                    Err(err) => {
+                        if !exists
+                            && let Some(entries) = path.parent().and_then(|dir| this.children.get_mut(dir))
+                        {
+                            entries.retain(|entry| entry.path != path);
+                        }
+                        cx.emit(FileTreeEvent::Error(format!("{err:#}").into()));
+                    }
+                }
+                if let Some(dir) = path.parent() {
+                    this.load_dir(dir.to_path_buf(), cx);
+                }
+                this.rebuild(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Moves to the Trash (recoverable) and selects the row after the last.
@@ -704,20 +751,6 @@ impl FileTree {
                 .map(|row| row.to_path_buf())
         });
         self.run(paths.into_iter().map(Op::Trash).collect(), true, next, cx);
-    }
-
-    fn after_change(&mut self, paths: &[&Path], select: Option<PathBuf>, cx: &mut Context<Self>) {
-        for path in paths {
-            if let Some(parent) = path.parent() {
-                self.children.remove(parent);
-            }
-            self.children.remove(*path);
-        }
-        if let Some(select) = select {
-            self.select_only(select);
-        }
-        self.rebuild(cx);
-        self.scroll_to_selected();
     }
 
     /// Selects `path` alone.
@@ -974,6 +1007,15 @@ impl FileTree {
                             self.expanded.insert(to.join(rest));
                         }
                     }
+                    // It goes to its new place in the list right away.
+                    let moved = from.parent().and_then(|dir| self.children.get_mut(dir)).and_then(|entries| {
+                        let ix = entries.iter().position(|entry| entry.path == *from)?;
+                        Some(entries.remove(ix))
+                    });
+                    if let Some(entry) = moved {
+                        let name = to.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.insert_entry(DirEntry { path: to.clone(), name: name.into(), is_dir: entry.is_dir });
+                    }
                     self.children.retain(|dir, _| !dir.starts_with(from));
                     changed.extend([from.clone(), to.clone()]);
                     select.push(to.clone());
@@ -1193,6 +1235,7 @@ impl FileTree {
             }))
         })
         .separator()
+        .item(item("Refresh", Box::new(|tree, _, cx| tree.refresh(cx))))
         .item(item("Collapse All Folders", Box::new(|tree, _, cx| tree.collapse_all(cx))).action(Box::new(CollapseFileTree)))
         .item(item("Show Ignored Files", Box::new(|tree, _, cx| {
             let show = !tree.ignored;
@@ -1289,9 +1332,14 @@ impl Render for FileTree {
                                     let path = click_path.clone();
                                     click_view.update(cx, |tree, cx| tree.click(path, event, window, cx));
                                 })
+                                .on_mouse_down(MouseButton::Left, {
+                                    let view = menu_view.clone();
+                                    move |_, _, cx| view.update(cx, |tree, _| tree.row_pressed = true)
+                                })
                                 // The menu belongs to the container; the row only says what it opens on.
                                 .on_mouse_down(MouseButton::Right, move |_, _, cx| {
                                     menu_view.update(cx, |tree, cx| {
+                                        tree.row_pressed = true;
                                         // Outside the selection, the row is selected alone.
                                         if !tree.is_marked(&path) {
                                             tree.select_only(path.clone());
@@ -1365,8 +1413,23 @@ impl Render for FileTree {
             }))
             // Before the rows: a right-click outside them is on the task's folder.
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                this.row_pressed = false;
                 if event.button == MouseButton::Right {
                     this.menu_target = None;
+                }
+            }))
+            // A click on no row selects nothing: what's done next (New
+            // Folder, Paste…) goes in the task's folder, as nothing shows.
+            .on_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                // Anywhere in the panel, the keys (Cmd-V…) come here.
+                if this.edit.is_none() {
+                    this.focus_handle.focus(window, cx);
+                }
+                if !this.row_pressed && (this.selected.is_some() || !this.marked.is_empty()) {
+                    this.selected = None;
+                    this.marked.clear();
+                    this.anchor = None;
+                    cx.notify();
                 }
             }))
             .context_menu({
@@ -1411,6 +1474,12 @@ fn undo_ops(batch: Vec<Done>) -> Vec<Op> {
         .collect()
 }
 
+/// Where an item goes among its folder's, as the agent lists them: folders
+/// first, by name.
+fn order(is_dir: bool, name: &str) -> (bool, String) {
+    (!is_dir, name.to_lowercase())
+}
+
 /// The files Finder (or the Explorer) has on the clipboard.
 fn external_clipboard(cx: &App) -> Option<Vec<PathBuf>> {
     cx.read_from_clipboard()?.entries().iter().find_map(|entry| match entry {
@@ -1425,9 +1494,22 @@ async fn run_op(client: &Client, op: Op) -> anyhow::Result<Done> {
             client.request(Request::Rename { from: from.clone(), to: to.clone() }).await?;
             Done::Moved { from, to }
         }
-        Op::Copy { from, to } => match client.request(Request::Copy { from, to }).await? {
-            Response::Path(Some(path)) => Done::Created(path),
-            other => anyhow::bail!("unexpected response: {other:?}"),
+        Op::Copy { from, to } => match client.request(Request::Copy { from: from.clone(), to: to.clone() }).await {
+            Ok(Response::Path(Some(path))) => Done::Created(path),
+            Ok(other) => anyhow::bail!("unexpected response: {other:?}"),
+            // An agent from before Copy (still running since an update):
+            // the copy is read and written through it.
+            Err(err) if err.to_string().contains("does not know the request") => {
+                let dir = to.parent().map(Path::to_path_buf).unwrap_or_default();
+                let to = free_path(client, &dir, &to.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).await?;
+                let is_dir = list(client, from.parent().unwrap_or(&dir))
+                    .await
+                    .iter()
+                    .any(|entry| entry.is_dir && Some(entry.name.as_str()) == from.file_name().and_then(|name| name.to_str()));
+                copy_through(client, from, to.clone(), is_dir).await?;
+                Done::Created(to)
+            }
+            Err(err) => return Err(err),
         },
         Op::Trash(path) => match client.request(Request::Trash { path: path.clone() }).await? {
             Response::Path(item) => Done::Trashed { path, item },
@@ -1441,24 +1523,60 @@ async fn run_op(client: &Client, op: Op) -> anyhow::Result<Done> {
     })
 }
 
+/// What the agent lists in `dir`, what git ignores too where it can.
+async fn list(client: &Client, dir: &Path) -> Vec<proto::DirEntryInfo> {
+    match client.request(Request::ListDirAll { path: dir.to_path_buf() }).await {
+        Ok(Response::Dir(entries)) => entries,
+        _ => match client.request(Request::ListDir { path: dir.to_path_buf() }).await {
+            Ok(Response::Dir(entries)) => entries,
+            _ => Vec::new(),
+        },
+    }
+}
+
+/// `name` in `dir`, or the first of its copies' names that's free.
+async fn free_path(client: &Client, dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    let taken: HashSet<String> = list(client, dir).await.into_iter().map(|entry| entry.name).collect();
+    let name = (0..1000)
+        .map(|n| proto::copy_name(name, n))
+        .find(|name| !taken.contains(name))
+        .ok_or_else(|| anyhow::anyhow!("{name} has too many copies"))?;
+    Ok(dir.join(name))
+}
+
 /// Sends a file or folder of this machine into `dir` on the agent's, named
 /// as a copy if the name is taken.
 async fn upload(client: &Client, from: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     let name = from.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let taken: HashSet<String> = match client.request(Request::ListDirAll { path: dir.to_path_buf() }).await {
-        Ok(Response::Dir(entries)) => entries.into_iter().map(|entry| entry.name).collect(),
-        _ => match client.request(Request::ListDir { path: dir.to_path_buf() }).await {
-            Ok(Response::Dir(entries)) => entries.into_iter().map(|entry| entry.name).collect(),
-            _ => HashSet::new(),
-        },
-    };
-    let name = (0..1000)
-        .map(|n| proto::copy_name(&name, n))
-        .find(|name| !taken.contains(name))
-        .ok_or_else(|| anyhow::anyhow!("{name} has too many copies"))?;
-    let to = dir.join(name);
+    let to = free_path(client, dir, &name).await?;
     upload_entry(client, from.to_path_buf(), to.clone()).await?;
     Ok(to)
+}
+
+/// Copies on the agent's machine with what any agent knows: listing,
+/// reading and writing.
+fn copy_through(
+    client: &Client,
+    from: PathBuf,
+    to: PathBuf,
+    is_dir: bool,
+) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+    Box::pin(async move {
+        if is_dir {
+            client.request(Request::CreateDir { path: to.clone() }).await?;
+            for entry in list(client, &from).await {
+                copy_through(client, from.join(&entry.name), to.join(&entry.name), entry.is_dir).await?;
+            }
+        } else {
+            let data = match client.request(Request::ReadFile { path: from.clone() }).await? {
+                Response::Bytes(data) => data,
+                other => anyhow::bail!("unexpected response: {other:?}"),
+            };
+            client.request(Request::CreateFile { path: to.clone() }).await?;
+            client.request(Request::WriteFile { path: to, data }).await?;
+        }
+        Ok(())
+    })
 }
 
 fn upload_entry(client: &Client, from: PathBuf, to: PathBuf) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
@@ -1498,20 +1616,89 @@ mod tests {
             gpui_kit::init(cx);
             cx.set_global(Config::default());
         });
-        cx.new(|cx| {
+        cx.new(sample)
+    }
+
+    fn sample(cx: &mut Context<FileTree>) -> FileTree {
+        let mut tree = FileTree::new(p("/t"), None, true, cx);
+        let entry = |path: &str, is_dir| DirEntry {
+            path: p(path),
+            name: Path::new(path).file_name().unwrap().to_string_lossy().into_owned().into(),
+            is_dir,
+        };
+        tree.children.insert(p("/t"), vec![entry("/t/docs", true), entry("/t/src", true), entry("/t/c.md", false)]);
+        tree.children.insert(p("/t/src"), vec![entry("/t/src/a.rs", false), entry("/t/src/b.rs", false)]);
+        tree.children.insert(p("/t/docs"), vec![]);
+        tree.expanded.insert(p("/t/src"));
+        tree.rebuild(cx);
+        tree
+    }
+
+    /// New Folder on a folder never opened: its name is typed in it while
+    /// the agent lists it, and the edit isn't dropped.
+    #[gpui_kit::test]
+    fn a_new_folder_goes_in_a_folder_not_read_yet(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (tree, cx) = cx.add_window_view(|_, cx| {
             let mut tree = FileTree::new(p("/t"), None, true, cx);
-            let entry = |path: &str, is_dir| DirEntry {
-                path: p(path),
-                name: Path::new(path).file_name().unwrap().to_string_lossy().into_owned().into(),
-                is_dir,
-            };
-            tree.children.insert(p("/t"), vec![entry("/t/docs", true), entry("/t/src", true), entry("/t/c.md", false)]);
-            tree.children.insert(p("/t/src"), vec![entry("/t/src/a.rs", false), entry("/t/src/b.rs", false)]);
-            tree.children.insert(p("/t/docs"), vec![]);
-            tree.expanded.insert(p("/t/src"));
+            let docs = DirEntry { path: p("/t/docs"), name: "docs".into(), is_dir: true };
+            tree.children.insert(p("/t"), vec![docs]);
             tree.rebuild(cx);
             tree
-        })
+        });
+        tree.update_in(cx, |tree, window, cx| {
+            tree.focus_handle.focus(window, cx);
+            tree.start_edit(EditKind::NewFolder { dir: p("/t/docs") }, window, cx);
+        });
+        cx.run_until_parked();
+        tree.read_with(cx, |tree, _| {
+            assert!(tree.edit.is_some(), "the edit was dropped");
+            let new = tree.rows.iter().position(|row| matches!(row.kind, RowKind::New));
+            assert_eq!(new, Some(1), "typed under docs");
+            assert_eq!(tree.rows[1].depth, 1);
+        });
+    }
+
+    /// The name is typed in the row the new item will have, and made, it's
+    /// there: nothing jumps.
+    #[gpui_kit::test]
+    fn a_new_item_is_typed_where_it_will_be(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (tree, cx) = cx.add_window_view(|_, cx| sample(cx));
+        let rows = |tree: &FileTree| -> Vec<String> {
+            tree.rows
+                .iter()
+                .map(|row| match &row.kind {
+                    RowKind::Entry(entry) => entry.name.to_string(),
+                    RowKind::New => "<new>".to_string(),
+                })
+                .collect()
+        };
+        tree.update_in(cx, |tree, window, cx| {
+            tree.start_edit(EditKind::NewFile { dir: p("/t/src") }, window, cx);
+            // Empty, a file goes after the folders.
+            assert_eq!(rows(tree), ["docs", "src", "<new>", "a.rs", "b.rs", "c.md"]);
+            let input = tree.edit.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("ab.rs", window, cx));
+            tree.rebuild(cx);
+            assert_eq!(rows(tree), ["docs", "src", "a.rs", "<new>", "b.rs", "c.md"]);
+            tree.edit = None;
+            tree.insert_entry(DirEntry { path: p("/t/src/ab.rs"), name: "ab.rs".into(), is_dir: false });
+            tree.rebuild(cx);
+            assert_eq!(rows(tree), ["docs", "src", "a.rs", "ab.rs", "b.rs", "c.md"]);
+            // A folder goes among the folders.
+            tree.start_edit(EditKind::NewFolder { dir: p("/t") }, window, cx);
+            let input = tree.edit.as_ref().unwrap().input.clone();
+            input.update(cx, |input, cx| input.set_value("e", window, cx));
+            tree.rebuild(cx);
+            assert_eq!(rows(tree), ["docs", "<new>", "src", "a.rs", "ab.rs", "b.rs", "c.md"]);
+        });
     }
 
     #[gpui_kit::test]
