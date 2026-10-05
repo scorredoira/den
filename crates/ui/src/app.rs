@@ -46,6 +46,7 @@ mod confirm;
 mod settings;
 mod switcher;
 mod theme;
+pub(crate) use theme::selected_row;
 mod welcome;
 
 /// How often the task list is re-read (worktrees created elsewhere).
@@ -2708,7 +2709,7 @@ impl Den {
             .px_3()
             .gap_2()
             .text_ui(cx)
-            .when(active, |el| el.bg(theme.list_active))
+            .when(active, |el| el.bg(selected_row(cx)))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
             // Its agents' state, the same dot as in the Agents panel, and
             // only the dot: no word for it ("working", "done"…), ever.

@@ -301,7 +301,7 @@ impl Debugger {
                         .pl(px(if several { 26. } else { 8. }))
                         .pr_2()
                         .gap_2()
-                        .when(selected, |el| el.bg(theme.selection))
+                        .when(selected, |el| el.bg(crate::app::selected_row(cx)))
                         .hover(|style| style.bg(theme.secondary))
                         .when(stop.resumed, |el| el.opacity(0.5))
                         .child(
