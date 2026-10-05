@@ -35,6 +35,7 @@ shortcuts![
     (ShowShortcuts, "Show Shortcuts", "f1"),
     (OpenSettings, "Settings", "secondary-,"),
     (Quit, "Quit", "secondary-q"),
+    (ReloadWindow, "Reload Window", ""),
     (Save, "Save", "secondary-s"),
     (CloseTab, "Close Tab or Terminal", mac_or("cmd-w", "ctrl-shift-w")),
     (CloseAllTabs, "Close All Tabs", "secondary-alt-w"),
@@ -44,6 +45,7 @@ shortcuts![
     (ToggleSidePanel, "Toggle Side Panel", "secondary-b"),
     (ShowFiles, "Panel: Files", "secondary-shift-e"),
     (CollapseFileTree, "Collapse All Folders", "secondary-alt-c"),
+    (RefreshFiles, "Files: Refresh", ""),
     (ShowChanges, "Panel: Changes", "secondary-shift-g"),
     (ShowHistory, "Panel: History", "secondary-shift-h"),
     (ToggleCommitFiles, "Panel: Commit Files", "secondary-alt-shift-h"),
@@ -186,7 +188,8 @@ mod tests {
     #[test]
     fn defaults_parse_and_do_not_clash() {
         let mut seen = HashSet::new();
-        for shortcut in SHORTCUTS {
+        // "" has no keys: the command palette runs it.
+        for shortcut in SHORTCUTS.iter().filter(|shortcut| !shortcut.default.is_empty()) {
             let keys = Keystroke::parse(shortcut.default).unwrap_or_else(|_| panic!("{}", shortcut.default));
             assert!(seen.insert(keys.unparse()), "{} repeated", shortcut.default);
         }

@@ -54,6 +54,7 @@ Right-click a workspace to hide it, remove it from the list (nothing on disk is 
 | {{key:shift-up}} / {{key:shift-down}} | Select the rows above or below too |
 | {{key:secondary-a}} | Select every row shown |
 | {{key:escape}} | Back to one row, and nothing cut |
+| {{RefreshFiles}} | Read the folders again (also in the panel's menu) |
 
 {{secondary}}-click adds a row to the selection or takes it out, {{shift}}-click selects up to it; whatever is done to a selected row is done to all of them. Drag rows onto a folder to move them, holding {{alt}} to copy them; held over a closed folder, it opens. Copying never replaces anything: pasted where it is, or with Duplicate in the menu, the copy is named "a copy.txt". Files dropped from Finder or the Explorer, or copied there and pasted, are copied in, to a server too.
 
@@ -154,3 +155,4 @@ Drag a terminal's tab onto the edge of another to split them; drag a pane's titl
 | Shortcut | Does |
 | --- | --- |
 | {{Quit}} | Quit (it asks about unsaved files) |
+| {{ReloadWindow}} | Reload Window: quits as {{Quit}} does and starts again; the terminals go on, in the agent |
