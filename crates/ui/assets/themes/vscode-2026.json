@@ -136,6 +136,18 @@
     },
     "variant": {
       "color": "#0550ae"
+    },
+    "attribute.value": {
+      "color": "#0000ff"
+    },
+    "string.key": {
+      "color": "#0451a5"
+    },
+    "string.value": {
+      "color": "#a31515"
+    },
+    "tag.delimiter": {
+      "color": "#800000"
     }
   },
   "dark": {
@@ -275,6 +287,18 @@
     },
     "variant": {
       "color": "#79c0ff"
+    },
+    "attribute.value": {
+      "color": "#ce9178"
+    },
+    "string.key": {
+      "color": "#9cdcfe"
+    },
+    "string.value": {
+      "color": "#ce9178"
+    },
+    "tag.delimiter": {
+      "color": "#808080"
     }
   }
 }

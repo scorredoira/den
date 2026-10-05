@@ -15,8 +15,9 @@ use anyhow::Result;
 
 use crate::{ActiveTheme, DEFAULT_THEME_COLORS, ThemeMode, highlighter::languages};
 
-pub(super) const HIGHLIGHT_NAMES: [&str; 48] = [
+pub(super) const HIGHLIGHT_NAMES: [&str; 52] = [
     "attribute",
+    "attribute.value",
     "boolean",
     "comment",
     "comment.doc",
@@ -50,11 +51,14 @@ pub(super) const HIGHLIGHT_NAMES: [&str; 48] = [
     "punctuation.list_marker",
     "punctuation.special",
     "string",
+    "string.key",
+    "string.value",
     "string.escape",
     "string.regex",
     "string.special",
     "string.special.symbol",
     "tag",
+    "tag.delimiter",
     "tag.doctype",
     "text.code.span",
     "text.literal",
@@ -122,6 +126,11 @@ impl LanguageConfig {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, JsonSchema, Serialize, Deserialize)]
 pub struct SyntaxColors {
     pub attribute: Option<ThemeStyle>,
+    // (den) What XML and JSON need to look like VS Code: an attribute's
+    // value, a key, a string value and a tag's `<` and `>`. Each falls back
+    // to what it is in other themes.
+    #[serde(rename = "attribute.value")]
+    pub attribute_value: Option<ThemeStyle>,
     pub boolean: Option<ThemeStyle>,
     pub comment: Option<ThemeStyle>,
     pub comment_doc: Option<ThemeStyle>,
@@ -172,6 +181,10 @@ pub struct SyntaxColors {
     #[serde(rename = "punctuation.special")]
     pub punctuation_special: Option<ThemeStyle>,
     pub string: Option<ThemeStyle>,
+    #[serde(rename = "string.key")]
+    pub string_key: Option<ThemeStyle>,
+    #[serde(rename = "string.value")]
+    pub string_value: Option<ThemeStyle>,
     #[serde(rename = "string.escape")]
     pub string_escape: Option<ThemeStyle>,
     #[serde(rename = "string.regex")]
@@ -181,6 +194,8 @@ pub struct SyntaxColors {
     #[serde(rename = "string.special.symbol")]
     pub string_special_symbol: Option<ThemeStyle>,
     pub tag: Option<ThemeStyle>,
+    #[serde(rename = "tag.delimiter")]
+    pub tag_delimiter: Option<ThemeStyle>,
     #[serde(rename = "tag.doctype")]
     pub tag_doctype: Option<ThemeStyle>,
     #[serde(rename = "text.code.span")]
@@ -272,6 +287,7 @@ impl SyntaxColors {
 
         let style = match name {
             "attribute" => self.attribute,
+            "attribute.value" => self.attribute_value.or(self.string),
             "boolean" => self.boolean,
             "comment" => self.comment,
             "comment.doc" => self.comment_doc,
@@ -305,11 +321,14 @@ impl SyntaxColors {
             "punctuation.list_marker" => self.punctuation_list_marker,
             "punctuation.special" => self.punctuation_special,
             "string" => self.string,
+            "string.key" => self.string_key.or(self.property),
+            "string.value" => self.string_value.or(self.string),
             "string.escape" => self.string_escape,
             "string.regex" => self.string_regex,
             "string.special" => self.string_special,
             "string.special.symbol" => self.string_special_symbol,
             "tag" => self.tag,
+            "tag.delimiter" => self.tag_delimiter.or(self.punctuation_delimiter),
             "tag.doctype" => self.tag_doctype,
             "text.code.span" => self.text_code_span,
             "text.literal" => self.text_literal,
