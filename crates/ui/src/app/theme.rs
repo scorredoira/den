@@ -1,11 +1,21 @@
-use gpui_kit::{component::ThemeConfig, rgb};
+use gpui_kit::{component::{ActiveTheme as _, ThemeConfig}, rgb, App, Hsla};
+
+/// The band behind the selected row of every panel, opaque. gpui-kit caps
+/// `list_active` at 20% opacity, which leaves it unreadable on light surfaces.
+const SELECTED_LIGHT: u32 = 0xc4dbfb;
+const SELECTED_DARK: u32 = 0x04395e;
+
+/// The background of the selected row in any panel.
+pub(crate) fn selected_row(cx: &App) -> Hsla {
+    rgb(if cx.theme().mode.is_dark() { SELECTED_DARK } else { SELECTED_LIGHT }).into()
+}
 
 /// VS Code's selection: a blue band, outlined in a stronger blue where the
 /// list has the keyboard.
 pub(super) fn selection(config: &mut ThemeConfig, dark: bool) {
     let colors = &mut config.colors;
-    let (band, outline) = if dark { ("#04395e", "#0078d4") } else { ("#cfe0fa", "#005fb8") };
-    colors.list_active = Some(band.into());
+    let (band, outline) = if dark { (SELECTED_DARK, "#0078d4") } else { (SELECTED_LIGHT, "#005fb8") };
+    colors.list_active = Some(format!("#{band:06x}").into());
     colors.list_active_border = Some(outline.into());
 }
 
