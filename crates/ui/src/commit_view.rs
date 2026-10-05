@@ -34,6 +34,8 @@ pub struct CommitView {
     inline: Rc<Vec<Row>>,
     scroll: UniformListScrollHandle,
     width: Rc<Cell<Pixels>>,
+    /// Drawn in one column last time: the rows a file's name is among.
+    narrow: Cell<bool>,
 }
 
 impl EventEmitter<CommitViewEvent> for CommitView {}
@@ -63,9 +65,31 @@ struct Half {
 
 /// A commit's rows, in two columns and in one, worked out away from the UI
 /// thread: highlighting every file of a big commit takes a while.
+#[derive(Default)]
 pub struct Prepared {
     rows: Vec<Row>,
     inline: Vec<Row>,
+}
+
+/// A file a commit changed, as its rows head it.
+#[derive(Clone)]
+pub struct CommitFile {
+    pub path: SharedString,
+    pub added: usize,
+    pub removed: usize,
+}
+
+impl Prepared {
+    /// The files, in the order they show.
+    pub fn files(&self) -> Vec<CommitFile> {
+        self.rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::File { path, added, removed } => Some(CommitFile { path: path.clone(), added: *added, removed: *removed }),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// Prepares `git show --format=fuller --patch` of a commit in the background.
@@ -99,7 +123,15 @@ impl CommitView {
             inline: Rc::new(prepared.inline),
             scroll: UniformListScrollHandle::new(),
             width: Rc::new(Cell::new(width)),
+            narrow: Cell::new(false),
         }
+    }
+
+    /// Scrolls to `file`'s changes, or to the top (the message) with `None`.
+    pub fn scroll_to(&self, file: Option<&str>) {
+        let rows = if self.narrow.get() { &self.inline } else { &self.rows };
+        let ix = file.and_then(|file| rows.iter().position(|row| matches!(row, Row::File { path, .. } if path == file)));
+        self.scroll.scroll_to_item_strict(ix.unwrap_or(0), ScrollStrategy::Top);
     }
 
     /// Shows another commit in its place, from the top: no new view, so it
@@ -272,6 +304,7 @@ impl Render for CommitView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // No room for two sides (or one column chosen): one column.
         let narrow = !Config::get(cx).diff_side_by_side(self.width.get());
+        self.narrow.set(narrow);
         let rows = if narrow { self.inline.clone() } else { self.rows.clone() };
         let view = cx.entity().downgrade();
         let size = Config::get(cx).font_size(TextArea::Editor);

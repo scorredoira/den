@@ -1,6 +1,6 @@
 //! Tabs of the code that show a view of their own rather than a file: the
-//! device, out of its column, side by side with the code in a split. Saved
-//! with what's open as a `den:` path no file has.
+//! history, and the device out of its column, side by side with the code in
+//! a split. Saved with what's open as a `den:` path no file has.
 
 use super::*;
 
@@ -9,21 +9,27 @@ use super::*;
 pub(super) enum Page {
     /// The workspace's device (there's one, so one such tab).
     Device,
+    /// The repo's history, as gitk shows it (one such tab too).
+    History,
 }
 
 /// The device's tab, as saved.
 const DEVICE: &str = "den:device";
+/// The history's.
+const HISTORY: &str = "den:history";
 
 impl Page {
     pub(super) fn view(&self, workspace: &Workspace) -> AnyElement {
         match self {
             Page::Device => workspace.device.clone().into_any_element(),
+            Page::History => workspace.history.clone().into_any_element(),
         }
     }
 
     pub(super) fn focus_handle(&self, workspace: &Workspace, cx: &App) -> FocusHandle {
         match self {
             Page::Device => workspace.device.read(cx).focus_handle(cx),
+            Page::History => workspace.history.read(cx).focus_handle(),
         }
     }
 
@@ -31,6 +37,7 @@ impl Page {
     pub(super) fn title(&self) -> String {
         match self {
             Page::Device => "Device".to_string(),
+            Page::History => "History".to_string(),
         }
     }
 
@@ -38,6 +45,7 @@ impl Page {
     pub(super) fn saved_path(&self) -> PathBuf {
         match self {
             Page::Device => PathBuf::from(DEVICE),
+            Page::History => PathBuf::from(HISTORY),
         }
     }
 }
@@ -85,6 +93,44 @@ impl Workspace {
         self.device.update(cx, |device, cx| device.set_in_tab(in_tab, cx));
     }
 
+    /// The tab the history is in, if it's open.
+    pub(crate) fn history_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|tab| matches!(tab.page, Some(Page::History)))
+    }
+
+    /// Whether the history shows, in front of its group.
+    pub(crate) fn history_visible(&self) -> bool {
+        self.history_tab().is_some_and(|ix| self.shown_in(self.tabs[ix].group) == Some(ix))
+    }
+
+    /// Opens the History tab with the commits that changed `file` (relative;
+    /// `true`: a folder), or with all of them.
+    pub(crate) fn open_history(&mut self, file: Option<(String, bool)>, window: &mut Window, cx: &mut Context<Self>) {
+        self.history.update(cx, |history, cx| history.show_file(file, cx));
+        self.show_history_tab(window, cx);
+    }
+
+    /// The History tab in front, opened if it wasn't, with what it showed.
+    fn show_history_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = match self.history_tab() {
+            Some(ix) => ix,
+            None => {
+                let tab = self.page_tab(Page::History, window, cx);
+                self.place_tab(tab, true)
+            }
+        };
+        self.activate_with(ix, true, window, cx);
+        self.layout_changed(cx);
+    }
+
+    /// Cmd-Shift-H: the History tab, closed if it's the one in front.
+    pub(crate) fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.history_tab() {
+            Some(ix) if self.active == Some(ix) => self.close(ix, window, cx),
+            _ => self.show_history_tab(window, cx),
+        }
+    }
+
     fn page_tab(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) -> FileTab {
         let mut tab = self.new_tab_with(page.saved_path(), false, "text", window, cx);
         tab.doc = true;
@@ -97,13 +143,18 @@ impl Workspace {
     /// Opens again a page tab saved with the session; false if `saved`
     /// isn't one.
     pub(super) fn restore_page(&mut self, saved: &SavedTab, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if saved.path != Path::new(DEVICE) {
-            return false;
-        }
-        let mut tab = self.page_tab(Page::Device, window, cx);
+        let page = match saved.path.to_str() {
+            Some(DEVICE) => Page::Device,
+            Some(HISTORY) => Page::History,
+            _ => return false,
+        };
+        let mut tab = self.page_tab(page.clone(), window, cx);
         tab.group = saved.group.min(1);
         self.tabs.push(tab);
-        self.sync_device_place(cx);
+        match page {
+            Page::Device => self.sync_device_place(cx),
+            Page::History => {}
+        }
         true
     }
 }

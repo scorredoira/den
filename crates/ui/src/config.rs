@@ -34,14 +34,17 @@ pub struct Layout {
     pub place: Place,
     /// The side column's places, an icon each on the activity bar in this
     /// order: their panels, top to bottom. Every side panel is in one.
+    #[serde(deserialize_with = "known_places")]
     pub places: Vec<Vec<Panel>>,
     /// The side panels taken off the column (Hide Panel): they keep their
     /// spot for when they're shown again.
+    #[serde(deserialize_with = "known_panels")]
     pub hidden: Vec<Panel>,
     /// The side panels folded to their header.
+    #[serde(deserialize_with = "known_panels")]
     pub collapsed: Vec<Panel>,
     /// The side panels' heights, as dragged.
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(skip_serializing_if = "HashMap::is_empty", deserialize_with = "known_heights")]
     pub heights: HashMap<Panel, f32>,
     pub side_width: f32,
     pub dock: Dock,
@@ -89,13 +92,36 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + Default>(dese
     Ok(T::deserialize(value).unwrap_or_default())
 }
 
+/// Panels by name, without those this version doesn't have: the History
+/// and Commit Files panels of before the History tab, or a newer den's.
+fn known_panels<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Panel>, D::Error> {
+    let names = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(names.into_iter().filter_map(|name| Panel::deserialize(name).ok()).collect())
+}
+
+fn known_places<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec<Panel>>, D::Error> {
+    let places = Vec::<Vec<serde_json::Value>>::deserialize(deserializer)?;
+    Ok(places
+        .into_iter()
+        .map(|names| names.into_iter().filter_map(|name| Panel::deserialize(name).ok()).collect())
+        .collect())
+}
+
+fn known_heights<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<HashMap<Panel, f32>, D::Error> {
+    let heights = HashMap::<String, f32>::deserialize(deserializer)?;
+    Ok(heights
+        .into_iter()
+        .filter_map(|(name, height)| Some((Panel::deserialize(serde_json::Value::String(name)).ok()?, height)))
+        .collect())
+}
+
 impl Layout {
     /// Mends one edited by hand: every side panel in one place, once.
     pub fn repair(&mut self) {
         let mut seen = Vec::new();
         for place in &mut self.places {
             place.retain(|panel| {
-                let keep = Group::of(*panel).is_some() && !matches!(panel, Panel::Commit | Panel::Debugger) && !seen.contains(panel);
+                let keep = Group::of(*panel).is_some() && *panel != Panel::Debugger && !seen.contains(panel);
                 seen.push(*panel);
                 keep
             });
@@ -271,7 +297,7 @@ impl Group {
         match self {
             Group::Explorer => &[Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline],
             Group::Search => &[Panel::Search, Panel::References],
-            Group::Git => &[Panel::Changes, Panel::History],
+            Group::Git => &[Panel::Changes],
             Group::Debug => &[Panel::CallStack, Panel::Variables, Panel::Watch, Panel::Breakpoints],
         }
     }
@@ -281,16 +307,14 @@ impl Group {
         match self {
             Group::Explorer => Panel::Files,
             Group::Search => Panel::Search,
-            Group::Git => Panel::History,
+            Group::Git => Panel::Changes,
             Group::Debug => Panel::Variables,
         }
     }
 
-    /// The group `panel` is in: the history's for the commit's files (a
-    /// part of it), the debug one for the debugger.
+    /// The group `panel` is in: the debug one for the debugger.
     pub fn of(panel: Panel) -> Option<Group> {
         match panel {
-            Panel::Commit => Some(Group::Git),
             Panel::Debugger => Some(Group::Debug),
             _ => Group::ALL.into_iter().find(|group| group.panels().contains(&panel)),
         }
@@ -314,9 +338,6 @@ pub enum Panel {
     Workspaces,
     Files,
     Changes,
-    History,
-    /// The files of the commit selected in the history, its lower part.
-    Commit,
     Search,
     References,
     /// The classes, functions, constants… of the file in front, without
@@ -342,7 +363,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 19] = [
+    pub const ALL: [Panel; 17] = [
         Panel::Workspaces,
         Panel::Agents,
         Panel::Files,
@@ -350,8 +371,6 @@ impl Panel {
         Panel::Search,
         Panel::References,
         Panel::Changes,
-        Panel::History,
-        Panel::Commit,
         Panel::CallStack,
         Panel::Variables,
         Panel::Watch,
@@ -547,10 +566,9 @@ pub struct Config {
     /// The worktrees made from the workspaces column (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub own_worktrees: Vec<String>,
-    /// The history without the selected commit's files under its commits
-    /// (Hide Files, Cmd-Alt-Shift-H).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub history_files_hidden: bool,
+    /// The History tab's sizes, as dragged.
+    #[serde(deserialize_with = "lenient")]
+    pub history: HistorySizes,
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,
@@ -566,6 +584,25 @@ pub struct Config {
     /// their id): they head it, as in VS Code.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recent_commands: Vec<String>,
+}
+
+/// The parts of the History tab and its columns, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistorySizes {
+    /// The commits' height, over the selected one.
+    pub commits: f32,
+    /// The commit's files, beside it.
+    pub files: f32,
+    /// The commits' author and date columns.
+    pub author: f32,
+    pub date: f32,
+}
+
+impl Default for HistorySizes {
+    fn default() -> Self {
+        Self { commits: 320., files: 280., author: 300., date: 170. }
+    }
 }
 
 /// How a diff shows its two sides.
@@ -1031,13 +1068,12 @@ mod layout_tests {
     fn every_side_panel_is_in_one_group() {
         for panel in Panel::ALL {
             let groups = Group::ALL.into_iter().filter(|group| group.panels().contains(&panel)).count();
-            let side = !matches!(panel, Panel::Code | Panel::Terminals | Panel::Console | Panel::Device | Panel::Notes | Panel::Debugger | Panel::Commit);
+            let side = !matches!(panel, Panel::Code | Panel::Terminals | Panel::Console | Panel::Device | Panel::Notes | Panel::Debugger);
             assert_eq!(groups, usize::from(side), "{panel:?}");
         }
         for group in Group::ALL {
             assert!(group.panels().contains(&group.filler()));
         }
-        assert_eq!(Group::of(Panel::Commit), Some(Group::Git));
         assert_eq!(Group::of(Panel::Debugger), Some(Group::Debug));
     }
 
@@ -1065,7 +1101,7 @@ mod layout_tests {
         // Into another place, and hidden ones come back.
         let git = layout.place_of(Panel::Changes).unwrap();
         layout.move_panel(Panel::Agents, git, None);
-        assert_eq!(layout.panels(git), [Panel::Changes, Panel::History, Panel::Agents]);
+        assert_eq!(layout.panels(git), [Panel::Changes, Panel::Agents]);
         // A place of its own, right after; merged back.
         layout.own_place(Panel::Workspaces);
         let workspaces = Place(Panel::Workspaces);
@@ -1124,7 +1160,19 @@ mod layout_tests {
         let mut layout: Layout = serde_json::from_str(r#"{"places": [["files", "files", "code"], []]}"#).unwrap();
         layout.repair();
         assert_eq!(layout.places[0], [Panel::Files, Panel::Workspaces, Panel::Agents, Panel::Outline]);
-        assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some() && !matches!(panel, Panel::Commit | Panel::Debugger)).all(|panel| layout.place_of(*panel).is_some()));
+        assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some() && **panel != Panel::Debugger).all(|panel| layout.place_of(*panel).is_some()));
+        // The History and Commit Files panels of before the History tab are left out.
+        let config: super::Config = serde_json::from_str(
+            r#"{"layout": {"place": "history", "places": [["files"], ["changes", "history", "commit"]], "hidden": ["agents", "commit"], "collapsed": ["history"], "heights": {"history": 100, "changes": 200}}}"#,
+        )
+        .unwrap();
+        let mut layout = config.layout;
+        layout.repair();
+        assert_eq!(layout.place, super::Place::default());
+        assert_eq!(layout.places[1], [Panel::Changes]);
+        assert_eq!(layout.hidden, [Panel::Agents]);
+        assert!(layout.collapsed.is_empty());
+        assert_eq!(layout.heights.into_iter().collect::<Vec<_>>(), [(Panel::Changes, 200.)]);
         // One from before the places reads as a new one, the rest of the config intact.
         let config: super::Config = serde_json::from_str(r#"{"order": ["/a"], "layout": {"place": {"group": "explorer"}, "alone": ["files"]}}"#).unwrap();
         assert_eq!(config.order, ["/a"]);

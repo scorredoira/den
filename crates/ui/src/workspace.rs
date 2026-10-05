@@ -23,7 +23,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory, ToggleCommitFiles,
+    CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory,
     OpenChanges, ShowFileHistory,
     FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
@@ -31,6 +31,7 @@ use crate::{
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     DiffLayoutAutomatic, DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile,
     changes::{self, ChangesEvent, ChangesPanel},
+    history::{HistoryEvent, HistoryView},
     commit_view::{self, CommitView, CommitViewEvent},
     definition,
     completion::Completions,
@@ -320,7 +321,7 @@ pub struct Workspace {
     /// On this machine (not on a server).
     local: bool,
     changes: Entity<ChangesPanel>,
-    history: Entity<ChangesPanel>,
+    history: Entity<HistoryView>,
     search: Entity<SearchPanel>,
     /// References panel: the latest F12 (with several targets) or Shift-F12.
     references: Entity<SearchPanel>,
@@ -389,8 +390,8 @@ impl Workspace {
         let file_tree = cx.new(|cx| FileTree::new(root.clone(), agent.clone(), local, cx));
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
-        let changes = cx.new(|cx| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::Uncommitted, cx));
-        let history = cx.new(|cx| ChangesPanel::new(root.clone(), agent.clone(), local, changes::View::History, cx));
+        let changes = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local));
+        let history = cx.new(|cx| HistoryView::new(root.clone(), agent.clone(), window, cx));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
         let outline = cx.new(|_| OutlinePanel::new());
@@ -434,7 +435,7 @@ impl Workspace {
                     FileTreeEvent::Open { path, pin } => this.open_with(path.clone(), *pin, *pin, window, cx),
                     FileTreeEvent::Renamed { from, to } => this.renamed(from, to, cx),
                     FileTreeEvent::Trashed { path } => this.trashed(path, window, cx),
-                    FileTreeEvent::ShowHistory { path, dir } => this.show_history(path, *dir, cx),
+                    FileTreeEvent::ShowHistory { path, dir } => this.show_history(path, *dir, window, cx),
                     FileTreeEvent::OpenTerminal { dir } => {
                         this.show_panel(Panel::Terminals, cx);
                         this.terminals.update(cx, |terminals, cx| terminals.new_terminal_in(dir.clone(), window, cx));
@@ -472,7 +473,7 @@ impl Workspace {
                 },
             ),
             cx.subscribe_in(&changes, window, Self::on_git_event),
-            cx.subscribe_in(&history, window, Self::on_git_event),
+            cx.subscribe_in(&history, window, Self::on_history_event),
             cx.subscribe_in(&search, window, |this, search, event: &SearchEvent, window, cx| match event {
                 SearchEvent::Open { file, line, column, pin } => {
                     let goto = Position::new(line.saturating_sub(1), *column);
@@ -503,7 +504,7 @@ impl Workspace {
             terminals.restore(window, cx);
         });
         if has_agent {
-            changes.update(cx, |changes, cx| changes.mark_stale(false, cx));
+            changes.update(cx, |changes, cx| changes.mark_stale(cx));
         }
         let focus_handle = cx.focus_handle();
         // Disk changes are watched by the agent on the task's machine.
@@ -630,11 +631,9 @@ impl Workspace {
             .unwrap_or_default();
         self.editor_split = session.split;
         self.restore_panels(session.shows);
-        // A git panel that shows from the start reads now, not when shown.
-        for (panel, entity) in [(Panel::Changes, self.changes.clone()), (Panel::History, self.history.clone())] {
-            if self.client.is_some() && self.is_shown(panel, cx) {
-                entity.update(cx, |entity, cx| entity.shown(cx));
-            }
+        // The changes, if they show from the start, read now, not when shown.
+        if self.client.is_some() && self.is_shown(Panel::Changes, cx) {
+            self.changes.update(cx, |changes, cx| changes.shown(cx));
         }
         for saved in session.tabs {
             if self.restore_page(&saved, window, cx) {
@@ -666,6 +665,10 @@ impl Workspace {
             if !doc {
                 self.file_tree.update(cx, |tree, cx| tree.reveal(&path, cx));
             }
+        }
+        // The history, if it reopened in front, reads now.
+        if self.history_visible() {
+            self.history.update(cx, |history, cx| history.shown(cx));
         }
         self.restored = true;
         cx.notify();
@@ -820,10 +823,9 @@ impl Workspace {
         self.fs_watch = Some(Self::watch_fs(&self.root, &client, window, cx));
         self.file_tree
             .update(cx, |tree, cx| tree.set_client(client.clone(), cx));
-        for (panel, entity) in self.git_panels() {
-            let visible = self.is_shown(panel, cx);
-            entity.update(cx, |entity, cx| entity.set_client(client.clone(), visible, cx));
-        }
+        self.changes.update(cx, |changes, cx| changes.set_client(client.clone(), cx));
+        let visible = self.history_visible();
+        self.history.update(cx, |history, cx| history.set_client(client.clone(), visible, cx));
         self.search.update(cx, |search, _| search.set_client(client.clone()));
         self.debugger.update(cx, |debugger, cx| {
             debugger.set_client(client.clone(), cx);
@@ -1153,25 +1155,6 @@ impl Workspace {
     fn group_width(&self, group: usize) -> Pixels {
         let width = self.group_widths[group.min(1)].get();
         if width > px(0.) { width } else { px(f32::MAX) }
-    }
-
-    /// Reads a commit's changes before they're asked for (the ones next to
-    /// the selected one in the history): stepping to them is then instant.
-    pub(crate) fn prefetch_commit(&mut self, commit: String, short: String, file: String, cx: &mut Context<Self>) {
-        let of = DiffOf::commit(commit, short, file, false);
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        if self.commit_texts.contains_key(&of) {
-            return;
-        }
-        let fetch = self.fetch_diff(&of, client);
-        cx.spawn(async move |this, cx| {
-            if let Ok(Response::Text(text)) = fetch.await {
-                this.update(cx, |this, _| this.remember_commit_text(of, text)).ok();
-            }
-        })
-        .detach();
     }
 
     /// Keeps what a commit showed, the most recent ones only.
@@ -2673,10 +2656,9 @@ impl Workspace {
         }
         self.file_tree
             .update(cx, |tree, cx| tree.invalidate(&paths, cx));
-        for (panel, entity) in self.git_panels() {
-            let visible = self.is_shown(panel, cx);
-            entity.update(cx, |entity, cx| entity.mark_stale(visible, cx));
-        }
+        self.changes.update(cx, |changes, cx| changes.mark_stale(cx));
+        let visible = self.history_visible();
+        self.history.update(cx, |history, cx| history.mark_stale(visible, cx));
         let reload: Vec<PathBuf> = self
             .tabs
             .iter()
@@ -2811,6 +2793,10 @@ impl Workspace {
         self.message = None;
         let tab = &self.tabs[ix];
         let (path, doc) = (tab.path.clone(), tab.doc);
+        // The history rereads what changed while it was out of sight.
+        if matches!(tab.page, Some(pages::Page::History)) {
+            self.history.update(cx, |history, cx| history.shown(cx));
+        }
         if focus {
             self.focus_active(window, cx);
         }
@@ -3380,7 +3366,7 @@ impl Workspace {
     }
 
 
-    /// What the Changes and History panels ask to open.
+    /// What the Changes panel asks to open.
     fn on_git_event(&mut self, _: &Entity<ChangesPanel>, event: &ChangesEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             ChangesEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
@@ -3393,34 +3379,30 @@ impl Workspace {
                     self.open_diff(of, *pin, window, cx);
                 }
             }
-            ChangesEvent::OpenCommitDiff { commit, short, file, pin } => {
-                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), *pin, window, cx);
-            }
-            ChangesEvent::OpenCommit { commit, short, pin } => {
-                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), String::new(), false), *pin, window, cx);
-            }
-            ChangesEvent::OpenFileAt { commit, short, file } => {
-                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
-            }
-            ChangesEvent::Prefetch { commit, short, file } => self.prefetch_commit(commit.clone(), short.clone(), file.clone(), cx),
-            ChangesEvent::ToggleCommitFiles => self.toggle_commit_files_now(cx),
             ChangesEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
+            ChangesEvent::ShowHistory { file } => self.open_history(Some((file.clone(), false)), window, cx),
         }
     }
 
-    /// The panels that read git, each with its place in the layout.
-    fn git_panels(&self) -> [(Panel, &Entity<ChangesPanel>); 2] {
-        [(Panel::Changes, &self.changes), (Panel::History, &self.history)]
+    /// What the History tab asks to open.
+    fn on_history_event(&mut self, _: &Entity<HistoryView>, event: &HistoryEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            HistoryEvent::OpenCommitDiff { commit, short, file } => {
+                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), true, window, cx);
+            }
+            HistoryEvent::OpenFileAt { commit, short, file } => {
+                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
+            }
+            HistoryEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
+            HistoryEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
+        }
     }
 
-    /// The History panel with the commits that changed `path`.
-    fn show_history(&mut self, path: &Path, dir: bool, cx: &mut Context<Self>) {
-        let Some(file) = self.repo_path(path) else {
-            return;
-        };
-        self.show_panel(Panel::History, cx);
-        self.history.update(cx, |history, cx| history.show_history(Some((file, dir)), cx));
-        cx.notify();
+    /// The History tab with the commits that changed `path`.
+    fn show_history(&mut self, path: &Path, dir: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(file) = self.repo_path(path) {
+            self.open_history(Some((file, dir)), window, cx);
+        }
     }
 
     fn render_tab_bar(&self, group: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3675,8 +3657,8 @@ impl Workspace {
             })
             .when(!whole_commit, |menu| {
                 let path = path.clone();
-                menu.item(menu::item("Show File History", &workspace, move |this, _, cx| {
-                    this.show_history(&path, false, cx)
+                menu.item(menu::item("Show File History", &workspace, move |this, window, cx| {
+                    this.show_history(&path, false, window, cx)
                 }))
             })
             .separator()
@@ -3761,8 +3743,6 @@ impl Workspace {
                 Content::Ready if let Some(commit) = &tab.commit => {
                     let tab_menu = self.tab_menu(tab, self.editor_split.is_some(), cx.entity().downgrade());
                     let hash = tab.diff.as_ref().and_then(|diff| diff.commit.as_ref()).map(|(hash, _)| hash.clone()).unwrap_or_default();
-                    // As in the history's menus: Show Files or Hide Files.
-                    let files = self.history.read(cx).files_in_menu(cx);
                     div()
                         .id("commit-view")
                         .size_full()
@@ -3775,9 +3755,6 @@ impl Workspace {
                                 .item(menu::PopupMenuItem::new("Copy Hash").on_click(move |_, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))
                                 }))
-                                .when_some(files, |menu, shown| {
-                                    menu.menu(if shown { "Hide Files" } else { "Show Files" }, Box::new(ToggleCommitFiles))
-                                })
                                 .separator();
                             tab_menu(menu, window, cx)
                         })
@@ -4037,7 +4014,8 @@ impl Workspace {
                     .child(branch),
             );
         }
-        if let Some(tab) = self.active.map(|ix| &self.tabs[ix]) {
+        // A page (the history, the device) has no file to tell of.
+        if let Some(tab) = self.active.map(|ix| &self.tabs[ix]).filter(|tab| tab.page.is_none()) {
             let relative = tab.path.strip_prefix(&self.root).unwrap_or(&tab.path);
             left = left.child(relative.display().to_string());
             let state = tab.editor.read(cx);
@@ -4188,8 +4166,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_side_panel))
             .on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.toggle_panel(Panel::Files, cx)))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.toggle_panel(Panel::Changes, cx)))
-            .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.toggle_panel(Panel::History, cx)))
-            .on_action(cx.listener(Self::toggle_commit_files))
+            .on_action(cx.listener(|this, _: &ShowHistory, window, cx| this.toggle_history(window, cx)))
             .on_action(cx.listener(Self::show_search))
             .on_action(cx.listener(Self::open_file_finder))
             // F4 steps through the visible panel's results: References or Search.
@@ -4233,9 +4210,9 @@ impl Render for Workspace {
                     this.open_changes(&path, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &ShowFileHistory, _, cx| {
+            .on_action(cx.listener(|this, _: &ShowFileHistory, window, cx| {
                 if let Some((path, _)) = this.cursor_place(cx) {
-                    this.show_history(&path, false, cx);
+                    this.show_history(&path, false, window, cx);
                 }
             }))
             .on_action(cx.listener(Self::add_to_watch))

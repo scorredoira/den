@@ -15,6 +15,7 @@ mod diff;
 mod editing;
 mod changes;
 mod commit_view;
+mod history;
 mod completion;
 mod file_tree;
 mod language;
@@ -55,7 +56,6 @@ actions!(
         ShowFiles,
         ShowChanges,
         ShowHistory,
-        ToggleCommitFiles,
         OpenChanges,
         ShowFileHistory,
         ShowSearch,
@@ -308,7 +308,7 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
 /// while it has focus.
 fn bind_keys(cx: &mut App) {
     cx.bind_keys(file_tree::keymap());
-    cx.bind_keys(changes::keymap());
+    cx.bind_keys(history::keymap());
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-h", Hide, None),

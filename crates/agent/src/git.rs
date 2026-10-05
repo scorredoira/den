@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, Response};
+use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, GraphCommit, Response};
 
 /// The repo's main branch: the local `master` or `main`. Only the local repo
 /// counts: remotes are never looked at.
@@ -209,6 +209,7 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
         )),
         GitOp::Search { query, skip, limit } => Ok(Response::Commits(search(dir, &query, skip, limit)?)),
         GitOp::Blame { file } => blame(dir, &file),
+        GitOp::Graph { query, file, skip, limit } => Ok(Response::Graph(graph(dir, &query, file.as_deref(), skip, limit)?)),
     }
 }
 
@@ -340,6 +341,68 @@ fn search(dir: &Path, query: &str, skip: usize, limit: usize) -> Result<Vec<Comm
         .take(limit)
         .map(|(commit, _)| commit)
         .collect())
+}
+
+const GRAPH_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%P%x1f%D%x1f%s%x1f%b%x1e";
+
+/// The history of every branch, tag and remote, for its graph. A search
+/// reads all of it and filters it here, as `search` does.
+fn graph(dir: &Path, query: &str, file: Option<&str>, skip: usize, limit: usize) -> Result<Vec<GraphCommit>> {
+    if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
+        return Ok(Vec::new());
+    }
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let (skip_arg, limit_arg) = (format!("--skip={skip}"), format!("--max-count={limit}"));
+    let mut args = vec!["log", "--date-order", "--decorate=full", "--date=format:%Y-%m-%d %H:%M:%S", GRAPH_FORMAT, "HEAD", "--branches", "--tags", "--remotes"];
+    if words.is_empty() {
+        args.extend([skip_arg.as_str(), limit_arg.as_str()]);
+    }
+    if let Some(file) = file {
+        // The parents become the nearest commits that changed it too.
+        args.extend(["--parents", "--", file]);
+    }
+    let raw = git(dir, &args)?;
+    let commits = raw.split('\x1e').filter_map(|record| {
+        let mut fields = record.trim_start_matches('\n').split('\x1f');
+        let commit = GraphCommit {
+            hash: fields.next().filter(|hash| !hash.is_empty())?.to_string(),
+            short: fields.next()?.to_string(),
+            author: fields.next()?.to_string(),
+            email: fields.next()?.to_string(),
+            date: fields.next()?.to_string(),
+            parents: fields.next()?.split_whitespace().map(str::to_string).collect(),
+            refs: decorations(fields.next()?),
+            subject: fields.next()?.to_string(),
+        };
+        Some((commit, fields.next().unwrap_or("")))
+    });
+    if words.is_empty() {
+        return Ok(commits.map(|(commit, _)| commit).collect());
+    }
+    Ok(commits
+        .filter(|(commit, body)| {
+            let text = format!("{}\n{}\n{}\n{}", commit.subject, body, commit.author, commit.email).to_lowercase();
+            words.iter().all(|word| commit.hash.starts_with(word.as_str()) || text.contains(word.as_str()))
+        })
+        .skip(skip)
+        .take(limit)
+        .map(|(commit, _)| commit)
+        .collect())
+}
+
+/// `%D` with `--decorate=full` (`HEAD -> refs/heads/main, tag: refs/tags/v1,
+/// refs/remotes/origin/main`) as full names, without a remote's `HEAD`.
+fn decorations(raw: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    for item in raw.split(", ").filter(|item| !item.is_empty()) {
+        let item = item.strip_prefix("tag: ").unwrap_or(item);
+        match item.strip_prefix("HEAD -> ") {
+            Some(branch) => refs.extend(["HEAD".to_string(), branch.to_string()]),
+            None if item.starts_with("refs/remotes/") && item.ends_with("/HEAD") => {}
+            None => refs.push(item.to_string()),
+        }
+    }
+    refs
 }
 
 /// The commits of a `git log` in `LOG_FORMAT`, each with its message body.
@@ -560,6 +623,41 @@ mod tests {
         assert_eq!(base, None);
         assert_eq!(paths(&files), [("index.html", 'M')]);
         assert!(diff(&dir, "index.html", false).unwrap().contains("+there"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_graph_has_every_branch_with_parents_and_refs() {
+        let dir = repo();
+        let graph = |query: &str, file: Option<&str>| match run_op(&dir, GitOp::Graph { query: query.into(), file: file.map(str::to_string), skip: 0, limit: 10 }) {
+            Response::Graph(commits) => commits,
+            other => panic!("{other:?}"),
+        };
+        run(&dir, &["switch", "-q", "-c", "task"]);
+        std::fs::write(dir.join("a.txt"), "on the branch\n").unwrap();
+        commit(&dir, "on the branch");
+        run(&dir, &["switch", "-q", "master"]);
+        std::fs::write(dir.join("b.txt"), "on master\n").unwrap();
+        commit(&dir, "on master");
+        run(&dir, &["tag", "v1"]);
+        run(&dir, &["-c", "user.email=a@b", "-c", "user.name=a", "merge", "-q", "--no-edit", "task"]);
+        let commits = graph("", None);
+        let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects[0], "Merge branch 'task'");
+        assert_eq!(subjects.len(), 4);
+        assert_eq!(commits[0].parents.len(), 2);
+        assert_eq!(commits[0].refs, ["HEAD", "refs/heads/master"]);
+        let tagged = commits.iter().find(|c| c.subject == "on master").unwrap();
+        assert_eq!(tagged.refs, ["refs/tags/v1"]);
+        assert_eq!(commits.iter().find(|c| c.subject == "on the branch").unwrap().refs, ["refs/heads/task"]);
+        assert_eq!(commits[3].subject, "initial");
+        assert!(commits[3].parents.is_empty());
+        // A search, and a file's: its parents are the commits that changed it.
+        let found: Vec<String> = graph("branch", None).into_iter().map(|c| c.subject).collect();
+        assert_eq!(found, ["Merge branch 'task'", "on the branch"]);
+        let of_b = graph("", Some("b.txt"));
+        assert_eq!(of_b.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["on master", "initial"]);
+        assert_eq!(of_b[0].parents, [of_b[1].hash.clone()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

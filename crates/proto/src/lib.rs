@@ -348,6 +348,12 @@ pub enum GitOp {
     /// Responds `Commits`: those of `HEAD` that the main branch (the local
     /// `master` or `main`) doesn't have, the newest first.
     Unmerged { limit: usize },
+    /// Responds `Graph`: the commits of every branch, tag and remote, the
+    /// newest first and each before its parents, with `skip` and `limit`.
+    /// Only those that changed `file`, if there's one (their parents are
+    /// then the nearest that did too), or whose hash, message or author
+    /// contain each word of `query`.
+    Graph { query: String, file: Option<String>, skip: usize, limit: usize },
 }
 
 /// Repo status for the Changes mode, uncommitted.
@@ -429,6 +435,23 @@ pub enum Response {
     /// that answered, separated by commas.
     Symbols { server: Option<String>, symbols: Vec<LspSymbol> },
     Agents(Vec<AgentInfo>),
+    Graph(Vec<GraphCommit>),
+}
+
+/// A commit of the history's graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GraphCommit {
+    pub hash: String,
+    pub short: String,
+    pub author: String,
+    pub email: String,
+    /// When it was written, `2026-10-05 16:22:33`, in its author's time zone.
+    pub date: String,
+    pub parents: Vec<String>,
+    /// What points at it, in full: `HEAD`, `refs/heads/…`, `refs/tags/…`,
+    /// `refs/remotes/…`.
+    pub refs: Vec<String>,
+    pub subject: String,
 }
 
 /// A port a process started from a terminal listens on (at loopback or on
