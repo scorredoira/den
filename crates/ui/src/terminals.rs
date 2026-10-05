@@ -48,6 +48,9 @@ pub enum TerminalAreaEvent {
     ShowPanel(Option<Panel>),
     /// A panel's tab closed.
     ClosePanel(Panel),
+    /// The debugger's terminal, drawn in its console: a new one, or (`None`)
+    /// it's gone.
+    DebugTerminal(Option<Entity<TerminalView>>),
 }
 
 /// A panel in the terminals' place: a tab after theirs.
@@ -101,6 +104,9 @@ pub struct TerminalArea {
     local: bool,
     /// The panels in the terminals' place, a tab each after theirs.
     panel_tabs: Vec<PanelTab>,
+    /// The terminal the debugger runs its command in: in `views`, but in no
+    /// tab, as the debugger's console draws it.
+    debug_term: Option<TermId>,
     /// For right-click menus.
     weak: WeakEntity<Self>,
     _subscriptions: Vec<Subscription>,
@@ -123,21 +129,33 @@ impl TerminalArea {
             body_size: Rc::default(),
             local,
             panel_tabs: Vec::new(),
+            debug_term: None,
             weak: cx.entity().downgrade(),
             _subscriptions: Vec::new(),
         }
     }
 
+    /// The debugger's terminal from before (saved by the debugger), for
+    /// `restore` to leave out of the tabs.
+    pub fn set_debug_term(&mut self, term: Option<TermId>) {
+        self.debug_term = term;
+    }
+
     /// Restores the agent's live terminals with the saved layout; if there are
-    /// none, opens one.
+    /// none, opens one. The debugger's goes to its console.
     pub fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
             return;
         };
         let group = self.group.clone();
+        let debug_term = self.debug_term;
         cx.spawn_in(window, async move |this, cx| {
             let result: Result<(Vec<Tree>, Vec<(TermId, Entity<Terminal>)>)> = async {
-                let alive: HashSet<TermId> = agent::list(&client, group.clone()).await?.into_iter().collect();
+                let mut alive: HashSet<TermId> = agent::list(&client, group.clone()).await?.into_iter().collect();
+                let mut terminals = Vec::new();
+                if let Some(term) = debug_term.filter(|term| alive.remove(term)) {
+                    terminals.push((term, agent::attach(client.clone(), term, cx).await?));
+                }
                 let saved = SavedLayouts::load().groups.remove(&group).unwrap_or_default();
                 let mut trees: Vec<Tree> = saved
                     .tabs
@@ -151,7 +169,6 @@ impl TerminalArea {
                 orphans.sort();
                 trees.extend(orphans.into_iter().map(Tree::Leaf));
 
-                let mut terminals = Vec::new();
                 for term in trees.iter().flat_map(Tree::leaves) {
                     terminals.push((term, agent::attach(client.clone(), term, cx).await?));
                 }
@@ -160,10 +177,20 @@ impl TerminalArea {
             .await;
 
             this.update_in(cx, |this, window, cx| match result {
-                Ok((trees, _)) if trees.is_empty() => this.open(Place::NewTab, window, cx),
                 Ok((trees, terminals)) => {
                     for (term, terminal) in terminals {
-                        this.add_view(term, terminal, window, cx);
+                        let view = this.add_view(term, terminal, window, cx);
+                        if Some(term) == this.debug_term {
+                            cx.emit(TerminalAreaEvent::DebugTerminal(Some(view)));
+                        }
+                    }
+                    // gone with the agent's restart
+                    if debug_term.is_some_and(|term| !this.views.contains_key(&term)) {
+                        this.debug_term = None;
+                    }
+                    if trees.is_empty() {
+                        this.open(Place::NewTab, window, cx);
+                        return;
                     }
                     for tree in trees {
                         let id = this.next_tab_id();
@@ -392,6 +419,59 @@ impl TerminalArea {
             return Task::ready(Some(term));
         }
         self.open_running(Place::NewTab, None, Some(line), false, window, cx)
+    }
+
+    /// Runs `line` in the shell of the debugger's terminal, which its console
+    /// draws: `term` when it's that one and still open, or a new one. The one
+    /// before, still running something, is closed with it. Resolves to the
+    /// terminal it runs in.
+    pub fn run_debug(
+        &mut self,
+        term: Option<TermId>,
+        line: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<TermId>> {
+        if let Some(term) = term.filter(|term| Some(*term) == self.debug_term)
+            && let Some(view) = self.views.get(&term).cloned()
+            && !view.read(cx).terminal().read(cx).exited()
+        {
+            let terminal = view.read(cx).terminal().clone();
+            terminal.update(cx, |terminal, cx| terminal.input(format!("{line}\r").into_bytes(), cx));
+            return Task::ready(Some(term));
+        }
+        if let Some(before) = self.debug_term {
+            self.close_term(before, window, cx);
+        }
+        let Some(client) = self.client.clone() else {
+            self.error("No agent: can't open terminals".into(), cx);
+            return Task::ready(None);
+        };
+        let (group, cwd) = (self.group.clone(), self.cwd.clone());
+        let size = self.body_size.get().map_or((80, 24), |size| grid_for(size, window, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = agent::create(client, group, cwd, size, cx).await;
+            this.update_in(cx, |this, window, cx| {
+                let (term, terminal) = match result {
+                    Ok(created) => created,
+                    Err(err) => {
+                        this.error(format!("Couldn't open terminal: {err:#}"), cx);
+                        return None;
+                    }
+                };
+                terminal.update(cx, |terminal, cx| terminal.input(format!("{line}\r").into_bytes(), cx));
+                // two launches at once: the later one's
+                if let Some(before) = this.debug_term {
+                    this.close_term(before, window, cx);
+                }
+                let view = this.add_view(term, terminal, window, cx);
+                this.debug_term = Some(term);
+                cx.emit(TerminalAreaEvent::DebugTerminal(Some(view)));
+                Some(term)
+            })
+            .ok()
+            .flatten()
+        })
     }
 
     /// `den term new`: a terminal in a new tab, or split from `beside` (the
@@ -648,6 +728,11 @@ impl TerminalArea {
             .get(&term)
             .is_some_and(|view| view.read(cx).focus_handle(cx).is_focused(window));
         self.views.remove(&term);
+        if self.debug_term.take_if(|debug| *debug == term).is_some() {
+            cx.emit(TerminalAreaEvent::DebugTerminal(None));
+            cx.notify();
+            return;
+        }
         let Some(tab_ix) = self.tabs.iter().position(|tab| tab.tree.leaves().contains(&term)) else {
             return;
         };

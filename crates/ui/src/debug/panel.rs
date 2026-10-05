@@ -8,8 +8,9 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex,
     input::Input,
     menu::{ContextMenuExt as _, PopupMenu},
+    resizable_panel,
     tooltip::Tooltip,
-    v_flex,
+    v_flex, v_resizable,
 };
 use gpui_base::SelectableText;
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -758,7 +759,7 @@ impl Debugger {
                 }
             });
         }
-        v_flex()
+        let console = v_flex()
             .size_full()
             .child(
                 div()
@@ -786,8 +787,20 @@ impl Debugger {
                         _ => {}
                     }))
                     .child(Input::new(&self.console_input).xsmall()),
-            )
-            .into_any_element()
+            );
+        // the command's terminal above, rather than among the terminals' tabs
+        match &self.term_view {
+            Some(view) => v_resizable("debug-console-split")
+                .child(resizable_panel().child(div().size_full().child(view.clone())))
+                .child(
+                    resizable_panel()
+                        .size(px(140.))
+                        .size_range(px(60.)..Pixels::MAX)
+                        .child(div().size_full().border_t_1().border_color(theme.border).child(console)),
+                )
+                .into_any_element(),
+            None => console.into_any_element(),
+        }
     }
 
     fn render_launch_problem(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

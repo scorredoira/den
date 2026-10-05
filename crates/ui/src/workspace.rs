@@ -446,6 +446,9 @@ impl Workspace {
                     TerminalAreaEvent::ShowPanel(Some(panel)) => this.show_panel(*panel, cx),
                     TerminalAreaEvent::ShowPanel(None) => this.show_panel(Panel::Terminals, cx),
                     TerminalAreaEvent::ClosePanel(panel) => this.hide_panel(*panel, cx),
+                    TerminalAreaEvent::DebugTerminal(view) => {
+                        this.debugger.update(cx, |debugger, cx| debugger.set_terminal_view(view.clone(), cx));
+                    }
                 },
             ),
             cx.subscribe_in(&changes, window, Self::on_git_event),
@@ -473,7 +476,12 @@ impl Workspace {
                 SearchEvent::Replace { .. } => {}
             }),
         ];
-        terminals.update(cx, |terminals, cx| terminals.restore(window, cx));
+        // the debugger's terminal goes to its console, not to a tab
+        let debug_term = debugger.read(cx).terminal();
+        terminals.update(cx, |terminals, cx| {
+            terminals.set_debug_term(debug_term);
+            terminals.restore(window, cx);
+        });
         if has_agent {
             changes.update(cx, |changes, cx| changes.mark_stale(false, cx));
         }
@@ -1991,8 +1999,8 @@ impl Workspace {
                 });
                 let line = debug::command_line(line, file.as_deref());
                 debugger.update(cx, |debugger, _| debugger.set_ran(session, line.clone(), file));
-                self.show_panel(Panel::Terminals, cx);
-                let run = self.terminals.update(cx, |terminals, cx| terminals.run_line(*term, line, window, cx));
+                self.show_panel(Panel::Console, cx);
+                let run = self.terminals.update(cx, |terminals, cx| terminals.run_debug(*term, line, window, cx));
                 let debugger = debugger.downgrade();
                 cx.spawn(async move |_, cx| {
                     let term = run.await;

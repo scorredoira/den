@@ -12,8 +12,9 @@ the agent, so a program on a server is debugged like a local one.
 { "command": "sim -d -dp 127.0.0.1:${port} ${file}" }
 ```
 
-- `command`: a shell line run in a terminal of the workspace (its output stays
-  there). `${file}` is the open file, relative to the workspace: there is one
+- `command`: a shell line run in the debugger's own terminal, which the
+  console tab shows above its evaluations, never among the terminals' tabs
+  (its output stays there). `${file}` is the open file, relative to the workspace: there is one
   command, which debugs whatever is open, and the program decides what that
   means (a script, a test file, the server it is part of). With no file open
   `${file}` is empty, and the program decides what to debug without one (sim:
@@ -31,7 +32,8 @@ always started. If the command's terminal goes back to its shell before the
 program listens, the program ended (it didn't compile, its port was taken):
 Den says so instead of waiting. While the command runs, Den waits for it as
 long as it takes (an app's build), and shows its last line. A command is never typed into a terminal that
-still runs something: it gets a new one. A program held before running
+still runs something: the program before gets a few seconds to end, and then
+the terminal is closed with it and the command gets a new one. A program held before running
 (`waiting` in `hello`) is released with `entry`, so it stops at its entry, as
 Visual Studio's debugger does: where the program says (sim: the first line of
 `main`, or of the function `-de` names). A program with a page (`page` in
