@@ -40,6 +40,11 @@ const WORKING_WINDOW: Duration = Duration::from_secs(2);
 /// After this long without output, check whether the screen is asking for an answer.
 const QUIET: Duration = Duration::from_millis(800);
 
+/// Output counts as work once it keeps coming (no pause of `QUIET`) for this
+/// long: a redraw or a stray line from an idle terminal is not work, and
+/// would mark the task as finished again after it was seen.
+const WORK_BURST: Duration = Duration::from_secs(1);
+
 type ConnId = u64;
 
 const MAX_PENDING_MESSAGES: usize = 128;
@@ -122,6 +127,8 @@ struct AgentTerm {
     title: Option<String>,
     subscribers: HashSet<ConnId>,
     last_output: Instant,
+    /// When the output that keeps coming up to `last_output` began.
+    burst_start: Instant,
     /// Its first quiet moment has passed: what a shell or a resumed session
     /// prints on starting up is not work, so until then output doesn't mark
     /// the task as working (on an agent restart every task would end up
@@ -193,9 +200,13 @@ impl State {
         let Some(entry) = self.terms.get_mut(&term) else {
             return;
         };
-        entry.last_output = Instant::now();
+        let now = Instant::now();
+        if now.duration_since(entry.last_output) >= QUIET {
+            entry.burst_start = now;
+        }
+        entry.last_output = now;
         entry.blocked = false;
-        if !entry.settled {
+        if !entry.settled || now.duration_since(entry.burst_start) < WORK_BURST {
             return;
         }
         let group = entry.group.clone();
@@ -1551,6 +1562,7 @@ fn create(
                 title: None,
                 subscribers: HashSet::new(),
                 last_output: Instant::now(),
+                burst_start: Instant::now(),
                 settled: false,
                 blocked: false,
                 checked: Instant::now(),
