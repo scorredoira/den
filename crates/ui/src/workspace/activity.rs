@@ -226,7 +226,7 @@ impl Workspace {
             .map(|place| (Item::Place(place), side == Some(place), self.badge(place, cx)))
             .collect();
         if self.device.read(cx).available() {
-            icons.push((Item::Device, self.is_shown(Panel::Device, cx), None));
+            icons.push((Item::Device, self.is_shown(Panel::Device, cx) || self.device_tab().is_some(), None));
         }
         let notes = self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary));
         let bottom = vec![(Item::Notes, self.is_shown(Panel::Notes, cx), notes)];
@@ -293,6 +293,8 @@ impl Workspace {
                 self.show_search(&ShowSearch, window, cx)
             }
             Item::Place(place) => self.click_place(place, cx),
+            // In a tab, it comes to the front there.
+            Item::Device if self.device_tab().is_some() => self.show_device(window, cx),
             Item::Device => self.toggle_panel(Panel::Device, cx),
             Item::Notes if self.is_shown(Panel::Notes, cx) => {
                 self.hide_panel(Panel::Notes, cx);

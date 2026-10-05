@@ -57,6 +57,7 @@ mod layout;
 mod activity;
 mod markdown_images;
 mod commands;
+mod pages;
 #[cfg(test)]
 pub(crate) mod autosave_tests;
 #[cfg(test)]
@@ -154,6 +155,8 @@ struct FileTab {
     old: Option<OldSide>,
     /// A whole commit: its message and every file's changes.
     commit: Option<Entity<CommitView>>,
+    /// A view of its own instead of a file (it's a `doc` too).
+    page: Option<pages::Page>,
     /// Reopened on returning to the task: if the file is gone, it closes itself.
     restored: bool,
     /// Who last changed each line, as it was on disk when read or saved.
@@ -613,6 +616,9 @@ impl Workspace {
             }
         }
         for saved in session.tabs {
+            if self.restore_page(&saved, window, cx) {
+                continue;
+            }
             // The same file twice: the second is a view of the first.
             if let Some(file) = self.tabs.iter().position(|tab| tab.path == saved.path) {
                 let view = self.new_view(file, saved.group.min(1), true, window, cx);
@@ -635,8 +641,10 @@ impl Workspace {
         if let Some(ix) = self.active {
             self.group = self.tabs[ix].group;
             self.mark_shown(ix);
-            let path = self.tabs[ix].path.clone();
-            self.file_tree.update(cx, |tree, cx| tree.reveal(&path, cx));
+            let (path, doc) = (self.tabs[ix].path.clone(), self.tabs[ix].doc);
+            if !doc {
+                self.file_tree.update(cx, |tree, cx| tree.reveal(&path, cx));
+            }
         }
         self.restored = true;
         cx.notify();
@@ -649,9 +657,14 @@ impl Workspace {
             shows: Some(self.panels.saved()),
             ..Session::default()
         };
-        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.doc) {
+        // A page is a doc that opens again; the shortcuts guide isn't.
+        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && (!tab.doc || tab.page.is_some())) {
             if self.active == Some(ix) {
                 session.active = Some(session.tabs.len());
+            }
+            if let Some(page) = &tab.page {
+                session.tabs.push(SavedTab { path: page.saved_path(), line: 0, column: 0, group: tab.group });
+                continue;
             }
             // If it hasn't loaded yet, the right cursor is the one it's headed to.
             let cursor = tab.goto.unwrap_or_else(|| tab.editor.read(cx).cursor_position());
@@ -1965,6 +1978,8 @@ impl Workspace {
         match event {
             DeviceEvent::Debug => self.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx)),
             DeviceEvent::Stop => self.debugger.update(cx, |debugger, cx| debugger.stop(cx)),
+            DeviceEvent::ToTab => self.device_to_tab(window, cx),
+            DeviceEvent::ToColumn => self.device_to_column(window, cx),
             DeviceEvent::Inspect => {
                 let asked = self.debugger.update(cx, |debugger, _| debugger.inspect());
                 if !asked {
@@ -2016,7 +2031,7 @@ impl Workspace {
             DebugEvent::Reveal => self.reveal_debugger(cx),
             DebugEvent::Hide => self.hide_panel(Panel::Debugger, cx),
             DebugEvent::Device(id) => {
-                self.show_panel(Panel::Device, cx);
+                self.show_device(window, cx);
                 self.device.update(cx, |device, cx| device.show_device(id.clone(), cx));
             }
         }
@@ -2256,6 +2271,7 @@ impl Workspace {
             diff: None,
             old: None,
             commit: None,
+            page: None,
             restored: false,
             blame: None,
             occurrences: None,
@@ -2545,12 +2561,14 @@ impl Workspace {
         self.mark_shown(ix);
         self.message = None;
         let tab = &self.tabs[ix];
-        let path = tab.path.clone();
+        let (path, doc) = (tab.path.clone(), tab.doc);
         if focus {
             self.focus_active(window, cx);
         }
-        self.file_tree
-            .update(cx, |tree, cx| tree.reveal(&path, cx));
+        // A page of the app's own isn't in the tree.
+        if !doc {
+            self.file_tree.update(cx, |tree, cx| tree.reveal(&path, cx));
+        }
         cx.notify();
     }
 
@@ -2560,7 +2578,10 @@ impl Workspace {
         let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
             return;
         };
-        if tab.rendered().is_some() || tab.image.is_some() || !matches!(tab.content, Content::Ready) {
+        if let Some(page) = &tab.page {
+            let focus = page.focus_handle(self, cx);
+            focus.focus(window, cx);
+        } else if tab.rendered().is_some() || tab.image.is_some() || !matches!(tab.content, Content::Ready) {
             self.focus_handle.focus(window, cx);
         } else {
             tab.editor.update(cx, |state, cx| state.focus(window, cx));
@@ -2652,6 +2673,7 @@ impl Workspace {
         }
         let was_active = self.active == Some(ix);
         let next = self.remove_tab(ix);
+        self.sync_device_place(cx);
         self.message = None;
         match next {
             None => {
@@ -3174,6 +3196,10 @@ impl Workspace {
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                let name = match &tab.page {
+                    Some(page) => page.title(),
+                    None => name,
+                };
                 let name = match &tab.diff {
                     Some(DiffOf { commit: Some((_, short)), file, .. }) if file.is_empty() => format!("Commit {short}"),
                     Some(DiffOf { commit: Some((_, short)), source: true, .. }) => format!("{name} @ {short}"),
@@ -3475,6 +3501,7 @@ impl Workspace {
                     .justify_center()
                     .child(img(image.clone()).max_w_full().max_h_full().object_fit(ObjectFit::Contain))
                     .into_any_element(),
+                Content::Ready if let Some(page) = &tab.page => page.view(self),
                 Content::Ready if let Some(commit) = &tab.commit => {
                     let tab_menu = self.tab_menu(tab, self.editor_split.is_some(), cx.entity().downgrade());
                     let hash = tab.diff.as_ref().and_then(|diff| diff.commit.as_ref()).map(|(hash, _)| hash.clone()).unwrap_or_default();

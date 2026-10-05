@@ -174,7 +174,8 @@ impl Workspace {
             Panel::Code => true,
             Panel::Terminals => panels.terminals,
             Panel::Console => panels.terminals && panels.console && panels.console_front,
-            Panel::Device => panels.device && self.device.read(cx).available(),
+            // In a tab of the code it's not in its column.
+            Panel::Device => panels.device && self.device.read(cx).available() && self.device_tab().is_none(),
             Panel::Notes => panels.notes,
             Panel::Commit => self.is_shown(Panel::History, cx) && self.history.read(cx).files_open(cx),
             Panel::Debugger => DEBUG_PANELS.into_iter().any(|panel| self.in_side(panel, cx)),
