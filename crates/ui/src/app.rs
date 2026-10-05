@@ -64,6 +64,9 @@ const CONNECTING: &str = "connecting…";
 /// How many folders Open Recent remembers.
 const RECENT: usize = 20;
 
+/// Commands the Command Palette remembers (VS Code's default).
+const RECENT_COMMANDS: usize = 50;
+
 /// A task on a server.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct TaskKey {
@@ -1663,16 +1666,29 @@ impl Den {
         self.close_pickers();
         // The commands run where the focus was, as if their keys were pressed there.
         let previous = window.focused(cx);
-        let commands: Vec<_> = SHORTCUTS
+        // As in VS Code: those run lately, the most recent first, then the
+        // rest by name.
+        let mut commands: Vec<_> = SHORTCUTS
             .iter()
             .filter(|shortcut| !matches!(shortcut.id, "OpenCommandPalette" | "ShowShortcuts"))
             .collect();
+        let recent_ids = &Config::get(cx).recent_commands;
+        let rank = |id: &str| recent_ids.iter().position(|recent| recent == id);
+        commands.sort_by(|a, b| match (rank(a.id), rank(b.id)) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.label.to_lowercase().cmp(&b.label.to_lowercase()),
+        });
+        let recent: HashSet<String> =
+            commands.iter().filter(|shortcut| rank(shortcut.id).is_some()).map(|shortcut| shortcut.label.to_string()).collect();
         let labels: Vec<String> = commands.iter().map(|shortcut| shortcut.label.to_string()).collect();
         let hints: HashMap<String, String> = commands
             .iter()
             .filter_map(|shortcut| Some((shortcut.label.to_string(), Kbd::format(&shortcuts::keys(shortcut, cx)?))))
             .collect();
-        let picker = cx.new(|cx| Picker::new(Arc::new(labels), "Run a command…", false, window, cx).with_hints(hints));
+        let picker =
+            cx.new(|cx| Picker::new(Arc::new(labels), "Run a command…", false, window, cx).ordered(recent).with_hints(hints));
         let subscription = cx.subscribe_in(&picker, window, move |this, _, event: &PickerEvent, window, cx| {
             this.command_palette = None;
             let restore = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| match &previous {
@@ -1683,6 +1699,11 @@ impl Den {
                 PickerEvent::Pick(label) => {
                     restore(this, window, cx);
                     if let Some(shortcut) = SHORTCUTS.iter().find(|shortcut| shortcut.label == label) {
+                        Config::update(cx, |config| {
+                            config.recent_commands.retain(|id| id != shortcut.id);
+                            config.recent_commands.insert(0, shortcut.id.to_string());
+                            config.recent_commands.truncate(RECENT_COMMANDS);
+                        });
                         match &previous {
                             // Once this update is over, and outside `Den`:
                             // dispatching on a focus handle runs now, and the

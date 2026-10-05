@@ -2,7 +2,10 @@
 //! strings: Cmd-P (the task's files), Cmd-K (tasks) and Cmd-Shift-P (commands).
 //! Without a list, it asks for a line of text (Ctrl-G, the line number).
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use gpui_kit::component::{
     ActiveTheme as _, h_flex,
@@ -39,11 +42,16 @@ pub struct Picker {
     free_text: bool,
     /// What's typed is offered too, after the matches, unless it's one of them.
     typed: bool,
+    /// The list's order is kept, also when filtering (the Command Palette:
+    /// the recent ones, then the rest by name), and these, at its start,
+    /// are labeled "recently used".
+    ordered: Option<HashSet<String>>,
     matches: Vec<String>,
     /// The query `matches` are for: Enter right after typing may come before
     /// the filtering in the background is done.
     matched: Option<String>,
     selected: usize,
+    scroll: ScrollHandle,
     filter: Option<Task<()>>,
     _subscription: Subscription,
 }
@@ -72,9 +80,11 @@ impl Picker {
             hints: HashMap::new(),
             free_text: false,
             typed: false,
+            ordered: None,
             matches: Vec::new(),
             matched: None,
             selected: 0,
+            scroll: ScrollHandle::new(),
             filter: None,
             _subscription: subscription,
         };
@@ -93,6 +103,13 @@ impl Picker {
         self
     }
 
+    /// Keeps the list's order, `recent` (at its start) labeled as recently used.
+    pub fn ordered(mut self, recent: HashSet<String>) -> Self {
+        self.ordered = Some(recent);
+        self.refilter_now();
+        self
+    }
+
     pub fn with_hints(mut self, hints: HashMap<String, String>) -> Self {
         self.hints = hints;
         self
@@ -104,13 +121,20 @@ impl Picker {
         self.refilter(cx);
     }
 
+    /// Before it's shown (`ordered` changes how): nothing is typed yet.
+    fn refilter_now(&mut self) {
+        self.filter = None;
+        self.matches = matches(&self.files, "", self.typed, self.ordered.is_some());
+        self.matched = Some(String::new());
+    }
+
     fn refilter(&mut self, cx: &mut Context<Self>) {
         let query = self.input.read(cx).value().to_string();
-        let (files, typed) = (self.files.clone(), self.typed);
+        let (files, typed, ordered) = (self.files.clone(), self.typed, self.ordered.is_some());
         self.filter = Some(cx.spawn(async move |this, cx| {
             let matches = cx.background_spawn({
                 let query = query.clone();
-                async move { matches(&files, &query, typed) }
+                async move { matches(&files, &query, typed, ordered) }
             });
             let matches = matches.await;
             this.update(cx, |this, cx| this.set_matches(matches, query, cx)).ok();
@@ -133,7 +157,7 @@ impl Picker {
         // Typed faster than it filters: what's picked is for what's typed.
         if self.matched.as_ref() != Some(&query) {
             self.filter = None;
-            let matches = matches(&self.files, &query, self.typed);
+            let matches = matches(&self.files, &query, self.typed, self.ordered.is_some());
             self.set_matches(matches, query, cx);
         }
         if let Some(file) = self.matches.get(self.selected) {
@@ -147,19 +171,32 @@ impl Picker {
         }
         let len = self.matches.len() as isize;
         self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+        self.scroll.scroll_to_item(self.selected);
         cx.notify();
     }
 }
 
-/// What's offered for `query`: the best matches and, if `typed`, what's typed
-/// after them (unless it's one of them).
-fn matches(files: &[String], query: &str, typed: bool) -> Vec<String> {
-    let mut matches = filter(files, query);
+/// What's offered for `query`: the best matches (or, `ordered`, all that
+/// match in the list's order) and, if `typed`, what's typed after them
+/// (unless it's one of them).
+fn matches(files: &[String], query: &str, typed: bool, ordered: bool) -> Vec<String> {
+    let mut matches = if ordered { filter_ordered(files, query) } else { filter(files, query) };
     let query = query.trim();
     if typed && !query.is_empty() && !matches.iter().any(|file| file == query) {
         matches.push(query.to_string());
     }
     matches
+}
+
+/// Those that match `query`, in the list's order.
+fn filter_ordered(files: &[String], query: &str) -> Vec<String> {
+    if query.trim().is_empty() {
+        return files.to_vec();
+    }
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+    let mut buf = Vec::new();
+    files.iter().filter(|file| pattern.score(Utf32Str::new(file, &mut buf), &mut matcher).is_some()).cloned().collect()
 }
 
 /// The files that best match `query`, best first. With nothing typed, the
@@ -222,7 +259,19 @@ impl Render for Picker {
                 v_flex()
                     .id("picker-results")
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .children(self.matches.iter().enumerate().map(|(ix, file)| {
+                        // As in VS Code: the group on its first row, a line
+                        // over the other commands when recent ones are above.
+                        let recent = self.ordered.as_ref().map(|recent| recent.contains(file));
+                        let previous = ix.checked_sub(1).and_then(|ix| self.matches.get(ix));
+                        let previous_recent = previous.and_then(|file| Some(self.ordered.as_ref()?.contains(file)));
+                        let separated = recent == Some(false) && previous_recent == Some(true);
+                        let group = match (recent, previous_recent) {
+                            (Some(true), None) => Some("recently used"),
+                            _ if separated => Some("other commands"),
+                            _ => None,
+                        };
                         let (name, dir) = match file.rsplit_once('/').filter(|_| self.paths) {
                             Some((dir, name)) => (name.to_string(), dir.to_string()),
                             None => (file.clone(), String::new()),
@@ -237,6 +286,7 @@ impl Render for Picker {
                             .rounded(theme.radius)
                             .when(ix == self.selected, |el| el.bg(theme.accent))
                             .hover(|style| style.bg(theme.accent.opacity(0.6)))
+                            .when(separated, |el| el.border_t_1().border_color(theme.border))
                             .child(div().flex_none().child(name))
                             .child(
                                 div()
@@ -247,9 +297,16 @@ impl Render for Picker {
                                     .text_ellipsis()
                                     .child(dir),
                             )
-                            .children(hint.map(|hint| {
-                                div().ml_auto().flex_none().text_ui_small(cx).text_color(theme.muted_foreground).child(hint)
-                            }))
+                            .child(
+                                h_flex()
+                                    .ml_auto()
+                                    .flex_none()
+                                    .gap_3()
+                                    .text_ui_small(cx)
+                                    .text_color(theme.muted_foreground)
+                                    .children(group)
+                                    .children(hint),
+                            )
                             .on_click(cx.listener(move |_, _, _, cx| cx.emit(PickerEvent::Pick(file.clone()))))
                     })),
             )
@@ -280,9 +337,21 @@ mod tests {
     #[test]
     fn what_is_typed_is_offered_after_the_matches() {
         let hosts: Vec<String> = ["ws", "bill"].into_iter().map(String::from).collect();
-        assert_eq!(matches(&hosts, "me@box ", true), ["me@box"]);
-        assert_eq!(matches(&hosts, "ws", true), ["ws"]);
-        assert_eq!(matches(&hosts, "me@box", false), Vec::<String>::new());
+        assert_eq!(matches(&hosts, "me@box ", true, false), ["me@box"]);
+        assert_eq!(matches(&hosts, "ws", true, false), ["ws"]);
+        assert_eq!(matches(&hosts, "me@box", false, false), Vec::<String>::new());
+    }
+
+    /// The Command Palette keeps its order (the recent ones, then by name)
+    /// when filtering, as VS Code does.
+    #[test]
+    fn ordered_keeps_the_list_order() {
+        let commands: Vec<String> = ["Toggle Terminal", "Go to File", "Format Document", "Go to Line"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(matches(&commands, "go", false, true), ["Go to File", "Go to Line"]);
+        assert_eq!(matches(&commands, "", false, true), commands);
     }
 
     /// Enter right after typing, before the background filtering is done,
