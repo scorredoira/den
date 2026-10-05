@@ -73,7 +73,6 @@ fn a_group_icon_shows_its_group_or_closes_the_column(cx: &mut TestAppContext) {
     click(cx, "activity-Place(Place(Changes))");
     assert!(cx.debug_bounds("stack-Files").is_none());
     bounds(cx, "stack-Changes");
-    bounds(cx, "stack-History");
     workspace.read_with(cx, |workspace, cx| {
         assert!(workspace.is_shown(Panel::Changes, cx));
         assert!(!workspace.is_shown(Panel::Workspaces, cx));
@@ -167,20 +166,42 @@ fn the_menu_brings_a_panel_back_in_its_spot(cx: &mut TestAppContext) {
     assert!(bounds(cx, "stack-Workspaces").bottom() <= agents.top() && agents.bottom() <= bounds(cx, "stack-Files").top());
 }
 
-/// Hiding the commit's files leaves the history; hiding the debugger leaves
-/// the panels it shares the column with.
+/// The history is a tab of the code, not a panel: opened again, it's the
+/// same tab, and it reopens with the workspace.
 #[gpui_kit::test]
-fn the_commit_files_and_the_debugger_hide_alone(cx: &mut TestAppContext) {
+fn the_history_is_a_tab_that_reopens(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Commit, cx));
-    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Commit, cx));
-    cx.run_until_parked();
-    workspace.read_with(cx, |workspace, cx| {
-        assert!(workspace.is_shown(Panel::History, cx));
-        assert!(!workspace.is_shown(Panel::Commit, cx));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.restore(window, cx);
+        workspace.open_history(None, window, cx);
+        workspace.open_history(Some(("main.ts".into(), false)), window, cx);
     });
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Commit, cx));
-    assert!(workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Commit, cx)));
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, _| {
+        let tabs = workspace.tabs.iter().filter(|tab| matches!(tab.page, Some(pages::Page::History))).count();
+        assert_eq!(tabs, 1);
+        assert_eq!(workspace.active, workspace.history_tab());
+        assert!(workspace.history_visible());
+    });
+    bounds(cx, "history-commits");
+    bounds(cx, "commit-files");
+    let again = workspace.update_in(cx, |_, window, cx| {
+        cx.new(|cx| {
+            let mut workspace = Workspace::new(PathBuf::from("/layout-test"), None, true, "layout-test".into(), window, cx);
+            workspace.restore(window, cx);
+            workspace
+        })
+    });
+    again.read_with(cx, |workspace, _| assert!(workspace.history_tab().is_some()));
+    // Cmd-Shift-H closes it while it's in front.
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_history(window, cx));
+    assert!(workspace.read_with(cx, |workspace, _| workspace.history_tab().is_none()));
+}
+
+/// Hiding the debugger leaves the panels it shares the column with.
+#[gpui_kit::test]
+fn the_debugger_hides_alone(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
     // The debugger's parts in the explorer: hidden, the files stay.
     cx.update(|_, cx| {
         Config::update(cx, |config| {
@@ -292,7 +313,7 @@ fn a_workspace_reopens_with_its_panels(cx: &mut TestAppContext) {
     let (first, cx) = draw(cx, |_| {});
     first.update_in(cx, |workspace, window, cx| {
         workspace.restore(window, cx);
-        workspace.show_panel(Panel::History, cx);
+        workspace.show_panel(Panel::Changes, cx);
         workspace.hide_panel(Panel::Terminals, cx);
     });
     let again = first.update_in(cx, |_, window, cx| {

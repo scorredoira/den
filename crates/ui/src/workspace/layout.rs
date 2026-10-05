@@ -44,8 +44,6 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Agents => "icons/bot.svg",
         Panel::Files => "icons/files.svg",
         Panel::Changes => "icons/git-branch.svg",
-        Panel::History => "icons/history.svg",
-        Panel::Commit => "icons/git-commit.svg",
         Panel::Search => "icons/search.svg",
         Panel::References => "icons/references.svg",
         Panel::Outline => "icons/list-tree.svg",
@@ -72,8 +70,6 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Agents => "Agents",
         Panel::Files => "Files",
         Panel::Changes => "Changes",
-        Panel::History => "History",
-        Panel::Commit => "Commit Files",
         Panel::Search => "Search",
         Panel::References => "References",
         Panel::Outline => "Outline",
@@ -177,7 +173,6 @@ impl Workspace {
             // In a tab of the code it's not in its column.
             Panel::Device => panels.device && self.device.read(cx).available() && self.device_tab().is_none(),
             Panel::Notes => panels.notes,
-            Panel::Commit => self.is_shown(Panel::History, cx) && self.history.read(cx).files_open(cx),
             Panel::Debugger => DEBUG_PANELS.into_iter().any(|panel| self.in_side(panel, cx)),
             _ => self.in_side(panel, cx) && !Config::get(cx).layout.collapsed.contains(&panel),
         }
@@ -233,9 +228,6 @@ impl Workspace {
         if panels.contains(&Panel::Changes) {
             self.changes.update(cx, |changes, cx| changes.shown(cx));
         }
-        if panels.contains(&Panel::History) {
-            self.history.update(cx, |history, cx| history.shown(cx));
-        }
         if panels.iter().any(|panel| DEBUG_PANELS.contains(panel)) {
             self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         }
@@ -262,9 +254,6 @@ impl Workspace {
             }
             Panel::Notes => panels.notes = true,
             _ => {
-                if panel == Panel::Commit {
-                    self.history.update(cx, |history, cx| history.show_files(true, cx));
-                }
                 // The debugger's parts it took off a place they share (see
                 // `hide_panel`) come back with it.
                 let layout = &Config::get(cx).layout;
@@ -273,12 +262,8 @@ impl Workspace {
                 if panel == Panel::Debugger && parts.iter().all(|part| layout.hidden.contains(part)) {
                     Config::update(cx, |config| config.layout.hidden.retain(|other| !parts.contains(other)));
                 }
-                // The debugger is its call stack's place; the commit's files, the history.
-                let panel = match panel {
-                    Panel::Debugger => Panel::CallStack,
-                    Panel::Commit => Panel::History,
-                    panel => panel,
-                };
+                // The debugger is its call stack's place.
+                let panel = if panel == Panel::Debugger { Panel::CallStack } else { panel };
                 if matches!(panel, Panel::Search | Panel::References) {
                     panels.results = panel;
                 }
@@ -299,7 +284,7 @@ impl Workspace {
     }
 
     /// Hides `panel`: a side panel's place closes the side column; the
-    /// commit's files go from under the commits; the debugger's parts go
+    /// debugger's parts go
     /// off a column they share with others, or close it.
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         let panels = &mut self.panels;
@@ -315,7 +300,6 @@ impl Workspace {
             }
             Panel::Device => panels.device = false,
             Panel::Notes => panels.notes = false,
-            Panel::Commit => self.history.update(cx, |history, cx| history.show_files(false, cx)),
             Panel::Debugger => {
                 let layout = &Config::get(cx).layout;
                 let here = self.side_place(cx).map(|place| layout.panels(place)).unwrap_or_default();
@@ -445,22 +429,6 @@ impl Workspace {
     pub fn set_workspaces(&mut self, view: &Entity<WorkspacesPanel>) {
         if self.workspaces.is_none() {
             self.workspaces = Some(view.clone());
-        }
-    }
-
-    /// The selected commit's files, under the commits. With the history
-    /// hidden, it shows with them.
-    pub(super) fn toggle_commit_files(&mut self, _: &ToggleCommitFiles, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_commit_files_now(cx);
-    }
-
-    /// Show Files or Hide Files, from a right-click menu or the shortcut.
-    pub(super) fn toggle_commit_files_now(&mut self, cx: &mut Context<Self>) {
-        if !self.is_shown(Panel::History, cx) {
-            self.history.update(cx, |history, cx| history.show_files(true, cx));
-            self.show_panel(Panel::History, cx);
-        } else {
-            self.history.update(cx, |history, cx| history.show_files(!history.files_open(cx), cx));
         }
     }
 
@@ -711,7 +679,6 @@ impl Workspace {
             Panel::Search => Some(self.search.clone().cached(cached()).into_any_element()),
             Panel::References => Some(self.references.clone().cached(cached()).into_any_element()),
             Panel::Changes => Some(self.changes.clone().cached(cached()).into_any_element()),
-            Panel::History => Some(self.history.clone().cached(cached()).into_any_element()),
             _ => self.debug_views.get(&panel).map(|view| view.clone().cached(cached()).into_any_element()),
         };
         let hide = workspace.clone();

@@ -122,6 +122,7 @@ pub type TermId = u64;
     FileLog { file: String, skip: usize, limit: usize }
     Init
     Unmerged { limit: usize }
+    Graph { query: String, file: Option<String>, skip: usize, limit: usize }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)] pub struct GitStatus {
     pub branch: Option<String>
@@ -173,6 +174,17 @@ pub type TermId = u64;
     Busy(bool)
     Symbols { server: Option<String>, symbols: Vec<LspSymbol> }
     Agents(Vec<AgentInfo>)
+    Graph(Vec<GraphCommit>)
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct GraphCommit {
+    pub hash: String
+    pub short: String
+    pub author: String
+    pub email: String
+    pub date: String
+    pub parents: Vec<String>
+    pub refs: Vec<String>
+    pub subject: String
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)] pub struct PortInfo {
     pub port: u16
