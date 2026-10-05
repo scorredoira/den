@@ -2,8 +2,8 @@ use gpui_kit::{component::{ActiveTheme as _, ThemeConfig}, rgb, App, Hsla};
 
 /// The band behind the selected row of every panel, opaque. gpui-kit caps
 /// `list_active` at 20% opacity, which leaves it unreadable on light surfaces.
-const SELECTED_LIGHT: u32 = 0xc4dbfb;
-const SELECTED_DARK: u32 = 0x04395e;
+const SELECTED_LIGHT: u32 = 0xd3e4fc;
+const SELECTED_DARK: u32 = 0x0a3554;
 
 /// The background of the selected row in any panel.
 pub(crate) fn selected_row(cx: &App) -> Hsla {
