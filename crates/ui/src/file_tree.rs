@@ -1,11 +1,15 @@
-//! File tree: lazy loading, keyboard (arrows with preview, Enter renames) and
-//! context menu. Everything goes through the agent on the task's machine, so
-//! it works the same locally as on a server.
+//! File tree: lazy loading, keyboard (arrows with preview, Enter renames),
+//! selecting several (Cmd/Ctrl- and Shift-click, Shift-arrows), cut, copy,
+//! paste, duplicate, drag and drop (Option/Ctrl copies), undo, and files
+//! brought in from Finder or the Explorer, dropped or pasted. Everything goes
+//! through the agent on the task's machine, so it works the same locally as
+//! on a server.
 
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use client::Client;
@@ -19,11 +23,27 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use crate::menu::PanelItems as _;
 
-use crate::{CollapseFileTree, config::{Config, UiText}};
+use crate::{CollapseFileTree, config::{Config, UiText}, drag_drop::TabDragPreview};
 
 actions!(
     file_tree,
-    [SelectPrev, SelectNext, Collapse, Expand, Rename, Trash, OpenSelected]
+    [
+        SelectPrev,
+        SelectNext,
+        ExtendPrev,
+        ExtendNext,
+        SelectAll,
+        ClearSelection,
+        Collapse,
+        Expand,
+        Rename,
+        Trash,
+        OpenSelected,
+        CutFiles,
+        CopyFiles,
+        PasteFiles,
+        UndoFiles,
+    ]
 );
 
 /// Tree shortcuts: they only apply when the tree has focus.
@@ -32,12 +52,73 @@ pub fn keymap() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("up", SelectPrev, context),
         KeyBinding::new("down", SelectNext, context),
+        KeyBinding::new("shift-up", ExtendPrev, context),
+        KeyBinding::new("shift-down", ExtendNext, context),
+        KeyBinding::new("secondary-a", SelectAll, context),
+        KeyBinding::new("escape", ClearSelection, context),
         KeyBinding::new("left", Collapse, context),
         KeyBinding::new("right", Expand, context),
         KeyBinding::new("enter", Rename, context),
+        KeyBinding::new("f2", Rename, context),
         KeyBinding::new("secondary-backspace", Trash, context),
+        KeyBinding::new("delete", Trash, context),
         KeyBinding::new("secondary-down", OpenSelected, context),
+        KeyBinding::new("secondary-x", CutFiles, context),
+        KeyBinding::new("secondary-c", CopyFiles, context),
+        KeyBinding::new("secondary-v", PasteFiles, context),
+        KeyBinding::new("secondary-z", UndoFiles, context),
     ]
+}
+
+const ROW_HEIGHT: Pixels = px(24.);
+
+/// How long a dragged item rests on a closed folder before it opens.
+const OPEN_ON_HOVER: Duration = Duration::from_millis(700);
+
+/// How many operations Undo goes back.
+const UNDO_LIMIT: usize = 100;
+
+/// What was cut or copied in a files panel, for any of the app's trees to
+/// paste: one on the same agent, or both on this machine.
+#[derive(Clone)]
+struct Clipped {
+    paths: Vec<PathBuf>,
+    cut: bool,
+    client: Option<Arc<Client>>,
+    local: bool,
+}
+
+#[derive(Default)]
+struct FileClipboard(Option<Clipped>);
+
+impl Global for FileClipboard {}
+
+/// A row dragged from the tree: with the rest of the selection if it's in it.
+#[derive(Clone)]
+pub(crate) struct FileDrag {
+    row: PathBuf,
+}
+
+/// A change on disk, run by the agent.
+#[derive(Debug, PartialEq)]
+enum Op {
+    Move { from: PathBuf, to: PathBuf },
+    /// Next to `to` if it exists ("a copy.txt").
+    Copy { from: PathBuf, to: PathBuf },
+    Trash(PathBuf),
+    /// `item`, from the Trash, back to `to`.
+    Untrash { item: PathBuf, to: PathBuf },
+    /// A file or folder of this machine into `dir` on the agent's.
+    Upload { from: PathBuf, dir: PathBuf },
+}
+
+/// What an `Op` did, which Undo reverts.
+#[derive(Clone, Debug, PartialEq)]
+enum Done {
+    Moved { from: PathBuf, to: PathBuf },
+    Created(PathBuf),
+    /// `item` is where the Trash keeps it, if the agent says.
+    Trashed { path: PathBuf, item: Option<PathBuf> },
 }
 
 pub enum FileTreeEvent {
@@ -109,8 +190,19 @@ pub struct FileTree {
     children: HashMap<PathBuf, Vec<DirEntry>>,
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
+    /// The row with the cursor: the arrows move it, Enter renames it.
     selected: Option<PathBuf>,
+    /// Rows selected together with Cmd/Ctrl or Shift; empty, only `selected`.
+    marked: Vec<PathBuf>,
+    /// Where Shift extends the selection from.
+    anchor: Option<PathBuf>,
     edit: Option<Edit>,
+    /// What Undo reverts, the last at the end.
+    undo: Vec<Vec<Done>>,
+    /// The folder something dragged over the tree would land in.
+    drop_target: Option<PathBuf>,
+    /// Opens the closed folder held under a drag.
+    _open_on_hover: Option<Task<()>>,
     /// Row the right-click menu was opened on; `None` is the empty space (the
     /// task's folder).
     menu_target: Option<PathBuf>,
@@ -119,6 +211,7 @@ pub struct FileTree {
     /// What git ignores is listed too (Show Ignored Files), as read.
     ignored: bool,
     _config: Subscription,
+    _clipboard: Subscription,
 }
 
 impl EventEmitter<FileTreeEvent> for FileTree {}
@@ -140,7 +233,12 @@ impl FileTree {
             children: HashMap::new(),
             rows: Vec::new(),
             selected: None,
+            marked: Vec::new(),
+            anchor: None,
             edit: None,
+            undo: Vec::new(),
+            drop_target: None,
+            _open_on_hover: None,
             menu_target: None,
             focus_handle: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
@@ -156,6 +254,8 @@ impl FileTree {
                     cx.notify();
                 }
             }),
+            // What's cut shows dimmed in every tree.
+            _clipboard: cx.observe_global::<FileClipboard>(|_, cx| cx.notify()),
         };
         tree.rebuild(cx);
         tree
@@ -166,7 +266,7 @@ impl FileTree {
         if self.selected.as_deref() == Some(path) {
             return;
         }
-        self.selected = Some(path.to_path_buf());
+        self.select_only(path.to_path_buf());
         let mut dir = path.parent();
         while let Some(d) = dir {
             if !d.starts_with(&self.root) {
@@ -328,12 +428,23 @@ impl FileTree {
         self.entry(self.selected.as_deref()?).cloned()
     }
 
-    fn click(&mut self, path: PathBuf, click_count: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn click(&mut self, path: PathBuf, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.entry(&path).cloned() else {
             return;
         };
         self.cancel_edit(cx);
-        self.selected = Some(path.clone());
+        let modifiers = event.modifiers();
+        if modifiers.secondary() || modifiers.shift {
+            if modifiers.shift {
+                self.extend_to(path, cx);
+            } else {
+                self.toggle_marked(path);
+            }
+            self.focus_handle.focus(window, cx);
+            return cx.notify();
+        }
+        let click_count = event.click_count();
+        self.select_only(path.clone());
         if entry.is_dir {
             self.toggle(&path, cx);
             self.focus_handle.focus(window, cx);
@@ -355,7 +466,7 @@ impl FileTree {
             let first = path.strip_prefix(&self.root).ok()?.components().next()?;
             Some(self.root.join(first))
         }) {
-            self.selected = Some(top);
+            self.select_only(top);
         }
         self.rebuild(cx);
         self.scroll_to_selected();
@@ -382,7 +493,7 @@ impl FileTree {
             Some(ix) => (ix as isize + offset).clamp(0, paths.len() as isize - 1) as usize,
             None => 0,
         };
-        self.selected = Some(paths[next].clone());
+        self.select_only(paths[next].clone());
         self.scroll_to_selected();
         if let Some(entry) = self.selected_entry()
             && !entry.is_dir
@@ -412,7 +523,7 @@ impl FileTree {
         } else if let Some(parent) = entry.path.parent()
             && parent != self.root
         {
-            self.selected = Some(parent.to_path_buf());
+            self.select_only(parent.to_path_buf());
             self.scroll_to_selected();
         }
         cx.notify();
@@ -456,9 +567,7 @@ impl FileTree {
     }
 
     fn trash_selected(&mut self, _: &Trash, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self.selected.clone() {
-            self.trash(path, cx);
-        }
+        self.trash(self.selection(), cx);
     }
 
     /// Folder where something new is created from `path`: itself or its parent.
@@ -550,14 +659,7 @@ impl FileTree {
                 if to == from {
                     return;
                 }
-                self.fs_op(
-                    Request::Rename { from: from.clone(), to: to.clone() },
-                    move |this, cx| {
-                        this.after_change(&[&from, &to], Some(to.clone()), cx);
-                        cx.emit(FileTreeEvent::Renamed { from, to });
-                    },
-                    cx,
-                );
+                self.run(vec![Op::Move { from, to }], true, None, cx);
             }
             EditKind::NewFile { dir } => {
                 let path = dir.join(&name);
@@ -565,6 +667,7 @@ impl FileTree {
                     Request::CreateFile { path: path.clone() },
                     move |this, cx| {
                         this.after_change(&[&path], Some(path.clone()), cx);
+                        this.push_undo(vec![Done::Created(path.clone())]);
                         cx.emit(FileTreeEvent::Open { path, pin: true });
                     },
                     cx,
@@ -574,33 +677,33 @@ impl FileTree {
                 let path = dir.join(&name);
                 self.fs_op(
                     Request::CreateDir { path: path.clone() },
-                    move |this, cx| this.after_change(&[&path], Some(path.clone()), cx),
+                    move |this, cx| {
+                        this.after_change(&[&path], Some(path.clone()), cx);
+                        this.push_undo(vec![Done::Created(path)]);
+                    },
                     cx,
                 );
             }
         }
     }
 
-    /// Moves to the Trash (recoverable) and selects the next row.
-    fn trash(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if path == self.root {
+    /// Moves to the Trash (recoverable) and selects the row after the last.
+    fn trash(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = paths.into_iter().filter(|path| *path != self.root).collect();
+        if paths.is_empty() {
             return;
         }
-        let paths: Vec<&Path> = self.rows.iter().filter_map(Row::path).collect();
-        let next = paths
-            .iter()
-            .position(|other| *other == path)
-            .and_then(|ix| paths.get(ix + 1).or_else(|| ix.checked_sub(1).and_then(|ix| paths.get(ix))))
-            .filter(|next| !next.starts_with(&path))
-            .map(|next| next.to_path_buf());
-        self.fs_op(
-            Request::Trash { path: path.clone() },
-            move |this, cx| {
-                this.after_change(&[&path], next, cx);
-                cx.emit(FileTreeEvent::Trashed { path });
-            },
-            cx,
-        );
+        let rows: Vec<&Path> = self.rows.iter().filter_map(Row::path).collect();
+        let gone = |row: &Path| paths.iter().any(|path| row.starts_with(path));
+        let last = rows.iter().rposition(|row| paths.iter().any(|path| path == row));
+        let next = last.and_then(|last| {
+            rows[last + 1..]
+                .iter()
+                .find(|row| !gone(row))
+                .or_else(|| rows[..last].iter().rev().find(|row| !gone(row)))
+                .map(|row| row.to_path_buf())
+        });
+        self.run(paths.into_iter().map(Op::Trash).collect(), true, next, cx);
     }
 
     fn after_change(&mut self, paths: &[&Path], select: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -610,17 +713,392 @@ impl FileTree {
             }
             self.children.remove(*path);
         }
-        if select.is_some() {
-            self.selected = select;
+        if let Some(select) = select {
+            self.select_only(select);
         }
         self.rebuild(cx);
         self.scroll_to_selected();
     }
 
-    fn context_menu(&self, path: PathBuf, menu: PopupMenu, tree: WeakEntity<Self>) -> PopupMenu {
+    /// Selects `path` alone.
+    fn select_only(&mut self, path: PathBuf) {
+        self.marked.clear();
+        self.anchor = Some(path.clone());
+        self.selected = Some(path);
+    }
+
+    /// Cmd/Ctrl-click: adds `path` to the selection, or takes it out.
+    fn toggle_marked(&mut self, path: PathBuf) {
+        if self.marked.is_empty() {
+            self.marked.extend(self.selected.clone());
+        }
+        match self.marked.iter().position(|marked| *marked == path) {
+            Some(ix) => {
+                self.marked.remove(ix);
+            }
+            None => self.marked.push(path.clone()),
+        }
+        self.anchor = Some(path.clone());
+        self.selected = Some(path);
+    }
+
+    /// Shift: selects the rows from the anchor to `path`.
+    fn extend_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let paths: Vec<&Path> = self.rows.iter().filter_map(Row::path).collect();
+        let anchor = self.anchor.clone().or_else(|| self.selected.clone()).unwrap_or_else(|| path.clone());
+        let (Some(from), Some(to)) = (
+            paths.iter().position(|row| *row == anchor),
+            paths.iter().position(|row| *row == path),
+        ) else {
+            return self.select_only(path);
+        };
+        self.marked = paths[from.min(to)..=from.max(to)].iter().map(|row| row.to_path_buf()).collect();
+        self.anchor = Some(anchor);
+        self.selected = Some(path);
+        self.scroll_to_selected();
+        cx.notify();
+    }
+
+    fn is_marked(&self, path: &Path) -> bool {
+        if self.marked.is_empty() {
+            self.selected.as_deref() == Some(path)
+        } else {
+            self.marked.iter().any(|marked| marked == path)
+        }
+    }
+
+    /// What the selection acts on, in the tree's order: never the task's
+    /// folder, nor what's inside a folder that's selected too.
+    fn selection(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = if self.marked.is_empty() {
+            self.selected.iter().cloned().collect()
+        } else {
+            self.marked.clone()
+        };
+        paths.retain(|path| *path != self.root);
+        let all = paths.clone();
+        paths.retain(|path| !all.iter().any(|other| other != path && path.starts_with(other)));
+        let order = |path: &PathBuf| self.rows.iter().position(|row| row.path() == Some(path)).unwrap_or(usize::MAX);
+        paths.sort_by_key(order);
+        paths
+    }
+
+    fn extend_prev(&mut self, _: &ExtendPrev, _: &mut Window, cx: &mut Context<Self>) {
+        self.extend_offset(-1, cx);
+    }
+
+    fn extend_next(&mut self, _: &ExtendNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.extend_offset(1, cx);
+    }
+
+    fn extend_offset(&mut self, offset: isize, cx: &mut Context<Self>) {
+        let paths: Vec<&Path> = self.rows.iter().filter_map(Row::path).collect();
+        let Some(current) = self.selected.as_ref().and_then(|selected| paths.iter().position(|path| path == selected)) else {
+            return self.select_offset(offset, cx);
+        };
+        let next = (current as isize + offset).clamp(0, paths.len() as isize - 1) as usize;
+        let path = paths[next].to_path_buf();
+        self.extend_to(path, cx);
+    }
+
+    fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked = self.rows.iter().filter_map(Row::path).map(Path::to_path_buf).collect();
+        cx.notify();
+    }
+
+    /// Escape: back to the row with the cursor, and nothing cut.
+    fn clear_selection(&mut self, _: &ClearSelection, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit.is_some() {
+            self.cancel_edit(cx);
+            return self.focus_handle.focus(window, cx);
+        }
+        self.marked.clear();
+        if cx.try_global::<FileClipboard>().is_some_and(|clipboard| clipboard.0.as_ref().is_some_and(|clip| clip.cut)) {
+            cx.set_global(FileClipboard(None));
+        }
+        cx.notify();
+    }
+
+    fn cut(&mut self, _: &CutFiles, _: &mut Window, cx: &mut Context<Self>) {
+        self.clip(self.selection(), true, cx);
+    }
+
+    fn copy(&mut self, _: &CopyFiles, _: &mut Window, cx: &mut Context<Self>) {
+        self.clip(self.selection(), false, cx);
+    }
+
+    /// Keeps `paths` for a paste; their paths go to the clipboard as text,
+    /// replacing whatever Finder copied before.
+    fn clip(&mut self, paths: Vec<PathBuf>, cut: bool, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        let text = paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join("\n");
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.set_global(FileClipboard(Some(Clipped {
+            paths,
+            cut,
+            client: self.client.clone(),
+            local: self.local,
+        })));
+    }
+
+    /// The folder a paste from the keyboard goes in: the selected one, or
+    /// the selected file's.
+    fn target_dir(&self) -> PathBuf {
+        match &self.selected {
+            Some(path) => self.dir_for(path),
+            None => self.root.clone(),
+        }
+    }
+
+    fn paste_action(&mut self, _: &PasteFiles, _: &mut Window, cx: &mut Context<Self>) {
+        self.paste(self.target_dir(), cx);
+    }
+
+    /// Files copied in Finder (or the Explorer) first, else what was cut or
+    /// copied in a tree.
+    fn paste(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        if let Some(paths) = external_clipboard(cx) {
+            return self.import(paths, dir, cx);
+        }
+        let Some(clip) = cx.try_global::<FileClipboard>().and_then(|clipboard| clipboard.0.clone()) else {
+            return;
+        };
+        let same_agent = match (&clip.client, &self.client) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if !same_agent && !(clip.local && self.local) {
+            return cx.emit(FileTreeEvent::Error("Those files are on another machine".into()));
+        }
+        if clip.cut {
+            // What's cut moves once.
+            cx.set_global(FileClipboard(None));
+        }
+        self.place(clip.paths, dir, !clip.cut, cx);
+    }
+
+    /// A copy of each next to it ("a copy.txt").
+    fn duplicate_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let ops = paths.into_iter().map(|path| Op::Copy { from: path.clone(), to: path }).collect();
+        self.run(ops, true, None, cx);
+    }
+
+    /// Moves (or copies) `paths` into `dir`; a folder never goes into itself,
+    /// and what's already there doesn't move.
+    fn place(&mut self, paths: Vec<PathBuf>, dir: PathBuf, copy: bool, cx: &mut Context<Self>) {
+        self.run(place_ops(paths, &dir, copy), true, None, cx);
+    }
+
+    /// Files from this machine (Finder, the Explorer) into `dir`: copied by
+    /// the agent if it's here too, sent to it otherwise.
+    fn import(&mut self, paths: Vec<PathBuf>, dir: PathBuf, cx: &mut Context<Self>) {
+        let ops = paths
+            .into_iter()
+            .filter_map(|from| {
+                let to = dir.join(from.file_name()?);
+                Some(match self.local {
+                    true => Op::Copy { from, to },
+                    false => Op::Upload { from, dir: dir.clone() },
+                })
+            })
+            .collect();
+        self.run(ops, true, None, cx);
+    }
+
+    fn undo_action(&mut self, _: &UndoFiles, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(batch) = self.undo.pop() else {
+            return;
+        };
+        self.run(undo_ops(batch), false, None, cx);
+    }
+
+    fn push_undo(&mut self, batch: Vec<Done>) {
+        // What an older agent sent to the Trash without saying where can't come back.
+        let batch: Vec<Done> = batch.into_iter().filter(|done| !matches!(done, Done::Trashed { item: None, .. })).collect();
+        if batch.is_empty() {
+            return;
+        }
+        self.undo.push(batch);
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Runs `ops` one after another on the agent, then shows what they did:
+    /// what they made or moved, selected (or `then_select`), and what failed.
+    fn run(&mut self, ops: Vec<Op>, undoable: bool, then_select: Option<PathBuf>, cx: &mut Context<Self>) {
+        if ops.is_empty() {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return cx.emit(FileTreeEvent::Error("No agent".into()));
+        };
+        let work = cx.background_spawn(async move {
+            let mut done = Vec::new();
+            let mut errors = Vec::new();
+            for op in ops {
+                match run_op(&client, op).await {
+                    Ok(result) => done.push(result),
+                    Err(err) => errors.push(format!("{err:#}")),
+                }
+            }
+            (done, errors)
+        });
+        cx.spawn(async move |this, cx| {
+            let (done, errors) = work.await;
+            this.update(cx, |this, cx| this.finish(done, errors, undoable, then_select, cx)).ok();
+        })
+        .detach();
+    }
+
+    fn finish(
+        &mut self,
+        done: Vec<Done>,
+        errors: Vec<String>,
+        undoable: bool,
+        then_select: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed: Vec<PathBuf> = Vec::new();
+        let mut select: Vec<PathBuf> = Vec::new();
+        for result in &done {
+            match result {
+                Done::Moved { from, to } => {
+                    // A folder that was open stays open where it went.
+                    let open: Vec<PathBuf> = self.expanded.iter().filter(|dir| dir.starts_with(from)).cloned().collect();
+                    for dir in open {
+                        self.expanded.remove(&dir);
+                        if let Ok(rest) = dir.strip_prefix(from) {
+                            self.expanded.insert(to.join(rest));
+                        }
+                    }
+                    self.children.retain(|dir, _| !dir.starts_with(from));
+                    changed.extend([from.clone(), to.clone()]);
+                    select.push(to.clone());
+                    cx.emit(FileTreeEvent::Renamed { from: from.clone(), to: to.clone() });
+                }
+                Done::Created(path) => {
+                    changed.push(path.clone());
+                    select.push(path.clone());
+                }
+                Done::Trashed { path, .. } => {
+                    self.children.retain(|dir, _| !dir.starts_with(path));
+                    self.expanded.retain(|dir| !dir.starts_with(path));
+                    changed.push(path.clone());
+                    cx.emit(FileTreeEvent::Trashed { path: path.clone() });
+                }
+            }
+        }
+        // Reread the folders that changed, keeping what's shown while they
+        // arrive.
+        let dirs: HashSet<PathBuf> = changed.iter().filter_map(|path| path.parent().map(Path::to_path_buf)).collect();
+        for dir in dirs {
+            self.expanded.insert(dir.clone());
+            self.load_dir(dir, cx);
+        }
+        if let Some(last) = select.last().cloned() {
+            let mut open = last.parent();
+            while let Some(dir) = open
+                && dir.starts_with(&self.root)
+            {
+                self.expanded.insert(dir.to_path_buf());
+                open = dir.parent();
+            }
+            self.anchor = select.first().cloned();
+            self.marked = if select.len() > 1 { select } else { Vec::new() };
+            self.selected = Some(last);
+        } else if let Some(path) = then_select {
+            self.select_only(path);
+        } else if let Some(cursor) = &self.selected
+            && done.iter().any(|result| matches!(result, Done::Trashed { path, .. } if cursor.starts_with(path)))
+        {
+            self.selected = None;
+            self.marked.clear();
+        }
+        self.marked.retain(|path| !done.iter().any(|result| matches!(result, Done::Trashed { path: gone, .. } if path.starts_with(gone))));
+        if undoable {
+            self.push_undo(done);
+        }
+        self.rebuild(cx);
+        self.scroll_to_selected();
+        if !errors.is_empty() {
+            cx.emit(FileTreeEvent::Error(errors.join("; ").into()));
+        }
+        cx.notify();
+    }
+
+    /// The row at `position` in the list laid out at `bounds`.
+    fn row_at(&self, position: Point<Pixels>, bounds: Bounds<Pixels>) -> Option<&Row> {
+        let offset = self.scroll.0.borrow().base_handle.offset().y;
+        let y = position.y - bounds.top() - offset;
+        if y < px(0.) {
+            return None;
+        }
+        self.rows.get((y / ROW_HEIGHT) as usize)
+    }
+
+    /// Where something dragged over `position` would land: the folder under
+    /// it, the file's folder, or the task's below the rows.
+    fn drag_moved(&mut self, position: Point<Pixels>, bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
+        let target = if !bounds.contains(&position) {
+            None
+        } else {
+            Some(match self.row_at(position, bounds) {
+                Some(Row { kind: RowKind::Entry(entry), .. }) if entry.is_dir => entry.path.clone(),
+                Some(Row { kind: RowKind::Entry(entry), .. }) => self.dir_for(&entry.path),
+                _ => self.root.clone(),
+            })
+        };
+        if target == self.drop_target {
+            return;
+        }
+        self.drop_target = target.clone();
+        // Held on a closed folder, it opens.
+        self._open_on_hover = target.filter(|dir| !self.expanded.contains(dir)).map(|dir| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(OPEN_ON_HOVER).await;
+                this.update(cx, |this, cx| {
+                    if this.drop_target.as_ref() == Some(&dir) && cx.has_active_drag() {
+                        this.expanded.insert(dir);
+                        this.rebuild(cx);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+        });
+        cx.notify();
+    }
+
+    fn take_drop_target(&mut self) -> PathBuf {
+        self._open_on_hover = None;
+        self.drop_target.take().unwrap_or_else(|| self.root.clone())
+    }
+
+    /// What dragging `row` takes: the selection if the row is in it.
+    fn dragged(&self, row: &Path) -> Vec<PathBuf> {
+        match self.is_marked(row) {
+            true => self.selection(),
+            false => vec![row.to_path_buf()],
+        }
+    }
+
+    fn context_menu(&self, path: PathBuf, can_paste: bool, menu: PopupMenu, tree: WeakEntity<Self>) -> PopupMenu {
         let dir = self.dir_for(&path);
-        let relative = path.strip_prefix(&self.root).unwrap_or(&path).to_string_lossy().into_owned();
-        let absolute = path.to_string_lossy().into_owned();
+        // On a selected row it acts on all the selection.
+        let paths = match path != self.root && self.is_marked(&path) {
+            true => self.selection(),
+            false => vec![path.clone()],
+        };
+        let several = paths.len() > 1;
+        let relative = paths
+            .iter()
+            .map(|path| path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let absolute = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
         // Rename and Trash have their shortcuts in the tree's context.
         let menu = menu.action_context(self.focus_handle.clone());
         let item = |label: &'static str, action: Box<dyn Fn(&mut FileTree, &mut Window, &mut Context<FileTree>)>| {
@@ -648,25 +1126,48 @@ impl FileTree {
             Box::new(move |tree, window, cx| tree.start_edit(EditKind::NewFolder { dir: dir.clone() }, window, cx))
         }))
         .separator()
-        // The task's folder (the empty space) can't be renamed or deleted.
+        // The task's folder (the empty space) can't be cut, copied, renamed or deleted.
         .when(path != self.root, |menu| {
-            menu.item(item("Rename", {
-                let path = path.clone();
-                Box::new(move |tree, window, cx| {
-                    tree.selected = Some(path.clone());
-                    tree.start_edit(EditKind::Rename(path.clone()), window, cx)
-                })
-            }).action(Box::new(Rename)))
-            .item(item("Move to Trash", {
-                let path = path.clone();
-                Box::new(move |tree, _, cx| tree.trash(path.clone(), cx))
+            menu.item(item("Cut", {
+                let paths = paths.clone();
+                Box::new(move |tree, _, cx| tree.clip(paths.clone(), true, cx))
+            }).action(Box::new(CutFiles)))
+            .item(item("Copy", {
+                let paths = paths.clone();
+                Box::new(move |tree, _, cx| tree.clip(paths.clone(), false, cx))
+            }).action(Box::new(CopyFiles)))
+        })
+        .item(item("Paste", {
+            let dir = dir.clone();
+            Box::new(move |tree, _, cx| tree.paste(dir.clone(), cx))
+        }).action(Box::new(PasteFiles)).disabled(!can_paste))
+        .when(path != self.root, |menu| {
+            menu.item(item("Duplicate", {
+                let paths = paths.clone();
+                Box::new(move |tree, _, cx| tree.duplicate_paths(paths.clone(), cx))
+            }))
+        })
+        .separator()
+        .when(path != self.root, |menu| {
+            menu.when(!several, |menu| {
+                menu.item(item("Rename", {
+                    let path = path.clone();
+                    Box::new(move |tree, window, cx| {
+                        tree.select_only(path.clone());
+                        tree.start_edit(EditKind::Rename(path.clone()), window, cx)
+                    })
+                }).action(Box::new(Rename)))
+            })
+            .item(item(if several { "Move Them to Trash" } else { "Move to Trash" }, {
+                let paths = paths.clone();
+                Box::new(move |tree, _, cx| tree.trash(paths.clone(), cx))
             }).action(Box::new(Trash)))
             .separator()
         })
-        .item(item("Copy Path", Box::new(move |_, _, cx| {
+        .item(item(if several { "Copy Paths" } else { "Copy Path" }, Box::new(move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(absolute.clone()))
         })))
-        .item(item("Copy Relative Path", Box::new(move |_, _, cx| {
+        .item(item(if several { "Copy Relative Paths" } else { "Copy Relative Path" }, Box::new(move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(relative.clone()))
         })))
         .when(self.local, |menu| {
@@ -705,6 +1206,15 @@ impl Render for FileTree {
         let rows = self.rows.clone();
         let selected = self.selected.clone();
         let focused = self.focus_handle.contains_focused(_window, cx);
+        let dragging = cx.has_active_drag();
+        let drop_target = self.drop_target.clone().filter(|_| dragging);
+        let root_target = drop_target.as_ref() == Some(&self.root);
+        let cut: Vec<PathBuf> = cx
+            .try_global::<FileClipboard>()
+            .and_then(|clipboard| clipboard.0.as_ref())
+            .filter(|clip| clip.cut)
+            .map(|clip| clip.paths.clone())
+            .unwrap_or_default();
         let editing = self.edit.as_ref().map(|edit| (edit.kind.clone(), edit.input.clone()));
         let view = cx.entity();
         let list = uniform_list("file-tree", rows.len(), move |range, _window, cx| {
@@ -716,13 +1226,18 @@ impl Render for FileTree {
                         RowKind::Entry(entry) => (Some(entry.path.clone()), entry.name.clone(), entry.is_dir),
                         RowKind::New => (None, SharedString::default(), false),
                     };
-                    let is_selected = path.is_some() && selected == path;
+                    let is_selected = path.as_ref().is_some_and(|path| view.read(cx).is_marked(path));
+                    let is_cursor = path.is_some() && selected == path;
+                    let is_cut = path.as_ref().is_some_and(|path| cut.iter().any(|cut| path.starts_with(cut)));
+                    let in_drop = !root_target
+                        && path.as_ref().is_some_and(|path| drop_target.as_ref().is_some_and(|dir| path.starts_with(dir)));
                     let expanded = is_dir && path.as_ref().is_some_and(|path| view.read(cx).expanded.contains(path));
                     let input = editing.as_ref().and_then(|(kind, input)| match (kind, &path) {
                         (EditKind::Rename(target), Some(path)) if target == path => Some(input.clone()),
                         (EditKind::NewFile { .. } | EditKind::NewFolder { .. }, None) => Some(input.clone()),
                         _ => None,
                     });
+                    let renaming = input.is_some();
                     let new_folder = matches!(editing, Some((EditKind::NewFolder { .. }, _)));
                     let (chevron, icon) = match (is_dir || (path.is_none() && new_folder), expanded) {
                         (true, true) => (Some("icons/tree-chevron-down.svg"), "icons/tree-folder-open.svg"),
@@ -731,7 +1246,7 @@ impl Render for FileTree {
                     };
                     let row_el = div()
                         .id(ix)
-                        .h(px(24.))
+                        .h(ROW_HEIGHT)
                         .w_full()
                         .flex()
                         .items_center()
@@ -743,9 +1258,11 @@ impl Render for FileTree {
                         // VS Code's: the selection filled, and outlined while the tree has the keyboard.
                         .border_1()
                         .border_color(transparent_black())
-                        .when(is_selected, |el| el.bg(theme.list_active))
-                        .when(is_selected && focused, |el| el.border_color(theme.list_active_border))
-                        .when(!is_selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
+                        .when(is_selected, |el| el.bg(crate::app::selected_row(cx)))
+                        .when(is_cursor && focused, |el| el.border_color(theme.list_active_border))
+                        .when(!is_selected && in_drop, |el| el.bg(theme.primary.opacity(0.12)))
+                        .when(!is_selected && !dragging, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
+                        .when(is_cut, |el| el.opacity(0.5))
                         .child(div().w(px(14.)).flex_none().children(chevron.map(|path| {
                             svg().path(path).size(px(14.)).text_color(theme.muted_foreground)
                         })))
@@ -765,15 +1282,32 @@ impl Render for FileTree {
                             let click_view = view.clone();
                             let menu_view = view.clone();
                             let click_path = path.clone();
+                            let drag = FileDrag { row: path.clone() };
+                            let drag_view = view.clone();
                             row_el
                                 .on_click(move |event, window, cx| {
-                                    let count = event.click_count();
                                     let path = click_path.clone();
-                                    click_view.update(cx, |tree, cx| tree.click(path, count, window, cx));
+                                    click_view.update(cx, |tree, cx| tree.click(path, event, window, cx));
                                 })
                                 // The menu belongs to the container; the row only says what it opens on.
                                 .on_mouse_down(MouseButton::Right, move |_, _, cx| {
-                                    menu_view.update(cx, |tree, _| tree.menu_target = Some(path.clone()));
+                                    menu_view.update(cx, |tree, cx| {
+                                        // Outside the selection, the row is selected alone.
+                                        if !tree.is_marked(&path) {
+                                            tree.select_only(path.clone());
+                                            cx.notify();
+                                        }
+                                        tree.menu_target = Some(path.clone());
+                                    });
+                                })
+                                .when(!renaming, |el| {
+                                    el.on_drag(drag, move |drag: &FileDrag, _, _, cx| {
+                                        let label = match drag_view.read(cx).dragged(&drag.row).as_slice() {
+                                            [one] => one.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+                                            many => format!("{} items", many.len()),
+                                        };
+                                        cx.new(|_| TabDragPreview(label.into()))
+                                    })
                                 })
                                 .into_any_element()
                         }
@@ -803,6 +1337,32 @@ impl Render for FileTree {
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::trash_selected))
             .on_action(cx.listener(Self::open_selected))
+            .on_action(cx.listener(Self::extend_prev))
+            .on_action(cx.listener(Self::extend_next))
+            .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::clear_selection))
+            .on_action(cx.listener(Self::cut))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::paste_action))
+            .on_action(cx.listener(Self::undo_action))
+            .when(root_target, |el| el.bg(cx.theme().primary.opacity(0.08)))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<FileDrag>, _, cx| {
+                this.drag_moved(event.event.position, event.bounds, cx);
+            }))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                this.drag_moved(event.event.position, event.bounds, cx);
+            }))
+            // Option/Alt (or Ctrl outside the Mac) copies instead of moving.
+            .on_drop(cx.listener(|this, drag: &FileDrag, window, cx| {
+                let dir = this.take_drop_target();
+                let modifiers = window.modifiers();
+                let copy = modifiers.alt || (!cfg!(target_os = "macos") && modifiers.control);
+                this.place(this.dragged(&drag.row), dir, copy, cx);
+            }))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                let dir = this.take_drop_target();
+                this.import(paths.paths().to_vec(), dir, cx);
+            }))
             // Before the rows: a right-click outside them is on the task's folder.
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
                 if event.button == MouseButton::Right {
@@ -815,11 +1375,233 @@ impl Render for FileTree {
                     let Some(this) = tree.upgrade() else {
                         return menu;
                     };
+                    let can_paste = external_clipboard(cx).is_some()
+                        || cx.try_global::<FileClipboard>().is_some_and(|clipboard| clipboard.0.is_some());
                     let this = this.read(cx);
                     let path = this.menu_target.clone().unwrap_or_else(|| this.root.clone());
-                    this.context_menu(path, menu, tree.clone()).separator().panel_items(crate::menu::hide_panel(), window, cx)
+                    this.context_menu(path, can_paste, menu, tree.clone()).separator().panel_items(crate::menu::hide_panel(), window, cx)
                 }
             })
             .child(list)
+    }
+}
+
+fn place_ops(paths: Vec<PathBuf>, dir: &Path, copy: bool) -> Vec<Op> {
+    paths
+        .into_iter()
+        .filter(|from| !dir.starts_with(from))
+        .filter(|from| copy || from.parent() != Some(dir))
+        .filter_map(|from| {
+            let to = dir.join(from.file_name()?);
+            Some(if copy { Op::Copy { from, to } } else { Op::Move { from, to } })
+        })
+        .collect()
+}
+
+/// What reverts `batch`, the last first.
+fn undo_ops(batch: Vec<Done>) -> Vec<Op> {
+    batch
+        .into_iter()
+        .rev()
+        .filter_map(|done| match done {
+            Done::Moved { from, to } => Some(Op::Move { from: to, to: from }),
+            Done::Created(path) => Some(Op::Trash(path)),
+            Done::Trashed { path, item } => Some(Op::Untrash { item: item?, to: path }),
+        })
+        .collect()
+}
+
+/// The files Finder (or the Explorer) has on the clipboard.
+fn external_clipboard(cx: &App) -> Option<Vec<PathBuf>> {
+    cx.read_from_clipboard()?.entries().iter().find_map(|entry| match entry {
+        ClipboardEntry::ExternalPaths(paths) if !paths.paths().is_empty() => Some(paths.paths().to_vec()),
+        _ => None,
+    })
+}
+
+async fn run_op(client: &Client, op: Op) -> anyhow::Result<Done> {
+    Ok(match op {
+        Op::Move { from, to } => {
+            client.request(Request::Rename { from: from.clone(), to: to.clone() }).await?;
+            Done::Moved { from, to }
+        }
+        Op::Copy { from, to } => match client.request(Request::Copy { from, to }).await? {
+            Response::Path(Some(path)) => Done::Created(path),
+            other => anyhow::bail!("unexpected response: {other:?}"),
+        },
+        Op::Trash(path) => match client.request(Request::Trash { path: path.clone() }).await? {
+            Response::Path(item) => Done::Trashed { path, item },
+            _ => Done::Trashed { path, item: None },
+        },
+        Op::Untrash { item, to } => {
+            client.request(Request::Untrash { item, to: to.clone() }).await?;
+            Done::Created(to)
+        }
+        Op::Upload { from, dir } => Done::Created(upload(client, &from, &dir).await?),
+    })
+}
+
+/// Sends a file or folder of this machine into `dir` on the agent's, named
+/// as a copy if the name is taken.
+async fn upload(client: &Client, from: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
+    let name = from.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let taken: HashSet<String> = match client.request(Request::ListDirAll { path: dir.to_path_buf() }).await {
+        Ok(Response::Dir(entries)) => entries.into_iter().map(|entry| entry.name).collect(),
+        _ => match client.request(Request::ListDir { path: dir.to_path_buf() }).await {
+            Ok(Response::Dir(entries)) => entries.into_iter().map(|entry| entry.name).collect(),
+            _ => HashSet::new(),
+        },
+    };
+    let name = (0..1000)
+        .map(|n| proto::copy_name(&name, n))
+        .find(|name| !taken.contains(name))
+        .ok_or_else(|| anyhow::anyhow!("{name} has too many copies"))?;
+    let to = dir.join(name);
+    upload_entry(client, from.to_path_buf(), to.clone()).await?;
+    Ok(to)
+}
+
+fn upload_entry(client: &Client, from: PathBuf, to: PathBuf) -> std::pin::Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+    Box::pin(async move {
+        let meta = std::fs::metadata(&from)?;
+        if meta.is_dir() {
+            client.request(Request::CreateDir { path: to.clone() }).await?;
+            for entry in std::fs::read_dir(&from)? {
+                let entry = entry?;
+                upload_entry(client, entry.path(), to.join(entry.file_name())).await?;
+            }
+        } else {
+            if meta.len() > proto::MAX_FILE_BYTES as u64 {
+                anyhow::bail!("{} is too large to send", from.display());
+            }
+            let data = std::fs::read(&from)?;
+            client.request(Request::CreateFile { path: to.clone() }).await?;
+            client.request(Request::WriteFile { path: to, data }).await?;
+        }
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use core::prelude::v1::test;
+
+    use super::*;
+
+    fn p(path: &str) -> PathBuf {
+        PathBuf::from(path)
+    }
+
+    /// /t with src/ (a.rs, b.rs) open, docs/ closed, and c.md.
+    fn tree(cx: &mut TestAppContext) -> Entity<FileTree> {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        cx.new(|cx| {
+            let mut tree = FileTree::new(p("/t"), None, true, cx);
+            let entry = |path: &str, is_dir| DirEntry {
+                path: p(path),
+                name: Path::new(path).file_name().unwrap().to_string_lossy().into_owned().into(),
+                is_dir,
+            };
+            tree.children.insert(p("/t"), vec![entry("/t/docs", true), entry("/t/src", true), entry("/t/c.md", false)]);
+            tree.children.insert(p("/t/src"), vec![entry("/t/src/a.rs", false), entry("/t/src/b.rs", false)]);
+            tree.children.insert(p("/t/docs"), vec![]);
+            tree.expanded.insert(p("/t/src"));
+            tree.rebuild(cx);
+            tree
+        })
+    }
+
+    #[gpui_kit::test]
+    fn shift_selects_a_range_and_secondary_adds_to_it(cx: &mut TestAppContext) {
+        let tree = tree(cx);
+        tree.update(cx, |tree, cx| {
+            tree.select_only(p("/t/src/a.rs"));
+            tree.extend_to(p("/t/c.md"), cx);
+            assert_eq!(tree.marked, [p("/t/src/a.rs"), p("/t/src/b.rs"), p("/t/c.md")]);
+            // Back up past the anchor: the range turns around it.
+            tree.extend_to(p("/t/src"), cx);
+            assert_eq!(tree.marked, [p("/t/src"), p("/t/src/a.rs")]);
+            // What's inside a selected folder goes with it.
+            assert_eq!(tree.selection(), [p("/t/src")]);
+            tree.toggle_marked(p("/t/c.md"));
+            tree.toggle_marked(p("/t/src"));
+            assert_eq!(tree.selection(), [p("/t/src/a.rs"), p("/t/c.md")]);
+            assert!(tree.is_marked(Path::new("/t/c.md")) && !tree.is_marked(Path::new("/t/src")));
+            tree.select_only(p("/t/docs"));
+            assert_eq!(tree.selection(), [p("/t/docs")]);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn dragging_a_selected_row_takes_the_selection(cx: &mut TestAppContext) {
+        let tree = tree(cx);
+        tree.update(cx, |tree, _| {
+            tree.select_only(p("/t/src/a.rs"));
+            tree.toggle_marked(p("/t/c.md"));
+            assert_eq!(tree.dragged(Path::new("/t/c.md")), [p("/t/src/a.rs"), p("/t/c.md")]);
+            assert_eq!(tree.dragged(Path::new("/t/src/b.rs")), [p("/t/src/b.rs")]);
+        });
+    }
+
+    #[test]
+    fn a_folder_never_moves_into_itself_nor_where_it_is() {
+        let ops = place_ops(vec![p("/t/src"), p("/t/c.md"), p("/t/docs/x")], Path::new("/t/src/inner"), false);
+        assert_eq!(ops, [
+            Op::Move { from: p("/t/c.md"), to: p("/t/src/inner/c.md") },
+            Op::Move { from: p("/t/docs/x"), to: p("/t/src/inner/x") },
+        ]);
+        assert!(place_ops(vec![p("/t/src/a.rs")], Path::new("/t/src"), false).is_empty());
+        // A copy where it is is a duplicate.
+        assert_eq!(place_ops(vec![p("/t/src/a.rs")], Path::new("/t/src"), true), [
+            Op::Copy { from: p("/t/src/a.rs"), to: p("/t/src/a.rs") },
+        ]);
+    }
+
+    #[test]
+    fn undo_reverts_the_last_first() {
+        let batch = vec![
+            Done::Moved { from: p("/t/a"), to: p("/t/b") },
+            Done::Created(p("/t/c")),
+            Done::Trashed { path: p("/t/d"), item: Some(p("/trash/d")) },
+        ];
+        assert_eq!(undo_ops(batch), [
+            Op::Untrash { item: p("/trash/d"), to: p("/t/d") },
+            Op::Trash(p("/t/c")),
+            Op::Move { from: p("/t/b"), to: p("/t/a") },
+        ]);
+    }
+
+    #[gpui_kit::test]
+    fn what_moves_is_selected_and_its_open_folders_stay_open(cx: &mut TestAppContext) {
+        let tree = tree(cx);
+        tree.update(cx, |tree, cx| {
+            let done = vec![
+                Done::Moved { from: p("/t/src"), to: p("/t/docs/src") },
+                Done::Moved { from: p("/t/c.md"), to: p("/t/docs/c.md") },
+            ];
+            tree.finish(done.clone(), vec![], true, None, cx);
+            assert!(tree.expanded.contains(Path::new("/t/docs/src")) && !tree.expanded.contains(Path::new("/t/src")));
+            assert!(tree.expanded.contains(Path::new("/t/docs")));
+            assert_eq!(tree.marked, [p("/t/docs/src"), p("/t/docs/c.md")]);
+            assert_eq!(tree.undo, [done]);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn trashing_selects_the_row_after(cx: &mut TestAppContext) {
+        let tree = tree(cx);
+        tree.update(cx, |tree, cx| {
+            tree.select_only(p("/t/src/a.rs"));
+            let trashed = Done::Trashed { path: p("/t/src/a.rs"), item: Some(p("/trash/a.rs")) };
+            tree.finish(vec![trashed.clone()], vec![], true, Some(p("/t/src/b.rs")), cx);
+            assert_eq!(tree.selected, Some(p("/t/src/b.rs")));
+            assert_eq!(tree.undo, [vec![trashed]]);
+            // Where an older agent doesn't say where it went, it can't come back.
+            tree.finish(vec![Done::Trashed { path: p("/t/c.md"), item: None }], vec![], true, None, cx);
+            assert_eq!(tree.undo.len(), 1);
+        });
     }
 }

@@ -61,6 +61,8 @@ pub type TermId = u64;
     TaskForceRemove { path: PathBuf }
     ListDirAll { path: PathBuf }
     TermClear { term: TermId }
+    Copy { from: PathBuf, to: PathBuf }
+    Untrash { item: PathBuf, to: PathBuf }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)] pub enum LspOp {
     Definition

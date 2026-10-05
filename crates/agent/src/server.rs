@@ -677,7 +677,7 @@ fn own_separators(request: &mut Request) {
         | Request::Replace { path, .. }
         | Request::Command { cwd: path, .. }
         | Request::Resolve { path } => fix(path),
-        Request::Rename { from, to } => {
+        Request::Rename { from, to } | Request::Copy { from, to } | Request::Untrash { item: from, to } => {
             fix(from);
             fix(to);
         }
@@ -741,6 +741,8 @@ fn is_slow(request: &Request) -> bool {
             | Request::ListDir { .. }
             | Request::ListDirAll { .. }
             | Request::Trash { .. }
+            | Request::Copy { .. }
+            | Request::Untrash { .. }
             | Request::Git { .. }
             | Request::Lsp { .. }
             | Request::LspResolve { .. }
@@ -827,10 +829,12 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
         }
         Request::ListDir { path } => Ok(Response::Dir(fs::list(&tasks::expand_home(&path), false)?)),
         Request::ListDirAll { path } => Ok(Response::Dir(fs::list(&tasks::expand_home(&path), true)?)),
-        Request::Trash { path } => {
-            fs::trash(&path)?;
+        Request::Trash { path } => Ok(Response::Path(fs::trash(&path)?)),
+        Request::Untrash { item, to } => {
+            fs::untrash(&item, &to)?;
             Ok(Response::Ok)
         }
+        Request::Copy { from, to } => Ok(Response::Path(Some(fs::copy(&from, &to)?))),
         _ => unreachable!("not a slow request"),
     }
 }
@@ -975,6 +979,8 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
         | Request::ListDir { .. }
         | Request::ListDirAll { .. }
         | Request::Trash { .. }
+        | Request::Copy { .. }
+        | Request::Untrash { .. }
         | Request::Git { .. }
         | Request::Lsp { .. }
         | Request::LspResolve { .. }

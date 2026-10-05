@@ -148,6 +148,46 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Copies the file or folder `from` to `to`, or, if `to` exists, to the
+/// first free `copy_name` next to it; returns where it went. Links are copied
+/// as links, not followed.
+pub fn copy(from: &Path, to: &Path) -> Result<PathBuf> {
+    if to.starts_with(from) && to != from {
+        bail!("can't copy {} into itself", from.display());
+    }
+    let meta = std::fs::symlink_metadata(from).with_context(|| format!("could not read {}", from.display()))?;
+    let name = to.file_name().context("no name to copy to")?.to_string_lossy().into_owned();
+    let to = (0..1000)
+        .map(|n| to.with_file_name(proto::copy_name(&name, n)))
+        .find(|path| std::fs::symlink_metadata(path).is_err())
+        .with_context(|| format!("{} has too many copies", to.display()))?;
+    copy_entry(from, &to, &meta).with_context(|| format!("could not copy {} to {}", from.display(), to.display()))?;
+    Ok(to)
+}
+
+fn copy_entry(from: &Path, to: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> {
+    if meta.is_symlink() {
+        let target = std::fs::read_link(from)?;
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, to);
+        #[cfg(windows)]
+        return if std::fs::metadata(from).is_ok_and(|meta| meta.is_dir()) {
+            std::os::windows::fs::symlink_dir(target, to)
+        } else {
+            std::os::windows::fs::symlink_file(target, to)
+        };
+    }
+    if meta.is_dir() {
+        std::fs::create_dir(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_entry(&entry.path(), &to.join(entry.file_name()), &entry.metadata()?)?;
+        }
+        return std::fs::set_permissions(to, meta.permissions());
+    }
+    std::fs::copy(from, to).map(drop)
+}
+
 pub fn create_file(path: &Path) -> Result<()> {
     std::fs::File::create_new(path).with_context(|| format!("could not create {}", path.display()))?;
     Ok(())
@@ -157,9 +197,75 @@ pub fn create_dir(path: &Path) -> Result<()> {
     std::fs::create_dir(path).with_context(|| format!("could not create {}", path.display()))
 }
 
-/// To the Trash (recoverable), not deleted.
-pub fn trash(path: &Path) -> Result<()> {
-    trash::delete(path).map_err(|err| anyhow::anyhow!("could not move to the Trash: {err}"))
+/// To the Trash (recoverable), not deleted. Returns what `untrash` puts
+/// back, if the system says where it went.
+pub fn trash(path: &Path) -> Result<Option<PathBuf>> {
+    trash_item(path).map_err(|err| anyhow::anyhow!("could not move to the Trash: {err:#}"))
+}
+
+/// The system's own call, not Finder's: Finder, scripted, asks for a
+/// password to move some files (links in `/tmp`…), and it doesn't say
+/// where they went.
+#[cfg(target_os = "macos")]
+fn trash_item(path: &Path) -> Result<Option<PathBuf>> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let Some(text) = path.to_str() else {
+        trash::delete(path)?;
+        return Ok(None);
+    };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(text));
+    let mut went = None;
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, Some(&mut went))
+        .map_err(|err| anyhow::anyhow!("{}", err.localizedDescription()))?;
+    Ok(went.and_then(|url| url.path()).map(|path| PathBuf::from(path.to_string())))
+}
+
+#[cfg(target_os = "macos")]
+fn untrash_item(item: &Path, to: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(item).is_err() {
+        bail!("{} is no longer in the Trash", to.display());
+    }
+    rename(item, to)
+}
+
+/// The item the system just put in its Trash for `path`, found by where
+/// it was.
+#[cfg(not(target_os = "macos"))]
+fn trash_item(path: &Path) -> Result<Option<PathBuf>> {
+    // Where the Trash will say it was: the folder's real path.
+    let original = match (path.parent().and_then(|dir| dunce::canonicalize(dir).ok()), path.file_name()) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => path.to_path_buf(),
+    };
+    trash::delete(path)?;
+    let Ok(items) = trash::os_limited::list() else {
+        return Ok(None);
+    };
+    Ok(items
+        .into_iter()
+        .filter(|item| item.original_path() == original || item.original_path() == path)
+        .max_by_key(|item| item.time_deleted)
+        .map(|item| PathBuf::from(item.id)))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn untrash_item(item: &Path, to: &Path) -> Result<()> {
+    let found = trash::os_limited::list()?
+        .into_iter()
+        .find(|trashed| Path::new(&trashed.id) == item)
+        .with_context(|| format!("{} is no longer in the Trash", to.display()))?;
+    if std::fs::symlink_metadata(found.original_path()).is_ok() {
+        bail!("{} already exists", found.original_path().display());
+    }
+    trash::os_limited::restore_all([found])?;
+    Ok(())
+}
+
+/// Puts back where it was (`to`) what `trash` sent to the Trash as `item`;
+/// never over something that took its place.
+pub fn untrash(item: &Path, to: &Path) -> Result<()> {
+    untrash_item(item, to).map_err(|err| anyhow::anyhow!("could not put back {}: {err:#}", to.display()))
 }
 
 /// Watches `root` and calls `changed` with batches of changed paths until
@@ -350,6 +456,51 @@ mod tests {
         write(&saved, b"new").unwrap();
         let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&saved), mode(&plain));
+    }
+
+    #[test]
+    fn copies_never_overwrite() {
+        let dir = dir("copy");
+        std::fs::create_dir_all(dir.join("src/inner")).unwrap();
+        write(&dir.join("src/inner/a.txt"), b"a").unwrap();
+        write(&dir.join("b.txt"), b"b").unwrap();
+        assert_eq!(copy(&dir.join("b.txt"), &dir.join("b.txt")).unwrap(), dir.join("b copy.txt"));
+        assert_eq!(copy(&dir.join("b.txt"), &dir.join("b.txt")).unwrap(), dir.join("b copy 2.txt"));
+        assert_eq!(read(&dir.join("b copy 2.txt")).unwrap(), b"b");
+        assert_eq!(copy(&dir.join("src"), &dir.join("dst")).unwrap(), dir.join("dst"));
+        assert_eq!(read(&dir.join("dst/inner/a.txt")).unwrap(), b"a");
+        assert!(copy(&dir.join("src"), &dir.join("src/inner/src")).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("b.txt", dir.join("link")).unwrap();
+            let link = copy(&dir.join("link"), &dir.join("link")).unwrap();
+            assert_eq!(std::fs::read_link(link).unwrap(), PathBuf::from("b.txt"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sends a file to the real Trash and puts it back.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn what_goes_to_the_trash_comes_back() {
+        let dir = dir("trash");
+        write(&dir.join("a.txt"), b"a").unwrap();
+        std::os::unix::fs::symlink("a.txt", dir.join("link")).unwrap();
+        let item = trash(&dir.join("a.txt")).unwrap().expect("where it went");
+        assert!(std::fs::symlink_metadata(dir.join("a.txt")).is_err());
+        // A link goes to the Trash itself, not what it points to.
+        let link = trash(&dir.join("link")).unwrap().expect("where the link went");
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        // Nothing is put back over what took its place.
+        write(&dir.join("a.txt"), b"new").unwrap();
+        assert!(untrash(&item, &dir.join("a.txt")).is_err());
+        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        untrash(&item, &dir.join("a.txt")).unwrap();
+        untrash(&link, &dir.join("link")).unwrap();
+        assert_eq!(read(&dir.join("a.txt")).unwrap(), b"a");
+        assert!(std::fs::symlink_metadata(dir.join("link")).unwrap().is_symlink());
+        assert!(untrash(&item, &dir.join("a.txt")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
