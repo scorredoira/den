@@ -110,7 +110,8 @@ pub enum Request {
     Rename { from: PathBuf, to: PathBuf },
     CreateFile { path: PathBuf },
     CreateDir { path: PathBuf },
-    /// To the Trash, not deleted.
+    /// To the Trash, not deleted. Responds `Path`: what `Untrash` puts back
+    /// (`None` where the system doesn't say; `Ok` from older agents).
     Trash { path: PathBuf },
     /// Reports changes inside `path` to this connection with `FsChanged`.
     Watch { path: PathBuf },
@@ -206,6 +207,26 @@ pub enum Request {
     /// cursor's line moves to the top. Every view of it clears with the
     /// agent's, as output of the process. Responds `Ok`.
     TermClear { term: TermId },
+    /// Copies the file or folder `from` to `to`, never over anything: if
+    /// `to` exists, the copy is named as `copy_name` says. Responds `Path`
+    /// with where it went.
+    Copy { from: PathBuf, to: PathBuf },
+    /// Puts `item`, from a `Trash` response, back at `to`, where it was;
+    /// never over anything. Responds `Ok`.
+    Untrash { item: PathBuf, to: PathBuf },
+}
+
+/// The name of the `n`th copy of `name`, as Finder names them: `n` 0 is the
+/// name itself, then `a copy.txt`, `a copy 2.txt`… (`.env` copy: `.env copy`).
+pub fn copy_name(name: &str, n: usize) -> String {
+    if n == 0 {
+        return name.to_string();
+    }
+    let suffix = if n == 1 { " copy".to_string() } else { format!(" copy {n}") };
+    match name.rfind('.').filter(|&dot| dot > 0) {
+        Some(dot) => format!("{}{suffix}{}", &name[..dot], &name[dot..]),
+        None => format!("{name}{suffix}"),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -838,6 +859,15 @@ mod tests {
     /// `wire.txt` is the wire of `PROTOCOL` as last recorded. A change a side
     /// of the old version can't read must come with a new `PROTOCOL`; any
     /// change is recorded with `UPDATE_WIRE=1 cargo test -p proto wire`.
+    #[test]
+    fn copies_are_named_like_finder_names_them() {
+        assert_eq!(copy_name("a.txt", 0), "a.txt");
+        assert_eq!(copy_name("a.txt", 1), "a copy.txt");
+        assert_eq!(copy_name("a.tar.gz", 2), "a.tar copy 2.gz");
+        assert_eq!(copy_name(".env", 1), ".env copy");
+        assert_eq!(copy_name("src", 3), "src copy 3");
+    }
+
     #[test]
     fn wire_changes_bump_the_protocol() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wire.txt");

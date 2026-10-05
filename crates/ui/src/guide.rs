@@ -2,7 +2,7 @@
 //! whose `{{…}}` are filled in with the keys as they are now, in this
 //! platform's form: `{{OpenFileFinder}}` a shortcut from Settings (changed
 //! or not), `{{Undo}}` one of the editor's own, `{{key:escape}}` a key, and
-//! `{{alt}}` or `{{shift}}` a modifier for a click or a drag.
+//! `{{alt}}`, `{{shift}}` or `{{secondary}}` a modifier for a click or a drag.
 
 use gpui_kit::{App, Keystroke, component::kbd::Kbd};
 
@@ -65,6 +65,8 @@ fn modifier(name: &str) -> Option<&'static str> {
         "alt" => "Alt",
         "shift" if mac => "⇧",
         "shift" => "Shift",
+        "secondary" if mac => "⌘",
+        "secondary" => "Ctrl",
         _ => return None,
     })
 }
