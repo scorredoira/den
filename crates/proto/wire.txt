@@ -123,6 +123,12 @@ pub type TermId = u64;
     Init
     Unmerged { limit: usize }
     Graph { query: String, file: Option<String>, skip: usize, limit: usize }
+    FindGraph { query: String, scope: GraphScope, file: Option<String>, all: bool, skip: usize, limit: usize }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)] pub enum GraphScope {
+    #[default] Message
+    Paths
+    Content
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)] pub struct GitStatus {
     pub branch: Option<String>

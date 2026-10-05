@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, GraphCommit, Response};
+use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, GraphCommit, GraphScope, Response};
 
 /// The repo's main branch: the local `master` or `main`. Only the local repo
 /// counts: remotes are never looked at.
@@ -209,7 +209,12 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
         )),
         GitOp::Search { query, skip, limit } => Ok(Response::Commits(search(dir, &query, skip, limit)?)),
         GitOp::Blame { file } => blame(dir, &file),
-        GitOp::Graph { query, file, skip, limit } => Ok(Response::Graph(graph(dir, &query, file.as_deref(), skip, limit)?)),
+        GitOp::Graph { query, file, skip, limit } => {
+            Ok(Response::Graph(graph(dir, &query, GraphScope::Message, file.as_deref(), true, skip, limit)?))
+        }
+        GitOp::FindGraph { query, scope, file, all, skip, limit } => {
+            Ok(Response::Graph(graph(dir, &query, scope, file.as_deref(), all, skip, limit)?))
+        }
     }
 }
 
@@ -343,19 +348,41 @@ fn search(dir: &Path, query: &str, skip: usize, limit: usize) -> Result<Vec<Comm
         .collect())
 }
 
-const GRAPH_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%P%x1f%D%x1f%s%x1f%b%x1e";
+/// Each commit starts with a record separator, and its body is followed by
+/// a unit separator: what `--name-only` adds comes after it, in its record.
+const GRAPH_FORMAT: &str = "--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%P%x1f%D%x1f%s%x1f%b%x1f";
 
-/// The history of every branch, tag and remote, for its graph. A search
-/// reads all of it and filters it here, as `search` does.
-fn graph(dir: &Path, query: &str, file: Option<&str>, skip: usize, limit: usize) -> Result<Vec<GraphCommit>> {
+/// The history of `HEAD` or, with `all`, of every branch, tag and remote,
+/// for its graph. A search of the message or of the paths reads all of it
+/// and filters it here, as `search` does; one of the content is git's (`-S`).
+fn graph(
+    dir: &Path,
+    query: &str,
+    scope: GraphScope,
+    file: Option<&str>,
+    all: bool,
+    skip: usize,
+    limit: usize,
+) -> Result<Vec<GraphCommit>> {
     if git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
         return Ok(Vec::new());
     }
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let (skip_arg, limit_arg) = (format!("--skip={skip}"), format!("--max-count={limit}"));
-    let mut args = vec!["log", "--date-order", "--decorate=full", "--date=format:%Y-%m-%d %H:%M:%S", GRAPH_FORMAT, "HEAD", "--branches", "--tags", "--remotes"];
-    if words.is_empty() {
+    let pickaxe = format!("-S{}", query.trim());
+    let mut args = vec!["log", "--date-order", "--decorate=full", "--date=format:%Y-%m-%d %H:%M:%S", GRAPH_FORMAT, "HEAD"];
+    if all {
+        args.extend(["--branches", "--tags", "--remotes"]);
+    }
+    // Filtered here: all of it is read.
+    let filtered = !words.is_empty() && scope != GraphScope::Content;
+    if !filtered {
         args.extend([skip_arg.as_str(), limit_arg.as_str()]);
+    }
+    match scope {
+        GraphScope::Paths if filtered => args.push("--name-only"),
+        GraphScope::Content if !words.is_empty() => args.extend([pickaxe.as_str(), "--regexp-ignore-case"]),
+        _ => {}
     }
     if let Some(file) = file {
         // The parents become the nearest commits that changed it too.
@@ -363,7 +390,7 @@ fn graph(dir: &Path, query: &str, file: Option<&str>, skip: usize, limit: usize)
     }
     let raw = git(dir, &args)?;
     let commits = raw.split('\x1e').filter_map(|record| {
-        let mut fields = record.trim_start_matches('\n').split('\x1f');
+        let mut fields = record.split('\x1f');
         let commit = GraphCommit {
             hash: fields.next().filter(|hash| !hash.is_empty())?.to_string(),
             short: fields.next()?.to_string(),
@@ -374,19 +401,24 @@ fn graph(dir: &Path, query: &str, file: Option<&str>, skip: usize, limit: usize)
             refs: decorations(fields.next()?),
             subject: fields.next()?.to_string(),
         };
-        Some((commit, fields.next().unwrap_or("")))
+        // The message's body, and the files' paths after it with `--name-only`.
+        Some((commit, fields.next().unwrap_or(""), fields.next().unwrap_or("")))
     });
-    if words.is_empty() {
-        return Ok(commits.map(|(commit, _)| commit).collect());
+    if !filtered {
+        return Ok(commits.map(|(commit, ..)| commit).collect());
     }
+    let query = query.trim().to_lowercase();
     Ok(commits
-        .filter(|(commit, body)| {
-            let text = format!("{}\n{}\n{}\n{}", commit.subject, body, commit.author, commit.email).to_lowercase();
-            words.iter().all(|word| commit.hash.starts_with(word.as_str()) || text.contains(word.as_str()))
+        .filter(|(commit, body, paths)| match scope {
+            GraphScope::Paths => paths.lines().any(|path| path.to_lowercase().contains(&query)),
+            _ => {
+                let text = format!("{}\n{}\n{}\n{}", commit.subject, body, commit.author, commit.email).to_lowercase();
+                words.iter().all(|word| commit.hash.starts_with(word.as_str()) || text.contains(word.as_str()))
+            }
         })
         .skip(skip)
         .take(limit)
-        .map(|(commit, _)| commit)
+        .map(|(commit, ..)| commit)
         .collect())
 }
 
@@ -658,6 +690,27 @@ mod tests {
         let of_b = graph("", Some("b.txt"));
         assert_eq!(of_b.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["on master", "initial"]);
         assert_eq!(of_b[0].parents, [of_b[1].hash.clone()]);
+        // Only HEAD's, as gitk shows it: another branch's commit isn't there.
+        run(&dir, &["switch", "-q", "-c", "other", "HEAD~1"]);
+        std::fs::write(dir.join("c.txt"), "elsewhere\n").unwrap();
+        commit(&dir, "elsewhere");
+        run(&dir, &["switch", "-q", "master"]);
+        let find = |query: &str, scope: GraphScope, all: bool| {
+            let op = GitOp::FindGraph { query: query.into(), scope, file: None, all, skip: 0, limit: 10 };
+            match run_op(&dir, op) {
+                Response::Graph(commits) => commits.into_iter().map(|c| c.subject).collect::<Vec<_>>(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let head = find("", GraphScope::Message, false);
+        assert_eq!(head.len(), 4);
+        assert!(!head.contains(&"elsewhere".to_string()));
+        assert!(find("", GraphScope::Message, true).contains(&"elsewhere".to_string()));
+        // Searched in the paths changed, or in what was added or removed.
+        assert_eq!(find("C.TXT", GraphScope::Paths, true), ["elsewhere"]);
+        assert_eq!(find("on master", GraphScope::Content, false), ["on master"]);
+        assert_eq!(find("on master", GraphScope::Message, false), ["on master"]);
+        assert!(find("b.txt", GraphScope::Message, false).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
