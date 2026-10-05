@@ -145,6 +145,32 @@ struct AgentTerm {
     agent_args: Option<String>,
 }
 
+impl AgentTerm {
+    /// Whether it's doing something. Claude Code says so in its title (see
+    /// `claude_working`): its redraws (on a resize, a reconnect, a status
+    /// line) are not work. Anything else works while its output keeps
+    /// coming, with no pause of `QUIET`, for `WORK_BURST`, past what it
+    /// printed on starting up.
+    fn working(&self) -> bool {
+        if let Some(working) = self.claude_title().and_then(claude_working) {
+            return working;
+        }
+        self.settled
+            && self.last_output.elapsed() < WORKING_WINDOW
+            && self.last_output.duration_since(self.burst_start) >= WORK_BURST
+    }
+
+    /// Its title, if Claude Code's and Claude Code still runs: one left by
+    /// a Claude Code that died (a spinner, say) is not its. Where the
+    /// foreground process can't be read (Windows), the title is all there is.
+    fn claude_title(&self) -> Option<&str> {
+        self.title
+            .as_deref()
+            .filter(|title| claude_title(title))
+            .filter(|_| cfg!(windows) || self.agent.as_deref() == Some("claude"))
+    }
+}
+
 #[derive(Default)]
 struct State {
     terms: HashMap<TermId, AgentTerm>,
@@ -195,7 +221,7 @@ impl State {
         }
     }
 
-    /// Marks `term`'s task as working, notifying if it just started.
+    /// Notes output from `term`, marking its task as working if it now is.
     fn note_output(&mut self, term: TermId) {
         let Some(entry) = self.terms.get_mut(&term) else {
             return;
@@ -206,7 +232,7 @@ impl State {
         }
         entry.last_output = now;
         entry.blocked = false;
-        if !entry.settled || now.duration_since(entry.burst_start) < WORK_BURST {
+        if !entry.working() {
             return;
         }
         let group = entry.group.clone();
@@ -218,7 +244,7 @@ impl State {
         }
     }
 
-    /// Considers tasks without recent output as stopped.
+    /// Considers tasks without a working terminal as stopped.
     fn expire_activity(&mut self) {
         for entry in self.terms.values_mut() {
             if !entry.settled && entry.last_output.elapsed() >= WORKING_WINDOW {
@@ -228,12 +254,7 @@ impl State {
         let stopped: Vec<String> = self
             .working
             .iter()
-            .filter(|group| {
-                !self
-                    .terms
-                    .values()
-                    .any(|entry| &&entry.group == group && entry.last_output.elapsed() < WORKING_WINDOW)
-            })
+            .filter(|group| !self.terms.values().any(|entry| &&entry.group == group && entry.working()))
             .cloned()
             .collect();
         for group in stopped {
@@ -295,13 +316,13 @@ impl State {
             .terms
             .iter()
             .filter_map(|(term, entry)| {
-                let name = entry.agent.clone().or_else(|| entry.title.as_deref().filter(|title| claude_title(title)).map(|_| "claude".to_string()))?;
+                let name = entry.agent.clone().or_else(|| entry.claude_title().map(|_| "claude".to_string()))?;
                 Some(AgentInfo {
                     term: *term,
                     group: entry.group.clone(),
                     name,
                     title: entry.title.clone(),
-                    working: entry.settled && entry.last_output.elapsed() < WORKING_WINDOW,
+                    working: entry.working(),
                     blocked: entry.blocked,
                 })
             })
@@ -1375,9 +1396,20 @@ fn agent_name(args: &str) -> Option<String> {
         .or_else(|| AGENTS.contains(&name.as_str()).then_some(name))
 }
 
-/// Claude Code's title: what it's doing after `✳` or a spinner (braille).
+/// Claude Code's title: what it's doing after `✳` or a spinner (braille,
+/// or half circles from 2.1.2xx on).
 fn claude_title(title: &str) -> bool {
-    title.chars().next().is_some_and(|ch| ch == '✳' || ('\u{2800}'..='\u{28FF}').contains(&ch))
+    claude_working(title).is_some()
+}
+
+/// Whether Claude Code works, by its title: a spinner while it does, `✳`
+/// while it doesn't; `None` for a title that isn't Claude Code's.
+fn claude_working(title: &str) -> Option<bool> {
+    match title.chars().next()? {
+        '✳' => Some(false),
+        '\u{2800}'..='\u{28FF}' | '◐' | '◑' | '◒' | '◓' => Some(true),
+        _ => None,
+    }
 }
 
 /// The Claude Code session a process runs: Claude Code writes it to
@@ -1672,7 +1704,7 @@ mod blocked_tests {
 
 #[cfg(test)]
 mod restart_tests {
-    use super::{ClaudeSession, Shell, agent_name, claude_title, resume_command_in, resumed_session, windows_words};
+    use super::{ClaudeSession, Shell, agent_name, claude_title, claude_working, resume_command_in, resumed_session, windows_words};
 
     #[test]
     fn tells_the_agents_apart() {
@@ -1686,6 +1718,12 @@ mod restart_tests {
         assert!(claude_title("✳ Fix the login"));
         assert!(claude_title("⠂ Fix the login"));
         assert!(!claude_title("zsh"));
+        assert_eq!(claude_working("✳ Fix the login"), Some(false));
+        assert_eq!(claude_working("⠐ Fix the login"), Some(true));
+        assert_eq!(claude_working("◐ Fix the login"), Some(true));
+        assert_eq!(claude_working("◑ Fix the login"), Some(true));
+        assert_eq!(claude_working(""), None);
+        assert_eq!(claude_working("zsh"), None);
     }
 
     #[test]
