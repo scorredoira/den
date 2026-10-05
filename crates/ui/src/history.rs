@@ -1,11 +1,10 @@
 //! The History tab, as gitk lays it out: the commits of the current branch
 //! (or, with All Branches, of every branch, tag and remote) above, with their
 //! graph, what points at them, their author and their date; under them the
-//! selected commit's files and, on their right, the commit (its message and
-//! every file's changes, as a commit's tab shows them), each file a click
-//! away from its changes. The three parts and the author's and date's columns
-//! resize, and keep their sizes. It only reads, and the agent does all the
-//! reading.
+//! selected commit (its message and every file's changes, as a commit's tab
+//! shows them) and, on its right, its files, a click away from their changes.
+//! The three parts and the author's and date's columns resize, and keep their
+//! sizes. It only reads, and the agent does all the reading.
 
 use std::{ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
@@ -92,7 +91,7 @@ pub struct HistoryView {
     focus_handle: FocusHandle,
     /// The files' list: its selection is outlined while it has the keyboard.
     files_focus: FocusHandle,
-    /// The commits above the commit, the files beside the commit, and the
+    /// The commits above the commit, the commit beside its files, and the
     /// commits' columns.
     rows: Split,
     bottom: Split,
@@ -426,15 +425,68 @@ impl HistoryView {
     }
 }
 
-/// Reads the graph. An agent from before `FindGraph` doesn't know it: then
-/// every branch, searched in the messages, as it was.
+/// Reads the graph. An agent from before `FindGraph` (until it's restarted)
+/// only knows `Graph`, every branch's: the current branch is then picked out
+/// here; a search or a file's history are every branch's, as they were.
 async fn read_graph(client: &Client, path: PathBuf, op: GitOp) -> anyhow::Result<Response> {
     let response = client.request(Request::Git { path: path.clone(), op: op.clone() }).await;
     match (response, op) {
-        (Err(_), GitOp::FindGraph { query, scope: GraphScope::Message, file, skip, limit, .. }) => {
-            client.request(Request::Git { path, op: GitOp::Graph { query, file, skip, limit } }).await
+        (Err(_), GitOp::FindGraph { query, scope: GraphScope::Message, file, all, skip, limit }) => {
+            // A file's history may not have HEAD's commit to start from.
+            if all || !query.trim().is_empty() || file.is_some() {
+                return client.request(Request::Git { path, op: GitOp::Graph { query, file, skip, limit } }).await;
+            }
+            head_graph(client, path, file, skip, limit).await
         }
         (response, _) => response,
+    }
+}
+
+/// `HEAD`'s commits, from every branch's read a page at a time: those its
+/// parents lead to, from the commit `HEAD` is on, until there are enough.
+async fn head_graph(client: &Client, path: PathBuf, file: Option<String>, skip: usize, limit: usize) -> anyhow::Result<Response> {
+    const PAGE: usize = 500;
+    let mut walk = HeadWalk::default();
+    let mut read = 0;
+    loop {
+        let op = GitOp::Graph { query: String::new(), file: file.clone(), skip: read, limit: PAGE };
+        let Response::Graph(page) = client.request(Request::Git { path: path.clone(), op }).await? else {
+            anyhow::bail!("unexpected response from the agent");
+        };
+        read += page.len();
+        let last = page.len() < PAGE;
+        walk.take(page);
+        if last || walk.kept.len() >= skip + limit || walk.done() {
+            return Ok(Response::Graph(walk.kept.into_iter().skip(skip).take(limit).collect()));
+        }
+    }
+}
+
+/// Picks `HEAD`'s commits out of every branch's, newest first.
+#[derive(Default)]
+struct HeadWalk {
+    kept: Vec<GraphCommit>,
+    /// The parents of those kept, not reached yet.
+    wanted: std::collections::HashSet<String>,
+    /// `HEAD`'s commit was reached.
+    started: bool,
+}
+
+impl HeadWalk {
+    fn take(&mut self, commits: Vec<GraphCommit>) {
+        for commit in commits {
+            let head = commit.refs.iter().any(|name| name == "HEAD");
+            if head || self.wanted.remove(&commit.hash) {
+                self.started = true;
+                self.wanted.extend(commit.parents.iter().cloned());
+                self.kept.push(commit);
+            }
+        }
+    }
+
+    /// Down to the first commit: nothing further is `HEAD`'s.
+    fn done(&self) -> bool {
+        self.started && self.wanted.is_empty()
     }
 }
 
@@ -991,18 +1043,18 @@ impl Render for HistoryView {
                         .child(resizable_panel().size(px(sizes.commits)).size_range(px(80.)..px(4000.)).child(commits))
                         .child(
                             resizable_panel().child(
-                                // The files at the left, the commit beside them.
+                                // The commit, and its files on its right.
                                 h_resizable("history-bottom")
                                     .with_state(&bottom)
+                                    .child(resizable_panel().child(div().size_full().border_t_1().border_color(theme.border).child(self.commit.clone())))
                                     .child(
                                         resizable_panel()
                                             .size(px(sizes.files))
                                             .size_range(px(120.)..px(2000.))
-                                            .child(div().size_full().border_t_1().border_r_1().border_color(theme.border).child(files)),
+                                            .child(div().size_full().border_t_1().border_l_1().border_color(theme.border).child(files)),
                                     )
-                                    .child(resizable_panel().child(div().size_full().border_t_1().border_color(theme.border).child(self.commit.clone())))
                                     .on_resize(|state, _, cx| {
-                                        if let Some(files) = state.read(cx).sizes().first().copied() {
+                                        if let Some(files) = state.read(cx).sizes().get(1).copied() {
                                             Config::update_quietly(cx, |config| config.history.files = f32::from(files));
                                         }
                                     }),
@@ -1072,6 +1124,22 @@ mod tests {
         // The second tip joins the first's lane, which waits for the same parent.
         assert_eq!(rows[1].bottom, [(0, 0, 0), (1, 0, 0)]);
         assert_eq!(rows[2].top, [(0, 0, 0)]);
+    }
+
+    /// With an older agent, the current branch is picked out of all of them,
+    /// across pages.
+    #[test]
+    fn head_s_commits_are_picked_out_of_every_branch() {
+        let mut head = commit("h", &["b"]);
+        head.refs = vec!["HEAD".into(), "refs/heads/master".into()];
+        let mut walk = HeadWalk::default();
+        // Another branch's tip comes before HEAD, and its own commit between.
+        walk.take(vec![commit("t", &["x"]), head, commit("x", &["a"])]);
+        assert!(!walk.done());
+        walk.take(vec![commit("b", &["a"]), commit("a", &[])]);
+        let kept: Vec<&str> = walk.kept.iter().map(|commit| commit.hash.as_str()).collect();
+        assert_eq!(kept, ["h", "b", "a"]);
+        assert!(walk.done());
     }
 
     #[test]
