@@ -1,8 +1,10 @@
 #!/bin/sh
 # Takes the README screenshots (docs/screenshots/): opens Den.app with a demo
 # config of its own (dark theme, a clone of this repo with a few worktrees),
-# runs Claude Code and a shell in split terminals (main.png), then shows the
-# History tab (history.png), capturing the window each time, and closes it.
+# runs Claude Code and a shell in split terminals (main.png), then shows an
+# uncommitted change side by side (diff.png), a project search (search.png),
+# Markdown with its outline (markdown.png) and the History tab (history.png),
+# capturing the window each time, and closes it.
 # Your config, agent and terminals aren't touched: the demo instance has its
 # own config, state and agent socket.
 #
@@ -35,6 +37,23 @@ for branch in lsp-hover ssh-reconnect tab-drag wsl-distros; do
   git -C "$projects/den" worktree add -q -b "$branch" "$projects/wt/$branch"
 done
 task="$projects/wt/wsl-distros"
+# The branch's work in progress: an uncommitted change to review.
+python3 - "$task/crates/client/src/wsl.rs" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+old = """    parse_list(&output.stdout)
+        .into_iter()
+        .map(|distro| format!("{PREFIX}{distro}"))
+        .collect()"""
+new = """    // The default distro first, then by name, as the picker lists them.
+    let mut distros = parse_list(&output.stdout);
+    distros.sort_by_key(|distro| (distro != "Ubuntu", distro.to_lowercase()));
+    distros.dedup();
+    distros.into_iter().map(|distro| format!("{PREFIX}{distro}")).collect()"""
+assert old in text, "wsl.rs changed: update the demo's change"
+open(path, "w").write(text.replace(old, new))
+PY
 
 mkdir -p "$demo/config" "$demo/state" "$demo/zdot"
 printf '["%s"]\n' "$projects/den" > "$demo/config/repos.json"
@@ -119,9 +138,37 @@ shot() {
 }
 shot main
 
-# The History tab, the terminals out of the way, on a commit with a few files.
+# The change side by side, from the shell, the terminals out of the way.
+type_line 'den diff crates/client/src/wsl.rs'
+sleep 3
 keys 'keystroke "j" using {command down}'
 sleep 2
+shot diff
+
+# A search, and its fourth match (F4) open with its line's blame.
+keys 'keystroke "f" using {command down, shift down}
+    delay 0.8
+    keystroke "socket_path"'
+sleep 3
+for _ in 1 2 3 4; do
+  keys 'key code 118'
+  sleep 0.8
+done
+sleep 2
+shot search
+
+# Markdown, rendered, with its headings in the outline.
+keys 'keystroke "p" using {command down}
+    delay 0.8
+    keystroke "docs/device.md"
+    delay 1.2
+    key code 36'
+sleep 2
+keys 'keystroke "l" using {command down, shift down}'
+sleep 2
+shot markdown
+
+# The History tab, on a commit with a few files.
 keys 'keystroke "h" using {command down, shift down}'
 sleep 4
 keys 'key code 125
