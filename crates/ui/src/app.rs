@@ -2119,12 +2119,13 @@ impl Den {
                             }
                         }
                     }
-                    // Git says what --force would delete: asked again instead.
-                    Err(err) if !force && format!("{err:#}").contains("--force") => {
+                    // Whatever refused it (git, the repo's .den/remove), why
+                    // goes in a dialog that offers to force it, never a dead
+                    // end in the list; a force that fails too says why there.
+                    Err(err) => {
                         let focus = this.confirm_focus(window, cx);
                         this.confirm_force_remove = Some((key, focus, format!("{err:#}").into()));
                     }
-                    Err(err) => this.error = Some((key, format!("{err:#}").into())),
                 }
                 cx.notify();
             })

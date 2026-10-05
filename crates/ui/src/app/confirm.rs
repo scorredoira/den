@@ -206,7 +206,11 @@ impl Den {
                     }))
                     .child(div().text_base().font_semibold().child(title))
                     .children(warning.map(|(lost, text)| {
+                        // A script's whole output can be long: it scrolls.
                         div()
+                            .id("confirm-warning")
+                            .max_h(px(240.))
+                            .overflow_y_scroll()
                             .text_color(if lost { theme.warning } else { theme.muted_foreground })
                             .whitespace_normal()
                             .child(text)
