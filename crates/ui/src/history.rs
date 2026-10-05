@@ -1,8 +1,8 @@
 //! The History tab, as gitk lays it out: the commits of every branch, tag
 //! and remote above, with their graph, what points at them, their author
-//! and their date; under them the selected commit (its message and every
-//! file's changes, as a commit's tab shows them) and, on its right, its
-//! files, a click away from their changes. The three parts and the author's
+//! and their date; under them the selected commit's files and, on their
+//! right, the commit (its message and every file's changes, as a commit's
+//! tab shows them), each file a click away from its changes. The three parts and the author's
 //! and date's columns resize, and keep their sizes. It only reads, and the
 //! agent does all the reading.
 
@@ -87,7 +87,9 @@ pub struct HistoryView {
     reading: Option<Task<()>>,
     scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
-    /// The commits above the commit, the commit beside its files, and the
+    /// The files' list: its selection is outlined while it has the keyboard.
+    files_focus: FocusHandle,
+    /// The commits above the commit, the files beside the commit, and the
     /// commits' columns.
     rows: Split,
     bottom: Split,
@@ -136,6 +138,7 @@ impl HistoryView {
             reading: None,
             scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            files_focus: cx.focus_handle(),
             rows: Split::new(cx),
             bottom: Split::new(cx),
             columns: Split::new(cx),
@@ -614,7 +617,15 @@ impl HistoryView {
     }
 
     /// The commits' rows in `range`: graph, labels and message, author, date.
-    fn render_rows(&mut self, range: Range<usize>, widths: (Pixels, Pixels), height: Pixels, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// `focused`: the list has the keyboard, and its selection is outlined.
+    fn render_rows(
+        &mut self,
+        range: Range<usize>,
+        widths: (Pixels, Pixels),
+        height: Pixels,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         // Near the end: read the next ones.
         if self.more && range.end + 100 >= self.commits.len() {
             self.load_more(cx);
@@ -633,7 +644,10 @@ impl HistoryView {
                     .id(("commit", ix))
                     .h(height)
                     .w_full()
+                    .border_1()
+                    .border_color(transparent_black())
                     .when(selected, |el| el.bg(crate::app::selected_row(cx)))
+                    .when(selected && focused, |el| el.border_color(theme.list_active_border))
                     .when(!selected, |el| el.hover(|style| style.bg(theme.list_hover)))
                     .child(
                         h_flex()
@@ -759,7 +773,10 @@ impl HistoryView {
                         uniform_list(
                             "history-commits",
                             count,
-                            cx.processor(move |this, range: Range<usize>, _, cx| this.render_rows(range, widths, height, cx)),
+                            cx.processor(move |this, range: Range<usize>, window, cx| {
+                                let focused = this.focus_handle.is_focused(window);
+                                this.render_rows(range, widths, height, focused, cx)
+                            }),
                         )
                         .track_scroll(&self.scroll)
                         .size_full(),
@@ -769,31 +786,40 @@ impl HistoryView {
     }
 
     /// The shown commit's files: its message first, as in gitk.
-    fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_files(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
+        let focused = self.files_focus.is_focused(window);
         let message = h_flex()
             .id("commit-message")
             .h(px(24.))
             .px_3()
+            .border_1()
+            .border_color(transparent_black())
             .text_color(theme.muted_foreground)
             .when(self.file_selected.is_none(), |el| el.bg(crate::app::selected_row(cx)).text_color(theme.foreground))
+            .when(self.file_selected.is_none() && focused, |el| el.border_color(theme.list_active_border))
             .when(self.file_selected.is_some(), |el| el.hover(|style| style.bg(theme.list_hover)))
             .child("Message")
-            .on_click(cx.listener(|this, _, _, cx| this.pick_file(None, cx)));
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.files_focus.focus(window, cx);
+                this.pick_file(None, cx)
+            }));
         let count = self.files.len();
         v_flex()
             .size_full()
             .when(cfg!(test), |el| el.debug_selector(|| "commit-files".into()))
+            .track_focus(&self.files_focus)
             .text_ui(cx)
             .child(message)
             .child(
                 uniform_list(
                     "commit-files",
                     count,
-                    cx.processor(|this, range: Range<usize>, _, cx| {
+                    cx.processor(|this, range: Range<usize>, window, cx| {
+                        let focused = this.files_focus.is_focused(window);
                         range
                             .filter_map(|ix| Some((ix, this.files.get(ix)?.clone())))
-                            .map(|(ix, file)| this.file_row(ix, &file, cx))
+                            .map(|(ix, file)| this.file_row(ix, &file, focused, cx))
                             .collect()
                     }),
                 )
@@ -805,7 +831,7 @@ impl HistoryView {
 
     /// A file row: name, folder, and lines added and removed. A click goes
     /// to its changes in the diff; a double click opens them in a tab.
-    fn file_row(&self, ix: usize, file: &CommitFile, cx: &mut Context<Self>) -> AnyElement {
+    fn file_row(&self, ix: usize, file: &CommitFile, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let selected = self.file_selected.as_ref() == Some(&file.path);
         let dir = file.path.rfind('/').map_or(0, |slash| slash + 1);
@@ -818,7 +844,10 @@ impl HistoryView {
             .h(px(24.))
             .px_3()
             .gap_2()
+            .border_1()
+            .border_color(transparent_black())
             .when(selected, |el| el.bg(crate::app::selected_row(cx)))
+            .when(selected && focused, |el| el.border_color(theme.list_active_border))
             .when(!selected, |el| el.hover(|style| style.bg(theme.list_hover)))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis_start().child(path))
             .child(
@@ -830,7 +859,8 @@ impl HistoryView {
                     .when(file.removed > 0, |el| el.child(div().text_color(theme.danger).child(format!("−{}", file.removed)))),
             )
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.files_focus.focus(window, cx);
                 if event.click_count() >= 2
                     && let Some(commit) = this.shown_commit()
                 {
@@ -858,7 +888,7 @@ impl Render for HistoryView {
         let bottom = self.bottom.state(viewport.width, (), cx).clone();
         let bar = self.render_bar(cx).into_any_element();
         let commits = self.render_commits(window, cx);
-        let files = self.render_files(cx);
+        let files = self.render_files(window, cx);
         let theme = cx.theme();
         v_flex()
             .size_full()
@@ -872,17 +902,18 @@ impl Render for HistoryView {
                         .child(resizable_panel().size(px(sizes.commits)).size_range(px(80.)..px(4000.)).child(commits))
                         .child(
                             resizable_panel().child(
+                                // The files at the left, the commit beside them.
                                 h_resizable("history-bottom")
                                     .with_state(&bottom)
-                                    .child(resizable_panel().child(div().size_full().border_t_1().border_color(theme.border).child(self.commit.clone())))
                                     .child(
                                         resizable_panel()
                                             .size(px(sizes.files))
                                             .size_range(px(120.)..px(2000.))
-                                            .child(div().size_full().border_t_1().border_l_1().border_color(theme.border).child(files)),
+                                            .child(div().size_full().border_t_1().border_r_1().border_color(theme.border).child(files)),
                                     )
+                                    .child(resizable_panel().child(div().size_full().border_t_1().border_color(theme.border).child(self.commit.clone())))
                                     .on_resize(|state, _, cx| {
-                                        if let Some(files) = state.read(cx).sizes().get(1).copied() {
+                                        if let Some(files) = state.read(cx).sizes().first().copied() {
                                             Config::update_quietly(cx, |config| config.history.files = f32::from(files));
                                         }
                                     }),
