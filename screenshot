@@ -1,8 +1,9 @@
 #!/bin/sh
-# Takes the README screenshot (docs/screenshots/main.png): opens Den.app with a
-# demo config of its own (dark theme, a clone of this repo with a few worktrees),
-# runs Claude Code and a shell in split terminals, captures the window and closes
-# it. Your config, agent and terminals aren't touched: the demo instance has its
+# Takes the README screenshots (docs/screenshots/): opens Den.app with a demo
+# config of its own (dark theme, a clone of this repo with a few worktrees),
+# runs Claude Code and a shell in split terminals (main.png), then shows the
+# History tab (history.png), capturing the window each time, and closes it.
+# Your config, agent and terminals aren't touched: the demo instance has its
 # own config, state and agent socket.
 #
 # Usage: ./screenshot [path to Den.app]   (default /Applications/Den.app)
@@ -12,7 +13,7 @@
 set -eu
 dir="$(cd "$(dirname "$0")" && pwd)"
 app="${1:-/Applications/Den.app}/Contents/MacOS/den"
-out="$dir/docs/screenshots/main.png"
+shots="$dir/docs/screenshots"
 # Short paths: the shell prompt shows the folder and a socket path has a limit.
 # The real path (/private/tmp), the one git reports for the worktrees.
 demo="$(cd "$(mktemp -d /tmp/dendemo.XXXX)" && pwd -P)"
@@ -110,6 +111,21 @@ sleep 1.5
 type_line 'git status --short; git log --oneline --graph -12'
 sleep 50
 
-screencapture -x -o -l "$window" "$demo/shot.png"
-sips --resampleWidth 2400 "$demo/shot.png" --out "$out" >/dev/null
-echo "saved: $out"
+# shot <name>: the window, as docs/screenshots/<name>.png.
+shot() {
+  screencapture -x -o -l "$window" "$demo/shot.png"
+  sips --resampleWidth 2400 "$demo/shot.png" --out "$shots/$1.png" >/dev/null
+  echo "saved: $shots/$1.png"
+}
+shot main
+
+# The History tab, the terminals out of the way, on a commit with a few files.
+keys 'keystroke "j" using {command down}'
+sleep 2
+keys 'keystroke "h" using {command down, shift down}'
+sleep 4
+keys 'key code 125
+    delay 0.3
+    key code 125'
+sleep 3
+shot history
