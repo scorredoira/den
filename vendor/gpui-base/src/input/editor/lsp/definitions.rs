@@ -21,6 +21,19 @@ pub trait DefinitionProvider {
         _window: &mut Window,
         _cx: &mut App,
     ) -> Task<Result<Vec<lsp_types::LocationLink>>>;
+
+    /// (den) What's underlined while Cmd is held over `offset`: by default
+    /// the definitions. A host may answer less here (what it knows at once),
+    /// and leave the rest to the click, which asks `definitions`.
+    fn hover_definitions(
+        &self,
+        text: &Rope,
+        offset: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<Vec<lsp_types::LocationLink>>> {
+        self.definitions(text, offset, window, cx)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -70,8 +83,7 @@ impl InputBaseState<EditorMode> {
             return;
         }
 
-        // Currently not implemented.
-        let task = provider.definitions(&self.text, offset, window, cx);
+        let task = provider.hover_definitions(&self.text, offset, window, cx);
         let mut symbol_range = self.text.word_range(offset).unwrap_or(offset..offset);
         let editor = cx.entity();
         self.extras.lsp._hover_task = cx.spawn_in(window, async move |_, cx| {
@@ -147,11 +159,16 @@ impl InputBaseState<EditorMode> {
             return false;
         }
 
-        if self.extras.hover_definition.is_empty() {
-            return false;
-        };
-        if !self.extras.hover_definition.is_same(offset) {
-            return false;
+        // (den) Nothing underlined there: asks, as Go to Definition does,
+        // where it was clicked.
+        if self.extras.hover_definition.is_empty() || !self.extras.hover_definition.is_same(offset) {
+            if self.extras.lsp.definition_provider.is_none() {
+                return false;
+            }
+            self.move_to(offset, None, cx);
+            self.focus(window, cx);
+            self.on_action_go_to_definition(&GoToDefinition, window, cx);
+            return true;
         }
 
         let Some(location) = self.extras.hover_definition.locations.first().cloned() else {

@@ -32,6 +32,7 @@ use crate::{
     DiffLayoutAutomatic, DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile,
     changes::{self, ChangesEvent, ChangesPanel},
     commit_view::{self, CommitView, CommitViewEvent},
+    definition,
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, DiffLayout, Panel, SavedTab, Session, TextArea, UiText},
@@ -851,20 +852,79 @@ impl Workspace {
     /// (relative to the file's folder, or to the task's root if they start with
     /// `/`) open in a tab. Anchors (`#section`) are ignored.
     fn follow_link(&mut self, url: &str, dir: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        // Cmd-click on text that isn't a link: a `path[:line[:column]]` or a
+        // URL, like in a terminal, from the task's folder or the document's.
+        if let Some(word) = url.strip_prefix("word:") {
+            match self.link_in(word, 0, dir) {
+                Some((ui_term::links::Link::Url(url), _)) => cx.open_url(&url),
+                Some((ui_term::links::Link::Path { path, line, column }, _)) => {
+                    let goto = Position::new(line.unwrap_or(1).saturating_sub(1), column.unwrap_or(1).saturating_sub(1));
+                    self.open_at(normalize(&path), goto, window, cx);
+                }
+                None => {}
+            }
+            return;
+        }
         if url.contains("://") || url.starts_with("mailto:") {
             cx.open_url(url);
             return;
         }
-        let path = url.split(['#', '?']).next().unwrap_or_default();
+        let (path, fragment) = url.split_once('#').unwrap_or((url, ""));
+        let path = path.split('?').next().unwrap_or_default();
         if path.is_empty() {
             return;
         }
         let path = percent_decode(path);
+        // `file.rs:12` or `file.rs#L12`: at that line.
+        let (path, line) = match path.rsplit_once(':').map(|(path, line)| (path, line.parse::<u32>())) {
+            Some((path, Ok(line))) => (path.to_string(), Some(line)),
+            _ => (path.clone(), fragment.strip_prefix('L').and_then(|line| line.parse::<u32>().ok())),
+        };
         let path = match path.strip_prefix('/') {
             Some(rest) => self.root.join(rest),
             None => dir.join(path),
         };
-        self.open(normalize(&path), true, window, cx);
+        match line {
+            Some(line) => self.open_at(normalize(&path), Position::new(line.saturating_sub(1), 0), window, cx),
+            None => self.open(normalize(&path), true, window, cx),
+        }
+    }
+
+    /// The path (`path[:line[:column]]`) or URL around character `column`
+    /// of `line`, and the characters it spans, as a terminal finds them: a
+    /// relative path from the task's folder or from `dir`.
+    fn link_in(&self, line: &str, column: usize, dir: &Path) -> Option<(ui_term::links::Link, std::ops::Range<usize>)> {
+        [&self.root, dir].into_iter().find_map(|from| ui_term::links::link_at(line, column, Some(from), self.local))
+    }
+
+    /// `link_in` for the text of `editor`'s tab, from its file's folder.
+    pub(crate) fn link_at(
+        &self,
+        editor: &Entity<EditorState>,
+        line: &str,
+        column: usize,
+    ) -> Option<(ui_term::links::Link, std::ops::Range<usize>)> {
+        let tab = self.tabs.iter().find(|tab| &tab.editor == editor)?;
+        let dir = tab.path.parent().unwrap_or(&self.root);
+        let (link, chars) = self.link_in(line, column, dir)?;
+        // On a server nothing says whether it exists: in code, `config.save`
+        // would pass for a file. A path there has a folder or a line.
+        if let ui_term::links::Link::Path { line: number, .. } = &link
+            && !self.local
+        {
+            let word: String = line.chars().skip(chars.start).take(chars.len()).collect();
+            if number.is_none() && !word.contains('/') {
+                return None;
+            }
+        }
+        Some((link, chars))
+    }
+
+    /// Opens `path` at `goto` from a Cmd-click in the editor: Navigate Back
+    /// returns to where it was clicked.
+    pub(crate) fn open_at_place(&mut self, path: PathBuf, goto: Position, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember_place(cx);
+        self.open_at(normalize(&path), goto, window, cx);
     }
 
     /// Shows `text`, Markdown, in a tab called `title` of its own (the
@@ -2407,6 +2467,11 @@ impl Workspace {
             lsp.completion_provider = Some(Rc::new(Completions::new(workspace.clone(), cx.entity().downgrade())));
             lsp.completion_menu.max_width = px(480.);
             lsp.hover_provider = Some(Rc::new(debug::hover::DebugHover { debugger: debugger.clone(), editor: cx.entity().downgrade() }));
+            lsp.definition_provider = Some(Rc::new(definition::Definitions { workspace: workspace.clone(), editor: cx.entity().downgrade() }));
+            lsp.show_document = Some(Rc::new({
+                let workspace = workspace.clone();
+                move |params, window, cx| definition::show_document(workspace.clone(), params, window, cx)
+            }));
             editor.set_gutter_column(true, cx);
             let this_editor = cx.entity().downgrade();
             editor.on_gutter_click(Some(Rc::new(move |line, event: &MouseDownEvent, window, cx| {

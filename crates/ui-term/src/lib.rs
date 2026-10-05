@@ -6,7 +6,7 @@ mod backend;
 mod colors;
 mod element;
 mod keys;
-mod links;
+pub mod links;
 mod platform;
 mod terminal;
 mod view;

@@ -1130,6 +1130,7 @@ impl Element for Inline {
                 let hitbox = hitbox.clone();
                 let text_view_state = GlobalState::global(cx).text_view_state().cloned();
                 let link_click_handler = self.link_click_handler.clone();
+                let text = self.text.clone();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
@@ -1142,8 +1143,18 @@ impl Element for Inline {
                         return;
                     }
 
+                    // (den) Cmd-click on plain text: the word under the
+                    // pointer, as a `word:` link, for the handler to tell
+                    // whether it's something to open (`path:line`).
+                    let word = event
+                        .modifiers
+                        .secondary()
+                        .then(|| text_layout.index_for_position(event.position).ok())
+                        .flatten()
+                        .and_then(|offset| word_at(&text, offset))
+                        .map(|word| LinkMark { url: format!("word:{word}").into(), ..Default::default() });
                     if let Some(link) =
-                        Self::link_for_position(&text_layout, &links, event.position)
+                        Self::link_for_position(&text_layout, &links, event.position).or(word)
                     {
                         TextSelection::end(window, cx);
                         cx.stop_propagation();
@@ -1166,6 +1177,17 @@ impl Element for Inline {
         drop(state);
         self.retain_styled_text();
     }
+}
+
+/// (den) The word of `text` at byte `offset`: what's between spaces, quotes,
+/// backticks and brackets, without punctuation at its end.
+fn word_at(text: &str, offset: usize) -> Option<&str> {
+    let delimiter = |c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>' | '{' | '}');
+    let offset = offset.min(text.len());
+    let start = text[..offset].rfind(delimiter).map_or(0, |at| at + text[at..].chars().next().map_or(1, char::len_utf8));
+    let end = text[offset..].find(delimiter).map_or(text.len(), |at| offset + at);
+    let word = text.get(start..end)?.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+    (!word.is_empty()).then_some(word)
 }
 
 /// Where one glyph of laid-out text paints: its row, and its horizontal
