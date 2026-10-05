@@ -26,7 +26,7 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     v_flex,
 };
-use gpui_kit::*;
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use crate::menu::PanelItems as _;
 use protocol::{Event, Listed, Modifiers, Screen, Touch};
 use serde::Deserialize;
@@ -70,6 +70,10 @@ pub enum DeviceEvent {
     Debug,
     /// Its stop: stop debugging, as Shift-F5 does.
     Stop,
+    /// Open in Editor Tab: out of its column, into a tab of the code.
+    ToTab,
+    /// Move to Side Column: from its tab back to its column.
+    ToColumn,
 }
 
 impl EventEmitter<DeviceEvent> for Device {}
@@ -134,6 +138,8 @@ pub struct Device {
     debugging: bool,
     /// What the session does while it starts the program.
     starting: Option<String>,
+    /// In a tab of the code rather than its column.
+    pub(crate) in_tab: bool,
 }
 
 impl Device {
@@ -161,6 +167,7 @@ impl Device {
             serve_chosen: false,
             debugging: false,
             starting: None,
+            in_tab: false,
         };
         device.load(cx);
         device
@@ -233,6 +240,13 @@ impl Device {
             out["warning"] = serde_json::json!(warning);
         }
         out
+    }
+
+    pub fn set_in_tab(&mut self, in_tab: bool, cx: &mut Context<Self>) {
+        if self.in_tab != in_tab {
+            self.in_tab = in_tab;
+            cx.notify();
+        }
     }
 
     /// The panel came to the front: the devices are asked for the first time.
@@ -661,7 +675,7 @@ impl Device {
     /// pick, and Hide Panel.
     fn panel_menu(&self, cx: &Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let this = cx.entity().downgrade();
-        let (running, debugging) = (self.serving.is_some(), self.debugging);
+        let (running, debugging, in_tab) = (self.serving.is_some(), self.debugging, self.in_tab);
         let devices = self.devices.clone().unwrap_or_default();
         move |menu, window, cx| {
             let menu = if debugging {
@@ -677,9 +691,19 @@ impl Device {
                 .separator();
             let devices = devices.clone();
             let this = this.clone();
-            menu.submenu("Device", window, cx, move |menu, _, _| pick_menu(menu, &devices, &this))
-                .separator()
-                .panel_items(crate::menu::hide_panel(), window, cx)
+            let menu = menu.submenu("Device", window, cx, {
+                let this = this.clone();
+                move |menu, _, _| pick_menu(menu, &devices, &this)
+            })
+            .separator();
+            // In a tab it closes as tabs do; its column's items are the column's.
+            if in_tab {
+                menu.item(crate::menu::item("Move to Side Column", &this, |_, _, cx| cx.emit(DeviceEvent::ToColumn)))
+            } else {
+                menu.item(crate::menu::item("Open in Editor Tab", &this, |_, _, cx| cx.emit(DeviceEvent::ToTab)))
+                    .separator()
+                    .panel_items(crate::menu::hide_panel(), window, cx)
+            }
         }
     }
 
@@ -781,6 +805,7 @@ impl Render for Device {
             .child(
                 div()
                     .id("device-screen")
+                    .when(cfg!(test), |el| el.debug_selector(|| "device-screen".into()))
                     .track_focus(&self.focus)
                     .key_context("Device")
                     .flex_1()
