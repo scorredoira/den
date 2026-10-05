@@ -15,7 +15,7 @@ impl Den {
         let before = self.agents.remove(&host).unwrap_or_default();
         for old in before.iter().filter(|old| old.working) {
             let key = TaskKey { host: host.clone(), path: PathBuf::from(&old.group) };
-            let stopped = agents.iter().any(|new| new.term == old.term && !new.working);
+            let stopped = agents.iter().any(|new| new.term == old.term && new.group == old.group && !new.working);
             if stopped && self.active.as_ref() != Some(&key) {
                 self.agents_attention.insert((host.clone(), old.term));
             }
