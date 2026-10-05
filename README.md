@@ -23,6 +23,10 @@
 - **Every agent at a glance.** The workspaces of all your servers in one panel, each with a dot for the coding agents (Claude Code, Codex…) running in its terminals: red when one is asking something, yellow while one works, green when they finished unseen. The Agents panel lists them all. No hooks: Den reads the terminals. Cmd-1…9, Cmd-E and Cmd-Alt-E jump between them.
 - **Agents drive Den.** With the `den` command, Claude shows you the code it's talking about with the range selected, the diff to review or a Markdown report, reads what you selected, and opens terminals, reads them and types in them. Den installs a Claude Code skill so Claude knows how.
 
+<p align="center">
+  <img src="docs/screenshots/history.png" alt="The History tab: the commits with their graph above, the selected one's files and its changes below">
+</p>
+
 ## Install
 
 Download a package from [Releases](https://github.com/scorredoira/den/releases).
