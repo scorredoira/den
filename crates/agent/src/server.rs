@@ -47,7 +47,11 @@ const WORK_BURST: Duration = Duration::from_secs(1);
 
 type ConnId = u64;
 
-const MAX_PENDING_MESSAGES: usize = 128;
+/// What limits a slow connection is `MAX_PENDING_OUTPUT`: a burst of small
+/// reads from a terminal is many messages but few bytes.
+const MAX_PENDING_MESSAGES: usize = 8192;
+/// Output of one terminal waiting together is sent in one message up to this.
+const MAX_JOINED_OUTPUT: usize = 256 * 1024;
 const MAX_PENDING_OUTPUT: usize = 8 * 1024 * 1024;
 
 /// Never wait for a slow connection while holding the agent's state lock.
@@ -425,7 +429,33 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     };
 
     std::thread::spawn(move || {
-        while let Ok(message) = rx.recv() {
+        let mut next = None;
+        loop {
+            let mut message = match next.take() {
+                Some(message) => message,
+                None => match rx.recv() {
+                    Ok(message) => message,
+                    Err(_) => break,
+                },
+            };
+            // A terminal's output with more of it already waiting behind:
+            // one message, one write, one wake of the UI.
+            if let ServerMessage::Event(Event::TermOutput { term, data }) = &mut message.message {
+                while data.len() < MAX_JOINED_OUTPUT {
+                    let Ok(mut more) = rx.try_recv() else {
+                        break;
+                    };
+                    match &mut more.message {
+                        ServerMessage::Event(Event::TermOutput { term: other, data: more_data }) if other == term => {
+                            data.append(more_data);
+                        }
+                        _ => {
+                            next = Some(more);
+                            break;
+                        }
+                    }
+                }
+            }
             if write_message(&mut writer, &message.message).is_err() {
                 if !writer_closed.swap(true, Ordering::Relaxed) {
                     close_writer();

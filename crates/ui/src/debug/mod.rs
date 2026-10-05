@@ -233,6 +233,9 @@ struct Watch {
     result: Option<Result<Var, String>>,
 }
 
+/// Lines the console keeps.
+const MAX_CONSOLE: usize = 5000;
+
 enum ConsoleLine {
     Info(String),
     Output { text: String, path: Option<PathBuf>, line: u32 },
@@ -346,9 +349,15 @@ pub struct Debugger {
     loading: HashSet<u64>,
     /// Keys of the expanded values, kept across stops.
     expanded: HashSet<String>,
+    /// The console's last lines (`MAX_CONSOLE` at most: a chatty program
+    /// doesn't make it heavier with every line).
     console: Vec<ConsoleLine>,
+    /// Lines written to the console since it began, and of them those
+    /// dropped from the start.
+    console_written: usize,
+    console_dropped: usize,
     console_scroll: ScrollHandle,
-    /// Lines of the console already scrolled to.
+    /// Lines of the console already scrolled to (of `console_written`).
     console_seen: usize,
     console_input: Entity<InputState>,
     watch_input: Entity<InputState>,
@@ -436,6 +445,8 @@ impl Debugger {
             expanded: HashSet::new(),
             console: Vec::new(),
             console_scroll: ScrollHandle::new(),
+            console_written: 0,
+            console_dropped: 0,
             console_seen: 0,
             console_input,
             watch_input,
@@ -684,9 +695,22 @@ impl Debugger {
         path
     }
 
+    /// Adds a line to the console, dropping the oldest ones past `MAX_CONSOLE`
+    /// (a few hundred at a time).
+    fn push_console(&mut self, line: ConsoleLine) {
+        self.console.push(line);
+        self.console_written += 1;
+        if self.console.len() > MAX_CONSOLE + 500 {
+            let drop = self.console.len() - MAX_CONSOLE;
+            self.console.drain(..drop);
+            self.console_dropped += drop;
+        }
+    }
+
     /// With `open_page`, the program's page is opened once it listens.
     fn begin(&mut self, launch: Launch, open_page: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.console.clear();
+        self.console_dropped = self.console_written;
         self.ran = None;
         self.page = None;
         self.device = None;
@@ -1160,7 +1184,7 @@ impl Debugger {
 
     pub fn fail(&mut self, error: String, cx: &mut Context<Self>) {
         self.end("", cx);
-        self.console.push(ConsoleLine::Error(error));
+        self.push_console(ConsoleLine::Error(error));
         cx.notify();
     }
 
@@ -1199,7 +1223,7 @@ impl Debugger {
 
     fn info(&mut self, text: String, cx: &mut Context<Self>) {
         if !text.is_empty() {
-            self.console.push(ConsoleLine::Info(text));
+            self.push_console(ConsoleLine::Info(text));
             cx.notify();
         }
     }
@@ -1238,7 +1262,7 @@ impl Debugger {
             }
             Ok(Message::Event(Event::Output { text, file, line })) => {
                 let path = (!file.is_empty()).then(|| self.local_path(&file));
-                self.console.push(ConsoleLine::Output { text: text.trim_end().to_string(), path, line });
+                self.push_console(ConsoleLine::Output { text: text.trim_end().to_string(), path, line });
                 cx.notify();
             }
             Ok(Message::Unknown) => {}
@@ -1250,7 +1274,7 @@ impl Debugger {
         self.serial += 1;
         let vm = stop.vm;
         if let Some(exc) = &stop.exception {
-            self.console.push(ConsoleLine::Error(format!("Exception: {}", exc.message)));
+            self.push_console(ConsoleLine::Error(format!("Exception: {}", exc.message)));
         }
         self.forget_console_refs(Some(vm));
         self.changed = changed_locals(self.stops.get(&vm).map(|previous| &previous.stop), &stop);
@@ -1640,7 +1664,7 @@ impl Debugger {
         }
         for (ix, line) in self.console.iter().enumerate() {
             if let ConsoleLine::Result(var, _) = line {
-                walk.push((format!("c{ix}"), var.clone()));
+                walk.push((format!("c{}", self.console_dropped + ix), var.clone()));
             }
         }
         if let Some(hover) = &self.hover {
@@ -1738,9 +1762,9 @@ impl Debugger {
 
     /// Writes `expr` and its value in the console.
     pub fn evaluate_in_console(&mut self, expr: String, cx: &mut Context<Self>) {
-        self.console.push(ConsoleLine::Input(expr.clone()));
+        self.push_console(ConsoleLine::Input(expr.clone()));
         let Some((vm, serial)) = self.halted().and_then(|vm| Some((vm, self.stops.get(&vm)?.serial))) else {
-            self.console.push(ConsoleLine::Error("Nothing is stopped to evaluate in".into()));
+            self.push_console(ConsoleLine::Error("Nothing is stopped to evaluate in".into()));
             cx.notify();
             return;
         };
@@ -1752,9 +1776,9 @@ impl Debugger {
                     if !this.stops.get(&vm).is_some_and(|stop| stop.serial == serial && !stop.resumed) {
                         var.reference = 0;
                     }
-                    this.console.push(ConsoleLine::Result(var, vm));
+                    this.push_console(ConsoleLine::Result(var, vm));
                 }
-                Err(error) => this.console.push(ConsoleLine::Error(error)),
+                Err(error) => this.push_console(ConsoleLine::Error(error)),
             }
             if assigns {
                 this.reload_frame();
@@ -1834,7 +1858,7 @@ impl Debugger {
         if let Some(value) = value.filter(|value| !value.is_empty()) {
             self.evaluate(format!("{} = {value}", edit.target), |this, result, _| {
                 if let Err(error) = result {
-                    this.console.push(ConsoleLine::Error(error));
+                    this.push_console(ConsoleLine::Error(error));
                 }
                 this.reload_frame();
             });

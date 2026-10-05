@@ -6,7 +6,9 @@
 
 use std::{
     collections::HashMap,
+    ops::Range,
     path::PathBuf,
+    rc::Rc,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -39,7 +41,7 @@ pub fn keymap() -> Vec<KeyBinding> {
 }
 
 /// Delay after a change on disk before asking git again.
-const DEBOUNCE: Duration = Duration::from_millis(400);
+const DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// Commits requested each time in the history.
 const PAGE: usize = 200;
@@ -61,6 +63,9 @@ pub enum ChangesEvent {
     ToggleCommitFiles,
     /// Select `file` in the Files panel.
     RevealInTree { file: String },
+    /// Read ahead what a commit changed (`file` empty: all of it): the
+    /// commits next to the selected one, which up and down go to.
+    Prefetch { commit: String, short: String, file: String },
 }
 
 /// What a panel lists: the Changes panel what isn't committed, the History
@@ -99,8 +104,28 @@ pub struct ChangesPanel {
     stale: bool,
     refresh: Option<Task<()>>,
     focus_handle: FocusHandle,
-    scroll: ScrollHandle,
+    /// The rows, drawn only while on screen: a long history costs nothing
+    /// while scrolling or while something else in the window moves.
+    list: ListState,
+    rows: Rc<[Row]>,
+    /// What each row was when the list was last told (see `update_rows`).
+    row_keys: Vec<SharedString>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A row of the list.
+#[derive(Clone, Copy)]
+enum Row {
+    /// "History of …", over a file's or folder's history.
+    FileHeader,
+    /// The history's search.
+    Query,
+    Commit(usize),
+    More,
+    /// "Staged Changes (n)" (`true`) or "Changes (n)".
+    Section(bool),
+    /// A staged (`true`) or unstaged file.
+    Change(bool, usize),
 }
 
 impl EventEmitter<ChangesEvent> for ChangesPanel {}
@@ -125,7 +150,9 @@ impl ChangesPanel {
             stale: true,
             refresh: None,
             focus_handle: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
+            list: ListState::new(0, ListAlignment::Top, px(200.)),
+            rows: Rc::new([]),
+            row_keys: Vec::new(),
             _subscriptions: Vec::new(),
         }
     }
@@ -151,6 +178,12 @@ impl ChangesPanel {
         let staged = self.status.staged.iter().map(|file| &file.path);
         let unstaged = self.status.unstaged.iter().map(|file| &file.path);
         staged.chain(unstaged).collect::<std::collections::HashSet<_>>().len()
+    }
+
+    /// Whether `file` (relative to the root) is deleted, as git last saw it:
+    /// on a server, the local disk can't say.
+    pub fn is_deleted(&self, file: &str) -> bool {
+        self.status.staged.iter().chain(&self.status.unstaged).any(|changed| changed.path == file && changed.status == 'D')
     }
 
     /// Whether `file` (relative to the root) is among those changes.
@@ -281,9 +314,9 @@ impl ChangesPanel {
             return;
         }
         let (hash, short) = (self.commits[ix].hash.clone(), self.commits[ix].short.clone());
-        // The search or the file's name is the list's first row.
-        let header = self.file.is_some() || self.query.is_some();
-        self.scroll.scroll_to_item(ix + header as usize);
+        if let Some(row) = self.rows.iter().position(|row| matches!(row, Row::Commit(commit) if *commit == ix)) {
+            self.list.scroll_to_reveal_item(row);
+        }
         match file {
             Some(file) => {
                 self.selected = Some(format!("h:{hash}"));
@@ -293,6 +326,17 @@ impl ChangesPanel {
             None => {
                 self.select_commit(hash.clone(), cx);
                 cx.emit(ChangesEvent::OpenCommit { commit: hash, short, pin: false });
+            }
+        }
+        self.prefetch_around(ix, cx);
+    }
+
+    /// Reads ahead the commits before and after the `ix`th.
+    fn prefetch_around(&self, ix: usize, cx: &mut Context<Self>) {
+        let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone()).unwrap_or_default();
+        for near in [ix + 1, ix.wrapping_sub(1)] {
+            if let Some(commit) = self.commits.get(near) {
+                cx.emit(ChangesEvent::Prefetch { commit: commit.hash.clone(), short: commit.short.clone(), file: file.clone() });
             }
         }
     }
@@ -542,28 +586,82 @@ impl ChangesPanel {
         }
     }
 
-    /// What isn't committed, as git sees it: committing, staging and
-    /// discarding are done in a terminal.
-    fn render_uncommitted(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let status = &self.status;
+    /// The rows of the list, in order: only those on screen are drawn.
+    fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
-        for (title, prefix, files) in [("Staged Changes", "s", &status.staged), ("Changes", "u", &status.unstaged)] {
-            if files.is_empty() {
-                continue;
+        match self.view {
+            View::Uncommitted => {
+                for (staged, files) in [(true, &self.status.staged), (false, &self.status.unstaged)] {
+                    if !files.is_empty() {
+                        rows.push(Row::Section(staged));
+                        rows.extend((0..files.len()).map(|ix| Row::Change(staged, ix)));
+                    }
+                }
             }
-            rows.push(self.section_title(format!("{title} ({})", files.len()), cx).into_any_element());
-            for file in files {
-                rows.push(self.change_row(format!("{prefix}:{}", file.path), file, cx));
+            View::History => {
+                if self.file.is_some() {
+                    rows.push(Row::FileHeader);
+                } else if self.query.is_some() {
+                    rows.push(Row::Query);
+                }
+                rows.extend((0..self.commits.len()).map(Row::Commit));
+                if self.more {
+                    rows.push(Row::More);
+                }
             }
         }
         rows
     }
 
-    fn render_history(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// What a row is, to tell a row that changed from one that didn't.
+    fn row_key(&self, row: Row) -> SharedString {
+        match row {
+            Row::FileHeader => "header".into(),
+            Row::Query => "query".into(),
+            Row::Commit(ix) => format!("h:{}", self.commits[ix].hash).into(),
+            Row::More => "more".into(),
+            Row::Section(staged) => if staged { "staged" } else { "changes" }.into(),
+            Row::Change(staged, ix) => {
+                let files = if staged { &self.status.staged } else { &self.status.unstaged };
+                format!("{}:{}", if staged { "s" } else { "u" }, files[ix].path).into()
+            }
+        }
+    }
+
+    /// Tells the list which rows changed: those around them keep their
+    /// place, and the scroll its position.
+    fn update_rows(&mut self) {
+        let rows = self.rows();
+        let keys: Vec<SharedString> = rows.iter().map(|row| self.row_key(*row)).collect();
+        if keys != self.row_keys {
+            let prefix = keys.iter().zip(&self.row_keys).take_while(|(a, b)| a == b).count();
+            let rest = keys.len().min(self.row_keys.len()) - prefix;
+            let suffix = keys.iter().rev().zip(self.row_keys.iter().rev()).take(rest).take_while(|(a, b)| a == b).count();
+            self.list.splice(prefix..self.row_keys.len() - suffix, keys.len() - prefix - suffix);
+            self.row_keys = keys;
+        }
+        self.rows = rows.into();
+    }
+
+    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(&row) = self.rows.get(ix) else {
+            return div().into_any_element();
+        };
         let theme = cx.theme();
-        let mut rows = Vec::new();
-        if let Some((file, _)) = &self.file {
-            rows.push(
+        match row {
+            Row::Section(staged) => {
+                let (title, files) = if staged { ("Staged Changes", &self.status.staged) } else { ("Changes", &self.status.unstaged) };
+                self.section_title(format!("{title} ({})", files.len()), cx).into_any_element()
+            }
+            Row::Change(staged, ix) => {
+                let (prefix, files) = if staged { ("s", &self.status.staged) } else { ("u", &self.status.unstaged) };
+                let file = &files[ix];
+                self.change_row(format!("{prefix}:{}", file.path), file, cx)
+            }
+            Row::FileHeader => {
+                let Some((file, _)) = &self.file else {
+                    return div().into_any_element();
+                };
                 h_flex()
                     .px_3()
                     .pb_1()
@@ -582,28 +680,28 @@ impl ChangesPanel {
                     .child(
                         link("history-all", "✕", cx).on_click(cx.listener(|this, _, _, cx| this.show_history(None, cx))),
                     )
-                    .into_any_element(),
-            );
-        } else if let Some(query) = &self.query {
-            rows.push(div().px_3().pb_1().child(Input::new(query).small().cleanable(true)).into_any_element());
-        }
-        // In a file's history a commit is that file's changes, not a list of files.
-        let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
-        // Hide Files or Show Files, wherever they are.
-        let files_item = self.lists_commits().then(|| self.files_shown(cx));
-        for (ix, commit) in self.commits.iter().enumerate() {
-            let key = format!("h:{}", commit.hash);
-            let selected = match file {
-                Some(_) => self.selected.as_ref() == Some(&key),
-                None => self.commit.as_ref() == Some(&commit.hash),
-            };
-            let file = file.clone();
-            let menu_file = file.clone();
-            let refs = commit.refs.replace("HEAD -> ", "");
-            let (hash, short) = (commit.hash.clone(), commit.short.clone());
-            let panel = cx.entity().downgrade();
-            let (copy_hash, copy_subject, commit_short) = (commit.hash.clone(), commit.subject.clone(), commit.short.clone());
-            rows.push(
+                    .into_any_element()
+            }
+            Row::Query => match &self.query {
+                Some(query) => div().px_3().pb_1().child(Input::new(query).small().cleanable(true)).into_any_element(),
+                None => div().into_any_element(),
+            },
+            Row::Commit(ix) => {
+                let commit = &self.commits[ix];
+                // In a file's history a commit is that file's changes, not a list of files.
+                let file = self.file.as_ref().filter(|(_, dir)| !dir).map(|(file, _)| file.clone());
+                // Hide Files or Show Files, wherever they are.
+                let files_item = self.lists_commits().then(|| self.files_shown(cx));
+                let key = format!("h:{}", commit.hash);
+                let selected = match file {
+                    Some(_) => self.selected.as_ref() == Some(&key),
+                    None => self.commit.as_ref() == Some(&commit.hash),
+                };
+                let menu_file = file.clone();
+                let refs = commit.refs.replace("HEAD -> ", "");
+                let (hash, short) = (commit.hash.clone(), commit.short.clone());
+                let panel = cx.entity().downgrade();
+                let (copy_hash, copy_subject, commit_short) = (commit.hash.clone(), commit.subject.clone(), commit.short.clone());
                 v_flex()
                     .id(("commit", ix))
                     .px_3()
@@ -639,10 +737,11 @@ impl ChangesPanel {
                             this.selected = Some(key.clone());
                             cx.emit(ChangesEvent::OpenCommitDiff { commit: hash.clone(), short: short.clone(), file: file.clone(), pin });
                             cx.notify();
-                            return;
+                        } else {
+                            this.select_commit(hash.clone(), cx);
+                            cx.emit(ChangesEvent::OpenCommit { commit: hash.clone(), short: short.clone(), pin });
                         }
-                        this.select_commit(hash.clone(), cx);
-                        cx.emit(ChangesEvent::OpenCommit { commit: hash.clone(), short: short.clone(), pin });
+                        this.prefetch_around(ix, cx);
                     }))
                     .context_menu(move |menu, window, cx| {
                         let (copy_hash, copy_subject) = (copy_hash.clone(), copy_subject.clone());
@@ -677,19 +776,16 @@ impl ChangesPanel {
                         .when_some(files_item, |menu, open| menu.item(Self::files_item(open, &panel)))
                         .panel_items(menu::hide_panel(), window, cx)
                     })
-                    .into_any_element(),
-            );
-        }
-        if self.more {
-            rows.push(
+                    .into_any_element()
+            }
+            Row::More => {
                 h_flex()
                     .px_3()
                     .py_1()
                     .child(link("history-more", "Load More", cx).on_click(cx.listener(|this, _, _, cx| this.load_more(cx))))
-                    .into_any_element(),
-            );
+                    .into_any_element()
+            }
         }
-        rows
     }
 
     /// The history lists commits with files: not a file's history, where a
@@ -767,28 +863,42 @@ impl ChangesPanel {
         let Some(files) = self.commit_files.get(&commit.hash) else {
             return note("…").into_any_element();
         };
-        let files_shown = self.files_shown(cx);
-        v_flex()
-            .id("commit-files")
-            .size_full()
-            .overflow_y_scroll()
-            .children(files.iter().enumerate().map(|(ix, file)| {
-                let key = format!("c:{}:{}", commit.hash, file.path);
-                let selected = self.selected.as_ref() == Some(&key);
-                let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
-                file_row(("commit-file", ix).into(), file, selected, 0., cx)
-                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                        this.selected = Some(key.clone());
-                        cx.emit(ChangesEvent::OpenCommitDiff {
-                            commit: hash.clone(),
-                            short: short.clone(),
-                            file: path.clone(),
-                            pin: event.click_count() >= 2,
-                        });
-                        cx.notify();
-                    }))
-                    .context_menu(Self::commit_file_menu(cx.entity().downgrade(), commit, file, files_shown))
-            }))
+        let count = files.len();
+        uniform_list(
+            "commit-files",
+            count,
+            cx.processor(|this, range: Range<usize>, _, cx| {
+                let Some(commit) = this.commit.as_ref().and_then(|hash| this.commits.iter().find(|commit| commit.hash == *hash)) else {
+                    return Vec::new();
+                };
+                let Some(files) = this.commit_files.get(&commit.hash) else {
+                    return Vec::new();
+                };
+                let files_shown = this.files_shown(cx);
+                range
+                    .filter_map(|ix| Some((ix, files.get(ix)?)))
+                    .map(|(ix, file)| {
+                        let key = format!("c:{}:{}", commit.hash, file.path);
+                        let selected = this.selected.as_ref() == Some(&key);
+                        let (hash, short, path) = (commit.hash.clone(), commit.short.clone(), file.path.clone());
+                        file_row(("commit-file", ix).into(), file, selected, 0., cx)
+                            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                                this.selected = Some(key.clone());
+                                cx.emit(ChangesEvent::OpenCommitDiff {
+                                    commit: hash.clone(),
+                                    short: short.clone(),
+                                    file: path.clone(),
+                                    pin: event.click_count() >= 2,
+                                });
+                                cx.notify();
+                            }))
+                            .context_menu(Self::commit_file_menu(cx.entity().downgrade(), commit, file, files_shown))
+                            .into_any_element()
+                    })
+                    .collect()
+            }),
+        )
+        .size_full()
             .into_any_element()
     }
 }
@@ -798,12 +908,10 @@ impl Render for ChangesPanel {
         if self.view == View::History {
             self.ensure_query(window, cx);
         }
-        let (rows, empty) = match self.view {
-            View::Uncommitted => (
-                self.render_uncommitted(cx),
-                (self.status.staged.is_empty() && self.status.unstaged.is_empty()).then_some("No changes"),
-            ),
-            View::History => (self.render_history(cx), self.commits.is_empty().then_some("No commits")),
+        self.update_rows();
+        let empty = match self.view {
+            View::Uncommitted => (self.status.staged.is_empty() && self.status.unstaged.is_empty()).then_some("No changes"),
+            View::History => self.commits.is_empty().then_some("No commits"),
         };
         let has_files = self.has_commit_files();
         let files_open = has_files && self.files_open(cx);
@@ -811,13 +919,18 @@ impl Render for ChangesPanel {
         // Right-click on the commits' empty space: show or hide the files.
         let list_menu = self.lists_commits().then(|| (cx.entity().downgrade(), self.files_shown(cx)));
         let theme = cx.theme();
+        let empty = empty.filter(|_| !self.loading && self.error.is_none());
+        let rows = list(self.list.clone(), cx.processor(|this, ix, _, cx| this.render_row(ix, cx))).w_full();
+        // Nothing to list: the rows over it (the search) and then why.
+        let rows = match empty {
+            Some(_) => rows.with_sizing_behavior(ListSizingBehavior::Infer),
+            None => rows.flex_1().min_h_0(),
+        };
         let list = v_flex()
             .id("changes-list")
             .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .children(rows)
-            .when_some(empty.filter(|_| !self.loading && self.error.is_none()), |el, empty| {
+            .child(rows)
+            .when_some(empty, |el, empty| {
                 el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
             });
         let list = match list_menu {

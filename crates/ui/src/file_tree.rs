@@ -75,6 +75,9 @@ const ROW_HEIGHT: Pixels = px(24.);
 /// How long a dragged item rests on a closed folder before it opens.
 const OPEN_ON_HOVER: Duration = Duration::from_millis(700);
 
+/// Folders of an open folder read ahead, at most.
+const READ_AHEAD: usize = 64;
+
 /// How many operations Undo goes back.
 const UNDO_LIMIT: usize = 100;
 
@@ -210,6 +213,10 @@ pub struct FileTree {
     menu_target: Option<PathBuf>,
     focus_handle: FocusHandle,
     scroll: UniformListScrollHandle,
+    /// Revealing a file whose folders are still being read: each listing
+    /// that arrives scrolls to it, until it's there. Other listings (the
+    /// disk changed) leave the scroll alone.
+    revealing: bool,
     /// What git ignores is listed too (Show Ignored Files), as read.
     ignored: bool,
     _config: Subscription,
@@ -245,16 +252,15 @@ impl FileTree {
             menu_target: None,
             focus_handle: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
+            revealing: false,
             ignored: Config::get(cx).show_ignored,
             // Show Ignored Files changes every window's trees.
             _config: cx.observe_global::<Config>(|tree: &mut Self, cx| {
                 let ignored = Config::get(cx).show_ignored;
                 if tree.ignored != ignored {
+                    // Reread, showing what it had until the new lists come.
                     tree.ignored = ignored;
-                    tree.children.clear();
-                    tree.loading.clear();
-                    tree.rebuild(cx);
-                    cx.notify();
+                    tree.refresh(cx);
                 }
             }),
             // What's cut shows dimmed in every tree.
@@ -279,15 +285,18 @@ impl FileTree {
             dir = d.parent();
         }
         self.rebuild(cx);
-        self.scroll_to_selected();
+        self.revealing = !self.scroll_to_selected();
         cx.notify();
     }
 
-    fn scroll_to_selected(&mut self) {
+    /// Whether the selected file is in the rows (and so scrolled to).
+    fn scroll_to_selected(&mut self) -> bool {
         let selected = self.selected.as_deref();
-        if let Some(ix) = self.rows.iter().position(|row| row.path() == selected) {
+        let ix = self.rows.iter().position(|row| row.path() == selected);
+        if let Some(ix) = ix {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
         }
+        ix.is_some()
     }
 
     /// Rereads the folders affected by paths that changed on disk.
@@ -382,10 +391,7 @@ impl FileTree {
     /// Switches to a new connection with the agent: everything is reread.
     pub fn set_client(&mut self, client: Arc<Client>, cx: &mut Context<Self>) {
         self.client = Some(client);
-        self.children.clear();
-        self.loading.clear();
-        self.rebuild(cx);
-        cx.notify();
+        self.refresh(cx);
     }
 
     fn load_dir(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
@@ -423,9 +429,30 @@ impl FileTree {
                 if this.children.get(&dir) == Some(&entries) {
                     return;
                 }
+                // An open folder's folders are read ahead: opening one shows
+                // its contents at once.
+                let shown = this.expanded.contains(&dir);
+                let ahead: Vec<PathBuf> = match shown {
+                    true => entries
+                        .iter()
+                        .filter(|entry| entry.is_dir && !this.children.contains_key(&entry.path))
+                        .take(READ_AHEAD)
+                        .map(|entry| entry.path.clone())
+                        .collect(),
+                    false => Vec::new(),
+                };
                 this.children.insert(dir, entries);
+                for dir in ahead {
+                    this.load_dir(dir, cx);
+                }
+                // A closed folder's list changes no row.
+                if !shown {
+                    return;
+                }
                 this.rebuild(cx);
-                this.scroll_to_selected();
+                if this.revealing {
+                    this.revealing = !this.scroll_to_selected();
+                }
                 cx.notify();
             })
             .ok();

@@ -2,7 +2,7 @@
 //! groups the results by file, and replaces them. The References panel is the
 //! same, without the boxes: its results (F12, Shift-F12) come from outside.
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use client::Client;
 use gpui_kit::component::{
@@ -47,7 +47,11 @@ pub struct SearchPanel {
     preserve_case: bool,
     /// What the last Replace All did.
     replaced: Option<SharedString>,
-    hits: Vec<SearchHit>,
+    /// Changed only through `set_hits`, which works out the rows from them.
+    hits: Rc<Vec<SearchHit>>,
+    /// The hits under their files, and how many files.
+    rows: Rc<Vec<Row>>,
+    files: usize,
     truncated: bool,
     /// Find in Folder: the folder searched (relative to `root`), not all of it.
     scope: Option<String>,
@@ -82,7 +86,9 @@ impl SearchPanel {
             case_sensitive: false,
             preserve_case: false,
             replaced: None,
-            hits: Vec::new(),
+            hits: Rc::default(),
+            rows: Rc::default(),
+            files: 0,
             truncated: false,
             scope: None,
             dismissed: BTreeSet::new(),
@@ -105,8 +111,8 @@ impl SearchPanel {
 
     /// References panel: `title` is being searched.
     pub fn set_loading(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
+        // The last results stay until the new ones come: no empty flash.
         self.title = Some(title.into());
-        self.hits.clear();
         self.selected = None;
         self.searching = true;
         self.error = None;
@@ -122,11 +128,11 @@ impl SearchPanel {
         self.dismissed.clear();
         match result {
             Ok(hits) => {
-                self.hits = hits;
+                self.set_hits(hits);
                 self.error = None;
             }
             Err(error) => {
-                self.hits.clear();
+                self.set_hits(Vec::new());
                 self.error = Some(error);
             }
         }
@@ -166,7 +172,7 @@ impl SearchPanel {
         let query = self.input.read(cx).value().to_string();
         if query.is_empty() {
             self.search = None;
-            self.hits.clear();
+            self.set_hits(Vec::new());
             self.selected = None;
             self.searching = false;
             self.error = None;
@@ -199,7 +205,7 @@ impl SearchPanel {
                                 hit.path = format!("{scope}/{}", hit.path);
                             }
                         }
-                        this.hits = hits;
+                        this.set_hits(hits);
                         this.dismissed.clear();
                         this.truncated = truncated;
                         this.selected = None;
@@ -322,7 +328,9 @@ impl SearchPanel {
             return;
         };
         let path = hit.path.clone();
-        self.selected = dismiss(&mut self.hits, self.selected, |at, _| at == ix);
+        let mut hits = Rc::unwrap_or_clone(std::mem::take(&mut self.hits));
+        self.selected = dismiss(&mut hits, self.selected, |at, _| at == ix);
+        self.set_hits(hits);
         // The file's other lines are still listed (and replaced).
         if self.hits.iter().any(|hit| hit.path == path) {
             self.dismissed.insert(path);
@@ -332,9 +340,19 @@ impl SearchPanel {
 
     /// Dismiss on a file: takes its matches off the list.
     fn dismiss_file(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.selected = dismiss(&mut self.hits, self.selected, |_, hit| hit.path == path);
+        let mut hits = Rc::unwrap_or_clone(std::mem::take(&mut self.hits));
+        self.selected = dismiss(&mut hits, self.selected, |_, hit| hit.path == path);
+        self.set_hits(hits);
         self.dismissed.remove(path);
         cx.notify();
+    }
+
+    /// New hits: the rows and the count of files are worked out once here,
+    /// not each time it's drawn.
+    fn set_hits(&mut self, hits: Vec<SearchHit>) {
+        self.files = hits.iter().map(|hit| &hit.path).collect::<BTreeSet<_>>().len();
+        self.hits = Rc::new(hits);
+        self.rows = Rc::new(self.rows());
     }
 
     fn rows(&self) -> Vec<Row> {
@@ -466,7 +484,7 @@ impl Render for SearchPanel {
             None => self.render_search_box(cx).into_any_element(),
         };
         let theme = cx.theme();
-        let files = self.hits.iter().map(|hit| &hit.path).collect::<std::collections::BTreeSet<_>>().len();
+        let files = self.files;
         let summary = if let Some(replaced) = &self.replaced {
             replaced.to_string()
         } else if self.searching {
@@ -481,7 +499,7 @@ impl Render for SearchPanel {
                 files
             )
         };
-        let rows = self.rows();
+        let rows = self.rows.clone();
         let hits = self.hits.clone();
         let selected = self.selected;
         let view = cx.entity();

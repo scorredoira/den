@@ -99,7 +99,13 @@ pub struct OutlinePanel {
     cursor: Option<u32>,
     current: Option<usize>,
     scroll: UniformListScrollHandle,
+    /// The last symbols of the files seen lately: going back to one shows
+    /// them at once, while its server is asked again.
+    seen: HashMap<PathBuf, Rc<[LspSymbol]>>,
 }
+
+/// Files whose symbols `seen` keeps.
+const SEEN: usize = 32;
 
 impl EventEmitter<OutlineEvent> for OutlinePanel {}
 
@@ -113,6 +119,7 @@ impl OutlinePanel {
             cursor: None,
             current: None,
             scroll: UniformListScrollHandle::new(),
+            seen: HashMap::new(),
         }
     }
 
@@ -129,7 +136,10 @@ impl OutlinePanel {
     pub fn loading(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.path.as_deref() != Some(path) {
             self.path = Some(path.to_path_buf());
-            self.state = State::Loading;
+            self.state = match self.seen.get(path) {
+                Some(symbols) => State::Ready(symbols.clone()),
+                None => State::Loading,
+            };
             self.scroll.scroll_to_item(0, ScrollStrategy::Top);
             self.rebuild(cx);
         }
@@ -143,7 +153,14 @@ impl OutlinePanel {
             return;
         }
         self.state = match (symbols, &self.state) {
-            (Ok(symbols), _) => State::Ready(symbols.into_iter().filter(|symbol| !symbol.local).collect()),
+            (Ok(symbols), _) => {
+                let symbols: Rc<[LspSymbol]> = symbols.into_iter().filter(|symbol| !symbol.local).collect();
+                if self.seen.len() >= SEEN && !self.seen.contains_key(path) {
+                    self.seen.clear();
+                }
+                self.seen.insert(path.to_path_buf(), symbols.clone());
+                State::Ready(symbols)
+            }
             (Err(_), State::Ready(symbols)) => State::Ready(symbols.clone()),
             (Err(error), _) => State::Failed(error),
         };

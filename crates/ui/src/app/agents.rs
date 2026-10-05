@@ -74,10 +74,16 @@ impl Den {
         if workspace.update(cx, |workspace, cx| workspace.focus_terminal(term, window, cx)) {
             return;
         }
-        // A workspace just opened is still attaching its terminals.
+        // A workspace just opened is still attaching its terminals: the
+        // keyboard goes to it as soon as it's there.
         cx.spawn_in(window, async move |_, cx| {
-            cx.background_executor().timer(Duration::from_millis(500)).await;
-            workspace.update_in(cx, |workspace, window, cx| workspace.focus_terminal(term, window, cx)).ok();
+            for _ in 0..100 {
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+                let focused = workspace.update_in(cx, |workspace, window, cx| workspace.focus_terminal(term, window, cx));
+                if !matches!(focused, Ok(false)) {
+                    break;
+                }
+            }
         })
         .detach();
     }

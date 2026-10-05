@@ -31,7 +31,7 @@ use crate::{
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     DiffLayoutAutomatic, DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile,
     changes::{self, ChangesEvent, ChangesPanel},
-    commit_view::{CommitView, CommitViewEvent},
+    commit_view::{self, CommitView, CommitViewEvent},
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, DiffLayout, Panel, SavedTab, Session, TextArea, UiText},
@@ -165,6 +165,8 @@ struct FileTab {
     /// selections it was computed for.
     occurrences: Option<RangeDecorationCollection>,
     occurrences_for: Vec<editing::Selection>,
+    /// Looking for them, in the background: a big file doesn't slow typing.
+    occurrences_task: Option<Task<()>>,
     /// The editor group it's in: 0, or 1 for the second one of a split.
     group: usize,
     /// When it was last shown: a group shows its most recent tab.
@@ -178,6 +180,9 @@ struct FileTab {
     /// The text as of its last change, once read: what an edit changed
     /// moves the breakpoints.
     text: Option<SharedString>,
+    /// The preview it took the place of, still drawn while this one loads:
+    /// the area doesn't go blank between one file and the next.
+    stand_in: Option<Box<FileTab>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -258,7 +263,7 @@ struct SymbolSearch {
 /// Places remembered for going back.
 const MAX_PLACES: usize = 100;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct DiffOf {
     /// Relative to the task's folder; empty for the whole commit.
     file: String,
@@ -276,6 +281,15 @@ impl DiffOf {
 
 pub struct Workspace {
     root: PathBuf,
+    /// How wide each editor group's body is, measured every frame: a new
+    /// diff is laid out at that width from its first frame, not corrected
+    /// on the next one.
+    group_widths: [Rc<Cell<Pixels>>; 2],
+    /// What was read of commits (they don't change): going back to one, or
+    /// to one read ahead, shows it at once.
+    commit_texts: HashMap<DiffOf, String>,
+    /// The commit HEAD was at when last looked: the blames are of it.
+    head: Option<String>,
     /// What of it shows (see `layout::Panels`).
     panels: Panels,
     /// The task's key in `config.json`, to remember what was open.
@@ -327,6 +341,8 @@ pub struct Workspace {
     navigating: bool,
     /// The task's file list for Cmd-P (refreshed each time it opens).
     files: Arc<Vec<String>>,
+    /// The list was asked for once already: the first Cmd-P finds it ready.
+    files_asked: bool,
     tabs: Vec<FileTab>,
     /// The active tab of the focused group (the one keys and commands act on).
     active: Option<usize>,
@@ -496,6 +512,9 @@ impl Workspace {
             Self::watch_ports(cx);
         }
         Self {
+            group_widths: Default::default(),
+            commit_texts: HashMap::new(),
+            head: None,
             root,
             panels: Panels::new(),
             session_key,
@@ -528,6 +547,7 @@ impl Workspace {
             forward: Vec::new(),
             navigating: false,
             files: Arc::default(),
+            files_asked: false,
             tabs: Vec::new(),
             active: None,
             editor_split: None,
@@ -909,7 +929,15 @@ impl Workspace {
             .filter(|_| !pin);
         match reuse {
             Some(ix) => {
-                self.tabs[ix] = tab;
+                let mut old = std::mem::replace(&mut self.tabs[ix], tab);
+                // A preview replaced before it loaded: what it stood in for.
+                let old = match old.stand_in.take() {
+                    Some(stand_in) if !matches!(old.content, Content::Ready) => stand_in,
+                    _ => Box::new(old),
+                };
+                if matches!(old.content, Content::Ready) {
+                    self.tabs[ix].stand_in = Some(old);
+                }
                 ix
             }
             None => {
@@ -994,7 +1022,7 @@ impl Workspace {
             Content::Ready => {
                 tab.editor
                     .update(cx, |state, cx| state.set_cursor_position(goto, window, cx));
-                reveal_centered(&tab.editor, goto.line, false, 10, window, cx);
+                reveal_centered(&tab.editor, goto.line, false, cx);
             }
             _ => tab.goto = Some(goto),
         }
@@ -1023,7 +1051,7 @@ impl Workspace {
             }
             if self.tabs[ix].diff.as_ref() != Some(&of) {
                 self.tabs[ix].diff = Some(of);
-                self.load_diff(ix, window, cx);
+                self.load_diff(ix, false, window, cx);
             }
             self.activate_with(ix, false, window, cx);
             return;
@@ -1033,19 +1061,71 @@ impl Workspace {
             Some((commit, _)) if file.is_empty() => self.root.join(commit),
             _ => self.root.join(&file),
         };
+        // Another commit in the preview tab (going through the history): it
+        // keeps showing the one before until the new one is read, instead of
+        // going blank and being laid out again from nothing.
+        let group = self.group;
+        let reuse = self.tabs.iter().position(|tab| {
+            tab.preview
+                && tab.group == group
+                && matches!(tab.content, Content::Ready)
+                && tab.diff.as_ref().is_some_and(|diff| {
+                    diff.commit.is_some() && of.commit.is_some() && !diff.source && !of.source && diff.file == of.file
+                })
+        });
+        if let Some(ix) = reuse.filter(|_| !pin) {
+            self.tabs[ix].path = path;
+            self.tabs[ix].diff = Some(of);
+            self.load_diff(ix, true, window, cx);
+            self.activate_with(ix, false, window, cx);
+            return;
+        }
         let language = if of.source { language::for_path(&path) } else { "diff" };
         let mut tab = self.new_tab_with(path, !pin, language, window, cx);
         tab.diff = Some(of);
         tab.grab_focus = false;
         let ix = self.place_tab(tab, pin);
-        self.load_diff(ix, window, cx);
+        self.load_diff(ix, false, window, cx);
         self.activate_with(ix, false, window, cx);
     }
 
-    fn load_diff(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(client), Some(of)) = (self.client.clone(), self.tabs[ix].diff.clone()) else {
+    /// The width last measured for `group`'s body (unknown: as wide as can be).
+    fn group_width(&self, group: usize) -> Pixels {
+        let width = self.group_widths[group.min(1)].get();
+        if width > px(0.) { width } else { px(f32::MAX) }
+    }
+
+    /// Reads a commit's changes before they're asked for (the ones next to
+    /// the selected one in the history): stepping to them is then instant.
+    pub(crate) fn prefetch_commit(&mut self, commit: String, short: String, file: String, cx: &mut Context<Self>) {
+        let of = DiffOf::commit(commit, short, file, false);
+        let Some(client) = self.client.clone() else {
             return;
         };
+        if self.commit_texts.contains_key(&of) {
+            return;
+        }
+        let fetch = self.fetch_diff(&of, client);
+        cx.spawn(async move |this, cx| {
+            if let Ok(Response::Text(text)) = fetch.await {
+                this.update(cx, |this, _| this.remember_commit_text(of, text)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Keeps what a commit showed, the most recent ones only.
+    fn remember_commit_text(&mut self, of: DiffOf, text: String) {
+        const KEPT: usize = 64;
+        if self.commit_texts.len() >= KEPT {
+            self.commit_texts.clear();
+        }
+        self.commit_texts.insert(of, text);
+    }
+
+    /// Asks the agent for a diff tab's text: a file's changes with the whole
+    /// file, a whole commit, or a file as it was.
+    fn fetch_diff(&self, of: &DiffOf, client: Arc<Client>) -> impl std::future::Future<Output = anyhow::Result<Response>> + use<> {
         let path = self.root.clone();
         let commit = of.commit.as_ref().map(|(commit, _)| commit.clone());
         // A file's changes go side by side, with the whole file.
@@ -1067,41 +1147,89 @@ impl Workspace {
             }
             None => Request::GitDiff { path, file: of.file.clone(), uncommitted: true },
         };
-        cx.spawn_in(window, async move |this, cx| {
-            let mut response = None;
+        async move {
             if let Some(whole) = whole {
                 // An agent that doesn't know `WholeDiff` fails: the plain diff then.
-                match client.request(whole).await {
-                    Ok(Response::Text(text)) => response = Some(Ok(Response::Text(text))),
-                    _ => {}
+                if let Ok(Response::Text(text)) = client.request(whole).await {
+                    return Ok(Response::Text(text));
                 }
             }
-            let response = match response {
-                Some(response) => response,
-                None => client.request(request).await,
+            client.request(request).await
+        }
+    }
+
+    /// Reads a diff tab's changes. With `reveal` (another commit in the same
+    /// tab) it goes to the first change, or the top, as when first shown.
+    fn load_diff(&mut self, ix: usize, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(client), Some(of)) = (self.client.clone(), self.tabs[ix].diff.clone()) else {
+            return;
+        };
+        let cached = self.commit_texts.get(&of).cloned();
+        let fetch = self.fetch_diff(&of, client);
+        cx.spawn_in(window, async move |this, cx| {
+            let response = match cached {
+                Some(text) => Ok(Response::Text(text)),
+                None => {
+                    let response = fetch.await;
+                    if let Ok(Response::Text(text)) = &response
+                        && of.commit.is_some()
+                    {
+                        let (of, text) = (of.clone(), text.clone());
+                        this.update(cx, |this, _| this.remember_commit_text(of, text)).ok();
+                    }
+                    response
+                }
             };
+            // A file's changes are split in two sides, and a whole commit's
+            // rows highlighted, in the background.
+            let mut sides = None;
+            if let Ok(Response::Text(text)) = &response
+                && !of.source
+                && !of.file.is_empty()
+            {
+                let text = text.clone();
+                sides = cx.background_spawn(async move { diff::split(&text) }).await;
+            }
+            let mut prepared = None;
+            if let Ok(Response::Text(show)) = &response
+                && of.commit.is_some()
+                && of.file.is_empty()
+                && !of.source
+            {
+                let show = show.clone();
+                let Ok(task) = this.update(cx, |_, cx| commit_view::prepare(show, cx)) else {
+                    return;
+                };
+                prepared = Some(task.await);
+            }
             this.update_in(cx, |this, window, cx| {
                 let Some(ix) = this.tabs.iter().position(|tab| tab.diff.as_ref() == Some(&of)) else {
                     return;
                 };
-                let sides = match &response {
-                    Ok(Response::Text(text)) if !of.source && !of.file.is_empty() => diff::split(text),
-                    _ => None,
-                };
                 if let Some(sides) = sides {
-                    this.show_side_by_side(ix, sides, window, cx);
+                    this.show_side_by_side(ix, sides, reveal, window, cx);
                     cx.notify();
                     return;
                 }
-                if let (Ok(Response::Text(show)), Some((hash, short))) = (&response, &of.commit)
-                    && of.file.is_empty()
-                    && !of.source
-                {
-                    let view = cx.new(|cx| CommitView::new(show, cx));
-                    let (hash, short) = (hash.clone(), short.clone());
-                    let subscription = cx.subscribe_in(&view, window, move |this, _, event: &CommitViewEvent, window, cx| {
+                if let Some(prepared) = prepared {
+                    if let Some(view) = &this.tabs[ix].commit {
+                        view.update(cx, |view, cx| view.set(prepared, cx));
+                        cx.notify();
+                        return;
+                    }
+                    let width = this.group_width(this.tabs[ix].group);
+                    let view = cx.new(|_| CommitView::new(prepared, width));
+                    // The tab's commit when clicked: it may show another one by then.
+                    let subscription = cx.subscribe_in(&view, window, move |this, view, event: &CommitViewEvent, window, cx| {
                         let CommitViewEvent::OpenFile(file) = event;
-                        this.open_diff(DiffOf::commit(hash.clone(), short.clone(), file.clone(), false), true, window, cx);
+                        let commit = this
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.commit.as_ref() == Some(view))
+                            .and_then(|tab| tab.diff.as_ref()?.commit.clone());
+                        if let Some((hash, short)) = commit {
+                            this.open_diff(DiffOf::commit(hash, short, file.clone(), false), true, window, cx);
+                        }
                     });
                     let tab = &mut this.tabs[ix];
                     tab.commit = Some(view);
@@ -1143,7 +1271,7 @@ impl Workspace {
     /// Shows a file's diff side by side: the old side in its own editor, the
     /// new one in the tab's, both highlighted as the file and scrolling
     /// together. The first time it goes to the first change.
-    fn show_side_by_side(&mut self, ix: usize, sides: diff::SideBySide, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_side_by_side(&mut self, ix: usize, sides: diff::SideBySide, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
         let language = language::for_path(&self.tabs[ix].path);
         let new = self.tabs[ix].editor.clone();
         let first = self.tabs[ix].old.is_none();
@@ -1176,7 +1304,7 @@ impl Workspace {
                 marks: None,
                 inline,
                 inline_marks: None,
-                width: Rc::new(Cell::new(px(f32::MAX))),
+                width: Rc::new(Cell::new(self.group_width(self.tabs[ix].group))),
                 selected,
                 _subscriptions: subscriptions,
             });
@@ -1245,21 +1373,47 @@ impl Workspace {
                 old.inline_marks = Some(collection);
             }
         }
-        if first {
+        if first || reveal {
             if let Some(&row) = sides.changes.first() {
                 let at = Position::new(row as u32, 0);
                 new.update(cx, |state, cx| state.set_cursor_position(at, window, cx));
-                reveal_centered(&new, row as u32, true, 10, window, cx);
+                reveal_centered(&new, row as u32, true, cx);
             }
             if let Some(&row) = inline.changes.first() {
                 let editor = old.inline.clone();
                 editor.update(cx, |state, cx| state.set_cursor_position(Position::new(row as u32, 0), window, cx));
-                reveal_centered(&editor, row as u32, true, 10, window, cx);
+                reveal_centered(&editor, row as u32, true, cx);
             }
         }
         if let Some(focused) = focused {
             focused.focus(window, cx);
         }
+    }
+
+    /// Reloads every open file's blame if HEAD isn't the commit it was.
+    fn check_head(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let request = Request::Git { path: self.root.clone(), op: GitOp::Log { skip: 0, limit: 1 } };
+        cx.spawn(async move |this, cx| {
+            let head = match client.request(request).await {
+                Ok(Response::Commits(commits)) => commits.into_iter().next().map(|commit| commit.hash),
+                _ => None,
+            };
+            this.update(cx, |this, cx| {
+                if head.is_some() && this.head == head {
+                    return;
+                }
+                this.head = head;
+                let files: Vec<PathBuf> = this.tabs.iter().filter(|tab| tab.is_file()).map(|tab| tab.path.clone()).collect();
+                for path in files {
+                    this.load_blame(path, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Reads the file's blame from the agent (silently: outside a repo, or
@@ -1288,6 +1442,8 @@ impl Workspace {
     /// Highlights the other occurrences of the word under the cursor, when
     /// the selections changed.
     fn highlight_occurrences(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        /// Larger texts are searched in the background, so typing doesn't wait.
+        const AT_ONCE: usize = 256 * 1024;
         let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.editor == editor) else {
             return;
         };
@@ -1296,8 +1452,29 @@ impl Workspace {
         if selections == tab.occurrences_for {
             return;
         }
-        let ranges = editing::occurrences(&state.value(), &selections);
-        tab.occurrences_for = selections;
+        tab.occurrences_for = selections.clone();
+        // A copy of the text costs nothing: it's shared.
+        let text = state.text().clone();
+        if text.len() <= AT_ONCE {
+            tab.occurrences_task = None;
+            let ranges = editing::occurrences(&text.to_string(), &selections);
+            Self::show_occurrences(tab, editor, ranges, cx);
+            return;
+        }
+        let editor = editor.clone();
+        tab.occurrences_task = Some(cx.spawn(async move |this, cx| {
+            let found = selections.clone();
+            let ranges = cx.background_spawn(async move { editing::occurrences(&text.to_string(), &found) }).await;
+            this.update(cx, |this, cx| {
+                if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.editor == editor && tab.occurrences_for == selections) {
+                    Self::show_occurrences(tab, &editor, ranges, cx);
+                }
+            })
+            .ok();
+        }));
+    }
+
+    fn show_occurrences(tab: &mut FileTab, editor: &Entity<EditorState>, ranges: Vec<std::ops::Range<usize>>, cx: &mut App) {
         let color = cx.theme().selection.opacity(0.45);
         let decorations: Vec<RangeDecoration> = ranges
             .into_iter()
@@ -1371,7 +1548,7 @@ impl Workspace {
                             let lines = editor.read(cx).text().lines_len() as u32;
                             let goto = Position::new(line.clamp(1, lines.max(1)) - 1, column.saturating_sub(1));
                             editor.update(cx, |state, cx| state.set_cursor_position(goto, window, cx));
-                            reveal_centered(&editor, goto.line, false, 10, window, cx);
+                            reveal_centered(&editor, goto.line, false, cx);
                         }
                         _ => this.focus_ide(window, cx),
                     }
@@ -1407,22 +1584,29 @@ impl Workspace {
         });
         self.finder = Some((finder, subscription));
         // The list is refreshed on every open; meanwhile, the previous one is used.
-        if let Some(client) = self.client.clone() {
-            let path = self.root.clone();
-            cx.spawn(async move |this, cx| {
-                if let Ok(Response::Files(files)) = client.request(Request::FindFiles { path }).await {
-                    this.update(cx, |this, cx| {
-                        this.files = Arc::new(files);
-                        if let Some((finder, _)) = &this.finder {
-                            finder.update(cx, |finder, cx| finder.set_files(this.files.clone(), cx));
-                        }
-                    })
-                    .ok();
-                }
-            })
-            .detach();
-        }
+        self.read_files(cx);
         cx.notify();
+    }
+
+    /// Asks for the list of files Cmd-P goes through.
+    fn read_files(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.files_asked = true;
+        let path = self.root.clone();
+        cx.spawn(async move |this, cx| {
+            if let Ok(Response::Files(files)) = client.request(Request::FindFiles { path }).await {
+                this.update(cx, |this, cx| {
+                    this.files = Arc::new(files);
+                    if let Some((finder, _)) = &this.finder {
+                        finder.update(cx, |finder, cx| finder.set_files(this.files.clone(), cx));
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Cmd-Shift-O: to a symbol of the file, from its language server (in
@@ -1555,7 +1739,7 @@ impl Workspace {
                         let named = text.slice(start..end) == symbol.name.as_str();
                         state.set_selections(&[(start, if named { end } else { start })], cx);
                     });
-                    reveal_centered(editor, symbol.line, false, 10, window, cx);
+                    reveal_centered(editor, symbol.line, false, cx);
                 }
                 return;
             }
@@ -1998,7 +2182,7 @@ impl Workspace {
                 // a file already open only scrolls if the line isn't in view
                 if let Some(ix) = open {
                     let editor = self.tabs[ix].editor.clone();
-                    reveal_centered(&editor, *line, false, 10, window, cx);
+                    reveal_centered(&editor, *line, false, cx);
                 }
                 if *focus && debugger.read(cx).is_stopped() {
                     window.activate_window();
@@ -2276,11 +2460,13 @@ impl Workspace {
             blame: None,
             occurrences: None,
             occurrences_for: Vec::new(),
+            occurrences_task: None,
             group: self.group,
             shown: 0,
             view: false,
             doc: false,
             text: None,
+            stand_in: None,
             _subscriptions: subscriptions,
         }
     }
@@ -2352,7 +2538,7 @@ impl Workspace {
                         });
                         if !reload {
                             let line = tab.editor.read(cx).cursor_position().line;
-                            reveal_centered(&tab.editor, line, true, 10, window, cx);
+                            reveal_centered(&tab.editor, line, true, cx);
                         }
                         // Its other views get the same text, keeping their cursor.
                         for view in this.tabs.iter_mut().filter(|tab| tab.view && tab.path == path) {
@@ -2414,13 +2600,11 @@ impl Workspace {
             self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
             self.device.update(cx, |device, cx| device.load(cx));
         }
-        // `root/.git`: a commit, checkout or reset (HEAD moved): the blame of
-        // every open file may have changed.
+        // `root/.git`: git's state changed. If HEAD moved (a commit,
+        // checkout or reset), the blame of every open file may have too;
+        // staging alone (the index) doesn't change it.
         if paths.contains(&self.root.join(".git")) {
-            let files: Vec<PathBuf> = self.tabs.iter().filter(|tab| tab.is_file()).map(|tab| tab.path.clone()).collect();
-            for path in files {
-                self.load_blame(path, cx);
-            }
+            self.check_head(cx);
         }
         self.file_tree
             .update(cx, |tree, cx| tree.invalidate(&paths, cx));
@@ -2441,7 +2625,7 @@ impl Workspace {
             .filter(|ix| self.tabs[*ix].diff.is_some() && paths.contains(&self.tabs[*ix].path))
             .collect();
         for ix in diffs {
-            self.load_diff(ix, window, cx);
+            self.load_diff(ix, false, window, cx);
         }
     }
 
@@ -3136,7 +3320,7 @@ impl Workspace {
         match event {
             ChangesEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
             ChangesEvent::OpenDiff { file, pin } => {
-                let deleted = !self.root.join(file).exists();
+                let deleted = self.changes.read(cx).is_deleted(file);
                 if *pin && !deleted {
                     self.open(self.root.join(file), true, window, cx);
                 } else {
@@ -3153,6 +3337,7 @@ impl Workspace {
             ChangesEvent::OpenFileAt { commit, short, file } => {
                 self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
             }
+            ChangesEvent::Prefetch { commit, short, file } => self.prefetch_commit(commit.clone(), short.clone(), file.clone(), cx),
             ChangesEvent::ToggleCommitFiles => self.toggle_commit_files_now(cx),
             ChangesEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
         }
@@ -3456,7 +3641,13 @@ impl Workspace {
     /// it the focus.
     fn render_group(&self, group: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let body = match self.shown_in(group).map(|ix| &self.tabs[ix]) {
+        let shown = self.shown_in(group).map(|ix| &self.tabs[ix]);
+        // Still loading: what was there before, if anything.
+        let shown = shown.map(|tab| match (&tab.content, &tab.stand_in) {
+            (Content::Loading, Some(stand_in)) => &**stand_in,
+            _ => tab,
+        });
+        let body = match shown {
             None => div()
                 .id("code-empty")
                 .size_full()
@@ -3738,6 +3929,7 @@ impl Workspace {
                             .map_or(EditorDrop::Center, |(_, placement)| placement);
                         this.drop_tab(drag, group, None, placement, window, cx);
                     }))
+                    .child(measure_width(&self.group_widths[group]))
                     .child(body)
                     .when_some(self.editor_drop.filter(|(target, _)| *target == group && cx.has_active_drag()), |el, (_, placement)| {
                         el.child(placement.indicator(cx))
@@ -3882,10 +4074,26 @@ fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.apply_word_wrap(window, cx);
-        if self.is_shown(Panel::Outline, cx) {
-            self.sync_outline(cx);
+        if !self.files_asked {
+            self.read_files(cx);
         }
+        // Loaded: what it stood in for goes.
+        for tab in &mut self.tabs {
+            if !matches!(tab.content, Content::Loading) {
+                tab.stand_in = None;
+            }
+        }
+        self.apply_word_wrap(window, cx);
+        // What the panels show follows what's drawn here, told to them right
+        // after: told while drawing, the ones drawn from cache wouldn't see
+        // it until something else redrew them.
+        cx.defer_in(window, |this, _, cx| {
+            this.shape_terminals(cx);
+            this.place_shown(cx);
+            if this.is_shown(Panel::Outline, cx) {
+                this.sync_outline(cx);
+            }
+        });
         if !cx.has_active_drag() {
             self.editor_drop = None;
         }
@@ -4276,15 +4484,13 @@ fn symbols_of(response: anyhow::Result<Response>, no_server: &'static str) -> Re
 /// (the editor alone only brings it in at the edge). With `always`, it centers
 /// even if it's visible: a freshly loaded file already scrolled the cursor in
 /// at the edge on its own, so being visible there doesn't mean it was. If not
-/// laid out yet (a freshly opened tab takes a few frames), it's tried again
-/// on the next ones, `retries` times at most.
-fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, retries: u8, window: &mut Window, cx: &mut App) {
+/// laid out yet, it's centered on its first layout.
+fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, cx: &mut App) {
     let state = editor.read(cx);
     let (Some(visible), Some(line_height)) = (state.visible_row_range(), state.line_height()) else {
-        if retries > 0 {
-            let editor = editor.clone();
-            window.on_next_frame(move |window, cx| reveal_centered(&editor, line, true, retries - 1, window, cx));
-        }
+        // Not laid out yet (a freshly opened tab): it lays itself out
+        // there, with no frame anywhere else first.
+        editor.update(cx, |state, cx| state.center_row(line as usize, cx));
         return;
     };
     let line = line as usize;
