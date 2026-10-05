@@ -562,6 +562,10 @@ pub struct Config {
     /// `DEFAULT_SIDE_BY_SIDE_WIDTH`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side_by_side_width: Option<f32>,
+    /// The commands run from the Command Palette, the most recent first (by
+    /// their id): they head it, as in VS Code.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_commands: Vec<String>,
 }
 
 /// How a diff shows its two sides.
