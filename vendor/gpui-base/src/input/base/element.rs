@@ -3340,8 +3340,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     gpui::CursorStyle::Arrow,
                     &prepaint.fold_icon_layout.line_number_hitbox,
                 );
+                // Only where nothing lies over it: a resize handle straddling
+                // the editor's edge takes the press, to drag.
+                let hitboxes = [prepaint.fold_icon_layout.line_number_hitbox.clone(), prepaint.hitbox.clone()];
                 window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, window, cx| {
-                    if !phase.capture() || !gutter_bounds.contains(&event.position) {
+                    if !phase.capture()
+                        || !gutter_bounds.contains(&event.position)
+                        || !hitboxes.iter().any(|hitbox| hitbox.is_hovered(window))
+                    {
                         return;
                     }
                     let y = event.position.y;
