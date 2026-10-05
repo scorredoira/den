@@ -202,6 +202,28 @@ fn windows(cx: &App) -> Vec<(AnyWindowHandle, Entity<Den>)> {
     main.windows.iter().filter_map(|open| Some((open.handle, open.den.upgrade()?))).collect()
 }
 
+/// The Den menu's own (About, Check for Updates, Settings, Keyboard
+/// Shortcuts): the app's, not a view's, so the menu has them even when
+/// nothing in a window has the keyboard. They act on the window in front,
+/// or on the first one.
+pub fn register_app_actions(cx: &mut App) {
+    // Deferred: from a key in a window, that window is busy dispatching it.
+    fn in_front(cx: &mut App, act: impl FnOnce(&mut Den, &mut Window, &mut Context<Den>) + 'static) {
+        cx.defer(move |cx| {
+            let open = windows(cx);
+            let active = cx.active_window();
+            let Some((handle, den)) = open.iter().find(|(handle, _)| Some(*handle) == active).or(open.first()).cloned() else {
+                return;
+            };
+            handle.update(cx, |_, window, cx| den.update(cx, |den, cx| act(den, window, cx))).ok();
+        });
+    }
+    cx.on_action(|_: &About, cx| in_front(cx, |den, window, cx| den.open_about(window, cx)));
+    cx.on_action(|_: &CheckForUpdates, cx| in_front(cx, |den, window, cx| den.check_for_updates(window, cx)));
+    cx.on_action(|_: &OpenSettings, cx| in_front(cx, |den, window, cx| den.open_settings(window, cx)));
+    cx.on_action(|_: &OpenShortcutsGuide, cx| in_front(cx, |den, window, cx| den.open_guide(window, cx)));
+}
+
 /// The main window, while it's open.
 fn main_window(cx: &App) -> Option<(AnyWindowHandle, Entity<Den>)> {
     let main = cx.try_global::<Main>()?.windows.iter().find(|open| open.server.is_none())?;
@@ -2942,11 +2964,7 @@ impl Render for Den {
             }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| this.switcher_key_up(event)))
 
-            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
-            .on_action(cx.listener(|this, _: &About, window, cx| this.open_about(window, cx)))
-            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| this.check_for_updates(window, cx)))
             .on_action(cx.listener(|this, _: &ShowWelcome, window, cx| this.show_welcome(window, cx)))
-            .on_action(cx.listener(|this, _: &OpenShortcutsGuide, window, cx| this.open_guide(window, cx)))
             .relative()
             // Our own bar, in the theme's color (macOS's is gray): the traffic
             // lights on the left, the active task in the middle, and it drags
@@ -3420,8 +3438,10 @@ mod palette_tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             cx.set_global(Config::default());
+            super::register_app_actions(cx);
         });
         let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        as_app_window(&den, cx);
         cx.update(|window, cx| {
             den.update(cx, |den, cx| {
                 den.focus_handle.focus(window, cx);
@@ -3471,6 +3491,31 @@ mod palette_tests {
         });
         cx.run_until_parked();
         assert!(den.read_with(cx, |den, _| den.quit_confirm.is_none() && !den.discarded));
+    }
+
+    /// Counts `den`'s window among the app's, as opening it does.
+    fn as_app_window(den: &Entity<Den>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            let open = super::OpenWindow { handle: window.window_handle(), den: den.downgrade(), server: None };
+            cx.default_global::<super::Main>().windows.push(open);
+        });
+    }
+
+    /// Settings and About are the app's: they work from the menu with
+    /// nothing focused, and from a key in the window, without opening twice.
+    #[gpui_kit::test]
+    fn the_den_menu_works_without_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            crate::update::init(cx);
+            super::register_app_actions(cx);
+        });
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        as_app_window(&den, cx);
+        cx.update(|_, cx| cx.dispatch_action(&crate::About));
+        cx.run_until_parked();
+        assert!(den.read_with(cx, |den, _| den.about.is_some()));
     }
 
     /// Check for Updates opens About; a build that isn't installed says so

@@ -194,6 +194,7 @@ fn main() {
         language::register();
         bind_keys(cx);
         app_menu::init(cx);
+        app::register_app_actions(cx);
         app_menu::set(cx);
 
         update::init(cx);
