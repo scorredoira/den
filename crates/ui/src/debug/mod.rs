@@ -32,6 +32,8 @@ pub use commands::WaitFor;
 pub use panel::{DebugPart, DebugView};
 use protocol::{Event, Message, Stop, Var};
 
+use ui_term::TerminalView;
+
 use crate::config::{Config, DebugSaved};
 
 /// Where the launch file is, relative to the workspace.
@@ -319,6 +321,9 @@ pub struct Debugger {
     generation: u64,
     /// The terminal the launch command runs in, reused by the next launch.
     term: Option<TermId>,
+    /// That terminal, drawn in the console (the terminals' area keeps it
+    /// out of its tabs).
+    term_view: Option<Entity<TerminalView>>,
     /// The session whose command went to a terminal not known yet (a new
     /// one), and whether Stop was asked meanwhile: that terminal is
     /// interrupted once known, not the one before.
@@ -407,6 +412,7 @@ impl Debugger {
             uncaught: saved.uncaught,
             all: saved.all,
             term: saved.terminal,
+            term_view: None,
             term_unknown: None,
             root,
             session_key,
@@ -476,6 +482,17 @@ impl Debugger {
     }
 
     // ---- state the workspace reads ----
+
+    /// The terminal the launch command runs in.
+    pub fn terminal(&self) -> Option<TermId> {
+        self.term
+    }
+
+    /// That terminal's view, for the console, or `None` once it's gone.
+    pub fn set_terminal_view(&mut self, view: Option<Entity<TerminalView>>, cx: &mut Context<Self>) {
+        self.term_view = view;
+        cx.notify();
+    }
 
     pub fn is_stopped(&self) -> bool {
         self.current().is_some()
@@ -754,6 +771,7 @@ impl Debugger {
             // the program ended without listening. Until a new terminal is
             // known, `term` is the one before.
             let mut seen_running = false;
+            let mut waited: Option<Instant> = None;
             let mut watched = None;
             let mut last_read = Instant::now();
             loop {
@@ -776,6 +794,20 @@ impl Debugger {
                             Some(term) => matches!(client.request(Request::TermBusy { term }).await, Ok(Response::Busy(true))),
                             None => false,
                         };
+                        // What still runs in its terminal (the program before,
+                        // ending) gets a moment; then the command takes a new
+                        // terminal, and that one is closed.
+                        if command.is_some() && busy && waited.get_or_insert_with(Instant::now).elapsed() < RESTART_TIMEOUT {
+                            this.update(cx, |this, cx| {
+                                if this.generation == generation {
+                                    this.status = Status::Connecting("Waiting for the program before to end…".into());
+                                    cx.notify();
+                                }
+                            })
+                            .ok();
+                            cx.background_executor().timer(CONNECT_RETRY).await;
+                            continue;
+                        }
                         // every await above may have outlived the session
                         if let Some(command) = command.take() {
                             let ran = this.update(cx, |this, cx| {
