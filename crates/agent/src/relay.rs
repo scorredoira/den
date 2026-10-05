@@ -117,7 +117,12 @@ mod tests {
 
     #[test]
     fn connecting_where_nothing_listens_fails() {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        // The local end of a connection: a port nothing listens on that, still
+        // in use, the system won't hand to a listener of a test running alongside.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let _server = listener.accept().unwrap();
+        let port = client.local_addr().unwrap().port();
         assert!(Relay::connect(port, |_| {}, || {}).is_err());
     }
 }
