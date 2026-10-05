@@ -129,7 +129,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{ShowFiles}} | Files |
 | {{CollapseFileTree}} | Collapse all the folders |
 | {{ShowChanges}} | Changes: what isn't committed |
-| {{ShowHistory}} | The History tab: every branch's commits with their graph, the selected one's diff and its files |
+| {{ShowHistory}} | The History tab: the current branch's commits (All Branches: every branch's) with their graph, the selected one's diff and its files; its search looks in the messages, the paths or the content |
 | {{ShowReferences}} | References |
 | {{ShowOutline}} | Outline: the classes, functions, constants… of the file in front, not what's inside the functions |
 

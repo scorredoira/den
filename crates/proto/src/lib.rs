@@ -354,6 +354,22 @@ pub enum GitOp {
     /// then the nearest that did too), or whose hash, message or author
     /// contain each word of `query`.
     Graph { query: String, file: Option<String>, skip: usize, limit: usize },
+    /// As `Graph`, but of `HEAD` alone (as gitk shows it) unless `all`, and
+    /// `query` looked for in `scope`.
+    FindGraph { query: String, scope: GraphScope, file: Option<String>, all: bool, skip: usize, limit: usize },
+}
+
+/// Where the history's search looks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GraphScope {
+    /// The hash, the message or the author.
+    #[default]
+    Message,
+    /// The paths of the files the commit changed.
+    Paths,
+    /// What the commit added or removed: the text appears more or fewer
+    /// times after it (`git log -S`).
+    Content,
 }
 
 /// Repo status for the Changes mode, uncommitted.

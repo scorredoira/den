@@ -1,10 +1,11 @@
-//! The History tab, as gitk lays it out: the commits of every branch, tag
-//! and remote above, with their graph, what points at them, their author
-//! and their date; under them the selected commit's files and, on their
-//! right, the commit (its message and every file's changes, as a commit's
-//! tab shows them), each file a click away from its changes. The three parts and the author's
-//! and date's columns resize, and keep their sizes. It only reads, and the
-//! agent does all the reading.
+//! The History tab, as gitk lays it out: the commits of the current branch
+//! (or, with All Branches, of every branch, tag and remote) above, with their
+//! graph, what points at them, their author and their date; under them the
+//! selected commit's files and, on their right, the commit (its message and
+//! every file's changes, as a commit's tab shows them), each file a click
+//! away from its changes. The three parts and the author's and date's columns
+//! resize, and keep their sizes. It only reads, and the agent does all the
+//! reading.
 
 use std::{ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
@@ -18,7 +19,7 @@ use gpui_kit::component::{
     v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
-use proto::{GitOp, GraphCommit, Request, Response};
+use proto::{GitOp, GraphCommit, GraphScope, Request, Response};
 
 use crate::{
     commit_view::{self, CommitFile, CommitView, CommitViewEvent},
@@ -73,6 +74,8 @@ pub struct HistoryView {
     /// Needs rereading when it shows.
     stale: bool,
     query: Entity<InputState>,
+    /// Where the search looks: the message, the paths or the content.
+    scope: GraphScope,
     /// The selected commit, and the one its diff shows.
     selected: Option<String>,
     shown: Option<String>,
@@ -128,6 +131,7 @@ impl HistoryView {
             error: None,
             stale: true,
             query,
+            scope: GraphScope::Message,
             selected: None,
             shown: None,
             texts: Vec::new(),
@@ -186,7 +190,34 @@ impl HistoryView {
     fn op(&self, skip: usize, limit: usize, cx: &App) -> GitOp {
         let query = self.query.read(cx).value().trim().to_string();
         let file = self.file.as_ref().map(|(file, _)| file.clone());
-        GitOp::Graph { query, file, skip, limit }
+        let all = Config::get(cx).history_all_branches;
+        GitOp::FindGraph { query, scope: self.scope, file, all, skip, limit }
+    }
+
+    /// Searches somewhere else, the placeholder saying where.
+    fn set_scope(&mut self, scope: GraphScope, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scope == scope {
+            return;
+        }
+        self.scope = scope;
+        let placeholder = match scope {
+            GraphScope::Message => "Search hash, message or author",
+            GraphScope::Paths => "Search the paths of the files changed",
+            GraphScope::Content => "Search what was added or removed",
+        };
+        self.query.update(cx, |query, cx| query.set_placeholder(placeholder, window, cx));
+        if !self.linked(cx) {
+            self.commits.clear();
+            self.schedule(Duration::ZERO, cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows every branch, or only the current one.
+    fn set_all_branches(&mut self, all: bool, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.history_all_branches = all);
+        self.commits.clear();
+        self.schedule(Duration::ZERO, cx);
     }
 
     /// Rereads the commits: as many as were read, so the list stays where it was.
@@ -202,7 +233,7 @@ impl HistoryView {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
             }
-            let response = client.request(Request::Git { path, op }).await;
+            let response = read_graph(&client, path, op).await;
             this.update(cx, |this, cx| {
                 this.loading = false;
                 this.stale = false;
@@ -254,7 +285,7 @@ impl HistoryView {
         let op = self.op(skip, PAGE, cx);
         self.more = false;
         cx.spawn(async move |this, cx| {
-            let result = client.request(Request::Git { path, op }).await;
+            let result = read_graph(&client, path, op).await;
             this.update(cx, |this, cx| {
                 if let Ok(Response::Graph(commits)) = result
                     && this.commits.len() == skip
@@ -392,6 +423,18 @@ impl HistoryView {
         self.commit.read(cx).scroll_to(file.as_deref());
         self.file_selected = file;
         cx.notify();
+    }
+}
+
+/// Reads the graph. An agent from before `FindGraph` doesn't know it: then
+/// every branch, searched in the messages, as it was.
+async fn read_graph(client: &Client, path: PathBuf, op: GitOp) -> anyhow::Result<Response> {
+    let response = client.request(Request::Git { path: path.clone(), op: op.clone() }).await;
+    match (response, op) {
+        (Err(_), GitOp::FindGraph { query, scope: GraphScope::Message, file, skip, limit, .. }) => {
+            client.request(Request::Git { path, op: GitOp::Graph { query, file, skip, limit } }).await
+        }
+        (response, _) => response,
     }
 }
 
@@ -680,7 +723,51 @@ impl HistoryView {
     }
 
     /// The search, and the file whose history it is, if it is one.
+    /// Where the search looks, as gitk's "containing" / "touching paths" /
+    /// "adding/removing string": one of three, the chosen one marked.
+    fn render_scopes(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let chosen = self.scope;
+        h_flex().flex_none().gap_0p5().text_ui_small(cx).children(
+            [(GraphScope::Message, "Message"), (GraphScope::Paths, "Paths"), (GraphScope::Content, "Content")].map(|(scope, label)| {
+                let selected = scope == chosen;
+                div()
+                    .id(label)
+                    .px_2()
+                    .py_0p5()
+                    .rounded(theme.radius)
+                    .text_color(if selected { theme.foreground } else { theme.muted_foreground })
+                    .when(selected, |el| el.bg(crate::app::selected_row(cx)))
+                    .when(!selected, |el| el.hover(|style| style.bg(theme.secondary_hover)))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, window, cx| this.set_scope(scope, window, cx)))
+            }),
+        )
+    }
+
+    /// All Branches: every branch, tag and remote, or (unchecked) only the
+    /// current branch, as gitk shows it.
+    fn render_branches_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let all = Config::get(cx).history_all_branches;
+        h_flex()
+            .id("history-all-branches")
+            .flex_none()
+            .gap_1()
+            .px_1()
+            .rounded(theme.radius)
+            .text_ui_small(cx)
+            .text_color(if all { theme.foreground } else { theme.muted_foreground })
+            .hover(|style| style.bg(theme.secondary_hover))
+            .child(if all { "☑" } else { "☐" })
+            .child("All Branches")
+            .tooltip(|window, cx| Tooltip::new("Every branch, tag and remote, not only the current branch").build(window, cx))
+            .on_click(cx.listener(move |this, _, _, cx| this.set_all_branches(!all, cx)))
+    }
+
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let branches = self.render_branches_toggle(cx).into_any_element();
+        let scopes = self.render_scopes(cx).into_any_element();
         let theme = cx.theme();
         h_flex()
             .flex_none()
@@ -690,6 +777,7 @@ impl HistoryView {
             .border_b_1()
             .border_color(theme.border)
             .child(div().w(px(320.)).flex_none().child(Input::new(&self.query).small().cleanable(true)))
+            .child(scopes)
             .when_some(self.file.as_ref().map(|(file, _)| file.clone()), |el, file| {
                 el.child(
                     h_flex()
@@ -711,6 +799,7 @@ impl HistoryView {
                 )
             })
             .child(div().flex_1())
+            .child(branches)
             .when(self.loading, |el| el.child(div().text_ui_small(cx).text_color(theme.muted_foreground).child("…")))
             .when_some(self.error.clone(), |el, error| {
                 el.child(div().min_w_0().overflow_hidden().text_ellipsis().text_ui_small(cx).text_color(theme.danger).child(error))

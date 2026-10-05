@@ -569,6 +569,10 @@ pub struct Config {
     /// The History tab's sizes, as dragged.
     #[serde(deserialize_with = "lenient")]
     pub history: HistorySizes,
+    /// The History tab shows every branch, tag and remote, not only the
+    /// current branch (as gitk does without `--all`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub history_all_branches: bool,
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,
