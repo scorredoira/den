@@ -11,7 +11,7 @@ TypeScript lines. It knows nothing of any app.
 ## The command
 
 ```sh
-den chrome --port P [--url URL] [--root DIR] [--headless] [--profile DIR] [--hosts LIST]
+den chrome --port P [--url URL] [--root DIR] [--headless] [--profile DIR] [--hosts LIST] [--inspect-skip GLOBS]
 ```
 
 - `--port`: where it listens for Den, on 127.0.0.1. `0` takes a free port;
@@ -30,6 +30,10 @@ den chrome --port P [--url URL] [--root DIR] [--headless] [--profile DIR] [--hos
   Chrome 136 and later refuse remote debugging on the default profile.
 - `--hosts`: the hosts whose pages are debugged, separated by commas: `name`,
   or `*.name` for its subdomains. By default `localhost,127.0.0.1,*.localhost`.
+- `--inspect-skip`: files an inspected element's creation stack passes over,
+  as globs of the root separated by commas (`*` within a folder, `**` across
+  folders): a widget library, so the line revealed is the one that asked for
+  the widget.
 
 Chrome is `DEN_CHROME` when set, otherwise Google Chrome where it is usually
 installed (on macOS `/Applications/Google Chrome.app`), or `google-chrome`,
@@ -81,7 +85,12 @@ line, as sim does.
 ones first, and `this` in a method. `globals` is the module's variables: the
 scope of the bundle's wrapper (a function of no source), or the module's or
 script's scope. Arrays, maps and sets carry `count`; a map's children are its
-entries, named by their key. A getter is shown as `(…)`, not run.
+entries, named by their key. A let or const whose declaration hasn't run yet
+is `<value unavailable>`. An object's children are its own properties, then
+the accessors of its prototypes sorted by name, as Chrome shows them: a DOM
+element's `tagName`, `id` and the rest with their values, and a class's
+getters, run with side effects refused (one with a side effect shows as `(…)`).
+Only the accessors of the page of children asked for are run.
 
 `eval`, log messages and conditions are evaluated in the frame. `eval` and log
 messages refuse an expression with side effects; an assignment (`a = 1`,
@@ -93,6 +102,18 @@ written by `den chrome`.
 rest, with the file and line of the call) and their uncaught exceptions,
 unless the VM stopped for that exception.
 
+## Inspect
+
+`inspect` with `on: true` lets the person pick an element on the debugged
+tabs, with Chrome's highlight; `on: false` stops it. Chrome keeps, for every
+node, the stack of the script that made it (`DOM.setNodeStackTracesEnabled`,
+set before a page runs). The pick maps that stack to the TypeScript files,
+reveals its first frame in a file `--inspect-skip` doesn't name (the first
+frame when all are skipped), and writes the whole stack to the console, one
+`file:line function` per line. A node the HTML parser made takes the stack of
+its nearest ancestor a script made; with none, the console says so. One pick
+ends the inspect.
+
 ## Its own commands
 
 For tests and agents, beside the protocol's. `vm` is the first debugged tab
@@ -103,6 +124,8 @@ when missing.
 | `navigate` | `url`, `vm?` | Loads the URL in the tab. |
 | `reload` | `vm?` | Reloads the tab. |
 | `evaluate` | `expr`, `vm?` | Runs the expression in the page, awaiting a promise: a `Var` named `expr`, with no `ref`. It answers when the code ends, after any stop it makes. |
+| `click` | `x`, `y`, `vm?` | A left click at that point of the tab, in CSS pixels. |
+| `inspectNode` | `expr`, `vm?` | The pick of `inspect` for the element the expression gives (run with no breakpoint stopping it): reveals the line and answers `{file, line, stack}`; `{}` when no script made it. |
 | `pages` | | `pages: [{vm, url, title}]` |
 
 `DEN_CHROME_TRACE=1` prints every CDP message on stderr.
@@ -110,7 +133,6 @@ when missing.
 ## Limits
 
 - `jump` is an error: Chrome can't set the next statement.
-- `inspect` is an unknown command.
 - `run` with `entry` doesn't stop at an entry: it opens `--url`.
 - Source maps over `https:` are not read, nor index maps (with `sections`).
 - Names are the bundle's: a variable the bundler renamed (`name2`) has that

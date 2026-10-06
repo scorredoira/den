@@ -110,6 +110,8 @@ pub struct Settings {
     pub url: Option<String>,
     /// Chrome was launched now: its blank tab can show the URL.
     pub launched: bool,
+    /// Globs of the files an inspected element's creation stack passes over.
+    pub inspect_skip: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -393,7 +395,7 @@ impl Core {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let cmd = request.get("cmd").and_then(Value::as_str).unwrap_or("").to_string();
         // the commands that run page code answer from their own thread
-        if matches!(cmd.as_str(), "navigate" | "reload" | "evaluate") {
+        if matches!(cmd.as_str(), "navigate" | "reload" | "evaluate" | "click") {
             if let Err(err) = self.page_command(generation, &cmd, id.clone(), &request) {
                 self.out.send(&json!({ "id": id, "ok": false, "error": format!("{err:#}") }));
             }
@@ -498,6 +500,35 @@ impl Core {
                     .map(|(vm, page)| json!({ "vm": vm, "url": page.url, "title": page.title }))
                     .collect();
                 body.insert("pages".into(), json!(pages));
+            }
+            "inspect" => {
+                let on = request.get("on").and_then(Value::as_bool).unwrap_or(false);
+                self.set_inspecting(on)?;
+            }
+            "inspectNode" => {
+                let vm = self.page_arg(request)?;
+                let expr = request.get("expr").and_then(Value::as_str).context("expr is missing")?;
+                // run with every pause skipped: a breakpoint in what it calls would stop the
+                // page while this thread waits for the answer
+                self.page_call(vm, "Debugger.setSkipAllPauses", json!({ "skip": true }))?;
+                let result = self.page_call(vm, "Runtime.evaluate", json!({ "expression": expr, "silent": true }));
+                self.page_call(vm, "Debugger.setSkipAllPauses", json!({ "skip": false }))?;
+                let result = result?;
+                if let Some(details) = result.get("exceptionDetails") {
+                    bail!("{expr}: {}", values::exception_text(details));
+                }
+                let object = &result["result"];
+                if values::str_of(object, "subtype") != "node" {
+                    bail!("{expr} is not an element: {}", values::preview(object));
+                }
+                let object_id = values::str_of(object, "objectId").to_string();
+                self.page_call(vm, "DOM.getDocument", json!({ "depth": 0 }))?;
+                let node = self.page_call(vm, "DOM.requestNode", json!({ "objectId": object_id }))?;
+                let node = node["nodeId"].as_i64().context("DOM.requestNode gave no node")?;
+                let picked = self.pick(vm, node)?;
+                if let Value::Object(picked) = picked {
+                    body = picked;
+                }
             }
             "" => bail!("a request without cmd"),
             other => bail!("unknown command {other:?}"),
@@ -630,17 +661,27 @@ impl Core {
         }
     }
 
-    /// `navigate`, `reload` and `evaluate`: they run page code, which can stop
-    /// at a breakpoint, so they wait for Chrome on a thread of their own.
+    /// `navigate`, `reload`, `evaluate` and `click`: they run page code, which
+    /// can stop at a breakpoint, so they wait for Chrome on a thread of their own.
     fn page_command(&mut self, generation: u64, cmd: &str, id: Value, request: &Value) -> Result<()> {
         let vm = self.page_arg(request)?;
         let session = self.pages.get(&vm).map(|page| page.session.clone()).with_context(|| format!("no vm {vm}"))?;
+        let mut before: Option<(&'static str, Value)> = None;
         let (method, params, name) = match cmd {
             "navigate" => {
                 let url = request.get("url").and_then(Value::as_str).context("url is missing")?;
                 ("Page.navigate", json!({ "url": url }), String::new())
             }
             "reload" => ("Page.reload", json!({}), String::new()),
+            "click" => {
+                let x = request.get("x").and_then(Value::as_f64).context("x is missing")?;
+                let y = request.get("y").and_then(Value::as_f64).context("y is missing")?;
+                // the press, then the release, which this answers
+                let press = json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 });
+                before = Some(("Input.dispatchMouseEvent", press));
+                let release = json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 });
+                ("Input.dispatchMouseEvent", release, String::new())
+            }
             _ => {
                 let expr = request.get("expr").and_then(Value::as_str).context("expr is missing")?;
                 let params = json!({
@@ -657,7 +698,11 @@ impl Core {
         thread::Builder::new()
             .name(format!("chrome-{cmd}"))
             .spawn(move || {
-                let result = cdp.call_timeout(Some(&session), method, params, None);
+                let result = match before {
+                    Some((method, params)) => cdp.call_timeout(Some(&session), method, params, None),
+                    None => Ok(Value::Null),
+                };
+                let result = result.and_then(|_| cdp.call_timeout(Some(&session), method, params, None));
                 let response = match result {
                     Ok(result) => page_command_body(method, &name, &result),
                     Err(err) => Err(err),
@@ -971,6 +1016,7 @@ impl Core {
                     }
                 }
             }
+            "Overlay.inspectNodeRequested" => self.on_inspect_requested(vm, params)?,
             "Runtime.consoleAPICalled" => self.on_console(vm, params),
             "Runtime.exceptionThrown" => self.on_exception_thrown(vm, params),
             _ => {}
@@ -1038,6 +1084,10 @@ impl Core {
         for (method, params) in setup {
             self.cdp.call(Some(&session), method, params).with_context(|| format!("set up vm {vm}"))?;
         }
+        // every node keeps the stack that made it, for inspect; on a page held at its start
+        // these can wait for it to run, so they go without waiting, before it is let run
+        self.call_in_background(Some(session.clone()), "DOM.enable", json!({}));
+        self.call_in_background(Some(session.clone()), "DOM.setNodeStackTracesEnabled", json!({ "enable": true }));
         if waiting {
             self.call_in_background(Some(session), "Runtime.runIfWaitingForDebugger", json!({}));
         }
@@ -1446,6 +1496,98 @@ impl Core {
         self.out.send(&json!({ "event": "output", "text": format!("{text}\n"), "file": file, "line": line }));
     }
 
+    // ---- inspect ----
+
+    /// Picking an element on the debugged pages, with Chrome's own highlight.
+    fn set_inspecting(&mut self, on: bool) -> Result<()> {
+        let vms: Vec<u64> = self.pages.iter().filter(|(_, page)| self.listed(page)).map(|(vm, _)| *vm).collect();
+        for vm in vms {
+            if on {
+                self.page_call(vm, "Overlay.enable", json!({}))?;
+                self.page_call(
+                    vm,
+                    "Overlay.setInspectMode",
+                    json!({
+                        "mode": "searchForNode",
+                        "highlightConfig": {
+                            "showInfo": true,
+                            "contentColor": { "r": 111, "g": 168, "b": 220, "a": 0.66 },
+                        },
+                    }),
+                )?;
+            } else {
+                self.page_call(vm, "Overlay.setInspectMode", json!({ "mode": "none", "highlightConfig": {} }))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The person picked an element: the line that made it.
+    fn on_inspect_requested(&mut self, vm: u64, params: &Value) -> Result<()> {
+        self.set_inspecting(false)?;
+        let backend = params["backendNodeId"].as_i64().context("a pick without a node")?;
+        self.page_call(vm, "DOM.getDocument", json!({ "depth": 0 }))?;
+        let pushed = self.page_call(vm, "DOM.pushNodesByBackendIdsToFrontend", json!({ "backendNodeIds": [backend] }))?;
+        let node = pushed["nodeIds"][0].as_i64().context("DOM.pushNodesByBackendIdsToFrontend gave no node")?;
+        self.pick(vm, node)?;
+        Ok(())
+    }
+
+    /// The line that made a node, or its nearest ancestor that a script made:
+    /// the first frame of its creation stack in a file not skipped. It is
+    /// revealed and the whole stack goes to the console; answers
+    /// `{file, line, stack}`, empty when no script made it.
+    fn pick(&mut self, vm: u64, node: i64) -> Result<Value> {
+        let mut node = node;
+        let mut frames = Vec::new();
+        for _ in 0..1000 {
+            let traces = self.page_call(vm, "DOM.getNodeStackTraces", json!({ "nodeId": node }))?;
+            let mut trace = traces.get("creation").cloned();
+            while let Some(current) = trace {
+                for frame in current["callFrames"].as_array().cloned().unwrap_or_default() {
+                    let name = values::str_of(&frame, "functionName");
+                    let name = if name.is_empty() { "(anonymous)" } else { name }.to_string();
+                    if let Some(original) = self.original_of(vm, &frame) {
+                        frames.push((original.file, original.line + 1, name));
+                    }
+                }
+                trace = current.get("parent").cloned();
+            }
+            if !frames.is_empty() {
+                break;
+            }
+            // made by the HTML parser: the nearest ancestor a script made
+            let resolved = self.page_call(vm, "DOM.resolveNode", json!({ "nodeId": node }))?;
+            let object = values::str_of(&resolved["object"], "objectId").to_string();
+            let parent = self.page_call(
+                vm,
+                "Runtime.callFunctionOn",
+                json!({ "functionDeclaration": "function() { return this.parentNode }", "objectId": object, "silent": true }),
+            )?;
+            let parent = values::str_of(&parent["result"], "objectId").to_string();
+            if parent.is_empty() {
+                break;
+            }
+            let requested = self.page_call(vm, "DOM.requestNode", json!({ "objectId": parent }))?;
+            node = requested["nodeId"].as_i64().context("DOM.requestNode gave no node")?;
+        }
+        if frames.is_empty() {
+            self.out.send(&json!({ "event": "output", "text": "No script made this element.\n", "file": "", "line": 0 }));
+            return Ok(json!({}));
+        }
+        let chosen = frames
+            .iter()
+            .find(|(file, _, _)| !self.settings.inspect_skip.iter().any(|glob| glob_matches(glob, file)))
+            .unwrap_or(&frames[0])
+            .clone();
+        let stack: Vec<String> = frames.iter().map(|(file, line, name)| format!("{file}:{line} {name}")).collect();
+        self.out.send(&json!({ "event": "reveal", "file": chosen.0, "line": chosen.1 }));
+        let text = format!("{}\n", stack.join("\n"));
+        self.out.send(&json!({ "event": "output", "text": text, "file": chosen.0, "line": chosen.1 }));
+        Ok(json!({ "file": chosen.0, "line": chosen.1, "stack": stack }))
+    }
+
+    // ---- values ----
     // ---- values ----
 
     /// The variables of a frame: its own, its blocks' and its closures', and
@@ -1534,7 +1676,8 @@ impl Core {
                 None if property.get("get").is_some_and(|get| get.get("objectId").is_some()) => {
                     list.push((name, json!({ "type": "accessor", "description": "(…)" })));
                 }
-                None => {}
+                // a let or const before its declaration runs
+                None => list.push((name, json!({ "type": "unavailable", "description": "<value unavailable>" }))),
             }
         }
         for property in result["privateProperties"].as_array().cloned().unwrap_or_default() {
@@ -1615,11 +1758,83 @@ impl Core {
                     .filter(|(name, _)| name.parse::<usize>().is_ok())
                     .collect();
             }
-            _ => children = self.properties(vm, &object)?,
+            _ => {
+                // its own properties, then the accessors of its prototypes (a DOM node's
+                // tagName, id…), sorted as Chrome shows them; only those of the page asked
+                // for are run
+                let own = self.properties(vm, &object)?;
+                let accessors = self.accessors(vm, &object, &own)?;
+                let total = own.len() + accessors.len();
+                let end = if count == 0 { total } else { (start + count).min(total) };
+                let mut page = Vec::new();
+                for index in start..end {
+                    match own.get(index) {
+                        Some((name, value)) => page.push((name.clone(), value.clone())),
+                        None => {
+                            let (name, value) = &accessors[index - own.len()];
+                            let value = match value {
+                                Some(value) => value.clone(),
+                                None => self.accessor_value(vm, &object, name)?,
+                            };
+                            page.push((name.clone(), value));
+                        }
+                    }
+                }
+                return Ok(page.into_iter().map(|(name, value)| self.var(vm, &name, &value)).collect());
+            }
         }
         let end = if count == 0 { children.len() } else { (start + count).min(children.len()) };
         let page: Vec<(String, Value)> = children.into_iter().skip(start).take(end.saturating_sub(start)).collect();
         Ok(page.into_iter().map(|(name, value)| self.var(vm, &name, &value)).collect())
+    }
+
+    /// The accessors an object gets from its prototypes, sorted by name, but
+    /// those of `own`: with their value when Chrome gives it (a DOM node's
+    /// tagName, id…), without it for a getter of a script, which has to run.
+    fn accessors(&self, vm: u64, object: &str, own: &[(String, Value)]) -> Result<Vec<(String, Option<Value>)>> {
+        let result = self.page_call(
+            vm,
+            "Runtime.getProperties",
+            json!({ "objectId": object, "ownProperties": false, "accessorPropertiesOnly": true, "generatePreview": true }),
+        )?;
+        let mut list: Vec<(String, Option<Value>)> = Vec::new();
+        for property in result["result"].as_array().cloned().unwrap_or_default() {
+            let name = values::str_of(&property, "name").to_string();
+            if name == "__proto__" || name == "constructor" || own.iter().any(|(listed, _)| *listed == name) {
+                continue;
+            }
+            if list.iter().any(|(listed, _)| *listed == name) {
+                continue;
+            }
+            match property.get("value") {
+                Some(value) => list.push((name, Some(value.clone()))),
+                None if property.get("get").is_some_and(|get| get.get("objectId").is_some()) => list.push((name, None)),
+                None => {}
+            }
+        }
+        list.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(list)
+    }
+
+    /// An accessor's value, run with no side effects allowed: one that would
+    /// have one shows as `(…)`, as Chrome does until it is clicked.
+    fn accessor_value(&self, vm: u64, object: &str, name: &str) -> Result<Value> {
+        let result = self.page_call(
+            vm,
+            "Runtime.callFunctionOn",
+            json!({
+                "functionDeclaration": "function(n) { return this[n] }",
+                "objectId": object,
+                "arguments": [{ "value": name }],
+                "throwOnSideEffect": true,
+                "generatePreview": true,
+                "silent": true,
+            }),
+        )?;
+        if result.get("exceptionDetails").is_some() {
+            return Ok(json!({ "type": "accessor", "description": "(…)" }));
+        }
+        Ok(result["result"].clone())
     }
 
     fn evaluate_on_frame(&self, vm: u64, frame: usize, expr: &str, no_side_effects: bool) -> Result<Value> {
@@ -1641,8 +1856,7 @@ impl Core {
             }),
         )?;
         if let Some(details) = result.get("exceptionDetails") {
-            let description = details["exception"].get("description").and_then(Value::as_str).map(values::first_line);
-            let message = description.unwrap_or_else(|| values::str_of(details, "text").to_string());
+            let message = values::exception_text(details);
             if message.contains("Possible side-effect") {
                 bail!(SideEffect);
             }
@@ -1703,6 +1917,33 @@ fn origin_of(url: &str) -> Option<&str> {
     let at = url.find("://")? + 3;
     let end = url[at..].find(['/', '?', '#']).map_or(url.len(), |end| at + end);
     Some(&url[..end])
+}
+
+/// Whether a file of the root matches a glob: `*` is any text within a
+/// folder, `**` any number of folders.
+fn glob_matches(glob: &str, file: &str) -> bool {
+    let glob: Vec<&str> = glob.split('/').filter(|part| !part.is_empty()).collect();
+    let file: Vec<&str> = file.split('/').filter(|part| !part.is_empty()).collect();
+    segments_match(&glob, &file)
+}
+
+fn segments_match(glob: &[&str], file: &[&str]) -> bool {
+    match glob.first() {
+        None => file.is_empty(),
+        Some(&"**") => (0..=file.len()).any(|skip| segments_match(&glob[1..], &file[skip..])),
+        Some(part) => !file.is_empty() && segment_matches(part, file[0]) && segments_match(&glob[1..], &file[1..]),
+    }
+}
+
+fn segment_matches(glob: &str, name: &str) -> bool {
+    match glob.split_once('*') {
+        None => glob == name,
+        Some((before, after)) => {
+            name.len() >= before.len()
+                && name.starts_with(before)
+                && (0..=name.len() - before.len()).any(|at| segment_matches(after, &name[before.len() + at..]))
+        }
+    }
 }
 
 fn is_blank(url: &str) -> bool {
@@ -1775,9 +2016,7 @@ fn page_command_body(method: &str, name: &str, result: &Value) -> Result<Map<Str
         }
         "Runtime.evaluate" => {
             if let Some(details) = result.get("exceptionDetails") {
-                let description =
-                    details["exception"].get("description").and_then(Value::as_str).map(values::first_line);
-                bail!("{}", description.unwrap_or_else(|| values::str_of(details, "text").to_string()));
+                bail!("{}", values::exception_text(details));
             }
             let object = &result["result"];
             body.insert("name".into(), json!(name));
@@ -1793,6 +2032,18 @@ fn page_command_body(method: &str, name: &str, result: &Value) -> Result<Map<Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn globs() {
+        assert!(super::glob_matches("client/scl/widgets/**", "client/scl/widgets/button.ts"));
+        assert!(super::glob_matches("client/scl/widgets/**", "client/scl/widgets/a/b.ts"));
+        assert!(!super::glob_matches("client/scl/widgets/**", "client/scl/platform/boot.ts"));
+        assert!(super::glob_matches("src/util.ts", "src/util.ts"));
+        assert!(super::glob_matches("src/*.ts", "src/util.ts"));
+        assert!(!super::glob_matches("src/*.ts", "src/a/util.ts"));
+        assert!(super::glob_matches("**/ui*.ts", "client/scl/uikit.ts"));
+        assert!(!super::glob_matches("src/u*l.ts", "src/util.tsx"));
+    }
+
     #[test]
     fn the_origin_of_an_address() {
         assert_eq!(super::origin_of("http://localhost:8080/main/login?ret=1"), Some("http://localhost:8080"));

@@ -13,12 +13,20 @@
       __publicField(this, "name", name);
       __publicField(this, "count", 0);
     }
+    get doubled() {
+      return this.count * 2;
+    }
     bump() {
       this.count++;
     }
   };
   function fail(message) {
     throw new Error(message);
+  }
+  function makeBox(label) {
+    const box = document.createElement("div");
+    box.textContent = label;
+    return box;
   }
 
   // src/app.ts
@@ -57,7 +65,14 @@
     }
     return acc;
   }
+  function showBox() {
+    const box = makeBox("a box");
+    box.id = "box";
+    box.style.cssText = "width: 200px; height: 100px";
+    document.body.appendChild(box);
+  }
   window.app = { main, throwCaught, throwLater, spin, loads: () => loads };
+  showBox();
   main();
 })();
 //# sourceMappingURL=app.js.map

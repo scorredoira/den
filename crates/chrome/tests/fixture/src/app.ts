@@ -1,5 +1,5 @@
 // The page the tests debug. Markers (@name) name the lines the tests use.
-import { add, Counter, fail } from "./util";
+import { add, Counter, fail, makeBox } from "./util";
 
 interface Order {
 	id: number;
@@ -48,5 +48,13 @@ function spin(n: number): number {
 	return acc;
 }
 
+function showBox(): void {
+	const box = makeBox("a box"); // @box
+	box.id = "box";
+	box.style.cssText = "width: 200px; height: 100px"; // @style
+	document.body.appendChild(box);
+}
+
 (window as any).app = { main, throwCaught, throwLater, spin, loads: () => loads };
+showBox();
 main();

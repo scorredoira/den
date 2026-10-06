@@ -32,7 +32,7 @@ use crate::{
     debugger::{Core, Input, Out, Settings},
 };
 
-const USAGE: &str = "usage: den chrome --port P [--url URL] [--root DIR] [--headless] [--profile DIR] [--hosts LIST]";
+const USAGE: &str = "usage: den chrome --port P [--url URL] [--root DIR] [--headless] [--profile DIR] [--hosts LIST] [--inspect-skip GLOBS]";
 
 /// What `den chrome` was asked for.
 #[derive(Clone, Debug)]
@@ -48,6 +48,10 @@ pub struct Options {
     pub profile: Option<PathBuf>,
     /// The hosts whose pages are debugged: `name` or `*.name`.
     pub hosts: Vec<String>,
+    /// Files an inspected element's creation stack passes over to reveal
+    /// the line that asked for it: globs of the root, `*` within a folder
+    /// and `**` across them.
+    pub inspect_skip: Vec<String>,
 }
 
 impl Options {
@@ -58,6 +62,7 @@ impl Options {
         let mut headless = false;
         let mut profile = None;
         let mut hosts = None;
+        let mut inspect_skip = Vec::new();
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             let (name, inline) = match arg.split_once('=') {
@@ -90,6 +95,13 @@ impl Options {
                     }
                     hosts = Some(list);
                 }
+                "--inspect-skip" => {
+                    inspect_skip = value()?
+                        .split(',')
+                        .map(|glob| glob.trim().trim_start_matches("./").to_string())
+                        .filter(|glob| !glob.is_empty())
+                        .collect();
+                }
                 "-h" | "--help" => bail!("{USAGE}"),
                 other => bail!("unknown argument {other:?}\n{USAGE}"),
             }
@@ -101,7 +113,7 @@ impl Options {
         };
         let root = root.canonicalize().with_context(|| format!("--root {}", root.display()))?;
         let hosts = hosts.unwrap_or_else(|| vec!["localhost".into(), "127.0.0.1".into(), "*.localhost".into()]);
-        Ok(Options { port, url, root, headless, profile, hosts })
+        Ok(Options { port, url, root, headless, profile, hosts, inspect_skip })
     }
 }
 
@@ -159,6 +171,7 @@ impl Bridge {
             hosts: options.hosts.clone(),
             url: options.url.clone(),
             launched: browser.launched,
+            inspect_skip: options.inspect_skip.clone(),
         };
         let core = Core::new(cdp.clone(), Out::default(), settings);
         let worker = thread::Builder::new()

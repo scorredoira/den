@@ -173,6 +173,13 @@ fn quote(text: &str) -> String {
     format!("{}{more}", Value::String(cut))
 }
 
+/// What an evaluation's `exceptionDetails` say: the first line of the
+/// exception, else the details' text.
+pub fn exception_text(details: &Value) -> String {
+    let description = details["exception"].get("description").and_then(Value::as_str).map(first_line);
+    description.unwrap_or_else(|| str_of(details, "text").to_string())
+}
+
 pub fn str_of<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
