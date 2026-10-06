@@ -818,3 +818,30 @@ fn inspecting_an_element_reveals_the_line_that_made_it() -> Result<()> {
     ensure!(reveal["file"] == "src/app.ts" && reveal["line"] == caller, "{reveal}");
     Ok(())
 }
+
+#[test]
+fn an_alt_click_in_the_page_reveals_the_line_that_made_the_element() -> Result<()> {
+    let caller = line("app.ts", "box")?;
+    let mut session = Session::start_skipping(None, &["src/util.ts"])?;
+    session.navigate("/index.html")?;
+    session.client.output("total 6 Ann")?;
+    let center = session.client.request(
+        "evaluate",
+        json!({ "expr": "(() => { const r = document.getElementById(\"box\").getBoundingClientRect(); return JSON.stringify([r.x + r.width / 2, r.y + r.height / 2]) })()" }),
+    )?;
+    let center: Vec<f64> = serde_json::from_str(center["value"].as_str().context("center")?.trim_matches('"'))?;
+
+    // a plain click is the page's, and reveals nothing
+    session.client.request("click", json!({ "x": center[0], "y": center[1] }))?;
+    session.client.no_event("reveal", Duration::from_millis(500), |event| event["event"] == "reveal")?;
+    let clicks = session.client.request("evaluate", json!({ "expr": "app.boxClicks()" }))?;
+    ensure!(clicks["value"] == "1", "{clicks}");
+
+    // an Alt+click reveals the line that made the element, and the page never sees it
+    session.client.request("click", json!({ "x": center[0], "y": center[1], "modifiers": 1 }))?;
+    let reveal = session.client.event("reveal", |event| event["event"] == "reveal")?;
+    ensure!(reveal["file"] == "src/app.ts" && reveal["line"] == caller, "{reveal}");
+    let clicks = session.client.request("evaluate", json!({ "expr": "app.boxClicks()" }))?;
+    ensure!(clicks["value"] == "1", "the page saw the Alt+click: {clicks}");
+    Ok(())
+}

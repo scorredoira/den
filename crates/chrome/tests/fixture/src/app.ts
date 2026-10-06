@@ -8,6 +8,7 @@ interface Order {
 }
 
 let loads = 0;
+let boxClicks = 0;
 const tags = new Map<string, number>([["a", 1], ["b", 2]]);
 
 function total(order: Order): number {
@@ -52,9 +53,12 @@ function showBox(): void {
 	const box = makeBox("a box"); // @box
 	box.id = "box";
 	box.style.cssText = "width: 200px; height: 100px"; // @style
+	box.addEventListener("click", () => {
+		boxClicks++;
+	});
 	document.body.appendChild(box);
 }
 
-(window as any).app = { main, throwCaught, throwLater, spin, loads: () => loads };
+(window as any).app = { main, throwCaught, throwLater, spin, loads: () => loads, boxClicks: () => boxClicks };
 showBox();
 main();

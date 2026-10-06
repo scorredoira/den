@@ -31,6 +31,7 @@
 
   // src/app.ts
   var loads = 0;
+  var boxClicks = 0;
   var tags = /* @__PURE__ */ new Map([["a", 1], ["b", 2]]);
   function total(order) {
     let sum = 0;
@@ -69,9 +70,12 @@
     const box = makeBox("a box");
     box.id = "box";
     box.style.cssText = "width: 200px; height: 100px";
+    box.addEventListener("click", () => {
+      boxClicks++;
+    });
     document.body.appendChild(box);
   }
-  window.app = { main, throwCaught, throwLater, spin, loads: () => loads };
+  window.app = { main, throwCaught, throwLater, spin, loads: () => loads, boxClicks: () => boxClicks };
   showBox();
   main();
 })();
