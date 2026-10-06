@@ -345,7 +345,7 @@ fn parse_panel(name: &str) -> Result<Panel, String> {
 const NOTES_USAGE: &str = "den notes: [add <text> | set <text>], or the text from stdin";
 
 const DEBUG_USAGE: &str = "den debug: state | inspect | start [<file>] | stop | restart | continue | next | in | out | pause \
-    | break <file>:<line> | clear [<file>:<line>] | eval <expr> | wait [stop|connected|idle] [<seconds>]";
+    | break <file>:<line> | clear [<file>:<line>] | eval <expr> | wait [stop|connected|idle] [<seconds>] | target [<name>]";
 
 /// How long `den debug wait` waits when not told.
 const DEBUG_WAIT: Duration = Duration::from_secs(30);
@@ -365,6 +365,11 @@ fn debug_command(
     };
     let answer = match args {
         ["state"] => Ok(debugger.read(cx).state().to_string()),
+        ["target"] => {
+            let debugger = debugger.read(cx);
+            Ok(json!({ "target": debugger.target(), "targets": debugger.targets }).to_string())
+        }
+        ["target", name] => debugger.update(cx, |debugger, cx| debugger.set_target(name, cx)).map(|()| String::new()),
         ["inspect"] => {
             if debugger.update(cx, |debugger, _| debugger.inspect()) {
                 Ok(String::new())

@@ -26,6 +26,22 @@ the agent, so a program on a server is debugged like a local one.
   own and none reaches another's program (another window's, one left
   running).
 
+- `targets`: where the command runs the program, e.g.
+  `["ios", "android", "chrome"]`. The names are the project's; Den gives
+  them no meaning. The debugger's toolbar shows the target picked, which a
+  click changes; each workspace keeps its own, the first until one is
+  picked. `${target}` in `command` and in the tests' `run` and `debug` is
+  it, and empty without `targets`. `den debug target` prints it and the
+  list; `den debug target <name>` picks one. Restart keeps the target the
+  session started with.
+
+```json
+{
+    "command": "scl app ${target} --dev -dp 127.0.0.1:${port}",
+    "targets": ["ios", "android", "chrome"]
+}
+```
+
 F5 runs the command. If something already answers on `port`, it attaches to
 it instead of starting the command again; never with `${port}`, which is
 always started. If the command's terminal goes back to its shell before the
@@ -94,11 +110,62 @@ den debug continue
 
 `den debug restart` is Cmd-Shift-F5: it stops the session and starts it
 again. `den debug state` is the session (`idle`, `connecting: …`, `connected`), the
-stopped VMs, the focused stop (file, line, frames, locals, exception), the
+target, the stopped VMs, the focused stop (file, line, frames, locals, exception), the
 breakpoints and the last lines of the console. `wait [stop|connected|idle]
 [<seconds>]` waits for that (30 seconds at most) and prints the state; a
 session that fails ends the wait too, and the console says why. `den
 --help` lists them all.
+
+## Several programs: `den debug join`
+
+`den debug join` runs several programs as one debug session: a server and
+the page it serves in Chrome, or a server and an app.
+
+```sh
+den debug join --port P [--no-page] -- <command> [<args>...] -- <command> [<args>...] [-- ...]
+```
+
+A launch file that debugs a server and its page in Chrome (the Chrome
+bridge, `den chrome`, is in [chrome.md](chrome.md)). The bridge opens the
+page itself, so `--no-page` keeps Den from opening the server's too:
+
+```json
+{
+    "command": "den debug join --port ${port} --no-page -- sim -d -dp 127.0.0.1:{port} ${file} -- den chrome --port {port} --url http://localhost:9092/"
+}
+```
+
+- `{port}` in a command is a free port of its own, where that program
+  listens for the debugger. Every command needs one. `${port}` is Den's,
+  where join listens. A command can't contain `--`.
+- The programs start in order, each once the one before listens and
+  answered `hello`: an app that starts its own server when none runs finds
+  the one before. There is no time limit (an app's build takes minutes);
+  the output of each goes on showing meanwhile, its lines after its name.
+  A program that ends before it listens ends join, with its exit and its
+  last lines of stderr. Programs that report different `cwd` end it too.
+- join serves protocol v1 on `127.0.0.1:P` to one client, as a program
+  does: the first line must be `hello`, and a new connection replaces the
+  one before.
+- Every `vm`, `ref` and `globals` number a program sends becomes
+  `n * 16 + i`, where `i` is the program's place (16 programs at most; 0
+  stays 0). A request with `vm` or `ref` goes to that program, with its own
+  number. Any other goes to every program and the answers are merged:
+  `hello` (`waiting` if any is, `running` added up, `stopped` together, the
+  first `page` unless `--no-page`), `threads` (the same), `setBreakpoints`
+  (each line where any program could put it: a program keeps the
+  breakpoints of files it doesn't load), `run`, `setExceptions` and
+  `pause` (an error if any program failed), and any other command (the
+  first program that answers it, e.g. `inspect`).
+- A client's session is a connection to each program, opened at its
+  `hello` and closed when it goes: each program then does what it does when
+  its client goes (clears its breakpoints, resumes its VMs), and nothing
+  holds a program while nobody debugs.
+- A program that ends is told in the console (an `output` event); its
+  stopped VMs resume and join goes on with the others. join ends when every
+  program has ended, or when interrupted (Stop interrupts the launch
+  command): it then ends its programs, with SIGINT and, after 3 seconds,
+  SIGKILL.
 
 ## Keys
 

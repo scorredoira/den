@@ -113,6 +113,7 @@ impl Debugger {
 
         let mut out = json!({
             "status": status,
+            "target": self.target(),
             "running": self.running,
             "stopped": stopped,
             "breakpoints": breakpoints,

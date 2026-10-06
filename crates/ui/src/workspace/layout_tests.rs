@@ -482,3 +482,27 @@ fn the_outline_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
     let places = cx.update(|_, cx| Config::get(cx).layout.places());
     assert!(places.contains(&Place(Panel::Outline)), "{places:?}");
 }
+
+/// With targets in the launch file, the debugger's toolbar shows the one
+/// picked; picking another keeps it for the workspace and `den debug
+/// state` says it.
+#[gpui_kit::test]
+fn the_toolbar_picks_the_target(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Debugger, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("debug-target").is_none(), "no picker without targets");
+    let debugger = workspace.read_with(cx, |workspace, _| workspace.debugger());
+    debugger.update(cx, |debugger, cx| {
+        debugger.targets = vec!["ios".into(), "android".into()];
+        assert_eq!(debugger.state()["target"], "ios");
+        assert!(debugger.set_target("web", cx).unwrap_err().contains("ios, android"));
+        debugger.set_target("android", cx).unwrap();
+        assert_eq!(debugger.state()["target"], "android");
+        cx.notify();
+    });
+    cx.run_until_parked();
+    bounds(cx, "debug-target");
+    let saved = cx.update(|_, cx| Config::get(cx).debug.get("layout-test").and_then(|saved| saved.target.clone()));
+    assert_eq!(saved.as_deref(), Some("android"));
+}

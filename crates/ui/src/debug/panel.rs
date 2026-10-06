@@ -6,8 +6,9 @@ use std::path::Path;
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex,
+    button::{Button, ButtonVariants as _},
     input::Input,
-    menu::{ContextMenuExt as _, PopupMenu},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu},
     resizable_panel,
     tooltip::Tooltip,
     v_flex, v_resizable,
@@ -250,7 +251,45 @@ impl Debugger {
                     .child(status)
                     .context_menu(self.panel_menu(cx)),
             )
+            .children(self.render_target_picker(cx))
             .into_any_element()
+    }
+
+    /// The target the launch command runs the program on, with the launch
+    /// file's others to pick from; none without `targets`.
+    fn render_target_picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let current = self.target()?.to_string();
+        let targets = self.targets.clone();
+        let debugger = cx.entity().downgrade();
+        let button = Button::new("debug-target")
+            .ghost()
+            .xsmall()
+            .label(current.clone())
+            .dropdown_caret(true)
+            .tooltip("Where the launch command runs the program (${target})")
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                for target in &targets {
+                    let name = target.clone();
+                    menu = menu.item(
+                        menu::item(target.clone(), &debugger, move |this, _, cx| {
+                            // the launch file may have changed since the menu opened
+                            if let Err(error) = this.set_target(&name, cx) {
+                                this.info(error, cx);
+                            }
+                        })
+                        .checked(*target == current),
+                    );
+                }
+                menu
+            });
+        Some(
+            div()
+                .id("debug-target-picker")
+                .when(cfg!(test), |el| el.debug_selector(|| "debug-target".into()))
+                .flex_none()
+                .child(button)
+                .into_any_element(),
+        )
     }
 
     fn render_stack(&self, cx: &mut Context<Self>) -> AnyElement {

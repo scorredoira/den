@@ -1,0 +1,11 @@
+[package]
+name = "chrome"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+serde_json.workspace = true
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
