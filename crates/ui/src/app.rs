@@ -1837,22 +1837,22 @@ impl Den {
     }
 
     /// The tasks' state on the explorer's icon or the panels' headers: the
-    /// most urgent of the other workspaces (those of hidden projects too),
-    /// of the project's other worktrees, and of the agents.
+    /// most urgent of the workspaces (those of hidden projects too, and the
+    /// one in front), of the project's worktrees, and of the agents. Idle
+    /// says nothing.
     fn task_badges(&self, cx: &App) -> TaskBadges {
         let project = self.active_project();
-        let others: Vec<(TaskKey, &TaskInfo)> =
-            self.ordered_all(cx).into_iter().filter(|(key, _)| self.active.as_ref() != Some(key)).collect();
-        let most_urgent = |others: &mut dyn Iterator<Item = &(TaskKey, &TaskInfo)>| {
-            others
+        let tasks = self.ordered_all(cx);
+        let most_urgent = |tasks: &mut dyn Iterator<Item = &(TaskKey, &TaskInfo)>| {
+            tasks
                 .map(|(key, task)| self.status(key, task, cx))
                 .filter(|(dot, color)| urgency(dot, *color, cx) > 0)
                 .max_by_key(|(dot, color)| urgency(dot, *color, cx))
                 .map(|(_, color)| color)
         };
         TaskBadges {
-            workspaces: most_urgent(&mut others.iter()),
-            worktrees: most_urgent(&mut others.iter().filter(|(key, task)| Some(project_of(key, task)) == project)),
+            workspaces: most_urgent(&mut tasks.iter()),
+            worktrees: most_urgent(&mut tasks.iter().filter(|(key, task)| Some(project_of(key, task)) == project)),
             agents: self.agents_badge(cx),
         }
     }
@@ -2906,6 +2906,17 @@ impl Den {
         v_flex().child(row).children(error).into_any_element()
     }
 
+    /// The Worktrees panel has something to tell: the project in front has
+    /// worktrees besides its checkout, or one being named. With only the
+    /// checkout it doesn't show (the project's row has New Worktree).
+    fn lists_worktrees(&self, cx: &App) -> bool {
+        let Some(project) = self.active_project() else {
+            return false;
+        };
+        let naming = self.new_task.as_ref().is_some_and(|form| form.host == project.host && form.repo == project.path);
+        naming || self.ordered_all(cx).iter().filter(|(key, task)| project_of(key, task) == project).count() > 1
+    }
+
     /// The Worktrees panel: the checkout and the worktrees of the project in
     /// front, a row each; then the one being named.
     fn render_worktrees(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3142,7 +3153,7 @@ impl Render for Den {
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let panel = self.workspaces_panel.clone();
             let worktrees = self.worktrees_panel.clone();
-            let has_worktrees = self.active_project().is_some_and(|project| self.is_repo(&project));
+            let has_worktrees = self.lists_worktrees(cx);
             let agents = self.agents_panel.clone();
             let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
@@ -3709,12 +3720,14 @@ mod palette_tests {
             assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
             assert_eq!(den.ordered_all(cx).len(), 3);
             assert!(den.is_repo(&key("/den")));
+            assert!(den.lists_worktrees(cx), "the checkout and a worktree");
         });
         // In front, it's gone through as any other.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/stride"), window, cx)));
         den.read_with(cx, |den, cx| {
             assert_eq!(den.active, Some(key("/stride")));
             assert_eq!(paths(den, cx).len(), 3);
+            assert!(!den.lists_worktrees(cx), "only its checkout");
         });
         // Back to den: its worktree, not its checkout.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/den"), window, cx)));

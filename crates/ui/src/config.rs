@@ -684,6 +684,10 @@ pub struct Config {
     /// show beside the commits, as they do by default.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_hide_files: bool,
+    /// The terminals show beside the History tab in front: hidden there by
+    /// default, for the history to have the width.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub history_terminals: bool,
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,
