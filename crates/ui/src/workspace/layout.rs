@@ -102,6 +102,8 @@ pub(super) struct Panels {
     /// The panel tab in front of the terminals, if one is: the console or
     /// the notes (always a tab at the bar's far end).
     front: Option<Panel>,
+    /// The terminals were opened for the notes: hiding these closes them.
+    notes_alone: bool,
     /// Search or References, whichever showed last: F4 steps through it.
     pub results: Panel,
     /// The side panels open in the column this workspace last drew: one
@@ -120,6 +122,7 @@ impl Panels {
             terminals: saved.terminals,
             console: false,
             front: None,
+            notes_alone: false,
             results: Panel::Search,
             seen: Vec::new(),
         }
@@ -240,13 +243,16 @@ impl Workspace {
             Panel::Terminals => {
                 panels.terminals = true;
                 panels.front = None;
+                panels.notes_alone = false;
             }
             Panel::Console => {
                 panels.terminals = true;
                 panels.console = true;
                 panels.front = Some(Panel::Console);
+                panels.notes_alone = false;
             }
             Panel::Notes => {
+                panels.notes_alone = !panels.terminals || (panels.front == Some(Panel::Notes) && panels.notes_alone);
                 panels.terminals = true;
                 panels.front = Some(Panel::Notes);
             }
@@ -289,6 +295,7 @@ impl Workspace {
             Panel::Code => return,
             Panel::Terminals => {
                 panels.terminals = false;
+                panels.notes_alone = false;
                 self.terminals_maximized = false;
             }
             Panel::Console => {
@@ -297,11 +304,16 @@ impl Workspace {
                     panels.front = None;
                 }
             }
-            // The terminals show again.
+            // The terminals show again, or close if they opened for the notes.
             Panel::Notes => {
                 if panels.front == Some(Panel::Notes) {
                     panels.front = None;
+                    if panels.notes_alone {
+                        panels.terminals = false;
+                        self.terminals_maximized = false;
+                    }
                 }
+                panels.notes_alone = false;
             }
             Panel::Debugger => {
                 let layout = &Config::get(cx).layout;

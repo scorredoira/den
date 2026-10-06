@@ -302,6 +302,20 @@ fn the_notes_are_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     bounds(cx, "notes-tab");
 }
 
+/// With the terminals closed, the notes' icon opens them with the notes in
+/// front, and closes them again on the next click.
+#[gpui_kit::test]
+fn the_notes_icon_toggles_them(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    cx.run_until_parked();
+    click(cx, "activity-Notes");
+    bounds(cx, "notes");
+    click(cx, "activity-Notes");
+    assert!(cx.debug_bounds("notes").is_none());
+    workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
+}
+
 /// The side column is the same in every workspace: going from one to
 /// another doesn't move it. The terminals are each one's.
 #[gpui_kit::test]
