@@ -122,6 +122,9 @@ impl Workspace {
             "layout": if self.debugging { "debugging" } else { "editing" },
             "debugger": session,
         });
+        // the debugger's grid: its parts in their cells' order, and those hidden
+        let grid = &Config::get(cx).layout.debug_grid;
+        out["debugger"]["grid"] = serde_json::json!({ "order": grid.order(), "hidden": grid.hidden });
         if let Some(branch) = &self.branch {
             out["branch"] = branch.clone().into();
         }

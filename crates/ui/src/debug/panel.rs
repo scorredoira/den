@@ -1,6 +1,6 @@
 //! The debugger's tab, after the terminals': its toolbar; the call stack,
-//! the variables, the watches and the breakpoints side by side; and the
-//! console under them.
+//! the variables, the watches and the breakpoints in a grid of two rows of
+//! two; and the console under them.
 
 use std::{cell::Cell, path::Path, rc::Rc};
 
@@ -9,7 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     input::Input,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu},
-    ResizableState, h_resizable, resizable_panel,
+    h_resizable, resizable_panel,
     tooltip::Tooltip,
     v_flex, v_resizable,
 };
@@ -20,7 +20,8 @@ use crate::menu::PanelItems as _;
 use super::{ConsoleLine, DebugEvent, Debugger, EditKind, Status, Var, child_path};
 use crate::{
     DebugContinue, DebugPause, DebugRestart, DebugStop, StepInto, StepOut, StepOver,
-    config::{Config, Split, UiText},
+    config::{Config, DebugPart, Split, UiText},
+    drag_drop::TabDragPreview,
     menu,
 };
 
@@ -147,6 +148,8 @@ impl Debugger {
                     })
                     .disabled(!connected),
                 )
+                .separator()
+                .submenu("Show", window, cx, show_parts_menu)
                 .separator()
                 .panel_items(hide_item(&debugger), window, cx)
         }
@@ -882,19 +885,12 @@ impl Debugger {
     }
 }
 
-/// A part of the debugger, a cell of its tab's grid.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum DebugPart {
-    Stack,
-    Variables,
-    Watch,
-    Breakpoints,
-}
+/// A part dragged by its header onto another's cell: the two swap.
+#[derive(Clone)]
+struct PartDrag(DebugPart);
 
 impl DebugPart {
-    const ALL: [DebugPart; 4] = [DebugPart::Stack, DebugPart::Variables, DebugPart::Watch, DebugPart::Breakpoints];
-
-    fn title(self) -> &'static str {
+    pub fn title(self) -> &'static str {
         match self {
             DebugPart::Stack => "Call Stack",
             DebugPart::Variables => "Variables",
@@ -933,6 +929,7 @@ impl Debugger {
         let watches = part == DebugPart::Watch && !self.watches.is_empty();
         let debugger = cx.entity().downgrade();
         let theme = cx.theme();
+        let primary = theme.primary;
         v_flex()
             .id(SharedString::from(format!("debug-cell-{part:?}")))
             .when(cfg!(test), |el| el.debug_selector(move || format!("debug-cell-{part:?}")))
@@ -951,13 +948,28 @@ impl Debugger {
                     .text_color(theme.muted_foreground)
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .child(part.title().to_uppercase()),
+                    .child(part.title().to_uppercase())
+                    .id(SharedString::from(format!("debug-header-{part:?}")))
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("debug-header-{part:?}")))
+                    .on_drag(PartDrag(part), |drag, _, _, cx| cx.new(|_| TabDragPreview(drag.0.title().into())))
+                    .drag_over::<PartDrag>(move |style, _, _, _| style.bg(primary.opacity(0.25))),
             )
             .child(div().id(id).flex_1().min_h_0().overflow_y_scroll().text_ui(cx).child(body))
-            // the Watch panel's own first
+            // dropped anywhere on the cell, the dragged part takes its place
+            .drag_over::<PartDrag>(move |style, _, _, _| style.border_2().border_color(primary))
+            .on_drop(move |drag: &PartDrag, _, cx| {
+                if drag.0 != part {
+                    let dragged = drag.0;
+                    Config::update(cx, |config| config.layout.debug_grid.swap(dragged, part));
+                }
+            })
+            // the Watch panel's own first, then hiding this part
             .context_menu(move |menu, window, cx| {
                 let menu = menu.when(watches, |menu| menu.item(remove_watches_item(&debugger)).separator());
-                panel_menu(menu, window, cx)
+                let hide = menu::PopupMenuItem::new(format!("Hide {}", part.title())).on_click(move |_, _, cx| {
+                    Config::update(cx, |config| config.layout.debug_grid.set_hidden(part, true));
+                });
+                panel_menu(menu.item(hide).separator(), window, cx)
             })
             .into_any_element()
     }
@@ -1011,48 +1023,79 @@ impl DebugView {
         }
     }
 
-    /// The grid: two rows of two, each edge draggable.
+    /// The grid: two rows of two, each edge draggable and kept. A hidden
+    /// part's row mate takes the row; a row with none goes, and the other
+    /// takes the grid.
     fn render_grid(&mut self, size: Size<Pixels>, grid_height: f32, cx: &mut Context<Self>) -> AnyElement {
-        let mut cells: Vec<(DebugPart, AnyElement)> = DebugPart::ALL
-            .into_iter()
-            .map(|part| (part, self.debugger.update(cx, |debugger, cx| debugger.render_part(part, cx))))
-            .collect();
-        let bottom_cells = cells.split_off(2);
+        let grid = Config::get(cx).layout.debug_grid.clone();
         let border = cx.theme().border;
         let width = size.width;
-        let row = |id: &'static str, state: &Entity<ResizableState>, cells: Vec<(DebugPart, AnyElement)>| {
-            let mut row = h_resizable(id).with_state(state);
-            for (part, cell) in cells {
-                row = row.child(
-                    resizable_panel()
-                        .size(width * part.share())
-                        .size_range(px(120.)..Pixels::MAX)
-                        .child(div().size_full().border_r_1().border_color(border).child(cell)),
-                );
+        let rows = grid.rows();
+        let mut rendered: Vec<AnyElement> = Vec::new();
+        for (upper, parts) in &rows {
+            let upper = *upper;
+            let mut cells: Vec<AnyElement> =
+                parts.iter().map(|part| self.debugger.update(cx, |debugger, cx| debugger.render_part(*part, cx))).collect();
+            if cells.len() == 1 {
+                rendered.push(div().size_full().children(cells.drain(..)).into_any_element());
+                continue;
             }
-            row
+            let saved = if upper { grid.top_width } else { grid.bottom_width };
+            let split = if upper { &mut self.top } else { &mut self.bottom };
+            // the saved size in the key: a layout swapped in starts from its own
+            let state = split.state(width, ("cells", parts, saved.map(f32::to_bits)), cx).clone();
+            let first = saved.map(px).unwrap_or(width * parts[0].share());
+            let mut row = h_resizable(if upper { "debug-grid-top" } else { "debug-grid-bottom" }).with_state(&state);
+            for (ix, cell) in cells.into_iter().enumerate() {
+                let panel = resizable_panel().size_range(px(120.)..Pixels::MAX);
+                let panel = if ix == 0 { panel.size(first) } else { panel };
+                row = row.child(panel.child(div().size_full().border_r_1().border_color(border).child(cell)));
+            }
+            let row = row.on_resize(move |state, _, cx| {
+                if let Some(size) = state.read(cx).sizes().first().copied() {
+                    Config::update_quietly(cx, |config| {
+                        let grid = &mut config.layout.debug_grid;
+                        let size = Some(f32::from(size));
+                        if upper { grid.top_width = size } else { grid.bottom_width = size }
+                    });
+                }
+            });
+            rendered.push(row.into_any_element());
+        }
+        let shown: Vec<bool> = rows.iter().map(|(upper, _)| *upper).collect();
+        let lower = if rendered.len() == 2 { rendered.pop() } else { None };
+        let upper = rendered.pop();
+        let body = match (upper, lower) {
+            (Some(top), Some(bottom)) => {
+                let state =
+                    self.grid_rows.state(px(grid_height), ("rows", &shown, grid.top_height.map(f32::to_bits)), cx).clone();
+                let half = px((grid_height / 2.).max(CELL_HEADER * 2.));
+                let top_height = grid.top_height.map(px).unwrap_or(half);
+                v_resizable("debug-grid-rows")
+                    .with_state(&state)
+                    .child(
+                        resizable_panel()
+                            .size(top_height)
+                            .size_range(px(CELL_HEADER * 2.)..Pixels::MAX)
+                            .child(div().size_full().border_b_1().border_color(border).child(top)),
+                    )
+                    .child(resizable_panel().size_range(px(CELL_HEADER * 2.)..Pixels::MAX).child(bottom))
+                    .on_resize(|state, _, cx| {
+                        if let Some(size) = state.read(cx).sizes().first().copied() {
+                            Config::update_quietly(cx, |config| config.layout.debug_grid.top_height = Some(f32::from(size)));
+                        }
+                    })
+                    .into_any_element()
+            }
+            // one row: it takes the grid
+            (Some(row), None) => row,
+            _ => div().into_any_element(),
         };
-        let top_state = self.top.state(width, "top", cx).clone();
-        let bottom_state = self.bottom.state(width, "bottom", cx).clone();
-        let top = row("debug-grid-top", &top_state, cells);
-        let bottom = row("debug-grid-bottom", &bottom_state, bottom_cells);
-        let rows_state = self.grid_rows.state(px(grid_height), "rows", cx).clone();
-        let half = px((grid_height / 2.).max(CELL_HEADER * 2.));
         div()
             .id("debug-grid")
             .when(cfg!(test), |el| el.debug_selector(|| "debug-grid".into()))
             .size_full()
-            .child(
-                v_resizable("debug-grid-rows")
-                    .with_state(&rows_state)
-                    .child(
-                        resizable_panel()
-                            .size(half)
-                            .size_range(px(CELL_HEADER * 2.)..Pixels::MAX)
-                            .child(div().size_full().border_b_1().border_color(border).child(top)),
-                    )
-                    .child(resizable_panel().size_range(px(CELL_HEADER * 2.)..Pixels::MAX).child(bottom)),
-            )
+            .child(body)
             .into_any_element()
     }
 }
@@ -1065,9 +1108,12 @@ impl Render for DebugView {
         // the console keeps a few lines whatever was saved: the grid can't cover it
         let most = (f32::from(size.height) - CONSOLE_MIN).max(CELL_HEADER * 4.);
         let height = Config::get(cx).layout.debug_height.unwrap_or(f32::from(size.height) * 0.6).clamp(CELL_HEADER * 4., most);
-        let grid = self.render_grid(size, height, cx);
+        // every part hidden: the console alone
+        let parts = !Config::get(cx).layout.debug_grid.rows().is_empty();
+        let grid = parts.then(|| self.render_grid(size, height, cx));
         let console = self.debugger.update(cx, |debugger, cx| debugger.render_console_part(cx));
-        let state = self.rows.state(size.height, "rows", cx).clone();
+        let saved = Config::get(cx).layout.debug_height.map(f32::to_bits);
+        let state = self.rows.state(size.height, ("rows", saved), cx).clone();
         let painted = self.size.clone();
         let view = cx.entity().downgrade();
         v_flex()
@@ -1081,8 +1127,8 @@ impl Render for DebugView {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .child(
-                        v_resizable("debug-rows")
+                    .child(match grid {
+                        Some(grid) => v_resizable("debug-rows")
                             .with_state(&state)
                             .child(
                                 resizable_panel()
@@ -1099,8 +1145,10 @@ impl Render for DebugView {
                                 if let Some(size) = state.read(cx).sizes().first().copied() {
                                     Config::update_quietly(cx, |config| config.layout.debug_height = Some(f32::from(size)));
                                 }
-                            }),
-                    )
+                            })
+                            .into_any_element(),
+                        None => div().size_full().child(console).into_any_element(),
+                    })
                     // the size it's painted at, which the rows and cells start from
                     .child(
                         canvas(
@@ -1144,6 +1192,19 @@ fn edit_item(
 
 fn remove_watches_item(debugger: &WeakEntity<Debugger>) -> menu::PopupMenuItem {
     menu::item("Remove All Watches", debugger, |this, _, cx| this.remove_all_watches(cx))
+}
+
+/// The grid's parts, checked while shown: a click hides or shows one.
+fn show_parts_menu(menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let hidden = Config::get(cx).layout.debug_grid.hidden.clone();
+    DebugPart::ALL.into_iter().fold(menu, |menu, part| {
+        let shown = !hidden.contains(&part);
+        menu.item(
+            menu::PopupMenuItem::new(part.title())
+                .checked(shown)
+                .on_click(move |_, _, cx| Config::update(cx, |config| config.layout.debug_grid.set_hidden(part, shown))),
+        )
+    })
 }
 
 /// Hide Panel: the debugger's tab closes.

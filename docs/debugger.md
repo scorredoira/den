@@ -196,7 +196,13 @@ bring it back), with the debugger's state on it: yellow while stopped, green
 while running. The toolbar at its top; a grid of two rows of two, the call
 stack and the variables above, the watches and the breakpoints below; and
 the console under it at the tab's width. Every line between them is dragged
-to size them; the console always keeps a few lines.
+to size them; the console always keeps a few lines. A part's header dragged
+onto another part swaps the two. A part's right-click menu hides it and its
+row mate takes the row; a row with none goes and the other takes the grid;
+with all four hidden the console has the tab. Show, in the tab's right-click
+menu, lists the four. Sizes, order and hidden parts are kept with the layout
+(the debugging one has its own), and `den where` lists the grid's order and
+the parts hidden.
 
 A session has a layout of its own: while the workspace in front debugs, Den
 uses the debugging layout (the side column closed and the debugger's tab in

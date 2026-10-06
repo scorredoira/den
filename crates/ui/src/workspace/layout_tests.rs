@@ -320,6 +320,105 @@ fn a_saved_grid_height_leaves_the_console(cx: &mut TestAppContext) {
     console_shows(cx);
 }
 
+fn grid(cx: &mut VisualTestContext, change: impl FnOnce(&mut config::DebugGrid)) {
+    cx.update(|_, cx| Config::update(cx, |config| change(&mut config.layout.debug_grid)));
+    cx.run_until_parked();
+}
+
+fn reveal(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) {
+    workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
+    cx.run_until_parked();
+}
+
+/// A part's header dragged onto another cell: the two swap, and the order
+/// is kept in the layout.
+#[gpui_kit::test]
+fn a_part_dragged_onto_another_swaps_with_it(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| layout.dock = Dock::Bottom);
+    reveal(&workspace, cx);
+    let start = bounds(cx, "debug-header-Stack").center();
+    let end = bounds(cx, "debug-cell-Breakpoints").center();
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let order = cx.update(|_, cx| Config::get(cx).layout.debug_grid.order());
+    use config::DebugPart::*;
+    assert_eq!(order, [Breakpoints, Variables, Watch, Stack]);
+    let (breakpoints, stack) = (bounds(cx, "debug-cell-Breakpoints"), bounds(cx, "debug-cell-Stack"));
+    let variables = bounds(cx, "debug-cell-Variables");
+    assert!(breakpoints.top() == variables.top() && breakpoints.right() <= variables.left() + px(1.), "{breakpoints:?} {variables:?}");
+    assert!(stack.top() >= breakpoints.bottom() - px(1.), "{stack:?} {breakpoints:?}");
+    let saved = cx.update(|_, cx| serde_json::to_value(&Config::get(cx).layout).unwrap());
+    assert_eq!(saved["debug_grid"]["order"], serde_json::json!(["Breakpoints", "Variables", "Watch", "Stack"]));
+}
+
+/// A hidden part's row mate takes the row; shown again, it's back in its
+/// cell. Every part hidden leaves the console alone.
+#[gpui_kit::test]
+fn a_hidden_part_leaves_its_space(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| layout.dock = Dock::Bottom);
+    reveal(&workspace, cx);
+    let grid_bounds = bounds(cx, "debug-grid");
+    grid(cx, |grid| grid.set_hidden(config::DebugPart::Variables, true));
+    assert!(cx.debug_bounds("debug-cell-Variables").is_none());
+    let stack = bounds(cx, "debug-cell-Stack");
+    assert!(stack.size.width >= grid_bounds.size.width - px(2.), "the call stack takes the row: {stack:?} {grid_bounds:?}");
+    bounds(cx, "debug-cell-Watch");
+    // both of the upper row: the lower one takes the grid
+    grid(cx, |grid| grid.set_hidden(config::DebugPart::Stack, true));
+    let watch = bounds(cx, "debug-cell-Watch");
+    assert!(watch.size.height >= bounds(cx, "debug-grid").size.height - px(2.), "{watch:?}");
+    grid(cx, |grid| {
+        grid.set_hidden(config::DebugPart::Stack, false);
+        grid.set_hidden(config::DebugPart::Variables, false);
+    });
+    two_by_two(cx);
+    // all four: the console alone, in the whole tab under the toolbar
+    grid(cx, |grid| {
+        for part in config::DebugPart::ALL {
+            grid.set_hidden(part, true);
+        }
+    });
+    assert!(cx.debug_bounds("debug-grid").is_none());
+    let (bar, console, tab) = (bounds(cx, "debugger"), bounds(cx, "debug-console"), bounds(cx, "debug-tab"));
+    assert!(console.top() <= bar.bottom() + px(2.) && console.bottom() >= tab.bottom() - px(2.), "{bar:?} {console:?} {tab:?}");
+}
+
+/// The grid's sizes as dragged are kept, and go with the layout: the
+/// debugging one has its own.
+#[gpui_kit::test]
+fn the_grid_sizes_are_kept_with_the_layout(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| layout.dock = Dock::Bottom);
+    debug(&workspace, cx, true);
+    grid(cx, |grid| {
+        grid.top_width = Some(300.);
+        grid.top_height = Some(120.);
+    });
+    let (stack, grid_bounds) = (bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-grid"));
+    assert!((stack.size.width - px(300.)).abs() <= px(2.), "{stack:?}");
+    assert!((stack.bottom() - grid_bounds.top() - px(120.)).abs() <= px(2.), "{stack:?} {grid_bounds:?}");
+    debug(&workspace, cx, false);
+    assert_eq!(cx.update(|_, cx| Config::get(cx).layout.debug_grid.top_width), None, "the editing layout's own");
+    debug(&workspace, cx, true);
+    assert_eq!(cx.update(|_, cx| Config::get(cx).layout.debug_grid.top_width), Some(300.));
+}
+
+/// A layout saved before the grid could change loads as the default grid;
+/// a part this version doesn't know is left out.
+#[test]
+fn a_layout_without_the_grid_loads() {
+    let layout: config::Layout = serde_json::from_str(r#"{ "side": true, "debug_height": 300 }"#).unwrap();
+    assert_eq!(layout.debug_grid.order(), config::DebugPart::ALL);
+    assert!(layout.debug_grid.hidden.is_empty());
+    let layout: config::Layout =
+        serde_json::from_str(r#"{ "debug_grid": { "order": ["Watch", "Threads", "Watch"], "hidden": ["Threads", "Stack"] } }"#).unwrap();
+    use config::DebugPart::*;
+    assert_eq!(layout.debug_grid.order(), [Watch, Stack, Variables, Breakpoints]);
+    assert_eq!(layout.debug_grid.hidden, [Stack]);
+}
+
 /// The notes are a tab at the far end of the terminals': the activity bar
 /// brings them in front of the terminals and back. Open in Editor Tab takes
 /// them to the code, and closing that tab brings them back to the terminals.
