@@ -1,4 +1,4 @@
-protocol 7
+protocol 8
 
 pub type TermId = u64;
 
@@ -27,7 +27,7 @@ pub type TermId = u64;
     GitChanges { path: PathBuf, uncommitted: bool }
     GitDiff { path: PathBuf, file: String, uncommitted: bool }
     FindFiles { path: PathBuf }
-    Search { path: PathBuf, query: String, regex: bool, case_sensitive: bool, max_hits: usize }
+    Search { path: PathBuf, query: SearchQuery, include: Vec<String>, exclude: Vec<String>, max_hits: usize }
     ReadFile { path: PathBuf }
     WriteFile { path: PathBuf, #[serde(with = "serde_bytes")] data: Vec<u8> }
     ListDir { path: PathBuf }
@@ -41,7 +41,7 @@ pub type TermId = u64;
     Git { path: PathBuf, op: GitOp }
     Lsp { root: PathBuf, path: PathBuf, text: String, line: u32, column: u32, op: LspOp }
     BlockedList
-    Replace { path: PathBuf, files: Vec<String>, query: String, regex: bool, case_sensitive: bool, replacement: String, preserve_case: bool }
+    Replace { path: PathBuf, files: Vec<String>, query: SearchQuery, replacement: String, preserve_case: bool }
     Ports
     LspResolve { root: PathBuf, path: PathBuf, list: u64, item: u32 }
     Format { root: PathBuf, path: PathBuf, text: String }
@@ -206,6 +206,12 @@ pub type TermId = u64;
     pub status: char
     pub added: u32
     pub removed: u32
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct SearchQuery {
+    pub text: String
+    pub regex: bool
+    pub case_sensitive: bool
+    pub whole_word: bool
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct SearchHit {
     pub path: String

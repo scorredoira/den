@@ -7,7 +7,10 @@ use std::{
     path::PathBuf,
 };
 
-use gpui_kit::component::ResizableState;
+use gpui_kit::component::{
+    ResizableState,
+    input::{FindBarMemory, SearchOptions},
+};
 use gpui_kit::{App, AppContext as _, Bounds, Entity, Global, Pixels, Styled, WindowBounds, point, px, size};
 use serde::{Deserialize, Serialize};
 
@@ -711,6 +714,77 @@ pub struct Config {
     /// their id): they head it, as in VS Code.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recent_commands: Vec<String>,
+    /// The find bar's (Cmd-F) width, toggles and history.
+    #[serde(deserialize_with = "lenient")]
+    pub find: SearchSaved,
+    /// The Search panel's (Shift-Cmd-F) toggles and history.
+    #[serde(deserialize_with = "lenient")]
+    pub search: SearchSaved,
+}
+
+/// What a search box remembers: its toggles and the queries searched, the
+/// newest last.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchSaved {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub case_sensitive: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub whole_word: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub regex: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub preserve_case: bool,
+    /// The find bar's width, as dragged; unset, its default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+}
+
+/// How many queries a search box remembers.
+const SEARCH_HISTORY: usize = 50;
+
+impl SearchSaved {
+    /// `query` goes last in the history.
+    pub fn remember(&mut self, query: &str) {
+        if query.is_empty() {
+            return;
+        }
+        self.history.retain(|old| old != query);
+        self.history.push(query.to_string());
+        let extra = self.history.len().saturating_sub(SEARCH_HISTORY);
+        self.history.drain(..extra);
+    }
+}
+
+/// The find bar keeps its memory as a global of its own: it starts from the
+/// config, and what changes in it goes back to the config.
+pub fn sync_find_bar(cx: &mut App) {
+    let saved = &Config::get(cx).find;
+    cx.set_global(FindBarMemory {
+        width: saved.width.map(px),
+        history: saved.history.clone(),
+        options: SearchOptions {
+            case_insensitive: !saved.case_sensitive,
+            whole_word: saved.whole_word,
+            regex: saved.regex,
+            preserve_case: saved.preserve_case,
+        },
+    });
+    cx.observe_global::<FindBarMemory>(|cx| {
+        let memory = cx.global::<FindBarMemory>();
+        let find = SearchSaved {
+            history: memory.history.clone(),
+            case_sensitive: !memory.options.case_insensitive,
+            whole_word: memory.options.whole_word,
+            regex: memory.options.regex,
+            preserve_case: memory.options.preserve_case,
+            width: memory.width.map(f32::from),
+        };
+        Config::update_quietly(cx, |config| config.find = find);
+    })
+    .detach();
 }
 
 /// A column of the History tab's top: the commits, the selected one's

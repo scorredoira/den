@@ -506,11 +506,22 @@ impl Input {
         search_panel: Option<AnyElement>,
         _: &Window,
     ) -> impl IntoElement {
-        v_flex().size_full().children(search_panel).child(
+        // (den) The find bar floats at the top right, over the text and
+        // clear of the scrollbar, and narrows when there isn't room.
+        v_flex().size_full().child(
             div()
                 .relative()
                 .flex_1()
-                .child(input_state.into_any_element()),
+                .child(input_state.into_any_element())
+                .children(search_panel.map(|panel| {
+                    h_flex()
+                        .absolute()
+                        .top_1()
+                        .left(px(8.))
+                        .right(px(16.))
+                        .justify_end()
+                        .child(panel)
+                })),
         )
     }
 }

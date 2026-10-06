@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// holds it against `wire.txt`. Each version has its own socket; an agent of a
 /// newer one, on starting, shuts down those of older ones and takes their
 /// terminals, so `Hello` and `Shutdown` stay the first requests of every version.
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 /// Maximum frame size, so garbage input can't make us allocate without limit.
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -95,12 +95,14 @@ pub enum Request {
     GitDiff { path: PathBuf, file: String, uncommitted: bool },
     /// All files under `path` (relative), without what git ignores.
     FindFiles { path: PathBuf },
-    /// Searches for `query` in the files under `path`, without what git ignores.
+    /// Searches for `query` in the files under `path`, without what git
+    /// ignores: only in those `include` matches, if it has any globs, and
+    /// never in those `exclude` matches.
     Search {
         path: PathBuf,
-        query: String,
-        regex: bool,
-        case_sensitive: bool,
+        query: SearchQuery,
+        include: Vec<String>,
+        exclude: Vec<String>,
         max_hits: usize,
     },
     ReadFile { path: PathBuf },
@@ -133,16 +135,14 @@ pub enum Request {
     },
     /// Tasks (groups) waiting for an answer right now. Responds `Files`.
     BlockedList,
-    /// Replaces what `Search` with the same `query`, `regex` and
-    /// `case_sensitive` finds in `files` (relative to `path`) with
-    /// `replacement` (`$1`… with `regex`). With `preserve_case`, each
-    /// replacement takes the case of what it replaces. Responds `Replaced`.
+    /// Replaces what `Search` with the same `query` finds in `files`
+    /// (relative to `path`) with `replacement` (`$1`… with `regex`). With
+    /// `preserve_case`, each replacement takes the case of what it
+    /// replaces. Responds `Replaced`.
     Replace {
         path: PathBuf,
         files: Vec<String>,
-        query: String,
-        regex: bool,
-        case_sensitive: bool,
+        query: SearchQuery,
         replacement: String,
         preserve_case: bool,
     },
@@ -496,6 +496,17 @@ pub struct ChangedFile {
     pub status: char,
     pub added: u32,
     pub removed: u32,
+}
+
+/// What a search looks for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchQuery {
+    pub text: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    /// Only where `text` is a whole word: bounded on its sides that are
+    /// word characters.
+    pub whole_word: bool,
 }
 
 /// A search match.

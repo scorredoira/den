@@ -12,8 +12,11 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{BinaryDetection, SearcherBuilder, sinks::UTF8};
-use ignore::{WalkBuilder, WalkState};
-use proto::SearchHit;
+use ignore::{
+    WalkBuilder, WalkState,
+    overrides::{Override, OverrideBuilder},
+};
+use proto::{SearchHit, SearchQuery};
 
 /// Cap on the files `files` returns, so millions aren't sent by mistake.
 const MAX_FILES: usize = 200_000;
@@ -46,17 +49,65 @@ pub fn files(dir: &Path) -> Vec<String> {
     files
 }
 
+/// The query as a regular expression. A whole word is bounded only on the
+/// sides that are word characters, so `.foo` still finds `x.foo`.
+fn pattern(query: &SearchQuery) -> String {
+    let text = &query.text;
+    let mut pattern = if query.regex { text.clone() } else { regex::escape(text) };
+    if query.whole_word {
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if query.regex {
+            pattern = format!(r"\b(?:{pattern})\b");
+        } else {
+            if word(text.chars().next()) {
+                pattern.insert_str(0, r"\b");
+            }
+            if word(text.chars().last()) {
+                pattern.push_str(r"\b");
+            }
+        }
+    }
+    pattern
+}
+
+/// The files `include` and `exclude` leave, as globs relative to `dir`
+/// (`*.rs`, `src`, `crates/ui/**`): a name alone matches at any depth, and
+/// a folder takes in all under it.
+fn overrides(dir: &Path, include: &[String], exclude: &[String]) -> Result<Override> {
+    let mut builder = OverrideBuilder::new(dir);
+    let globs = |list: &[String]| -> Vec<String> {
+        list.iter()
+            .map(|glob| glob.trim().trim_start_matches("./").trim_end_matches('/').to_string())
+            .filter(|glob| !glob.is_empty())
+            .collect()
+    };
+    for glob in globs(include) {
+        builder.add(&glob)?;
+        builder.add(&format!("{glob}/**"))?;
+    }
+    for glob in globs(exclude) {
+        builder.add(&format!("!{glob}"))?;
+    }
+    Ok(builder.build()?)
+}
+
 /// Searches in parallel; stops upon reaching `max_hits`.
-pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hits: usize) -> Result<(Vec<SearchHit>, bool)> {
+pub fn search(
+    dir: &Path,
+    query: &SearchQuery,
+    include: &[String],
+    exclude: &[String],
+    max_hits: usize,
+) -> Result<(Vec<SearchHit>, bool)> {
     let matcher = RegexMatcherBuilder::new()
-        .case_insensitive(!case_sensitive)
-        .fixed_strings(!regex)
-        .build(query)?;
+        .case_insensitive(!query.case_sensitive)
+        .build(&pattern(query))?;
+    let overrides = overrides(dir, include, exclude)?;
     // One more than asked for tells whether there were more.
     let limit = max_hits.saturating_add(1);
     let hits = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicUsize::new(0));
-    walker(dir).build_parallel().run(|| {
+    walker(dir).overrides(overrides).build_parallel().run(|| {
         let matcher = matcher.clone();
         let hits = hits.clone();
         let count = count.clone();
@@ -123,15 +174,13 @@ pub fn search(dir: &Path, query: &str, regex: bool, case_sensitive: bool, max_hi
 pub fn replace(
     dir: &Path,
     files: &[String],
-    query: &str,
-    regex: bool,
-    case_sensitive: bool,
+    query: &SearchQuery,
     replacement: &str,
     preserve_case: bool,
 ) -> Result<(usize, usize)> {
-    let pattern = if regex { query.to_string() } else { regex::escape(query) };
-    let matcher = regex::RegexBuilder::new(&pattern)
-        .case_insensitive(!case_sensitive)
+    let regex = query.regex;
+    let matcher = regex::RegexBuilder::new(&pattern(query))
+        .case_insensitive(!query.case_sensitive)
         .build()?;
     let (mut changed, mut total) = (0, 0);
     let mut failed = Vec::new();
@@ -210,6 +259,33 @@ fn with_case_of(like: &str, with: &str) -> String {
 mod tests {
     use super::*;
 
+    fn q(text: &str, regex: bool, case_sensitive: bool) -> SearchQuery {
+        SearchQuery { text: text.into(), regex, case_sensitive, whole_word: false }
+    }
+
+    #[test]
+    fn whole_words_and_the_files_included_and_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "save saved\n").unwrap();
+        std::fs::write(dir.join("src/deep/b.ts"), "save\n").unwrap();
+        std::fs::write(dir.join("c.rs"), "x.save()\n").unwrap();
+        let paths = |include: &[&str], exclude: &[&str]| {
+            let owned = |globs: &[&str]| globs.iter().map(|glob| glob.to_string()).collect::<Vec<_>>();
+            let (include, exclude) = (owned(include), owned(exclude));
+            let whole = SearchQuery { whole_word: true, ..q("save", false, true) };
+            let (hits, _) = search(dir, &whole, &include, &exclude, 100).unwrap();
+            hits.into_iter().map(|hit| hit.path.replace('\\', "/")).collect::<Vec<_>>()
+        };
+        assert_eq!(paths(&[], &[]), ["c.rs", "src/a.rs", "src/deep/b.ts"]);
+        assert_eq!(paths(&["src"], &[]), ["src/a.rs", "src/deep/b.ts"]);
+        assert_eq!(paths(&["*.rs"], &[]), ["c.rs", "src/a.rs"]);
+        assert_eq!(paths(&["./src/"], &["deep"]), ["src/a.rs"]);
+        assert_eq!(paths(&[], &["*.ts", "c.rs"]), ["src/a.rs"]);
+        assert_eq!(paths(&[" "], &[""]), ["c.rs", "src/a.rs", "src/deep/b.ts"]);
+    }
+
     #[test]
     fn replacement_takes_the_case_of_the_match() {
         assert_eq!(with_case_of("payment", "invoice"), "invoice");
@@ -230,12 +306,12 @@ mod tests {
         std::fs::write(dir.join("a.ts"), "payment(Payment, PAYMENT)\n").unwrap();
         std::fs::write(dir.join("b.ts"), "payment\n").unwrap();
         let files = vec!["a.ts".to_string()];
-        assert_eq!(replace(&dir, &files, "payment", false, false, "invoice", true).unwrap(), (1, 3));
+        assert_eq!(replace(&dir, &files, &q("payment", false, false), "invoice", true).unwrap(), (1, 3));
         assert_eq!(std::fs::read_to_string(dir.join("a.ts")).unwrap(), "invoice(Invoice, INVOICE)\n");
         assert_eq!(std::fs::read_to_string(dir.join("b.ts")).unwrap(), "payment\n");
-        assert_eq!(replace(&dir, &files, r"(\w+)\(", true, true, "call_$1(", false).unwrap(), (1, 1));
+        assert_eq!(replace(&dir, &files, &q(r"(\w+)\(", true, true), "call_$1(", false).unwrap(), (1, 1));
         assert_eq!(std::fs::read_to_string(dir.join("a.ts")).unwrap(), "call_invoice(Invoice, INVOICE)\n");
-        assert_eq!(replace(&dir, &files, "a.b", false, true, "x", false).unwrap(), (0, 0));
+        assert_eq!(replace(&dir, &files, &q("a.b", false, true), "x", false).unwrap(), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -247,7 +323,7 @@ mod tests {
         std::fs::write(dir.join("latin1.txt"), b"payment caf\xe9\n").unwrap();
         std::fs::write(dir.join("c.txt"), "payment\n").unwrap();
         let files = ["a.txt", "latin1.txt", "missing.txt", "c.txt"].map(String::from);
-        let err = replace(dir, &files, "payment", false, true, "invoice", false).unwrap_err().to_string();
+        let err = replace(dir, &files, &q("payment", false, true), "invoice", false).unwrap_err().to_string();
         assert!(err.contains("replaced 2 in 2 file(s)"), "{err}");
         assert!(err.contains("latin1.txt: not UTF-8") && err.contains("missing.txt"), "{err}");
         assert_eq!(std::fs::read_to_string(dir.join("c.txt")).unwrap(), "invoice\n");
@@ -258,8 +334,8 @@ mod tests {
     fn truncated_only_when_there_are_more() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "x\nx\nx\n").unwrap();
-        assert!(!search(dir.path(), "x", false, true, 3).unwrap().1);
-        let (hits, truncated) = search(dir.path(), "x", false, true, 2).unwrap();
+        assert!(!search(dir.path(), &q("x", false, true), &[], &[], 3).unwrap().1);
+        let (hits, truncated) = search(dir.path(), &q("x", false, true), &[], &[], 2).unwrap();
         assert!(truncated && hits.len() == 2);
     }
 
@@ -277,9 +353,9 @@ mod tests {
             (r"^$", "", "X", "", vec![]),
         ] {
             std::fs::write(&path, text).unwrap();
-            let (hits, _) = search(&dir, query, true, true, 100).unwrap();
+            let (hits, _) = search(&dir, &q(query, true, true), &[], &[], 100).unwrap();
             assert_eq!(hits.iter().map(|hit| hit.line).collect::<Vec<_>>(), matching_lines, "{query}");
-            replace(&dir, &["a.txt".into()], query, true, true, replacement, false).unwrap();
+            replace(&dir, &["a.txt".into()], &q(query, true, true), replacement, false).unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), expected, "{query}");
         }
         std::fs::remove_dir_all(dir).unwrap();
@@ -300,14 +376,14 @@ mod tests {
         let native_path = native_path.to_string_lossy();
         assert_eq!(files(&dir), vec![".gitignore", "notes.md", native_path.as_ref()]);
 
-        let (hits, truncated) = search(&dir, "hello", false, false, 100).unwrap();
+        let (hits, truncated) = search(&dir, &q("hello", false, false), &[], &[], 100).unwrap();
         assert!(!truncated);
         let found: Vec<(&str, u32, u32)> = hits.iter().map(|h| (h.path.as_str(), h.line, h.column)).collect();
         assert_eq!(found, vec![("notes.md", 1, 0), (native_path.as_ref(), 2, 8)]);
 
-        let (hits, _) = search(&dir, "hello", false, true, 100).unwrap();
+        let (hits, _) = search(&dir, &q("hello", false, true), &[], &[], 100).unwrap();
         assert_eq!(hits.len(), 1);
-        let (hits, _) = search(&dir, r"let \w+", true, true, 100).unwrap();
+        let (hits, _) = search(&dir, &q(r"let \w+", true, true), &[], &[], 100).unwrap();
         assert_eq!((hits[0].column, hits[0].length), (4, 9));
         let _ = std::fs::remove_dir_all(&dir);
     }
