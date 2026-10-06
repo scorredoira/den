@@ -173,7 +173,7 @@ impl Bridge {
             launched: browser.launched,
             inspect_skip: options.inspect_skip.clone(),
         };
-        let core = Core::new(cdp.clone(), Out::default(), settings);
+        let core = Core::new(cdp.clone(), inputs.clone(), Out::default(), settings);
         let worker = thread::Builder::new()
             .name("chrome-bridge".into())
             .spawn(move || core.run(receiver))

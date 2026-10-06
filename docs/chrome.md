@@ -18,7 +18,8 @@ den chrome --port P [--url URL] [--root DIR] [--headless] [--profile DIR] [--hos
   the line `debugger listening on 127.0.0.1:P` says which.
 - `--url`: the page to open. It opens when Den connects and sends `run`, so
   the breakpoints are in place for its first script (`waiting` is true in
-  `hello` until then). A debugged tab of the same site (scheme, host and
+  `hello` until then), and once its server listens: a server started in the
+  same session, which listens later, gets its page rather than Chrome's error. A debugged tab of the same site (scheme, host and
   port) comes to the front and loads the URL again, so the code that runs at
   load meets the breakpoints and every session uses the same tab; with none, a
   new tab opens.
@@ -27,7 +28,11 @@ den chrome --port P [--url URL] [--root DIR] [--headless] [--profile DIR] [--hos
 - `--headless`: Chrome without windows, for tests and agents.
 - `--profile`: Chrome's profile folder. By default a folder of its own in
   Den's data folder (`den/chrome`), kept between sessions so logins stay.
-  Chrome 136 and later refuse remote debugging on the default profile.
+  Chrome 136 and later refuse remote debugging on the default profile when
+  launched for it. To debug in your own Chrome, with its logins, enable
+  `chrome://inspect/#remote-debugging` in it and pass its folder
+  (`~/Library/Application Support/Google/Chrome` on macOS): the bridge
+  connects to it while it runs, and never launches it.
 - `--hosts`: the hosts whose pages are debugged, separated by commas: `name`,
   or `*.name` for its subdomains. By default `localhost,127.0.0.1,*.localhost`.
 - `--inspect-skip`: files an inspected element's creation stack passes over,
