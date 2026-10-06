@@ -40,7 +40,6 @@ Tree-sitter highlighting, language servers, project search, go to file, an outli
 
 - **Agents drive Den.** With the `den` command Claude shows you code, diffs and reports, and opens and reads terminals. Den installs a Claude Code skill so Claude knows how.
 - **A debugger** for any program that speaks [Den's debug protocol](docs/debugger.md): breakpoints, stepping, values in the code.
-- **A phone beside the code.** On macOS the Device panel shows an iOS simulator or any phone served with [Den's device protocol](docs/device.md).
 
 ## Install
 
@@ -60,7 +59,7 @@ On macOS, releases aren't notarized: the first time, open Den from System Settin
 ## Docs
 
 - [Using Den](docs/guide.md): opening from a terminal and the `den` command, workspaces, layout, debugging, updates.
-- [The debug protocol](docs/debugger.md) and [the device protocol](docs/device.md).
+- [The debug protocol](docs/debugger.md).
 - [Publishing releases](docs/releasing.md).
 
 ## License

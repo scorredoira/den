@@ -1,6 +1,6 @@
 ---
 name: den
-description: Drive the Den app you are running in (when DEN_TERMINAL is set) with the `den` command. When the user talks about what is on their screen (this file, the app, the simulator, the debugger, "where are you"), run `den where` first - it says the workspace, branch and worktree, the open tabs, the panels, the device and the debug session. Also: show the user a file, a line or a selected range, a diff or a Markdown note; read what the user has selected in the editor or which files are open; open terminals, read them and type in them (e.g. start or watch other agents in their own worktrees); create worktrees. Use it whenever pointing the user at code would help, when the user refers to "this" or "what I selected", or to work with other terminals.
+description: Drive the Den app you are running in (when DEN_TERMINAL is set) with the `den` command. When the user talks about what is on their screen (this file, the app, the simulator, the debugger, "where are you"), run `den where` first - it says the workspace, branch and worktree, the open tabs, the panels and the debug session. Also: show the user a file, a line or a selected range, a diff or a Markdown note; read what the user has selected in the editor or which files are open; open terminals, read them and type in them (e.g. start or watch other agents in their own worktrees); create worktrees. Use it whenever pointing the user at code would help, when the user refers to "this" or "what I selected", or to work with other terminals.
 ---
 
 # Den
@@ -12,14 +12,13 @@ full list; the main ones:
 
 - `den where` prints, as JSON, what the user has in front: the workspace
   (server, path, repo, branch, whether it is a worktree), the tabs and the
-  active one with its cursor, the panels shown, the Device panel (devices,
-  the one on screen, booted or not) and the debugger's session (status,
-  the command it ran, the program's page and device, the last line the
+  active one with its cursor, the panels shown and the debugger's session
+  (status, the command it ran, the program's page, the last line the
   program revealed). Run it first when the user refers to their screen.
 - `den workspace <path|name|branch>` brings a workspace to the front;
   `den close <file>` (or `--all`) closes tabs, never one with unsaved
   changes; `den panel show|hide <panel>` (files, terminals, debugger,
-  console, device, changes, notes, search, outline…); `den reveal <file>` selects
+  console, changes, notes, search, outline…); `den reveal <file>` selects
   it in the files panel.
 - `den show <file>:<line>` opens the file at that line for the user;
   `den show <file>:<line>-<line>` (or `<line>:<col>-<line>:<col>`) selects
@@ -51,12 +50,6 @@ full list; the main ones:
   debugged; the line that made it opens, and is `revealed` in the state. To test
   a program, start it, trigger what reaches the breakpoint (a request, a
   test) and wait. `den debug restart` stops it and starts it again.
-- `den device ...` uses the phone of the Device panel like the mouse and the
-  keyboard do: `den device show` (serves the first booted device),
-  `den device tap <x> <y>` and `den device swipe <x> <y> <x2> <y2>` (fractions
-  of the screen from its top left), `den device text <text>` (tap the field
-  first), `den device key <name>`, `den device home`. With `den debug`, a tap
-  reaches a breakpoint in the app's code.
 
 Lines and columns start at 1. A command that fails prints why and exits
 with an error.

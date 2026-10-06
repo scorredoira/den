@@ -189,9 +189,6 @@ pub enum DebugEvent {
     Refocus,
     /// Show the panel (it started or stopped somewhere).
     Reveal,
-    /// The program runs on a device, by the id the Device panel's programs
-    /// give it (`device` in `hello`): show its screen.
-    Device(String),
     /// Its close button.
     Hide,
 }
@@ -380,9 +377,8 @@ pub struct Debugger {
     /// The line the launch ran in its terminal, `${file}` replaced: what
     /// `den debug state` says is being debugged.
     ran: Option<String>,
-    /// The program's page and device, from its `hello`.
+    /// The program's page, from its `hello`.
     page: Option<String>,
-    device: Option<String>,
     /// The last place the program asked to show (`reveal`), 1-based line.
     revealed: Option<(String, u32)>,
     _subscriptions: Vec<Subscription>,
@@ -461,7 +457,6 @@ impl Debugger {
             started: None,
             ran: None,
             page: None,
-            device: None,
             revealed: None,
             tests: None,
             _subscriptions: subscriptions,
@@ -713,7 +708,6 @@ impl Debugger {
         self.console_dropped = self.console_written;
         self.ran = None;
         self.page = None;
-        self.device = None;
         self.revealed = None;
         self.launched = false;
         self.open_page = open_page;
@@ -1033,10 +1027,6 @@ impl Debugger {
         // just runs.
         let page = page_of(&body);
         self.page = page.clone();
-        self.device = body.get("device").and_then(Value::as_str).filter(|id| !id.is_empty()).map(str::to_string);
-        if let Some(device) = &self.device {
-            cx.emit(DebugEvent::Device(device.clone()));
-        }
         if body.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
             self.send("run", json!({ "entry": page.is_none() }), |_, _, _| {});
         }
@@ -1193,16 +1183,6 @@ impl Debugger {
     fn fail_session(&mut self, generation: u64, error: String, cx: &mut Context<Self>) {
         if self.generation == generation {
             self.fail(error, cx);
-        }
-    }
-
-    /// Whether a session is on (starting, or connected), and what it does
-    /// while it starts the program: what the Device panel shows of it.
-    pub fn session(&self) -> (bool, Option<String>) {
-        match &self.status {
-            Status::Idle => (false, None),
-            Status::Connecting(what) => (true, Some(what.clone())),
-            Status::Connected => (true, None),
         }
     }
 

@@ -38,7 +38,6 @@ use crate::{
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
     config::{self, Config, DiffLayout, Panel, SavedTab, Session, TextArea, UiText},
     debug::{self, DebugEvent, DebugView, Debugger, EditKind},
-    device::{Device, DeviceEvent},
     notes::NotesPanel,
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
     AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel, ToggleNotes,
@@ -368,7 +367,6 @@ pub struct Workspace {
     /// Its parts with a panel or a tab of their own.
     debug_views: HashMap<Panel, Entity<DebugView>>,
     debug_hover: Entity<debug::hover::HoverCard>,
-    device: Entity<Device>,
     notes: Entity<NotesPanel>,
     /// The terminal the tests run in, reused by the next one.
     test_term: Option<proto::TermId>,
@@ -398,22 +396,13 @@ impl Workspace {
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
         let debug_views = layout::debug_views(&debugger, cx);
-        let device = cx.new(|cx| Device::new(root.clone(), local, cx));
         let notes = cx.new(|cx| NotesPanel::new(session_key.clone(), window, cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
-            cx.subscribe_in(&device, window, Self::on_device_event),
             cx.subscribe_in(&outline, window, Self::on_outline),
-            // The Device panel's play and stop are the session's, and it shows how it starts.
-            cx.observe(&debugger, |this, debugger, cx| {
-                let (on, starting) = debugger.read(cx).session();
-                this.device.update(cx, |device, cx| device.set_session(on, starting, cx));
-                cx.notify();
-            }),
-            // Its icon, when the device file comes or goes.
-            cx.observe(&device, |_, _, cx| cx.notify()),
+            cx.observe(&debugger, |_, _, cx| cx.notify()),
             // The dot on its tab and icon, when it fills or empties.
             cx.observe(&notes, |_, _, cx| cx.notify()),
             // The count on the changes' icon.
@@ -568,7 +557,6 @@ impl Workspace {
             debugger,
             debug_views,
             debug_hover,
-            device,
             notes,
             test_term: None,
             _subscriptions: subscriptions,
@@ -2203,22 +2191,6 @@ impl Workspace {
         }
     }
 
-    /// Inspect on the phone goes to the program being debugged.
-    fn on_device_event(&mut self, device: &Entity<Device>, event: &DeviceEvent, window: &mut Window, cx: &mut Context<Self>) {
-        match event {
-            DeviceEvent::Debug => self.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx)),
-            DeviceEvent::Stop => self.debugger.update(cx, |debugger, cx| debugger.stop(cx)),
-            DeviceEvent::ToTab => self.device_to_tab(window, cx),
-            DeviceEvent::ToColumn => self.device_to_column(window, cx),
-            DeviceEvent::Inspect => {
-                let asked = self.debugger.update(cx, |debugger, _| debugger.inspect());
-                if !asked {
-                    device.update(cx, |device, cx| device.warn("Debug the app (F5) to inspect it.", cx));
-                }
-            }
-        }
-    }
-
     fn on_debug_event(&mut self, debugger: &Entity<Debugger>, event: &DebugEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             DebugEvent::Show { path, line, focus } => {
@@ -2260,10 +2232,6 @@ impl Workspace {
             DebugEvent::Refocus => self.focus_active(window, cx),
             DebugEvent::Reveal => self.reveal_debugger(cx),
             DebugEvent::Hide => self.hide_panel(Panel::Debugger, cx),
-            DebugEvent::Device(id) => {
-                self.show_device(window, cx);
-                self.device.update(cx, |device, cx| device.show_device(id.clone(), cx));
-            }
         }
     }
 
@@ -2659,7 +2627,6 @@ impl Workspace {
         let den = self.root.join(".den");
         if paths.iter().any(|path| path.starts_with(&den)) {
             self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
-            self.device.update(cx, |device, cx| device.load(cx));
         }
         // `root/.git`: git's state changed. If HEAD moved (a commit,
         // checkout or reset), the blame of every open file may have too;
@@ -2921,7 +2888,6 @@ impl Workspace {
         }
         let was_active = self.active == Some(ix);
         let next = self.remove_tab(ix);
-        self.sync_device_place(cx);
         self.message = None;
         match next {
             None => {
@@ -4032,7 +3998,7 @@ impl Workspace {
                     .child(branch),
             );
         }
-        // A page (the history, the device) has no file to tell of.
+        // A page (the history, the notes) has no file to tell of.
         if let Some(tab) = self.active.map(|ix| &self.tabs[ix]).filter(|tab| tab.page.is_none()) {
             let relative = tab.path.strip_prefix(&self.root).unwrap_or(&tab.path);
             left = left.child(relative.display().to_string());
@@ -4267,7 +4233,7 @@ impl Render for Workspace {
                             .min_w_0()
                             .h_full()
                             // A right-click forgets the panel the last one was in; the
-                            // side panels and the device, inside, set theirs after.
+                            // side panels, inside, set theirs after.
                             .capture_any_mouse_down(|event: &MouseDownEvent, _, cx| {
                                 if event.button == MouseButton::Right {
                                     menu::set_panel_under(None, None, cx);

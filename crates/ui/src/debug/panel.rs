@@ -228,6 +228,12 @@ impl Debugger {
                     .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
             )
             .child(
+                tool("debug-inspect", "icons/crosshair.svg", "Inspect: tap a widget to see the line that made it", self.status == Status::Connected, theme.foreground, cx)
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.inspect();
+                    })),
+            )
+            .child(
                 div()
                     .id("debug-status")
                     .ml_2()

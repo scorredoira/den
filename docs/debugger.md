@@ -118,6 +118,10 @@ session that fails ends the wait too, and the console says why. `den
 
 All of them can be changed in Settings.
 
+Inspect, the crosshair in the panel's bar, asks the program being debugged
+to let the person pick a widget on its screen (`inspect`, below); the line
+that made it opens in the editor.
+
 It is a tab after the terminals' (closing the tab hides it; F5 or Cmd-Shift-D
 bring it back). Like every panel, it goes wherever its icon in the activity
 bar is dragged: see Layout in the README.
@@ -188,7 +192,7 @@ A stop carries everything needed to show it, so it costs no round trip.
 
 | cmd | arguments | result |
 |-----|-----------|--------|
-| `hello` | `version` | `version`, `cwd`, `waiting` (held before running), `running` (VMs running), `stopped: [Stop]`, `page?` (the program's page, above), `device?` (the device it runs on, which the Device panel shows: docs/device.md) |
+| `hello` | `version` | `version`, `cwd`, `waiting` (held before running), `running` (VMs running), `stopped: [Stop]`, `page?` (the program's page, above) |
 | `run` | `entry?` | Releases a program held before running. Idempotent. With `entry`, the program stops at its entry (reason `entry`): the start of the code being debugged, which it decides, not the first code it runs. |
 | `setBreakpoints` | `file`, `breakpoints: [{line, condition?, hit?, log?}]` | `breakpoints: [{line, error?}]`: where each one went, and why it was ignored |
 | `setExceptions` | `uncaught`, `all` | |

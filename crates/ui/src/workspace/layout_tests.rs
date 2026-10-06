@@ -303,7 +303,7 @@ fn the_notes_are_a_tab_of_the_terminals(cx: &mut TestAppContext) {
 }
 
 /// The side column is the same in every workspace: going from one to
-/// another doesn't move it. The terminals and the device are each one's.
+/// another doesn't move it. The terminals are each one's.
 #[gpui_kit::test]
 fn the_side_column_stays_from_workspace_to_workspace(cx: &mut TestAppContext) {
     let (first, cx) = draw(cx, |_| {});
@@ -316,10 +316,7 @@ fn the_side_column_stays_from_workspace_to_workspace(cx: &mut TestAppContext) {
     first.update(cx, |workspace, cx| workspace.hide_panel(Panel::Changes, cx));
     assert_eq!(second.read_with(cx, |workspace, cx| workspace.side_place(cx)), None);
     // A new one shows the terminals, nothing else of its own.
-    second.read_with(cx, |workspace, cx| {
-        assert!(workspace.is_shown(Panel::Terminals, cx));
-        assert!(!workspace.is_shown(Panel::Device, cx));
-    });
+    second.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
     second.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
     assert!(first.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Terminals, cx)));
     // Where the terminals go is every workspace's.
@@ -470,60 +467,4 @@ fn the_outline_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
     assert!(bounds(cx, "stack-Outline").size.height > bounds(cx, "side-column").size.height / 2.);
     let places = cx.update(|_, cx| Config::get(cx).layout.places());
     assert!(places.contains(&Place(Panel::Outline)), "{places:?}");
-}
-
-/// Open in Editor Tab takes the device out of its column into a tab of the
-/// code, which draws it; Move to Side Column brings it back.
-#[gpui_kit::test]
-fn the_device_goes_to_a_tab_and_back(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.show_panel(Panel::Device, cx);
-        workspace.device_to_tab(window, cx);
-    });
-    cx.run_until_parked();
-    workspace.read_with(cx, |workspace, cx| {
-        let ix = workspace.device_tab().expect("a tab");
-        assert_eq!(workspace.active, Some(ix));
-        assert!(!workspace.panels.saved().device && !workspace.is_shown(Panel::Device, cx));
-        assert!(workspace.device.read(cx).in_tab);
-    });
-    assert!(cx.debug_bounds("device-screen").is_some(), "the tab draws it");
-    // Asked for again (the activity bar, the debugger), it's its tab.
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.activate(0, window, cx);
-        workspace.show_device(window, cx);
-        assert_eq!(workspace.active, workspace.device_tab());
-        workspace.device_to_column(window, cx);
-    });
-    workspace.read_with(cx, |workspace, cx| {
-        assert_eq!(workspace.device_tab(), None);
-        assert!(workspace.panels.saved().device);
-        assert!(!workspace.device.read(cx).in_tab);
-    });
-}
-
-/// The device's tab is saved with what's open, and opens again.
-#[gpui_kit::test]
-fn the_device_tab_opens_again_with_the_workspace(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    workspace.update_in(cx, |workspace, window, cx| workspace.device_to_tab(window, cx));
-    cx.run_until_parked();
-    let session = workspace.read_with(cx, |workspace, cx| workspace.session(cx));
-    let paths: Vec<String> = session.tabs.iter().map(|tab| tab.path.to_string_lossy().into_owned()).collect();
-    assert_eq!(paths, ["main.ts", "den:device"]);
-    let restored = workspace.update_in(cx, |_, window, cx| {
-        cx.new(|cx| {
-            let mut other = Workspace::new(PathBuf::from("/layout-test"), None, true, "restored".into(), window, cx);
-            Config::update(cx, |config| {
-                config.sessions.insert("restored".into(), session.clone());
-            });
-            other.restore(window, cx);
-            other
-        })
-    });
-    restored.read_with(cx, |workspace, cx| {
-        assert!(workspace.device_tab().is_some() && workspace.device.read(cx).in_tab);
-        assert!(!workspace.is_shown(Panel::Device, cx));
-    });
 }

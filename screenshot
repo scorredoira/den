@@ -160,7 +160,7 @@ shot search
 # Markdown, rendered, with its headings in the outline.
 keys 'keystroke "p" using {command down}
     delay 0.8
-    keystroke "docs/device.md"
+    keystroke "docs/debugger.md"
     delay 1.2
     key code 36'
 sleep 2
