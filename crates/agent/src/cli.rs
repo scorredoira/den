@@ -33,10 +33,9 @@ keyboard stays in the terminal unless --focus.
   den where           prints what's in front as JSON: the workspace (server,
                       path, repo, branch, worktree or not), its tabs and
                       the active one with its cursor, the panels shown,
-                      the Device panel (its devices, the one on screen)
                       and the debugger's session (status, the command it
-                      ran, the program's page and device, the last line
-                      it revealed).
+                      ran, the program's page, the last line it
+                      revealed).
   den workspace <path | name | branch>
                       brings that workspace to the front.
   den show <file>[:<line>[:<col>]] [--focus]
@@ -58,8 +57,8 @@ keyboard stays in the terminal unless --focus.
   den panel show | hide <panel>
                       workspaces, agents, files, outline, search,
                       references, changes, history, debugger, callstack,
-                      variables, watch, breakpoints, terminals, console,
-                      notes or device.
+                      variables, watch, breakpoints, terminals, console
+                      or notes.
   den reveal <file>   selects the file in the files panel.
   den message <text>  shows a message in the status bar.
   den notes           prints the workspace's notes (its Notes panel).
@@ -101,24 +100,6 @@ keyboard stays in the terminal unless --focus.
                       waits for a VM to stop (or for the session to
                       connect, or to end), 30 seconds at most, and prints
                       the state. A session that fails ends the wait too.
-
-  den device show [<id>]
-                      shows the Device panel serving that device (an id
-                      `den where` lists), or the one it has: the first
-                      booted. `den where` says when it is running.
-  den device tap <x> <y>
-                      a finger on the device the Device panel shows, at a
-                      point of its screen in fractions from its top left
-                      (0.5 0.5 is the centre).
-  den device swipe <x> <y> <x2> <y2>
-                      a finger moved from one point to the other.
-  den device text <text>...
-                      types the text.
-  den device key <name> [shift] [alt] [ctrl] [cmd]
-                      a key: one character, or enter, escape, backspace,
-                      tab, space, home, pageup, delete, end, pagedown,
-                      right, left, down or up.
-  den device home     the home button.
 ";
 
 /// Folder holding the `den` link, which the agent puts in its terminals' PATH.

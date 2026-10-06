@@ -45,7 +45,7 @@ fn main() -> Result<()> {
         Some("-s" | "--server") if cli::invoked_as_den() => cli::server(&args[1..]),
         Some("-n" | "--new-window") if cli::invoked_as_den() => cli::open_new(&args[1..]),
         Some(
-            "show" | "diff" | "doc" | "selection" | "tabs" | "message" | "notes" | "workspaces" | "debug" | "device" | "where"
+            "show" | "diff" | "doc" | "selection" | "tabs" | "message" | "notes" | "workspaces" | "debug" | "where"
             | "workspace" | "close" | "panel" | "reveal",
         ) => cli::command(&args),
         Some(path) if cli::invoked_as_den() && !path.starts_with('-') && args.len() == 1 => cli::open(path),

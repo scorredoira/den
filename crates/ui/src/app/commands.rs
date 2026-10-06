@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::*;
-use crate::{debug::WaitFor, device::Device, splits::Axis, workspace::normalize};
+use crate::{debug::WaitFor, splits::Axis, workspace::normalize};
 
 type Answer = Result<String, String>;
 
@@ -114,10 +114,6 @@ impl Den {
             }
             ["debug", rest @ ..] => match here(self, false, window, cx) {
                 Ok((_, workspace)) => return debug_command(rest, &cwd, workspace, window, cx),
-                Err(err) => Err(err),
-            },
-            ["device", rest @ ..] => match here(self, false, window, cx) {
-                Ok((_, workspace)) => return device_command(rest, workspace, cx),
                 Err(err) => Err(err),
             },
             // `den -s <server> [<path>]`: in a window of its own.
@@ -336,7 +332,7 @@ impl Den {
 }
 
 /// A panel by the name `den panel` takes: as the layout saves it
-/// (files, terminals, debugger, device, changes, notes…).
+/// (files, terminals, debugger, changes, notes…).
 fn parse_panel(name: &str) -> Result<Panel, String> {
     let panel: Option<Panel> = serde_json::from_value(json!(name.to_lowercase())).ok();
     panel.filter(|panel| Panel::ALL.contains(panel)).ok_or_else(|| {
@@ -480,115 +476,6 @@ fn debug_command(
     Task::ready(answer)
 }
 
-const DEVICE_USAGE: &str = "den device: show [<id>] | tap <x> <y> | swipe <x> <y> <x2> <y2> | text <text> \
-    | key <name> [shift] [alt] [ctrl] [cmd] | home; x and y are fractions of the screen, from its top left";
-
-/// How long a finger stays down on a tap, and between the points of a swipe.
-const TAP: Duration = Duration::from_millis(80);
-const SWIPE_STEP: Duration = Duration::from_millis(25);
-const SWIPE_STEPS: usize = 12;
-
-/// What `den device …` asks of the Device panel.
-#[derive(Debug, PartialEq)]
-enum DeviceInput {
-    /// Serve the device with this id, or the one the panel has.
-    Show(Option<String>),
-    /// A finger down on the first point, through the others `step` apart,
-    /// up on the last.
-    Gesture { points: Vec<(f32, f32)>, step: Duration },
-    /// A command of the protocol as it is.
-    Send(String),
-}
-
-/// `den device …`'s arguments.
-fn parse_device(args: &[&str]) -> Result<DeviceInput, String> {
-    use crate::device::protocol;
-
-    let fraction = |word: &str| {
-        word.parse::<f32>()
-            .ok()
-            .filter(|value| (0.0..=1.0).contains(value))
-            .ok_or_else(|| format!("{word}: not a fraction of the screen (0 to 1)"))
-    };
-    let point = |x: &str, y: &str| Ok::<_, String>((fraction(x)?, fraction(y)?));
-    match args {
-        ["show", id @ ..] if id.len() <= 1 => Ok(DeviceInput::Show(id.first().map(|id| id.to_string()))),
-        ["tap", x, y] => {
-            let at = point(x, y)?;
-            Ok(DeviceInput::Gesture { points: vec![at, at], step: TAP })
-        }
-        ["swipe", x, y, x2, y2] => {
-            let (from, to) = (point(x, y)?, point(x2, y2)?);
-            let points = (0..=SWIPE_STEPS)
-                .map(|step| {
-                    let t = step as f32 / SWIPE_STEPS as f32;
-                    (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
-                })
-                .collect();
-            Ok(DeviceInput::Gesture { points, step: SWIPE_STEP })
-        }
-        ["text", text @ ..] if !text.is_empty() => Ok(DeviceInput::Send(protocol::text(&text.join(" ")))),
-        ["key", name, held @ ..] => {
-            let mut modifiers = protocol::Modifiers::default();
-            for word in held {
-                match *word {
-                    "shift" => modifiers.shift = true,
-                    "alt" => modifiers.alt = true,
-                    "ctrl" => modifiers.ctrl = true,
-                    "cmd" => modifiers.cmd = true,
-                    _ => return Err(format!("{word}: not a modifier (shift, alt, ctrl, cmd)")),
-                }
-            }
-            if !protocol::NAMED_KEYS.contains(name) && name.chars().count() != 1 {
-                return Err(format!("{name}: not a key: one character, or one of {}", protocol::NAMED_KEYS.join(" ")));
-            }
-            Ok(DeviceInput::Send(protocol::key(name, modifiers)))
-        }
-        ["home"] => Ok(DeviceInput::Send(protocol::home())),
-        _ => Err(DEVICE_USAGE.to_string()),
-    }
-}
-
-/// `den device …`: what the panel's mouse and keyboard do on the device on
-/// screen, for an agent that tests an app.
-fn device_command(args: &[&str], workspace: Entity<Workspace>, cx: &mut Context<Den>) -> Task<Answer> {
-    let device = workspace.read(cx).device();
-    let answer = match parse_device(args) {
-        Ok(DeviceInput::Show(id)) => {
-            workspace.update(cx, |workspace, cx| workspace.set_panel(Panel::Device, true, cx));
-            device.update(cx, |device, cx| device.serve(id, cx));
-            Ok(String::new())
-        }
-        Ok(DeviceInput::Gesture { points, step }) => return gesture(device, points, step, cx),
-        Ok(DeviceInput::Send(command)) => device.read(cx).input(command).map(|()| String::new()),
-        Err(err) => Err(err),
-    };
-    Task::ready(answer)
-}
-
-/// A finger down on the first point, moved through the others, `step`
-/// apart, and up on the last.
-fn gesture(device: Entity<Device>, points: Vec<(f32, f32)>, step: Duration, cx: &mut Context<Den>) -> Task<Answer> {
-    use crate::device::protocol::{Touch, touch};
-
-    let first = points[0];
-    if let Err(err) = device.read(cx).input(touch(Touch::Down, first, None)) {
-        return Task::ready(Err(err));
-    }
-    let device = device.downgrade();
-    cx.spawn(async move |_, cx| {
-        let last = points.len() - 1;
-        for (ix, at) in points.into_iter().enumerate().skip(1) {
-            cx.background_executor().timer(step).await;
-            let phase = if ix == last { Touch::Up } else { Touch::Move };
-            device
-                .read_with(cx, |device, _| device.input(touch(phase, at, None)))
-                .map_err(|_| "the workspace closed".to_string())??;
-        }
-        Ok(String::new())
-    })
-}
-
 /// `file[:line[:col]][-line[:col]]`, relative to `cwd`: the file, where the
 /// cursor goes and, for a range, where it ends (to the end of the line
 /// without a column).
@@ -632,34 +519,14 @@ mod tests {
 
     use gpui_kit::component::input::Position;
 
-    use super::{DeviceInput, SWIPE_STEPS, TAP, parse_device, parse_panel, parse_target};
+    use super::{parse_panel, parse_target};
     use crate::config::Panel;
 
     #[test]
     fn panels_by_name() {
         assert_eq!(parse_panel("files"), Ok(Panel::Files));
-        assert_eq!(parse_panel("Device"), Ok(Panel::Device));
         assert_eq!(parse_panel("agents"), Ok(Panel::Agents));
         assert!(parse_panel("nothing").unwrap_err().contains("terminals"));
-    }
-
-    #[test]
-    fn device_inputs() {
-        assert_eq!(parse_device(&["show"]), Ok(DeviceInput::Show(None)));
-        assert_eq!(parse_device(&["show", "624D"]), Ok(DeviceInput::Show(Some("624D".into()))));
-        assert_eq!(parse_device(&["tap", "0.5", "0.25"]), Ok(DeviceInput::Gesture { points: vec![(0.5, 0.25), (0.5, 0.25)], step: TAP }));
-        let Ok(DeviceInput::Gesture { points, .. }) = parse_device(&["swipe", "0", "0.5", "1", "0.5"]) else {
-            panic!("a swipe is a gesture");
-        };
-        assert_eq!((points.len(), points[0], points[SWIPE_STEPS]), (SWIPE_STEPS + 1, (0.0, 0.5), (1.0, 0.5)));
-        assert!(parse_device(&["tap", "2", "0.5"]).unwrap_err().contains("not a fraction"));
-        assert!(parse_device(&["tap", "x", "0.5"]).unwrap_err().contains("not a fraction"));
-        assert!(parse_device(&["key", "nope"]).unwrap_err().contains("not a key"));
-        assert!(parse_device(&["key", "a", "hyper"]).unwrap_err().contains("not a modifier"));
-        assert!(matches!(parse_device(&["key", "enter", "shift"]), Ok(DeviceInput::Send(_))));
-        assert!(matches!(parse_device(&["text", "Pádel", "Norte"]), Ok(DeviceInput::Send(text)) if text.contains("Pádel Norte")));
-        assert!(parse_device(&["text"]).unwrap_err().starts_with("den device:"));
-        assert!(parse_device(&[]).unwrap_err().starts_with("den device:"));
     }
 
     #[test]

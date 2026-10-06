@@ -12,7 +12,7 @@ In Den's terminals, more commands act on the workspace of the terminal they run 
 
 | Command | What it does |
 | --- | --- |
-| `den where` | Prints as JSON what's in front: the workspace (server, path, repo, branch, worktree or not), its tabs, the panels shown, the Device panel and the debugger's session. |
+| `den where` | Prints as JSON what's in front: the workspace (server, path, repo, branch, worktree or not), its tabs, the panels shown and the debugger's session. |
 | `den workspace <path\|name\|branch>` | Brings that workspace to the front. |
 | `den close <file>`, `den close --all` | Closes the file's tabs, or all of them; none if one has unsaved changes. |
 | `den panel show\|hide <panel>`, `den reveal <file>` | Shows or hides a panel; selects the file in the files panel. |
@@ -45,13 +45,13 @@ Cmd-D splits a terminal down and Cmd-Alt-D to the right (Ctrl-Alt-D and Ctrl-Shi
 
 ## Layout
 
-The window has a place for each thing. On the left, the activity bar and the side column; the code in the middle, always; the terminals on its right or, with View > Terminals Under the Code (Cmd-Alt-J, or the terminals' bar right-click), under it; and the Device panel on the far right while it shows. Right-clicked, the device goes to a tab of the code (Open in Editor Tab), to split beside a file, and back to its column (Move to Side Column).
+The window has a place for each thing. On the left, the activity bar and the side column; the code in the middle, always; the terminals on its right or, with View > Terminals Under the Code (Cmd-Alt-J, or the terminals' bar right-click), under it.
 
 The activity bar has an icon for each group of the side column: the explorer (Workspaces, Files, Outline and, once shown, Agents), Search (and References), Source Control (Changes) and Run and Debug. A click shows its group or, if it's the one showing, closes the column; Cmd-B closes it or brings it back. Drag the icons up or down to reorder them. A group's panels go one above the other: a click on a panel's header folds it to that header, dragged onto another's header it goes above it, and its lower edge, dragged, sizes it; the files, the search, the changes and the variables take the height the others leave. Any panel can go in any icon's column: drag its header onto another icon to move it there, or onto another panel's header to put it above; drag an icon onto the column to bring all its panels. Right-click a panel to hide it, or to give it an icon of its own, where it has the column to itself. The bar's right-click menu, and Show Panel in any panel's, lists every panel, checked if it's in the column showing: a click brings it there, from wherever it is, or takes it off. The icons carry what's going on in their group: the number of files changed, the most urgent of the agents and of the other workspaces on the explorer's, and the debugger's state, yellow while stopped and green while running. At its bottom, the notes, Add Server (a host from `~/.ssh/config`, `user@host` or, on Windows, a WSL distro) and Settings.
 
 Each workspace in the Workspaces panel has a dot for the coding agents (Claude Code, Codex, Gemini…) running in its terminals: red when one is waiting for an answer, a half yellow one while one works, green when they finished while you weren't looking, and an empty circle with none running or all idle; only the dot, no words. The Agents panel lists every agent of every workspace and server the same way, with what it's on (Claude Code's title) on hover. A click goes to that terminal.
 
-The side column, what it shows and where things go are the same in every workspace: going from one to another moves nothing. Each workspace keeps whether its terminals and its device show; a new one shows the terminals. Reset Layout (View, or the activity bar's right-click) puts it all back as it starts.
+The side column, what it shows and where things go are the same in every workspace: going from one to another moves nothing. Each workspace keeps whether its terminals show; a new one shows the terminals. Reset Layout (View, or the activity bar's right-click) puts it all back as it starts.
 
 Each workspace has its notes, a tab at the far end of the terminals' bar that the activity bar or Cmd-Alt-N brings in front (again, back to the terminals): plain Markdown for what's next there, kept by Den in its config folder, never in the repo, and forgotten when the worktree is removed. To write at length, Open in Editor Tab (the tab's right-click) puts them in a tab of the code; Move to Terminals, or closing that tab, brings them back. Their icon is a sticky note written on while they have something, and Cmd-E shows their first line on the way in.
 

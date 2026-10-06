@@ -130,9 +130,6 @@ impl Debugger {
         if let Some(page) = &self.page {
             out["page"] = Value::String(page.clone());
         }
-        if let Some(device) = &self.device {
-            out["device"] = Value::String(device.clone());
-        }
         if let Some((file, line)) = &self.revealed {
             out["revealed"] = json!({ "file": file, "line": line });
         }

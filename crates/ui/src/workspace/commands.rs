@@ -9,11 +9,6 @@ impl Workspace {
         self.debugger.clone()
     }
 
-    /// `den device`: the workspace's Device panel.
-    pub fn device(&self) -> Entity<Device> {
-        self.device.clone()
-    }
-
     /// `den show`: `path` with the cursor at `from` or, with `to`, the range
     /// between them selected. Without `focus`, the keyboard stays where it was.
     pub fn show(&mut self, path: PathBuf, from: Position, to: Option<Position>, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -97,7 +92,7 @@ impl Workspace {
     }
 
     /// `den where`: what the workspace shows. The tabs, the active one by
-    /// itself; the panels in sight; the Device panel; the debugger's session.
+    /// itself; the panels in sight; the debugger's session.
     pub fn whereabouts(&self, cx: &App) -> serde_json::Value {
         let tabs: Vec<serde_json::Value> = (0..self.tabs.len())
             .filter(|ix| !self.tabs[*ix].view)
@@ -110,13 +105,9 @@ impl Workspace {
             })
             .collect();
         let panels: Vec<Panel> = Panel::ALL.into_iter().filter(|panel| self.is_shown(*panel, cx)).collect();
-        let mut device = self.device.read(cx).state();
-        if device["available"] == true {
-            device["shown"] = self.is_shown(Panel::Device, cx).into();
-        }
         let debugger = self.debugger.read(cx).state();
         let mut session = serde_json::json!({});
-        for key in ["status", "running", "stopped", "command", "page", "device", "revealed", "launchError"] {
+        for key in ["status", "running", "stopped", "command", "page", "revealed", "launchError"] {
             if let Some(value) = debugger.get(key) {
                 session[key] = value.clone();
             }
@@ -128,7 +119,6 @@ impl Workspace {
             "root": self.root,
             "tabs": tabs,
             "panels": panels,
-            "device": device,
             "debugger": session,
         });
         if let Some(branch) = &self.branch {
@@ -260,8 +250,8 @@ mod tests {
         assert_eq!(state["breakpoints"], serde_json::json!([]));
     }
 
-    /// `den where` of a workspace with nothing open: its root, no tabs, no
-    /// Device panel, the debugger idle. `den close` of a file not open says so.
+    /// `den where` of a workspace with nothing open: its root, no tabs, the
+    /// debugger idle. `den close` of a file not open says so.
     #[gpui_kit::test]
     fn whereabouts_and_close(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -275,7 +265,6 @@ mod tests {
         assert_eq!(place["root"], "/where-test");
         assert_eq!(place["tabs"], serde_json::json!([]));
         assert!(place.get("active").is_none());
-        assert_eq!(place["device"], serde_json::json!({ "available": false }));
         assert_eq!(place["debugger"]["status"], "idle");
         assert!(place["panels"].as_array().unwrap().iter().all(|panel| panel.is_string()));
 
@@ -288,7 +277,7 @@ mod tests {
     }
 
     /// A `reveal` from the program is in `den debug state`, the program's
-    /// page and device from its `hello` too.
+    /// page from its `hello` too.
     #[gpui_kit::test]
     fn debug_state_says_what_the_program_said(cx: &mut TestAppContext) {
         cx.update(|cx| {

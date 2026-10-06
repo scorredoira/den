@@ -1,8 +1,7 @@
 //! Where things go (see `config::Layout`): on the left the activity bar and
 //! the side column, which shows a group of panels at a time, one above the
 //! other, each folding to its header; the code in the middle; the terminals
-//! on its right or under it; the device on the far right. The notes open
-//! over it all.
+//! on its right or under it. The notes open over it all.
 use std::rc::Rc;
 
 use super::*;
@@ -50,7 +49,6 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Code => "icons/code.svg",
         Panel::Terminals => "icons/terminal.svg",
         Panel::Debugger | Panel::CallStack | Panel::Variables | Panel::Watch | Panel::Breakpoints | Panel::Console => "icons/bug.svg",
-        Panel::Device => "icons/smartphone.svg",
         Panel::Notes => "icons/sticky-note.svg",
     }
 }
@@ -86,7 +84,6 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Watch => "Watch",
         Panel::Breakpoints => "Breakpoints",
         Panel::Console => "Debug Console",
-        Panel::Device => "Device",
         Panel::Notes => "Notes",
     }
 }
@@ -100,7 +97,6 @@ const MIN_BODY: f32 = 40.;
 /// what isn't saved: the notes, the debugger's console.
 pub(super) struct Panels {
     terminals: bool,
-    device: bool,
     /// The debugger's console, a tab after the terminals' once shown.
     console: bool,
     /// The panel tab in front of the terminals, if one is: the console or
@@ -122,7 +118,6 @@ impl Panels {
     fn restored(saved: SavedPanels) -> Self {
         Self {
             terminals: saved.terminals,
-            device: saved.device,
             console: false,
             front: None,
             results: Panel::Search,
@@ -131,7 +126,7 @@ impl Panels {
     }
 
     pub fn saved(&self) -> SavedPanels {
-        SavedPanels { terminals: self.terminals, device: self.device }
+        SavedPanels { terminals: self.terminals }
     }
 }
 
@@ -174,8 +169,6 @@ impl Workspace {
             Panel::Code => true,
             Panel::Terminals => panels.terminals,
             Panel::Console => panels.terminals && panels.console && panels.front == Some(Panel::Console),
-            // In a tab of the code it's not in its column.
-            Panel::Device => panels.device && self.device.read(cx).available() && self.device_tab().is_none(),
             // In a tab of the code it's not among the terminals.
             Panel::Notes => panels.terminals && panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
             Panel::Debugger => DEBUG_PANELS.into_iter().any(|panel| self.in_side(panel, cx)),
@@ -253,10 +246,6 @@ impl Workspace {
                 panels.console = true;
                 panels.front = Some(Panel::Console);
             }
-            Panel::Device => {
-                panels.device = true;
-                self.device.update(cx, |device, cx| device.shown(cx));
-            }
             Panel::Notes => {
                 panels.terminals = true;
                 panels.front = Some(Panel::Notes);
@@ -308,7 +297,6 @@ impl Workspace {
                     panels.front = None;
                 }
             }
-            Panel::Device => panels.device = false,
             // The terminals show again.
             Panel::Notes => {
                 if panels.front == Some(Panel::Notes) {
@@ -456,7 +444,7 @@ impl Workspace {
     }
 
     /// The columns: the side one, the code (with the terminals under it, if
-    /// that's their place), the terminals and the device.
+    /// that's their place) and the terminals.
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let terminals = self.panels.terminals;
         if self.terminals_maximized && terminals {
@@ -465,10 +453,9 @@ impl Workspace {
         let layout = Config::get(cx).layout.clone();
         let side = self.side_place(cx).is_some();
         let right = terminals && layout.dock == Dock::Right;
-        let device = self.is_shown(Panel::Device, cx);
-        let state = self.split.state(self.width, [side, right, device], cx).clone();
+        let state = self.split.state(self.width, [side, right], cx).clone();
         // With no saved width, the terminals take half of what the others leave.
-        let fixed = if side { layout.side_width } else { 0. } + if device { layout.device_width } else { 0. };
+        let fixed = if side { layout.side_width } else { 0. };
         let half = ((f32::from(self.width) - fixed) / 2.).max(300.);
         let mut row = h_resizable("workspace-columns").with_state(&state);
         if side {
@@ -488,34 +475,12 @@ impl Workspace {
                     .child(self.terminals.clone().cached(StyleRefinement::default().size_full())),
             );
         }
-        if device {
-            let hide = cx.entity().downgrade();
-            row = row.child(
-                resizable_panel()
-                    .size(config::width(layout.device_width, 200., 2000.))
-                    .size_range(px(200.)..px(2000.))
-                    .child(div().size_full().child(self.device.clone()).capture_any_mouse_down(
-                        move |event: &MouseDownEvent, _, cx| {
-                            // Its menu's Hide Panel hides it, not the side
-                            // panel right-clicked last.
-                            if event.button == MouseButton::Right {
-                                let hide = hide.clone();
-                                let hide: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
-                                    hide.update(cx, |this, cx| this.hide_panel(Panel::Device, cx)).ok();
-                                });
-                                menu::set_panel_under(Some(hide), None, cx);
-                            }
-                        },
-                    )),
-            );
-        }
-        // The side column, the code, the terminals, the device: in order.
+        // The side column, the code, the terminals: in order.
         let kinds: Vec<&'static str> = side
             .then_some("side")
             .into_iter()
             .chain(["code"])
             .chain(right.then_some("terminals"))
-            .chain(device.then_some("device"))
             .collect();
         let workspace = cx.entity().downgrade();
         row.on_resize(move |state, _, cx| {
@@ -526,7 +491,6 @@ impl Workspace {
                     match *kind {
                         "side" => config.layout.side_width = size,
                         "terminals" => config.layout.dock_width = Some(size),
-                        "device" => config.layout.device_width = size,
                         _ => {}
                     }
                 }

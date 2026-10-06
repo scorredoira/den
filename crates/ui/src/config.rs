@@ -22,7 +22,7 @@ pub enum ThemeChoice {
 
 /// Where things go, the same in every workspace: on the left the side
 /// column, which shows one place's panels; the code in the middle; the
-/// terminals on its right or under it; the device, on the far right.
+/// terminals on its right or under it.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
@@ -54,7 +54,6 @@ pub struct Layout {
     /// The terminals as a row; unset, a third of the window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dock_height: Option<f32>,
-    pub device_width: f32,
 }
 
 impl Default for Layout {
@@ -70,7 +69,6 @@ impl Default for Layout {
             dock: Dock::Right,
             dock_width: None,
             dock_height: None,
-            device_width: 400.,
         }
     }
 }
@@ -346,8 +344,6 @@ pub enum Panel {
     Code,
     Terminals,
     Debugger,
-    /// The screen of a phone (see `device`).
-    Device,
     /// What's next in the workspace (see `notes`).
     Notes,
     /// The terminals running a coding agent, in every workspace.
@@ -363,7 +359,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 17] = [
+    pub const ALL: [Panel; 16] = [
         Panel::Workspaces,
         Panel::Agents,
         Panel::Files,
@@ -380,7 +376,6 @@ impl Panel {
         Panel::Console,
         Panel::Debugger,
         Panel::Notes,
-        Panel::Device,
     ];
 }
 
@@ -464,13 +459,12 @@ pub struct Session {
 #[serde(default)]
 pub struct SavedPanels {
     pub terminals: bool,
-    pub device: bool,
 }
 
 impl Default for SavedPanels {
     /// A new workspace's: the terminals.
     fn default() -> Self {
-        Self { terminals: true, device: false }
+        Self { terminals: true }
     }
 }
 
@@ -1072,7 +1066,7 @@ mod layout_tests {
     fn every_side_panel_is_in_one_group() {
         for panel in Panel::ALL {
             let groups = Group::ALL.into_iter().filter(|group| group.panels().contains(&panel)).count();
-            let side = !matches!(panel, Panel::Code | Panel::Terminals | Panel::Console | Panel::Device | Panel::Notes | Panel::Debugger);
+            let side = !matches!(panel, Panel::Code | Panel::Terminals | Panel::Console | Panel::Notes | Panel::Debugger);
             assert_eq!(groups, usize::from(side), "{panel:?}");
         }
         for group in Group::ALL {

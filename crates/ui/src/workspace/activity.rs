@@ -1,8 +1,7 @@
 //! The activity bar, on the window's left edge: an icon for each group of
 //! the side column and each panel with an icon of its own, which shows it
-//! or, if it's the one showing, closes the column; the device's while
-//! there's one; and at the bottom the notes, connecting to a server and
-//! Settings. Its right-click menu, as Show Panel, lists every panel.
+//! or, if it's the one showing, closes the column; and at the bottom the
+//! notes, connecting to a server and Settings. Its right-click menu, as Show Panel, lists every panel.
 use super::*;
 use super::layout::{PanelDrag, group_icon, icon, notes_icon, title};
 use crate::config::{Group, Panel, Place};
@@ -28,7 +27,6 @@ pub(crate) enum Badge {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Item {
     Place(Place),
-    Device,
     /// The notes, and whether they have something (a sticky note written on).
     Notes { filled: bool },
 }
@@ -38,7 +36,7 @@ impl Item {
     /// panels stand for (see `Layout::kind`), or else its first panel.
     fn stands_for(self, cx: &App) -> Result<Panel, Group> {
         let Item::Place(place) = self else {
-            return Ok(if self == Item::Device { Panel::Device } else { Panel::Notes });
+            return Ok(Panel::Notes);
         };
         let layout = &Config::get(cx).layout;
         match (&layout.panels(place)[..], layout.kind(place)) {
@@ -252,15 +250,12 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 impl Workspace {
     pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let side = self.side_place(cx);
-        let mut icons: Vec<Activity> = Config::get(cx)
+        let icons: Vec<Activity> = Config::get(cx)
             .layout
             .places()
             .into_iter()
             .map(|place| (Item::Place(place), side == Some(place), self.badge(place, cx)))
             .collect();
-        if self.device.read(cx).available() {
-            icons.push((Item::Device, self.is_shown(Panel::Device, cx) || self.device_tab().is_some(), None));
-        }
         let notes = Item::Notes { filled: self.notes.read(cx).filled() };
         let notes_shown = self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix));
         let bottom = vec![(notes, notes_shown, None)];
@@ -273,16 +268,13 @@ impl Workspace {
 
     /// What Show Panel and the activity bar's menu list: every side panel,
     /// checked while it's in the place the column shows (none while it's
-    /// closed); the terminals, the device and the notes, while they show.
+    /// closed); the terminals and the notes, while they show.
     pub(crate) fn menu_panels(&self, cx: &App) -> Vec<(Panel, bool)> {
         let layout = &Config::get(cx).layout;
         let here = self.side_place(cx).map(|place| layout.panels(place)).unwrap_or_default();
         let mut panels: Vec<(Panel, bool)> =
             Group::ALL.into_iter().flat_map(|group| group.panels()).map(|panel| (*panel, here.contains(panel))).collect();
         panels.push((Panel::Terminals, self.is_shown(Panel::Terminals, cx)));
-        if self.device.read(cx).available() {
-            panels.push((Panel::Device, self.is_shown(Panel::Device, cx)));
-        }
         panels.push((Panel::Notes, self.is_shown(Panel::Notes, cx)));
         panels
     }
@@ -294,7 +286,6 @@ impl Workspace {
         match panel {
             Panel::Terminals => self.set_terminals_visible(!self.is_shown(panel, cx), window, cx),
             Panel::Notes => self.toggle_notes(&ToggleNotes, window, cx),
-            Panel::Device => self.toggle_panel(panel, cx),
             _ if self.in_side(panel, cx) => self.remove_panel(panel, cx),
             _ => self.bring_panel(panel, None, cx),
         }
@@ -319,7 +310,7 @@ impl Workspace {
     }
 
     /// A place shows, or closes the side column if it's the one showing;
-    /// the device and the notes show or hide. The search gets the focus,
+    /// the notes show or hide. The search gets the focus,
     /// as its key does.
     pub(crate) fn click_activity(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
         match item {
@@ -327,9 +318,6 @@ impl Workspace {
                 self.show_search(&ShowSearch, window, cx)
             }
             Item::Place(place) => self.click_place(place, cx),
-            // In a tab, it comes to the front there.
-            Item::Device if self.device_tab().is_some() => self.show_device(window, cx),
-            Item::Device => self.toggle_panel(Panel::Device, cx),
             Item::Notes { .. } => self.toggle_notes(&ToggleNotes, window, cx),
         }
     }
