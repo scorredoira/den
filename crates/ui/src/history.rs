@@ -222,7 +222,7 @@ impl HistoryView {
 
     /// Shows or hides the shown commit's files, beside the commits.
     fn toggle_files(&mut self, cx: &mut Context<Self>) {
-        Config::update(cx, |config| config.history_files = !config.history_files);
+        Config::update(cx, |config| config.history_hide_files = !config.history_hide_files);
     }
 
     /// Rereads the commits: as many as were read, so the list stays where it was.
@@ -824,7 +824,7 @@ impl HistoryView {
 
     /// Files: the shown commit's files beside the commits, or not.
     fn render_files_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        toggle("history-files", "Files", Config::get(cx).history_files, cx)
+        toggle("history-files", "Files", !Config::get(cx).history_hide_files, cx)
             .tooltip(|window, cx| Tooltip::new("The commit's files, beside the commits").build(window, cx))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx)))
     }
@@ -941,9 +941,8 @@ impl HistoryView {
     }
 
     /// The shown commit's files: its message first, as in gitk.
-    fn render_files(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let focused = self.files_focus.is_focused(window);
         let message = h_flex()
             .id("commit-message")
             .h(px(24.))
@@ -951,8 +950,7 @@ impl HistoryView {
             .border_1()
             .border_color(transparent_black())
             .text_color(theme.muted_foreground)
-            .when(self.file_selected.is_none(), |el| el.bg(crate::app::selected_row(cx)).text_color(theme.foreground))
-            .when(self.file_selected.is_none() && focused, |el| el.border_color(theme.list_active_border))
+            .when(self.file_selected.is_none(), |el| el.text_color(theme.foreground))
             .when(self.file_selected.is_some(), |el| el.hover(|style| style.bg(theme.list_hover)))
             .child("Message")
             .on_click(cx.listener(|this, _, window, cx| {
@@ -1052,8 +1050,8 @@ impl Render for HistoryView {
             .child(self.commit.clone())
             .context_menu(self.files_menu(cx));
         // The commits, and the shown commit's files on their right if Files is on.
-        let top = if Config::get(cx).history_files {
-            let files = self.render_files(window, cx);
+        let top = if !Config::get(cx).history_hide_files {
+            let files = self.render_files(cx);
             let border = cx.theme().border;
             h_resizable("history-top")
                 .with_state(&top)
@@ -1113,7 +1111,7 @@ fn toggle(id: &'static str, label: &'static str, on: bool, cx: &App) -> Stateful
 
 /// Files, checked while the commit's files show: a click shows or hides them.
 fn files_item(view: &WeakEntity<HistoryView>, cx: &App) -> menu::PopupMenuItem {
-    menu::item("Files", view, |this, _, cx| this.toggle_files(cx)).checked(Config::get(cx).history_files)
+    menu::item("Files", view, |this, _, cx| this.toggle_files(cx)).checked(!Config::get(cx).history_hide_files)
 }
 
 #[cfg(test)]
