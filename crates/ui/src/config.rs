@@ -58,6 +58,94 @@ pub struct Layout {
     /// row above its console; unset, three fifths of the tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug_height: Option<f32>,
+    /// The debugger's grid: where each part goes, the ones hidden, and the
+    /// sizes dragged.
+    #[serde(deserialize_with = "lenient")]
+    pub debug_grid: DebugGrid,
+}
+
+/// A part of the debugger, a cell of its tab's grid.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum DebugPart {
+    Stack,
+    Variables,
+    Watch,
+    Breakpoints,
+}
+
+impl DebugPart {
+    pub const ALL: [DebugPart; 4] = [DebugPart::Stack, DebugPart::Variables, DebugPart::Watch, DebugPart::Breakpoints];
+}
+
+/// The debugger's grid of two rows of two: its parts in order (the first
+/// two above), those hidden, and the sizes as dragged: the upper row's
+/// height and each row's first cell's width.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugGrid {
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "known_parts")]
+    pub order: Vec<DebugPart>,
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "known_parts")]
+    pub hidden: Vec<DebugPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_height: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom_width: Option<f32>,
+}
+
+impl DebugGrid {
+    /// The four parts in their cells' order: as saved, each once, with any
+    /// missing where it goes by default.
+    pub fn order(&self) -> [DebugPart; 4] {
+        let mut order: Vec<DebugPart> = Vec::new();
+        for part in &self.order {
+            if !order.contains(part) {
+                order.push(*part);
+            }
+        }
+        for part in DebugPart::ALL {
+            if !order.contains(&part) {
+                order.push(part);
+            }
+        }
+        [order[0], order[1], order[2], order[3]]
+    }
+
+    /// The rows as shown, each with whether it's the upper one: the parts
+    /// of each that aren't hidden, a row with none left out.
+    pub fn rows(&self) -> Vec<(bool, Vec<DebugPart>)> {
+        let order = self.order();
+        [(true, &order[..2]), (false, &order[2..])]
+            .into_iter()
+            .map(|(upper, row)| (upper, row.iter().copied().filter(|part| !self.hidden.contains(part)).collect::<Vec<_>>()))
+            .filter(|(_, row)| !row.is_empty())
+            .collect()
+    }
+
+    /// Swaps two parts' cells.
+    pub fn swap(&mut self, a: DebugPart, b: DebugPart) {
+        let mut order = self.order();
+        let (Some(i), Some(j)) = (order.iter().position(|part| *part == a), order.iter().position(|part| *part == b)) else {
+            return;
+        };
+        order.swap(i, j);
+        self.order = order.to_vec();
+    }
+
+    /// Hides a part, or shows it again in its cell.
+    pub fn set_hidden(&mut self, part: DebugPart, hidden: bool) {
+        self.hidden.retain(|other| *other != part);
+        if hidden {
+            self.hidden.push(part);
+        }
+    }
+}
+
+fn known_parts<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<DebugPart>, D::Error> {
+    let names = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(names.into_iter().filter_map(|name| DebugPart::deserialize(name).ok()).collect())
 }
 
 impl Default for Layout {
@@ -74,6 +162,7 @@ impl Default for Layout {
             dock_width: None,
             dock_height: None,
             debug_height: None,
+            debug_grid: DebugGrid::default(),
         }
     }
 }
