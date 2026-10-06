@@ -69,6 +69,17 @@ struct Half {
 pub struct Prepared {
     rows: Vec<Row>,
     inline: Vec<Row>,
+    /// The rows of the message, first in both.
+    header: usize,
+}
+
+/// A commit's message, for showing it apart from its changes.
+#[derive(Clone, Default)]
+pub struct CommitMessage {
+    pub subject: SharedString,
+    pub body: SharedString,
+    /// Who wrote it, when, and its short hash.
+    pub meta: SharedString,
 }
 
 /// A file a commit changed, as its rows head it.
@@ -90,6 +101,28 @@ impl Prepared {
             })
             .collect()
     }
+
+    /// Takes the message out of the rows: they start at the first file.
+    pub fn take_message(&mut self) -> CommitMessage {
+        let mut message = CommitMessage::default();
+        let mut body: Vec<&str> = Vec::new();
+        for row in &self.rows[..self.header] {
+            match row {
+                Row::Subject(text) => message.subject = text.clone(),
+                Row::Body(text) => body.push(text),
+                Row::Blank => body.push(""),
+                Row::Meta(text) => message.meta = text.clone(),
+                _ => {}
+            }
+        }
+        message.body = body.join("\n").trim().to_string().into();
+        // and the blank line before the first file
+        let header = (self.header + 1).min(self.rows.len()).min(self.inline.len());
+        self.rows.drain(..header);
+        self.inline.drain(..header);
+        self.header = 0;
+        message
+    }
 }
 
 /// Prepares `git show --format=fuller --patch` of a commit in the background.
@@ -101,9 +134,9 @@ pub fn prepare(show: String, cx: &App) -> Task<Prepared> {
         syntax: theme.highlight_theme.clone(),
     };
     cx.background_spawn(async move {
-        let rows = rows(&show, &colors);
+        let (rows, header) = rows(&show, &colors);
         let inline = inline(&rows);
-        Prepared { rows, inline }
+        Prepared { rows, inline, header }
     })
 }
 
@@ -127,11 +160,12 @@ impl CommitView {
         }
     }
 
-    /// Scrolls to `file`'s changes, or to the top (the message) with `None`.
-    pub fn scroll_to(&self, file: Option<&str>) {
+    /// Scrolls to `file`'s changes.
+    pub fn scroll_to(&self, file: &str) {
         let rows = if self.narrow.get() { &self.inline } else { &self.rows };
-        let ix = file.and_then(|file| rows.iter().position(|row| matches!(row, Row::File { path, .. } if path == file)));
-        self.scroll.scroll_to_item_strict(ix.unwrap_or(0), ScrollStrategy::Top);
+        if let Some(ix) = rows.iter().position(|row| matches!(row, Row::File { path, .. } if path == file)) {
+            self.scroll.scroll_to_item_strict(ix, ScrollStrategy::Top);
+        }
     }
 
     /// Shows another commit in its place, from the top: no new view, so it
@@ -179,12 +213,14 @@ fn inline(rows: &[Row]) -> Vec<Row> {
     out
 }
 
-fn rows(show: &str, colors: &Colors) -> Vec<Row> {
+/// The rows, and how many of them are the message.
+fn rows(show: &str, colors: &Colors) -> (Vec<Row>, usize) {
     let (header, patch) = match show.find("\ndiff --git ") {
         Some(at) => (&show[..at], &show[at + 1..]),
         None => (show, ""),
     };
     let mut rows = header_rows(header);
+    let message = rows.len();
     for section in patch.split("\ndiff --git ").filter(|section| !section.trim().is_empty()) {
         let path = section_path(section);
         rows.push(Row::Blank);
@@ -216,7 +252,7 @@ fn rows(show: &str, colors: &Colors) -> Vec<Row> {
             rows.push(Row::Line { old, new });
         }
     }
-    rows
+    (rows, message)
 }
 
 /// The message (its first line in bold), who wrote it and when.

@@ -205,6 +205,30 @@ fn the_history_is_a_tab_that_reopens(cx: &mut TestAppContext) {
     assert!(workspace.read_with(cx, |workspace, _| workspace.history_tab().is_none()));
 }
 
+/// Above the changes, three columns: the commits, the selected one's
+/// message and its files. A column's header dragged onto another swaps the
+/// two, and the order is kept.
+#[gpui_kit::test]
+fn the_history_s_columns_are_dragged_into_place(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
+    cx.run_until_parked();
+    let (commits, message, files) = (bounds(cx, "history-commits"), bounds(cx, "commit-message"), bounds(cx, "commit-files"));
+    assert!(commits.right() <= message.left() + px(1.) && message.right() <= files.left() + px(1.), "{commits:?} {message:?} {files:?}");
+    assert!(message.top() == files.top(), "{message:?} {files:?}");
+    let start = bounds(cx, "history-header-Files").center();
+    let end = bounds(cx, "history-commits").center();
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    use config::HistoryPart::*;
+    assert_eq!(cx.update(|_, cx| Config::get(cx).history_order()), [Files, Message, Commits]);
+    let (commits, files) = (bounds(cx, "history-commits"), bounds(cx, "commit-files"));
+    assert!(files.right() <= bounds(cx, "commit-message").left() + px(1.) && commits.left() >= files.right(), "{files:?} {commits:?}");
+}
+
 /// The History tab has an icon on the activity bar, after the places': a
 /// click opens it, another closes it.
 #[gpui_kit::test]
