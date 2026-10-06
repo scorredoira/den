@@ -106,7 +106,7 @@ impl Den {
                             .size(px(280.))
                             .max_w_full()
                             .flex_none()
-                            .text_color(theme.muted_foreground.opacity(0.22)),
+                            .text_color(theme.muted_foreground.opacity(crate::workspace::EMPTY_LOGO_OPACITY)),
                     )
                     .child(v_flex().w(px(400.)).max_w_full().gap_6().child(start).children(recent)),
             )

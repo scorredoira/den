@@ -264,6 +264,29 @@ struct SymbolSearch {
 /// Places remembered for going back.
 const MAX_PLACES: usize = 100;
 
+/// How faint the logo of an empty editor (and of the welcome) is.
+pub(crate) const EMPTY_LOGO_OPACITY: f32 = 0.3;
+
+/// What an empty editor offers below the logo, as VS Code does: a few
+/// shortcuts, with the keys they have now.
+fn empty_hints(cx: &App) -> impl IntoElement {
+    const HINTS: &[(&str, &str)] = &[
+        ("OpenCommandPalette", "Show All Commands"),
+        ("OpenFileFinder", "Go to File"),
+        ("ShowSearch", "Find in Files"),
+        ("NewFile", "New File"),
+        ("NewTerminal", "New Terminal"),
+    ];
+    let theme = cx.theme();
+    v_flex().w(px(320.)).max_w_full().gap_2().text_ui(cx).text_color(theme.muted_foreground).children(
+        HINTS.iter().filter_map(|(id, label)| {
+            let shortcut = crate::shortcuts::SHORTCUTS.iter().find(|shortcut| shortcut.id == *id)?;
+            let keys = crate::shortcuts::keys(shortcut, cx)?;
+            Some(h_flex().justify_between().gap_4().child(*label).child(component::kbd::Kbd::new(keys)))
+        }),
+    )
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct DiffOf {
     /// Relative to the task's folder; empty for the whole commit.
@@ -3697,12 +3720,19 @@ impl Workspace {
                     }
                 })
                 .child(
-                    svg()
-                        .path("icons/den-empty.svg")
-                        .size(px(360.))
+                    v_flex()
+                        .items_center()
+                        .gap_10()
                         .max_w_full()
-                        .max_h_full()
-                        .text_color(theme.muted_foreground.opacity(0.22)),
+                        .child(
+                            svg()
+                                .path("icons/den-empty.svg")
+                                .size(px(360.))
+                                .max_w_full()
+                                .flex_none()
+                                .text_color(theme.muted_foreground.opacity(EMPTY_LOGO_OPACITY)),
+                        )
+                        .child(empty_hints(cx)),
                 )
                 .into_any_element(),
             Some(tab) => match &tab.content {
