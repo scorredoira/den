@@ -496,6 +496,7 @@ impl Workspace {
                     TerminalAreaEvent::ToEditorTab(Panel::Notes) => this.notes_to_tab(window, cx),
                     TerminalAreaEvent::ToEditorTab(_) => {}
                     TerminalAreaEvent::ShowPanel(None) => this.show_panel(Panel::Terminals, cx),
+                    TerminalAreaEvent::ClosePanel(Panel::Notes) => this.toggle_notes(&ToggleNotes, window, cx),
                     TerminalAreaEvent::ClosePanel(panel) => this.hide_panel(*panel, cx),
                     TerminalAreaEvent::DebugTerminal(view) => {
                         this.debugger.update(cx, |debugger, cx| debugger.set_terminal_view(view.clone(), cx));

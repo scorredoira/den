@@ -1005,7 +1005,11 @@ impl TerminalArea {
                         cx.emit(TerminalAreaEvent::ClosePanel(panel));
                     })),
             ))
-            .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(panel)))))
+            // The notes' tab in front, clicked again, hides them: as their icon.
+            .on_click(cx.listener(move |_, _, _, cx| match panel == Panel::Notes && showing {
+                true => cx.emit(TerminalAreaEvent::ClosePanel(panel)),
+                false => cx.emit(TerminalAreaEvent::ShowPanel(Some(panel))),
+            }))
             .context_menu({
                 let (area, closable) = (self.weak.clone(), tab.closable);
                 // The notes' tab stays: Hide Panel hides the terminals' place,
