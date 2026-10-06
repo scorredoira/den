@@ -556,6 +556,9 @@ pub struct Den {
     split: config::Split,
     /// The tasks column, drawn by the workspace where its panel is placed.
     workspaces_panel: Entity<WorkspacesPanel>,
+    /// The worktrees of the project in front, drawn by the workspace where
+    /// its panel is placed.
+    worktrees_panel: Entity<WorkspacesPanel>,
     /// The agents panel, drawn by the workspace where it's placed.
     agents_panel: Entity<WorkspacesPanel>,
     /// Settings, if open.
@@ -625,6 +628,15 @@ impl Den {
                             .unwrap_or_else(|_| div().into_any_element())
                     })
                     .with_actions(move |_, _| tasks_add_button(&actions).into_any_element())
+                })
+            },
+            worktrees_panel: {
+                let den = cx.entity().downgrade();
+                cx.new(|_| {
+                    WorkspacesPanel::new(move |_, cx| {
+                        den.update(cx, |den, cx| den.render_worktrees(cx))
+                            .unwrap_or_else(|_| div().into_any_element())
+                    })
                 })
             },
             agents_panel: {
@@ -1209,10 +1221,22 @@ impl Den {
         cx.notify();
     }
 
-    /// Workspaces in list order (the one for Cmd-1…9): by server;
-    /// within each, a repo's checkout followed by its worktrees, the repos
-    /// and the worktrees within them in the dragged order.
+    /// Workspaces in list order, as Cmd-E and Cmd-K go through them: those
+    /// of the hidden projects left out, unless one is in front.
     fn ordered<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
+        let mut entries = self.ordered_all(cx);
+        let active = self.active.as_ref().and_then(|key| Some(project_of(key, self.task(key)?)));
+        entries.retain(|(key, task)| {
+            let project = project_of(key, task);
+            active.as_ref() == Some(&project) || !self.is_hidden_project(&project, cx)
+        });
+        entries
+    }
+
+    /// Every workspace in list order: by server; within each, by project
+    /// (a repo's checkout followed by its worktrees, or a folder), the
+    /// projects and the worktrees within them in the dragged order.
+    fn ordered_all<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
         let config = Config::get(cx);
         let mut entries: Vec<(usize, TaskKey, &TaskInfo)> = Vec::new();
         for (ix, host) in self.hosts.iter().enumerate() {
@@ -1265,6 +1289,59 @@ impl Den {
         host.tasks.iter().chain(&host.loose).find(|task| task.path == key.path)
     }
 
+    /// The project in front: its repo's checkout, or its folder.
+    fn active_project(&self) -> Option<TaskKey> {
+        let key = self.active.as_ref()?;
+        Some(project_of(key, self.task(key)?))
+    }
+
+    fn is_hidden_project(&self, project: &TaskKey, cx: &App) -> bool {
+        Config::get(cx).hidden_projects.contains(&project.config())
+    }
+
+    /// Hides `project` from the Projects panel, Cmd-E and Cmd-K, or shows it
+    /// again. Its agents still count in the dots.
+    fn set_project_hidden(&mut self, project: &TaskKey, hidden: bool, cx: &mut Context<Self>) {
+        let key = project.config();
+        Config::update(cx, |config| {
+            config.hidden_projects.retain(|other| *other != key);
+            if hidden {
+                config.hidden_projects.push(key);
+            }
+        });
+        cx.notify();
+    }
+
+    fn toggle_hidden_projects(&mut self, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.show_hidden_projects = !config.show_hidden_projects);
+        cx.notify();
+    }
+
+    /// Whether `project` (on its server) is a git repo: it has a branch or
+    /// worktrees, and so a Worktrees panel.
+    fn is_repo(&self, project: &TaskKey) -> bool {
+        self.host(&project.host).is_some_and(|host| {
+            host.tasks.iter().any(|task| task.repo == project.path && (task.branch.is_some() || !task.main))
+        })
+    }
+
+    /// Enters `project`: the worktree of it used last, or its checkout (its
+    /// first workspace, if it has none).
+    fn enter_project(&mut self, project: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
+        let mine: Vec<TaskKey> = self
+            .ordered_all(cx)
+            .into_iter()
+            .filter(|(key, task)| project_of(key, task) == project)
+            .map(|(key, _)| key)
+            .collect();
+        let recent = Config::get(cx).recent.iter().map(|recent| TaskKey { host: recent.host.clone().into(), path: recent.path.clone() });
+        let last = self.active.iter().chain(self.previous.iter()).cloned().chain(recent).find(|key| mine.contains(key));
+        let key = last.or_else(|| mine.iter().find(|key| **key == project).cloned()).or_else(|| mine.first().cloned());
+        if let Some(key) = key {
+            self.activate(key, window, cx);
+        }
+    }
+
     /// Whether what's open in the window is remembered: not in one opened
     /// with `den -s`.
     fn remembers(&self) -> bool {
@@ -1290,7 +1367,7 @@ impl Den {
         self.host(&key.host).is_some_and(|host| !host.tasks.iter().any(|task| key.path.starts_with(&task.path)))
     }
 
-    /// Keep in Workspaces, in a window opened with `den -s`: its servers and
+    /// Keep in Projects, in a window opened with `den -s`: its servers and
     /// the folders open in it (or only `folder`) are remembered, and the main
     /// window lists them.
     fn keep(&mut self, folder: Option<TaskKey>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1759,17 +1836,25 @@ impl Den {
         self.show_tasks_column(visible, cx);
     }
 
-    /// The tasks' state on the explorer's icon: the most urgent of the
-    /// other workspaces, and of the agents.
+    /// The tasks' state on the explorer's icon or the panels' headers: the
+    /// most urgent of the other workspaces (those of hidden projects too),
+    /// of the project's other worktrees, and of the agents.
     fn task_badges(&self, cx: &App) -> TaskBadges {
-        let dot = |(dot, color): (&str, Hsla)| (urgency(dot, color, cx) > 0).then_some(color);
-        let others = self
-            .ordered(cx)
-            .into_iter()
-            .filter(|(key, _)| self.active.as_ref() != Some(key))
-            .map(|(key, task)| self.status(&key, task, cx))
-            .max_by_key(|(dot, color)| urgency(dot, *color, cx));
-        TaskBadges { workspaces: others.and_then(dot), agents: self.agents_badge(cx) }
+        let project = self.active_project();
+        let others: Vec<(TaskKey, &TaskInfo)> =
+            self.ordered_all(cx).into_iter().filter(|(key, _)| self.active.as_ref() != Some(key)).collect();
+        let most_urgent = |others: &mut dyn Iterator<Item = &(TaskKey, &TaskInfo)>| {
+            others
+                .map(|(key, task)| self.status(key, task, cx))
+                .filter(|(dot, color)| urgency(dot, *color, cx) > 0)
+                .max_by_key(|(dot, color)| urgency(dot, *color, cx))
+                .map(|(_, color)| color)
+        };
+        TaskBadges {
+            workspaces: most_urgent(&mut others.iter()),
+            worktrees: most_urgent(&mut others.iter().filter(|(key, task)| Some(project_of(key, task)) == project)),
+            agents: self.agents_badge(cx),
+        }
     }
 
     /// Opens `path` on `host`: the task it is, or the folder on its own.
@@ -2038,8 +2123,13 @@ impl Den {
         if self.client(&host).is_none() {
             return;
         }
-        if !self.tasks_shown(cx) {
-            self.show_tasks_column(true, cx);
+        // It's named in the Worktrees panel, which lists the project in front.
+        let project = TaskKey { host: host.clone(), path: repo.clone() };
+        if self.active_project().as_ref() != Some(&project) {
+            self.enter_project(project, window, cx);
+        }
+        if let Some(workspace) = self.active_workspace() {
+            workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Worktrees, cx));
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("branch name"));
         let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
@@ -2211,7 +2301,7 @@ impl Den {
         // The list as runs of the same repo, each its checkout first.
         let mut groups: Vec<Vec<TaskKey>> = Vec::new();
         let mut last: Option<(SharedString, PathBuf)> = None;
-        for (key, task) in self.ordered(cx) {
+        for (key, task) in self.ordered_all(cx) {
             let group = (key.host.clone(), task.repo.clone());
             if last.as_ref() != Some(&group) {
                 groups.push(Vec::new());
@@ -2494,7 +2584,7 @@ impl Den {
             .px_3()
             .border_b_1()
             .border_color(theme.sidebar_border)
-            .child(div().flex_1().text_ui_small(cx).text_color(theme.muted_foreground).child("WORKSPACES"))
+            .child(div().flex_1().text_ui_small(cx).text_color(theme.muted_foreground).child("PROJECTS"))
             .child(tasks_add_button(&weak))
             .context_menu(move |menu, window, cx| column_menu(menu, &weak, window, cx))
             .into_any_element()
@@ -2594,7 +2684,9 @@ impl Den {
                         .on_click(cx.listener(move |this, _, window, cx| this.ask_restart(restart.clone(), window, cx)))
                     })
                     .context_menu(move |menu, window, cx| {
-                        host_menu(menu, &menu_name, connected, keep, &weak).panel_items(hide_column(&weak), window, cx)
+                        host_menu(menu, &menu_name, connected, keep, &weak)
+                            .item(show_hidden_item(&weak, cx))
+                            .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
                     }),
             )
             .children(detail.map(|detail| {
@@ -2608,15 +2700,27 @@ impl Den {
             .into_any_element()
     }
 
+    /// The projects, by server: a row each. Hidden ones only with Show
+    /// Hidden Projects, or while in front.
     fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
-        let ordered = self.ordered(cx);
+        let ordered = self.ordered_all(cx);
+        let show_hidden = Config::get(cx).show_hidden_projects;
+        let active = self.active_project();
         let mut sections: Vec<AnyElement> = Vec::new();
         for host in &self.hosts {
             sections.push(self.render_host_header(host, cx));
             let entries: Vec<(TaskKey, &TaskInfo)> =
                 ordered.iter().filter(|(key, _)| key.host == host.name).cloned().collect();
             for group in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo) {
-                sections.push(self.render_repo(group, cx));
+                let Some((key, task)) = group.first() else {
+                    continue;
+                };
+                let project = project_of(key, task);
+                let hidden = self.is_hidden_project(&project, cx);
+                if hidden && !show_hidden && active.as_ref() != Some(&project) {
+                    continue;
+                }
+                sections.push(self.render_project(project, hidden, group, cx));
             }
         }
         let theme = cx.theme();
@@ -2629,7 +2733,7 @@ impl Den {
                 .text_ui_small(cx)
                 .text_color(theme.muted_foreground)
                 .child(div().whitespace_normal().child(
-                    "The folders you open stay here. A git repo shows its worktrees, each a workspace with its own terminals and Claude Code session.",
+                    "The folders you open stay here. A git repo's worktrees show in the Worktrees panel, each a workspace with its own terminals and Claude Code session.",
                 ))
                 .child(
                     div()
@@ -2663,20 +2767,188 @@ impl Den {
             .into_any_element()
     }
 
-    /// A folder's workspaces, a row each: its checkout and, in a repo, its
-    /// worktrees; then the one being named.
-    fn render_repo(&self, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
-        let Some(&(ref first, first_task)) = group.first() else {
-            return div().into_any_element();
-        };
+    /// A project's row: the most urgent dot of its workspaces and its name,
+    /// dimmed while hidden. A click enters the worktree of it used last.
+    fn render_project(&self, project: TaskKey, hidden: bool, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
+        let active = self.active_project().as_ref() == Some(&project);
+        let (dot, color) = group
+            .iter()
+            .map(|(key, task)| self.status(key, task, cx))
+            .filter(|(dot, _)| *dot != "…")
+            .max_by_key(|(dot, color)| urgency(dot, *color, cx))
+            .unwrap_or(("○", cx.theme().muted_foreground));
+        let theme = cx.theme();
+        let known = self
+            .host(&project.host)
+            .is_some_and(|host| host.tasks.iter().any(|other| other.path == project.path));
+        let git = self.is_repo(&project);
+        let local = project.host == LOCAL;
+        let connected = self.client(&project.host).is_some();
+        let name = folder_name(&project.path);
+        let label: SharedString = name.clone().into();
+        let weak = cx.entity().downgrade();
+        // Removing it would close its checkout, unsaved changes and all.
+        let unsaved = self
+            .workspaces
+            .get(&project)
+            .is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty());
+
+        let row = h_flex()
+            .id(SharedString::from(format!("project-{}", project.config())))
+            .h(px(24.))
+            .px_3()
+            .gap_2()
+            .text_ui(cx)
+            .when(hidden, |row| row.opacity(0.5))
+            .when(active, |el| el.bg(selected_row(cx)))
+            .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
+            // The most urgent of its agents' state, and only the dot.
+            .child(div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.clone()))
+            .on_drag(TaskDrag { key: project.clone(), label }, |drag, _, _, cx| cx.new(|_| DragPreview(drag.label.clone())))
+            .drag_over::<TaskDrag>(|style, _, _, cx| style.border_t_2().border_color(cx.theme().primary))
+            .on_drop(cx.listener({
+                let project = project.clone();
+                move |this, drag: &TaskDrag, _, cx| this.move_task(&drag.key, &project, cx)
+            }))
+            .on_click(cx.listener({
+                let project = project.clone();
+                move |this, _, window, cx| this.enter_project(project.clone(), window, cx)
+            }))
+            .tooltip({
+                let path = project.path.display().to_string();
+                move |window, cx| Tooltip::new(path.clone()).build(window, cx)
+            })
+            .context_menu({
+                let project = project.clone();
+                move |menu, window, cx| {
+                    let (create, init, add, window_key, copy, finder, hide, close) = (
+                        project.clone(),
+                        project.clone(),
+                        project.clone(),
+                        project.clone(),
+                        project.clone(),
+                        project.clone(),
+                        project.clone(),
+                        project.clone(),
+                    );
+                    menu.when(git, |menu| {
+                        menu.item(
+                            menu::item(format!("New Worktree in {name}…"), &weak, move |this, window, cx| {
+                                this.start_new_task(create.host.clone(), create.path.clone(), window, cx)
+                            })
+                            .disabled(!connected),
+                        )
+                        .separator()
+                    })
+                    .when(known && !git, |menu| {
+                        menu.item(
+                            menu::item("Initialize Git Repository", &weak, move |this, window, cx| {
+                                this.init_git(init.clone(), window, cx)
+                            })
+                            .disabled(!connected),
+                        )
+                        .separator()
+                    })
+                    .when(!known, |menu| {
+                        menu.item(
+                            menu::item("Add to Projects", &weak, move |this, window, cx| {
+                                if this.remembers() {
+                                    this.add_folder(add.host.clone(), add.path.clone(), window, cx)
+                                } else {
+                                    this.keep(Some(add.clone()), window, cx)
+                                }
+                            })
+                            .disabled(!connected),
+                        )
+                        .separator()
+                    })
+                    .item(menu::item("Open in New Window", &weak, move |this, _, cx| {
+                        let key = window_key.clone();
+                        let destination = this.host(&key.host).and_then(|host| host.destination.clone());
+                        let except = cx.entity_id();
+                        cx.defer(move |cx| open_new_window_except(key.host, destination, key.path, None, Some(except), cx));
+                    }))
+                    .separator()
+                    .item(menu::item("Copy Path", &weak, move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.path.to_string_lossy().into_owned()))
+                    }))
+                    .item(
+                        menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path)).disabled(!local),
+                    )
+                    .separator()
+                    .item(menu::item(if hidden { "Show Project" } else { "Hide Project" }, &weak, move |this, _, cx| {
+                        this.set_project_hidden(&hide, !hidden, cx)
+                    }))
+                    .item(
+                        menu::item("Remove from Projects", &weak, move |this, window, cx| {
+                            this.set_project_hidden(&close, false, cx);
+                            if known {
+                                this.remove_folder(&close, close.path.clone(), window, cx)
+                            } else {
+                                this.close_folder(&close, window, cx)
+                            }
+                        })
+                        .disabled(unsaved),
+                    )
+                    .separator()
+                    .item(show_hidden_item(&weak, cx))
+                    .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
+                }
+            });
+
+        // What went wrong with a folder (a repo's show in its worktrees).
+        let error = self
+            .error
+            .as_ref()
+            .filter(|(target, _)| !git && *target == project)
+            .map(|(_, error)| div().mx_3().mb_1().child(error_text(error.clone(), cx)));
+        v_flex().child(row).children(error).into_any_element()
+    }
+
+    /// The Worktrees panel: the checkout and the worktrees of the project in
+    /// front, a row each; then the one being named.
+    fn render_worktrees(&self, cx: &mut Context<Self>) -> AnyElement {
+        let project = self.active_project();
+        let rows: Vec<AnyElement> = self
+            .ordered_all(cx)
+            .into_iter()
+            .filter(|(key, task)| Some(project_of(key, task)) == project)
+            .map(|(key, task)| self.render_task(&key, task, cx))
+            .collect();
         let new_task = self
             .new_task
             .as_ref()
-            .filter(|form| form.host == first.host && form.repo == first_task.repo)
+            .filter(|form| project.as_ref().is_some_and(|project| form.host == project.host && form.repo == project.path))
             .map(|form| render_new_task(form, cx));
+        let weak = cx.entity().downgrade();
+        let theme = cx.theme();
         v_flex()
-            .children(group.iter().map(|(key, task)| self.render_task(key, task, cx)))
+            .id("worktree-list")
+            .size_full()
+            .bg(theme.sidebar)
+            .text_color(theme.sidebar_foreground)
+            .overflow_y_scroll()
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.cancel(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .children(rows)
             .children(new_task)
+            // The empty space below: right-click for a new one.
+            .child(
+                div()
+                    .id("worktree-list-space")
+                    .flex_1()
+                    .min_h(px(32.))
+                    .context_menu(move |menu, window, cx| {
+                        menu.item(menu::item("New Worktree…", &weak, |this, window, cx| this.new_task_action(&NewTask, window, cx)))
+                            .separator()
+                            .panel_items(hide_panel(&weak, Panel::Worktrees), window, cx)
+                    }),
+            )
             .into_any_element()
     }
 
@@ -2690,9 +2962,9 @@ impl Den {
         (dot, color)
     }
 
-    /// A workspace's row: its state's dot, its repo and branch, what its
-    /// agents do; on hover, New Worktree on a repo's checkout, Delete
-    /// Worktree on a worktree.
+    /// A workspace's row in the Worktrees panel: its state's dot and its
+    /// branch; on hover, New Worktree on the checkout, Delete Worktree on a
+    /// worktree.
     fn render_task(&self, key: &TaskKey, task: &TaskInfo, cx: &mut Context<Self>) -> AnyElement {
         let active = self.active.as_ref() == Some(key);
         let (dot, color) = self.status(key, task, cx);
@@ -2705,15 +2977,9 @@ impl Den {
         let weak = cx.entity().downgrade();
         let connected = self.client(&key.host).is_some();
         let repo_name = folder_name(&task.repo);
-        // Only a repo makes worktrees: one with a branch, or with worktrees
-        // of its own.
-        let git = known
-            && (task.branch.is_some()
-                || !task.main
-                || self.host(&key.host).is_some_and(|host| {
-                    host.tasks.iter().any(|other| other.repo == task.repo && !other.main)
-                }));
-        let label = row_label(task);
+        // Only a repo makes worktrees.
+        let git = known && self.is_repo(&project_of(key, task));
+        let label = worktree_label(task);
         // On hover, as in its menu: a repo makes a worktree, a worktree is
         // deleted.
         let action = if git && task.main && connected {
@@ -2788,44 +3054,15 @@ impl Den {
                 let key = key.clone();
                 let repo = task.repo.clone();
                 let repo_name = repo_name.clone();
-                let main = task.main;
                 let branch = task.branch.clone();
-                // Closing would lose unsaved changes: save them first.
-                let unsaved = self
-                    .workspaces
-                    .get(&key)
-                    .is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty());
                 move |menu, window, cx| {
-                    let (create, copy, finder, init, remove, close, add) =
-                        (key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone(), key.clone());
-                    let (repo, folder) = (repo.clone(), repo.clone());
+                    let (create, copy, finder, remove) = (key.clone(), key.clone(), key.clone(), key.clone());
+                    let repo = repo.clone();
                     let (window_key, branch) = (key.clone(), branch.clone());
                     menu.when(git, |menu| {
                         menu.item(
                             menu::item(format!("New Worktree in {repo_name}…"), &weak, move |this, window, cx| {
                                 this.start_new_task(create.host.clone(), repo.clone(), window, cx)
-                            })
-                            .disabled(!connected),
-                        )
-                        .separator()
-                    })
-                    .when(known && main && !git, |menu| {
-                        menu.item(
-                            menu::item("Initialize Git Repository", &weak, move |this, window, cx| {
-                                this.init_git(init.clone(), window, cx)
-                            })
-                            .disabled(!connected),
-                        )
-                        .separator()
-                    })
-                    .when(!known, |menu| {
-                        menu.item(
-                            menu::item("Add to Workspaces", &weak, move |this, window, cx| {
-                                if this.remembers() {
-                                    this.add_folder(add.host.clone(), add.path.clone(), window, cx)
-                                } else {
-                                    this.keep(Some(add.clone()), window, cx)
-                                }
                             })
                             .disabled(!connected),
                         )
@@ -2852,34 +3089,18 @@ impl Den {
                         menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path))
                             .disabled(!local),
                     )
-                    .separator()
-                    // A folder (with its worktrees, if it's a repo) leaves the
-                    // list; a worktree is deleted instead.
-                    .when(main, |menu| {
-                        menu.item(
-                            menu::item("Remove from Workspaces", &weak, move |this, window, cx| {
-                                if known {
-                                    this.remove_folder(&close, folder.clone(), window, cx)
-                                } else {
-                                    this.close_folder(&close, window, cx)
-                                }
-                            })
-                            .disabled(unsaved),
-                        )
-                    })
                     .when(removable, |menu| {
-                        menu.item(menu::item("Delete Worktree…", &weak, move |this, window, cx| {
+                        menu.separator().item(menu::item("Delete Worktree…", &weak, move |this, window, cx| {
                             this.ask_remove(remove.clone(), window, cx)
                         }))
                     })
                     .separator()
-                    .panel_items(hide_column(&weak), window, cx)
+                    .panel_items(hide_panel(&weak, Panel::Worktrees), window, cx)
                 }
             });
 
 
-        // Under the checkout's own row; under the repo's name only while
-        // that row is folded away.
+        // Under its row.
         let error = self
             .error
             .as_ref()
@@ -2920,12 +3141,15 @@ impl Render for Den {
             let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let panel = self.workspaces_panel.clone();
+            let worktrees = self.worktrees_panel.clone();
+            let has_worktrees = self.active_project().is_some_and(|project| self.is_repo(&project));
             let agents = self.agents_panel.clone();
             let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
                 workspace.set_workspaces(&panel);
+                workspace.set_worktrees(&worktrees, has_worktrees, cx);
                 workspace.set_agents(&agents);
                 workspace.set_badges(badges, cx);
             });
@@ -3000,9 +3224,9 @@ impl Render for Den {
                                 .text_color(cx.theme().muted_foreground)
                                 .hover(|style| style.bg(cx.theme().secondary_hover).text_color(cx.theme().foreground))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child("Keep in Workspaces")
+                                .child("Keep in Projects")
                                 .tooltip(|window, cx| {
-                                    Tooltip::new("Opened with den -s, this window is forgotten when it closes: keep its server and folders in the workspaces column.")
+                                    Tooltip::new("Opened with den -s, this window is forgotten when it closes: keep its server and folders in Projects.")
                                         .build(window, cx)
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| this.keep(None, window, cx))),
@@ -3135,7 +3359,8 @@ fn add_menu_items(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
 fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     add_menu_items(menu, den)
         .separator()
-        .panel_items(hide_column(den), window, cx)
+        .item(show_hidden_item(den, cx))
+        .panel_items(hide_panel(den, Panel::Workspaces), window, cx)
 }
 
 /// Right-click on a server's name in the tasks column, before Hide Panel.
@@ -3149,7 +3374,7 @@ fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, 
     }
     let (open, reconnect, remove) = (name.clone(), name.clone(), name.clone());
     menu.when(keep, |menu| {
-        menu.item(menu::item("Keep in Workspaces", den, |this, window, cx| this.keep(None, window, cx)))
+        menu.item(menu::item("Keep in Projects", den, |this, window, cx| this.keep(None, window, cx)))
             .separator()
     })
     .item(
@@ -3175,9 +3400,33 @@ fn tasks_add_button(den: &WeakEntity<Den>) -> impl IntoElement {
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| add_menu_items(menu, &den))
 }
 
-/// Hide Panel, at the end of every menu in the tasks column.
-fn hide_column(den: &WeakEntity<Den>) -> menu::PopupMenuItem {
-    menu::item("Hide Panel", den, |this, _, cx| this.show_tasks_column(false, cx))
+/// Hide Panel, at the end of every menu in the Projects and Worktrees
+/// panels: takes `panel` off the side column.
+fn hide_panel(den: &WeakEntity<Den>, panel: Panel) -> menu::PopupMenuItem {
+    menu::item("Hide Panel", den, move |this, _, cx| {
+        if let Some(workspace) = this.active_workspace() {
+            workspace.update(cx, |workspace, cx| workspace.remove_panel(panel, cx));
+        }
+    })
+}
+
+/// Show Hidden Projects, checked while the Projects panel shows them.
+fn show_hidden_item(den: &WeakEntity<Den>, cx: &App) -> menu::PopupMenuItem {
+    menu::item("Show Hidden Projects", den, |this, _, cx| this.toggle_hidden_projects(cx))
+        .checked(Config::get(cx).show_hidden_projects)
+}
+
+/// The project a workspace is of: its repo's checkout, or its folder.
+fn project_of(key: &TaskKey, task: &TaskInfo) -> TaskKey {
+    TaskKey { host: key.host.clone(), path: task.repo.clone() }
+}
+
+/// A workspace's name in the Worktrees panel: its branch, or its folder.
+fn worktree_label(task: &TaskInfo) -> SharedString {
+    match &task.branch {
+        Some(branch) => branch.clone().into(),
+        None => folder_name(&task.path).into(),
+    }
 }
 
 /// In Open Recent: the path (`~/…` locally) and, on a server, its name.
@@ -3429,6 +3678,47 @@ mod palette_tests {
         cx.simulate_prompt_answer("Discard Changes");
         cx.run_until_parked();
         assert!(den.read_with(cx, |den, _| !den.workspaces.contains_key(&key)));
+    }
+
+    /// A hidden project is left out of Cmd-E and Cmd-K, unless it's in
+    /// front; entering a project goes to the worktree of it used last.
+    #[gpui_kit::test]
+    fn hidden_projects_and_entering_one(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        let task = |repo: &str, path: &str, main: bool| proto::TaskInfo {
+            repo: repo.into(),
+            path: path.into(),
+            branch: Some(if main { "master".into() } else { path.rsplit('/').next().unwrap().into() }),
+            main,
+            working: false,
+        };
+        let key = |path: &str| super::TaskKey { host: super::LOCAL.into(), path: path.into() };
+        cx.update(|window, cx| {
+            den.update(cx, |den, cx| {
+                den.hosts[0].tasks = vec![task("/den", "/den", true), task("/den", "/den-hide", false), task("/stride", "/stride", true)];
+                den.activate(key("/den-hide"), window, cx);
+                den.set_project_hidden(&key("/stride"), true, cx);
+            })
+        });
+        let paths = |den: &Den, cx: &App| den.ordered(cx).into_iter().map(|(key, _)| key.path).collect::<Vec<_>>();
+        den.read_with(cx, |den, cx| {
+            assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
+            assert_eq!(den.ordered_all(cx).len(), 3);
+            assert!(den.is_repo(&key("/den")));
+        });
+        // In front, it's gone through as any other.
+        cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/stride"), window, cx)));
+        den.read_with(cx, |den, cx| {
+            assert_eq!(den.active, Some(key("/stride")));
+            assert_eq!(paths(den, cx).len(), 3);
+        });
+        // Back to den: its worktree, not its checkout.
+        cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/den"), window, cx)));
+        den.read_with(cx, |den, _| assert_eq!(den.active, Some(key("/den-hide"))));
     }
 
     /// Settings from the command palette: the action reaches `Den` itself,

@@ -104,7 +104,7 @@ impl Den {
     pub(super) fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<AnyElement> = Vec::new();
         let several = self.agents.values().filter(|agents| !agents.is_empty()).count() > 1;
-        let ordered: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
+        let ordered: Vec<TaskKey> = self.ordered_all(cx).into_iter().map(|(key, _)| key).collect();
         for host in &self.hosts {
             let Some(agents) = self.agents.get(&host.name).filter(|agents| !agents.is_empty()).cloned() else {
                 continue;

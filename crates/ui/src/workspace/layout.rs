@@ -40,6 +40,7 @@ impl Render for WorkspacesPanel {
 pub(super) fn icon(panel: Panel) -> &'static str {
     match panel {
         Panel::Workspaces => "icons/layers.svg",
+        Panel::Worktrees => "icons/git-fork.svg",
         Panel::Agents => "icons/bot.svg",
         Panel::Files => "icons/files.svg",
         Panel::Changes => "icons/git-branch.svg",
@@ -68,7 +69,8 @@ pub(super) fn group_icon(group: Group) -> &'static str {
 
 pub(crate) fn title(panel: Panel) -> &'static str {
     match panel {
-        Panel::Workspaces => "Workspaces",
+        Panel::Workspaces => "Projects",
+        Panel::Worktrees => "Worktrees",
         Panel::Agents => "Agents",
         Panel::Files => "Files",
         Panel::Changes => "Changes",
@@ -458,10 +460,22 @@ impl Workspace {
         }
     }
 
-    /// The app's workspaces panel, the same for every workspace.
+    /// The app's projects panel, the same for every workspace.
     pub fn set_workspaces(&mut self, view: &Entity<WorkspacesPanel>) {
         if self.workspaces.is_none() {
             self.workspaces = Some(view.clone());
+        }
+    }
+
+    /// The app's worktrees panel, the same for every workspace; it shows
+    /// only while the project has worktrees (it's a repo).
+    pub fn set_worktrees(&mut self, view: &Entity<WorkspacesPanel>, has_worktrees: bool, cx: &mut Context<Self>) {
+        if self.worktrees.is_none() {
+            self.worktrees = Some(view.clone());
+        }
+        if self.has_worktrees != has_worktrees {
+            self.has_worktrees = has_worktrees;
+            cx.notify();
         }
     }
 
@@ -560,7 +574,9 @@ impl Workspace {
     /// place's icon dropped on it brings its panels.
     fn render_side(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let layout = Config::get(cx).layout.clone();
-        let panels = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
+        let mut panels = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
+        // A folder that isn't a repo has no worktrees to list.
+        panels.retain(|panel| *panel != Panel::Worktrees || self.has_worktrees);
         let open: Vec<Panel> = panels.iter().copied().filter(|panel| !layout.collapsed.contains(panel)).collect();
         let filler = Layout::filler(&open);
         // The first one's header needs no line above it.
@@ -608,6 +624,13 @@ impl Workspace {
             }
             _ => None,
         };
+        // Folded, the projects and the worktrees say the most urgent of
+        // their agents on their header.
+        let dot = match panel {
+            Panel::Workspaces if !open => self.badges.workspaces,
+            Panel::Worktrees if !open => self.badges.worktrees,
+            _ => None,
+        };
         let header = h_flex()
             .id(("side-header", panel as usize))
             .when(cfg!(test), |el| el.debug_selector(move || format!("title-{panel:?}")))
@@ -638,6 +661,7 @@ impl Workspace {
                         _ => title(panel).to_uppercase(),
                     }),
             )
+            .children(dot.map(|color| div().flex_none().size(px(7.)).rounded_full().bg(color)))
             .children(actions.map(|actions| div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(actions)))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapsed(panel, cx)))
             .on_drag(PanelDrag(panel), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
@@ -677,6 +701,7 @@ impl Workspace {
         let cached = || StyleRefinement::default().size_full();
         let content = match panel {
             Panel::Workspaces => self.workspaces.clone().map(|view| view.into_any_element()),
+            Panel::Worktrees => self.worktrees.clone().map(|view| view.into_any_element()),
             Panel::Agents => self.agents.clone().map(|view| view.into_any_element()),
             Panel::Files => Some(self.file_tree.clone().cached(cached()).into_any_element()),
             Panel::Outline => Some(self.outline.clone().cached(cached()).into_any_element()),

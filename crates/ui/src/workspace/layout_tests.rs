@@ -125,9 +125,11 @@ fn a_panel_hides_or_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("stack-Files").is_none());
     let alone = bounds(cx, "stack-Workspaces");
     assert!(alone.size.height > bounds(cx, "side-column").size.height / 2., "{alone:?}");
-    click(cx, "activity-Place(Place(Files))");
+    // The explorer is named by its first panel now: the worktrees (which,
+    // outside a repo, don't show).
+    click(cx, "activity-Place(Place(Worktrees))");
     bounds(cx, "stack-Files");
-    assert!(cx.debug_bounds("stack-Workspaces").is_none());
+    assert!(cx.debug_bounds("stack-Workspaces").is_none() && cx.debug_bounds("stack-Worktrees").is_none());
     click(cx, "activity-Place(Place(Workspaces))");
     bounds(cx, "stack-Workspaces");
     // The menu checks what's in this place; the files, from the menu, come here.
