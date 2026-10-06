@@ -1,10 +1,11 @@
 //! The History tab, as gitk lays it out: the commits of the current branch
 //! (or, with All Branches, of every branch, tag and remote) above, with their
-//! graph, what points at them, their author and their date; under them the
-//! selected commit (its message and every file's changes, as a commit's tab
-//! shows them) and, on its right, its files, a click away from their changes.
-//! The three parts and the author's and date's columns resize, and keep their
-//! sizes. It only reads, and the agent does all the reading.
+//! graph, what points at them, their author and their date, and on their
+//! right, if Files is on, the selected commit's files, a click away from their
+//! changes; under them the selected commit (its message and every file's
+//! changes, as a commit's tab shows them). The three parts and the author's
+//! and date's columns resize, and keep their sizes. It only reads, and the
+//! agent does all the reading.
 
 use std::{ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
@@ -91,10 +92,10 @@ pub struct HistoryView {
     focus_handle: FocusHandle,
     /// The files' list: its selection is outlined while it has the keyboard.
     files_focus: FocusHandle,
-    /// The commits above the commit, the commit beside its files, and the
-    /// commits' columns.
+    /// The commits above the commit, the commits beside the commit's files,
+    /// and the commits' columns.
     rows: Split,
-    bottom: Split,
+    top: Split,
     columns: Split,
     _subscriptions: Vec<Subscription>,
 }
@@ -143,7 +144,7 @@ impl HistoryView {
             focus_handle: cx.focus_handle(),
             files_focus: cx.focus_handle(),
             rows: Split::new(cx),
-            bottom: Split::new(cx),
+            top: Split::new(cx),
             columns: Split::new(cx),
             _subscriptions: subscriptions,
         }
@@ -217,6 +218,11 @@ impl HistoryView {
         Config::update(cx, |config| config.history_all_branches = all);
         self.commits.clear();
         self.schedule(Duration::ZERO, cx);
+    }
+
+    /// Shows or hides the shown commit's files, beside the commits.
+    fn toggle_files(&mut self, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.history_files = !config.history_files);
     }
 
     /// Rereads the commits: as many as were read, so the list stays where it was.
@@ -672,7 +678,7 @@ impl HistoryView {
     fn commit_menu(&self, commit: &GraphCommit, cx: &mut Context<Self>) -> impl Fn(menu::PopupMenu, &mut Window, &mut Context<menu::PopupMenu>) -> menu::PopupMenu + 'static {
         let view = cx.entity().downgrade();
         let (hash, short, subject) = (commit.hash.clone(), commit.short.clone(), commit.subject.clone());
-        move |menu, _, _| {
+        move |menu, _, cx| {
             let (hash, short, subject) = (hash.clone(), short.clone(), subject.clone());
             menu.item(menu::item("Copy Hash", &view, move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))))
                 .item(menu::item("Copy Short Hash", &view, move |_, _, cx| {
@@ -681,7 +687,15 @@ impl HistoryView {
                 .item(menu::item("Copy Message", &view, move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(subject.clone()))
                 }))
+                .separator()
+                .item(files_item(&view, cx))
         }
+    }
+
+    /// The commit's and its files' menu: only Files.
+    fn files_menu(&self, cx: &mut Context<Self>) -> impl Fn(menu::PopupMenu, &mut Window, &mut Context<menu::PopupMenu>) -> menu::PopupMenu + 'static {
+        let view = cx.entity().downgrade();
+        move |menu, _, cx| menu.item(files_item(&view, cx))
     }
 
     fn file_menu(&self, file: &CommitFile, cx: &mut Context<Self>) -> impl Fn(menu::PopupMenu, &mut Window, &mut Context<menu::PopupMenu>) -> menu::PopupMenu + 'static {
@@ -689,7 +703,7 @@ impl HistoryView {
         let commit = self.shown_commit().map(|commit| (commit.hash.clone(), commit.short.clone())).unwrap_or_default();
         let path = file.path.to_string();
         let root = self.root.clone();
-        move |menu, _, _| {
+        move |menu, _, cx| {
             let ((diff_hash, diff_short), (at_hash, at_short)) = (commit.clone(), commit.clone());
             let (diff, at, open, copy, reveal) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
             let absolute = root.join(&path).to_string_lossy().into_owned();
@@ -708,6 +722,8 @@ impl HistoryView {
             .item(menu::item("Reveal in File Tree", &view, move |_, _, cx| {
                 cx.emit(HistoryEvent::RevealInTree { file: reveal.clone() })
             }))
+            .separator()
+            .item(files_item(&view, cx))
         }
     }
 
@@ -800,25 +816,22 @@ impl HistoryView {
     /// All Branches: every branch, tag and remote, or (unchecked) only the
     /// current branch, as gitk shows it.
     fn render_branches_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
         let all = Config::get(cx).history_all_branches;
-        h_flex()
-            .id("history-all-branches")
-            .flex_none()
-            .gap_1()
-            .px_1()
-            .rounded(theme.radius)
-            .text_ui_small(cx)
-            .text_color(if all { theme.foreground } else { theme.muted_foreground })
-            .hover(|style| style.bg(theme.secondary_hover))
-            .child(if all { "☑" } else { "☐" })
-            .child("All Branches")
+        toggle("history-all-branches", "All Branches", all, cx)
             .tooltip(|window, cx| Tooltip::new("Every branch, tag and remote, not only the current branch").build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| this.set_all_branches(!all, cx)))
     }
 
+    /// Files: the shown commit's files beside the commits, or not.
+    fn render_files_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        toggle("history-files", "Files", Config::get(cx).history_files, cx)
+            .tooltip(|window, cx| Tooltip::new("The commit's files, beside the commits").build(window, cx))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx)))
+    }
+
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let branches = self.render_branches_toggle(cx).into_any_element();
+        let files = self.render_files_toggle(cx).into_any_element();
         let scopes = self.render_scopes(cx).into_any_element();
         let theme = cx.theme();
         h_flex()
@@ -852,6 +865,7 @@ impl HistoryView {
             })
             .child(div().flex_1())
             .child(branches)
+            .child(files)
             .when(self.loading, |el| el.child(div().text_ui_small(cx).text_color(theme.muted_foreground).child("…")))
             .when_some(self.error.clone(), |el, error| {
                 el.child(div().min_w_0().overflow_hidden().text_ellipsis().text_ui_small(cx).text_color(theme.danger).child(error))
@@ -944,7 +958,8 @@ impl HistoryView {
             .on_click(cx.listener(|this, _, window, cx| {
                 this.files_focus.focus(window, cx);
                 this.pick_file(None, cx)
-            }));
+            }))
+            .context_menu(self.files_menu(cx));
         let count = self.files.len();
         v_flex()
             .size_full()
@@ -1026,10 +1041,38 @@ impl Render for HistoryView {
         let sizes = Config::get(cx).history;
         let viewport = window.viewport_size();
         let rows = self.rows.state(viewport.height, (), cx).clone();
-        let bottom = self.bottom.state(viewport.width, (), cx).clone();
+        let top = self.top.state(viewport.width, (), cx).clone();
         let bar = self.render_bar(cx).into_any_element();
         let commits = self.render_commits(window, cx);
-        let files = self.render_files(window, cx);
+        let commit = div()
+            .id("history-commit")
+            .size_full()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(self.commit.clone())
+            .context_menu(self.files_menu(cx));
+        // The commits, and the shown commit's files on their right if Files is on.
+        let top = if Config::get(cx).history_files {
+            let files = self.render_files(window, cx);
+            let border = cx.theme().border;
+            h_resizable("history-top")
+                .with_state(&top)
+                .child(resizable_panel().child(commits))
+                .child(
+                    resizable_panel()
+                        .size(px(sizes.files))
+                        .size_range(px(120.)..px(2000.))
+                        .child(div().size_full().border_l_1().border_color(border).child(files)),
+                )
+                .on_resize(|state, _, cx| {
+                    if let Some(files) = state.read(cx).sizes().get(1).copied() {
+                        Config::update_quietly(cx, |config| config.history.files = f32::from(files));
+                    }
+                })
+                .into_any_element()
+        } else {
+            commits
+        };
         let theme = cx.theme();
         v_flex()
             .size_full()
@@ -1040,26 +1083,8 @@ impl Render for HistoryView {
                 div().flex_1().min_h_0().child(
                     v_resizable("history-rows")
                         .with_state(&rows)
-                        .child(resizable_panel().size(px(sizes.commits)).size_range(px(80.)..px(4000.)).child(commits))
-                        .child(
-                            resizable_panel().child(
-                                // The commit, and its files on its right.
-                                h_resizable("history-bottom")
-                                    .with_state(&bottom)
-                                    .child(resizable_panel().child(div().size_full().border_t_1().border_color(theme.border).child(self.commit.clone())))
-                                    .child(
-                                        resizable_panel()
-                                            .size(px(sizes.files))
-                                            .size_range(px(120.)..px(2000.))
-                                            .child(div().size_full().border_t_1().border_l_1().border_color(theme.border).child(files)),
-                                    )
-                                    .on_resize(|state, _, cx| {
-                                        if let Some(files) = state.read(cx).sizes().get(1).copied() {
-                                            Config::update_quietly(cx, |config| config.history.files = f32::from(files));
-                                        }
-                                    }),
-                            ),
-                        )
+                        .child(resizable_panel().size(px(sizes.commits)).size_range(px(80.)..px(4000.)).child(top))
+                        .child(resizable_panel().child(commit))
                         .on_resize(|state, _, cx| {
                             if let Some(commits) = state.read(cx).sizes().first().copied() {
                                 Config::update_quietly(cx, |config| config.history.commits = f32::from(commits));
@@ -1068,6 +1093,27 @@ impl Render for HistoryView {
                 ),
             )
     }
+}
+
+/// A checkbox in the bar, as gitk's.
+fn toggle(id: &'static str, label: &'static str, on: bool, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    h_flex()
+        .id(id)
+        .flex_none()
+        .gap_1()
+        .px_1()
+        .rounded(theme.radius)
+        .text_ui_small(cx)
+        .text_color(if on { theme.foreground } else { theme.muted_foreground })
+        .hover(|style| style.bg(theme.secondary_hover))
+        .child(if on { "☑" } else { "☐" })
+        .child(label)
+}
+
+/// Files, checked while the commit's files show: a click shows or hides them.
+fn files_item(view: &WeakEntity<HistoryView>, cx: &App) -> menu::PopupMenuItem {
+    menu::item("Files", view, |this, _, cx| this.toggle_files(cx)).checked(Config::get(cx).history_files)
 }
 
 #[cfg(test)]
