@@ -10,7 +10,10 @@ use std::{
     io::Write,
     net::{Shutdown, TcpStream},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc::Receiver},
+    sync::{
+        Arc, Mutex,
+        mpsc::{Receiver, Sender},
+    },
     thread,
     time::Duration,
 };
@@ -31,6 +34,9 @@ const VERSION: u64 = 1;
 /// or a line made of several generated positions, before it stops anyway.
 const MAX_STEPS: u32 = 300;
 
+/// How often `--url`'s server is tried until it listens.
+const LISTEN_POLL: Duration = Duration::from_millis(100);
+
 pub enum Input {
     Cdp(cdp::Event),
     CdpClosed(String),
@@ -47,6 +53,8 @@ pub enum Input {
     Disconnected {
         generation: u64,
     },
+    /// The server of `--url` listens: the page opens.
+    Open(String),
     Shutdown,
 }
 
@@ -278,6 +286,7 @@ struct Ref {
 
 pub struct Core {
     cdp: Arc<Cdp>,
+    inputs: Sender<Input>,
     out: Out,
     settings: Settings,
     root_text: String,
@@ -296,10 +305,11 @@ pub struct Core {
 }
 
 impl Core {
-    pub fn new(cdp: Arc<Cdp>, out: Out, settings: Settings) -> Core {
+    pub fn new(cdp: Arc<Cdp>, inputs: Sender<Input>, out: Out, settings: Settings) -> Core {
         let root_text = settings.root.to_string_lossy().to_string();
         Core {
             cdp,
+            inputs,
             out,
             settings,
             root_text,
@@ -355,6 +365,11 @@ impl Core {
                 Input::Disconnected { generation } => {
                     if self.client == Some(generation) {
                         self.disconnect(generation);
+                    }
+                }
+                Input::Open(url) => {
+                    if let Err(err) = self.open_url(&url) {
+                        self.report(&format!("open {url}: {err:#}"));
                     }
                 }
                 Input::Shutdown => return Ok(()),
@@ -452,9 +467,10 @@ impl Core {
             }
             "run" => {
                 // a program held before running is released; here that is
-                // opening --url, once the breakpoints are in place
+                // opening --url, once the breakpoints are in place and its
+                // server listens: one started with this bridge listens later
                 if let Some(url) = self.settings.url.take() {
-                    self.open_url(&url)?;
+                    self.open_when_listening(url)?;
                 }
             }
             "setBreakpoints" => {
@@ -593,6 +609,22 @@ impl Core {
     fn page_call(&self, vm: u64, method: &str, params: Value) -> Result<Value> {
         let page = self.pages.get(&vm).with_context(|| format!("no vm {vm}"))?;
         self.cdp.call(Some(&page.session), method, params)
+    }
+
+    fn open_when_listening(&self, url: String) -> Result<()> {
+        let address = fetch::address(&url)?;
+        let inputs = self.inputs.clone();
+        thread::Builder::new()
+            .name("chrome-open".into())
+            .spawn(move || {
+                while TcpStream::connect_timeout(&address, LISTEN_POLL).is_err() {
+                    thread::sleep(LISTEN_POLL);
+                }
+                // the receiver is gone only when the bridge has ended
+                let _ = inputs.send(Input::Open(url));
+            })
+            .context("start waiting for the page's server")?;
+        Ok(())
     }
 
     fn open_url(&mut self, url: &str) -> Result<()> {

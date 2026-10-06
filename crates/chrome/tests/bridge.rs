@@ -40,8 +40,13 @@ fn line(file: &str, marker: &str) -> Result<u64> {
 
 /// Serves the fixture's `www` folder on 127.0.0.1.
 fn serve_fixture() -> Result<u16> {
-    let root = fixture()?.join("www");
     let listener = TcpListener::bind("127.0.0.1:0").context("bind the fixture server")?;
+    serve_on(listener)
+}
+
+/// Serves the fixture's `www` folder on a listener already bound.
+fn serve_on(listener: TcpListener) -> Result<u16> {
+    let root = fixture()?.join("www");
     let port = listener.local_addr()?.port();
     thread::spawn(move || {
         for stream in listener.incoming() {
@@ -681,6 +686,42 @@ fn the_url_opens_on_run() -> Result<()> {
     // now loaded, the result says where it went
     let placed = session.breakpoints("src/app.ts", json!([{ "line": main - 2 }, { "line": 1000 }]))?;
     ensure!(placed[0] == json!({ "line": main }) && placed[1]["error"].is_string(), "{placed}");
+    Ok(())
+}
+
+// The server and the bridge start together, and the server listens later:
+// the page waits for it rather than showing Chrome's error.
+#[test]
+fn the_url_waits_for_its_server() -> Result<()> {
+    let reserved = TcpListener::bind("127.0.0.1:0").context("reserve a port")?;
+    let port = reserved.local_addr()?.port();
+    drop(reserved);
+    let profile = std::env::temp_dir().join(format!("den-chrome-test-{}-late", std::process::id()));
+    let options = Options {
+        port: 0,
+        url: Some(format!("http://127.0.0.1:{port}/index.html")),
+        root: fixture()?,
+        headless: true,
+        profile: Some(profile.clone()),
+        hosts: vec!["127.0.0.1".into()],
+        inspect_skip: Vec::new(),
+    };
+    let bridge = Bridge::start(options)?;
+    let client = Client::connect(bridge.port())?;
+    let mut session = Session { client, base: String::new(), bridge: Some(bridge), profile };
+    let main = line("app.ts", "main")?;
+    session.client.request("hello", json!({ "version": 1 }))?;
+    session.breakpoints("src/app.ts", json!([{ "line": main }]))?;
+    session.client.request("run", json!({}))?;
+
+    thread::sleep(Duration::from_secs(1));
+    let pages = session.client.request("pages", json!({}))?;
+    let urls: Vec<&str> = pages["pages"].as_array().into_iter().flatten().filter_map(|page| page["url"].as_str()).collect();
+    ensure!(!urls.iter().any(|url| url.ends_with("/index.html")), "opened before its server listens: {pages}");
+    let listener = TcpListener::bind(("127.0.0.1", port)).context("the server listens late")?;
+    serve_on(listener)?;
+    let stop = session.client.stopped()?;
+    expect_stop(&stop, "breakpoint", "src/app.ts", main)?;
     Ok(())
 }
 

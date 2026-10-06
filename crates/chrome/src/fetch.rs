@@ -3,7 +3,7 @@
 
 use std::{
     io::{Read, Write},
-    net::{TcpStream, ToSocketAddrs},
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     time::Duration,
 };
 
@@ -75,6 +75,38 @@ pub fn resolve_url(base: &str, relative: &str) -> String {
     format!("{origin}/{}{query}", parts.join("/"))
 }
 
+/// Where an `http(s)` URL's server listens.
+pub fn address(url: &str) -> Result<SocketAddr> {
+    let (rest, default_port) = if let Some(rest) = url.strip_prefix("http://") {
+        (rest, 80)
+    } else if let Some(rest) = url.strip_prefix("https://") {
+        (rest, 443)
+    } else {
+        bail!("{} is not an http(s) URL", short(url));
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let host = host(url).context("a URL without a host")?;
+    let port_text = if authority.starts_with('[') {
+        authority.split_once("]:").map(|(_, port)| port)
+    } else {
+        authority.rsplit_once(':').map(|(_, port)| port)
+    };
+    let port = match port_text {
+        Some(port) => port.parse::<u16>().with_context(|| format!("{port:?} is not a port"))?,
+        None => default_port,
+    };
+    // Chrome resolves localhost and its subdomains to the loopback itself;
+    // the system resolver may not know `app.localhost`.
+    let connect_host =
+        if host == "localhost" || host.ends_with(".localhost") { "127.0.0.1".to_string() } else { host.clone() };
+    (connect_host.as_str(), port)
+        .to_socket_addrs()
+        .with_context(|| format!("resolve {connect_host}"))?
+        .next()
+        .with_context(|| format!("{connect_host} has no address"))
+}
+
 /// The text of a `data:` or `http:` URL.
 pub fn load(url: &str) -> Result<String> {
     if let Some(data) = url.strip_prefix("data:") {
@@ -120,25 +152,7 @@ fn http_get(url: &str) -> Result<String> {
     let authority = &rest[..authority_end];
     let path = rest[authority_end..].split('#').next().unwrap_or("");
     let path = if path.is_empty() { "/" } else { path };
-    let host = host(url).context("a URL without a host")?;
-    let port_text = if authority.starts_with('[') {
-        authority.split_once("]:").map(|(_, port)| port)
-    } else {
-        authority.rsplit_once(':').map(|(_, port)| port)
-    };
-    let port = match port_text {
-        Some(port) => port.parse::<u16>().with_context(|| format!("{port:?} is not a port"))?,
-        None => 80,
-    };
-    // Chrome resolves localhost and its subdomains to the loopback itself;
-    // the system resolver may not know `app.localhost`.
-    let connect_host =
-        if host == "localhost" || host.ends_with(".localhost") { "127.0.0.1".to_string() } else { host.clone() };
-    let address = (connect_host.as_str(), port)
-        .to_socket_addrs()
-        .with_context(|| format!("resolve {connect_host}"))?
-        .next()
-        .with_context(|| format!("{connect_host} has no address"))?;
+    let address = address(url)?;
     let timeout = Duration::from_secs(10);
     let mut stream =
         TcpStream::connect_timeout(&address, timeout).with_context(|| format!("connect to {authority}"))?;

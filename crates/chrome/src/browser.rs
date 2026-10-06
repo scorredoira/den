@@ -96,6 +96,15 @@ pub fn open(profile: &Path, headless: bool) -> Result<Browser> {
         fs::remove_file(&active).with_context(|| format!("remove the stale {}", active.display()))?;
     }
 
+    if is_chrome_default(profile) {
+        // Chrome ignores --remote-debugging-port on its own profile: a launch
+        // would show a blank tab nobody debugs
+        bail!(
+            "the Chrome of the profile {} doesn't let debuggers in: open it, enable chrome://inspect/#remote-debugging and start again",
+            profile.display()
+        );
+    }
+
     let binary = find()?;
     let mut command = Command::new(&binary);
     command
@@ -135,6 +144,16 @@ pub fn open(profile: &Path, headless: bool) -> Result<Browser> {
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Whether a profile folder is the one Chrome uses when given none.
+fn is_chrome_default(profile: &Path) -> bool {
+    let default = if cfg!(target_os = "macos") {
+        dirs::data_dir().map(|data| data.join("Google").join("Chrome"))
+    } else {
+        dirs::config_dir().map(|config| config.join("google-chrome"))
+    };
+    default.is_some_and(|default| profile == default)
 }
 
 /// The port and browser path Chrome wrote, once it wrote both lines.
