@@ -183,7 +183,13 @@ fn the_history_is_a_tab_that_reopens(cx: &mut TestAppContext) {
         assert!(workspace.history_visible());
     });
     bounds(cx, "history-commits");
-    bounds(cx, "commit-files");
+    // The commit's files only with Files on, beside the commits.
+    assert!(cx.debug_bounds("commit-files").is_none());
+    cx.update(|_, cx| Config::update(cx, |config| config.history_files = true));
+    cx.run_until_parked();
+    let commits = bounds(cx, "history-commits");
+    let files = bounds(cx, "commit-files");
+    assert!(files.left() >= commits.right() - px(1.) && files.top() < commits.bottom(), "{files:?} {commits:?}");
     let again = workspace.update_in(cx, |_, window, cx| {
         cx.new(|cx| {
             let mut workspace = Workspace::new(PathBuf::from("/layout-test"), None, true, "layout-test".into(), window, cx);
