@@ -1295,8 +1295,9 @@ impl Den {
         Some(project_of(key, self.task(key)?))
     }
 
+    /// Hidden itself or with its server.
     fn is_hidden_project(&self, project: &TaskKey, cx: &App) -> bool {
-        Config::get(cx).hidden_projects.contains(&project.config())
+        Config::get(cx).hidden_projects.contains(&project.config()) || is_hidden_host(&project.host, cx)
     }
 
     /// Hides `project` from the Projects panel, Cmd-E and Cmd-K, or shows it
@@ -1307,6 +1308,19 @@ impl Den {
             config.hidden_projects.retain(|other| *other != key);
             if hidden {
                 config.hidden_projects.push(key);
+            }
+        });
+        cx.notify();
+    }
+
+    /// Hides a server and its projects from the Projects panel, Cmd-E and
+    /// Cmd-K, or shows them again. It stays connected: its agents still
+    /// count in the dots.
+    fn set_host_hidden(&mut self, host: &SharedString, hidden: bool, cx: &mut Context<Self>) {
+        Config::update(cx, |config| {
+            config.hidden_hosts.retain(|other| other != host.as_ref());
+            if hidden {
+                config.hidden_hosts.push(host.to_string());
             }
         });
         cx.notify();
@@ -2630,10 +2644,12 @@ impl Den {
         let keep = self.unkept(cx);
         let weak = cx.entity().downgrade();
         let menu_name = name.clone();
+        let hidden = is_hidden_host(&name, cx);
         v_flex()
             .px_3()
             .pt_2()
             .pb_1()
+            .when(hidden, |el| el.opacity(0.5))
             .child(
                 h_flex()
                     .id(SharedString::from(format!("host-{name}")))
@@ -2684,7 +2700,11 @@ impl Den {
                         .on_click(cx.listener(move |this, _, window, cx| this.ask_restart(restart.clone(), window, cx)))
                     })
                     .context_menu(move |menu, window, cx| {
+                        let host = menu_name.clone();
                         host_menu(menu, &menu_name, connected, keep, &weak)
+                            .item(menu::item(if hidden { "Show Server" } else { "Hide Server" }, &weak, move |this, _, cx| {
+                                this.set_host_hidden(&host, !hidden, cx)
+                            }))
                             .item(show_hidden_item(&weak, cx))
                             .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
                     }),
@@ -2708,9 +2728,9 @@ impl Den {
         let active = self.active_project();
         let mut sections: Vec<AnyElement> = Vec::new();
         for host in &self.hosts {
-            sections.push(self.render_host_header(host, cx));
             let entries: Vec<(TaskKey, &TaskInfo)> =
                 ordered.iter().filter(|(key, _)| key.host == host.name).cloned().collect();
+            let mut projects = Vec::new();
             for group in entries.chunk_by(|(_, a), (_, b)| a.repo == b.repo) {
                 let Some((key, task)) = group.first() else {
                     continue;
@@ -2720,8 +2740,14 @@ impl Den {
                 if hidden && !show_hidden && active.as_ref() != Some(&project) {
                     continue;
                 }
-                sections.push(self.render_project(project, hidden, group, cx));
+                projects.push(self.render_project(project, hidden, group, cx));
             }
+            // A hidden server shows only for its project in front.
+            if is_hidden_host(&host.name, cx) && !show_hidden && projects.is_empty() {
+                continue;
+            }
+            sections.push(self.render_host_header(host, cx));
+            sections.extend(projects);
         }
         let theme = cx.theme();
         // Nothing in it yet: say what it's for.
@@ -2877,9 +2903,13 @@ impl Den {
                         menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path)).disabled(!local),
                     )
                     .separator()
-                    .item(menu::item(if hidden { "Show Project" } else { "Hide Project" }, &weak, move |this, _, cx| {
-                        this.set_project_hidden(&hide, !hidden, cx)
-                    }))
+                    // Its own hiding: one hidden with its server shows with it.
+                    .item({
+                        let hidden = Config::get(cx).hidden_projects.contains(&hide.config());
+                        menu::item(if hidden { "Show Project" } else { "Hide Project" }, &weak, move |this, _, cx| {
+                            this.set_project_hidden(&hide, !hidden, cx)
+                        })
+                    })
                     .item(
                         menu::item("Remove from Projects", &weak, move |this, window, cx| {
                             this.set_project_hidden(&close, false, cx);
@@ -3421,6 +3451,11 @@ fn hide_panel(den: &WeakEntity<Den>, panel: Panel) -> menu::PopupMenuItem {
     })
 }
 
+/// `host` is hidden with its projects (Hide Server).
+fn is_hidden_host(host: &SharedString, cx: &App) -> bool {
+    Config::get(cx).hidden_hosts.iter().any(|other| other == host.as_ref())
+}
+
 /// Show Hidden Projects, checked while the Projects panel shows them.
 fn show_hidden_item(den: &WeakEntity<Den>, cx: &App) -> menu::PopupMenuItem {
     menu::item("Show Hidden Projects", den, |this, _, cx| this.toggle_hidden_projects(cx))
@@ -3732,6 +3767,18 @@ mod palette_tests {
         // Back to den: its worktree, not its checkout.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/den"), window, cx)));
         den.read_with(cx, |den, _| assert_eq!(den.active, Some(key("/den-hide"))));
+        // A hidden server hides all its projects, but the one in front.
+        cx.update(|window, cx| {
+            den.update(cx, |den, cx| {
+                den.set_project_hidden(&key("/stride"), false, cx);
+                den.set_host_hidden(&super::LOCAL.into(), true, cx);
+                den.activate(key("/den-hide"), window, cx);
+            })
+        });
+        den.read_with(cx, |den, cx| {
+            assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
+            assert!(den.is_hidden_project(&key("/den"), cx));
+        });
     }
 
     /// Settings from the command palette: the action reaches `Den` itself,

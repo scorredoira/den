@@ -667,6 +667,10 @@ pub struct Config {
     /// checkout or a folder (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hidden_projects: Vec<String>,
+    /// Servers hidden from the Projects panel, Cmd-E and Cmd-K, with all
+    /// their projects (by name, `local` too).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_hosts: Vec<String>,
     /// The Projects panel shows the hidden ones too, dimmed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub show_hidden_projects: bool,
