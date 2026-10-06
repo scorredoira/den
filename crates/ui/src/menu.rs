@@ -60,7 +60,7 @@ impl PanelItems for PopupMenu {
 }
 
 /// Every panel, checked while it's on: a click puts it on or takes it
-/// off. And Reset Layout. Show Panel's, and the activity bar's menu.
+/// off. The History tab, checked while it shows. And Reset Layout. Show Panel's, and the activity bar's menu.
 pub fn panels_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     let Some(workspace) = crate::app::window_workspace(window, cx) else {
         return menu.item(reset_layout());
@@ -75,6 +75,10 @@ pub fn panels_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupM
                     .checked(shown),
             )
         })
+        .item(
+            item("History", &weak, |this, window, cx| this.toggle_history(window, cx))
+                .checked(workspace.read(cx).history_visible()),
+        )
         .separator()
         .item(reset_layout())
 }
