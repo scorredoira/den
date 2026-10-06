@@ -218,6 +218,42 @@ fn the_history_icon_toggles_its_tab(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, _| assert!(workspace.history_tab().is_none()));
 }
 
+/// The History tab in front hides the terminals, for the width; shown
+/// there, they show there the next time. Another tab in front, or the tab
+/// closed, brings the terminals back as editing had them.
+#[gpui_kit::test]
+fn the_history_has_the_width(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let editing = bounds(cx, "terminals");
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("terminals").is_none(), "the terminals hide");
+    assert!(bounds(cx, "commit-files").right() > editing.left(), "the history takes their width");
+    workspace.update_in(cx, |workspace, window, cx| workspace.activate(0, window, cx));
+    cx.run_until_parked();
+    assert_eq!(bounds(cx, "terminals"), editing, "back on another tab");
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("terminals").is_none());
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Terminals, cx));
+    cx.run_until_parked();
+    bounds(cx, "terminals");
+    assert!(cx.update(|_, cx| Config::get(cx).history_terminals), "remembered");
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_history(window, cx));
+    cx.run_until_parked();
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
+    cx.run_until_parked();
+    bounds(cx, "terminals");
+    // Saved with the workspace: editing's, as it reopens editing.
+    let saved = workspace.read_with(cx, |workspace, cx| workspace.session(cx).shows);
+    assert_eq!(saved, Some(config::SavedPanels { terminals: false }));
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_history(window, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("terminals").is_none(), "editing as it was left");
+}
+
 #[gpui_kit::test]
 fn the_workspaces_are_a_panel_of_the_explorer(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
@@ -467,6 +503,21 @@ fn the_notes_icon_toggles_them(cx: &mut TestAppContext) {
     click(cx, "activity-Notes");
     assert!(cx.debug_bounds("notes").is_none());
     workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
+}
+
+/// In a tab of the code, the notes' icon brings them in front and, on the
+/// next click, the tab that was in front before.
+#[gpui_kit::test]
+fn the_notes_icon_toggles_their_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update_in(cx, |workspace, window, cx| workspace.notes_to_tab(window, cx));
+    cx.run_until_parked();
+    click(cx, "activity-Notes");
+    workspace.read_with(cx, |workspace, _| assert_eq!(workspace.active, Some(0), "the file again"));
+    assert!(cx.debug_bounds("notes").is_none());
+    click(cx, "activity-Notes");
+    bounds(cx, "notes");
+    workspace.read_with(cx, |workspace, _| assert_eq!(workspace.active, workspace.notes_tab()));
 }
 
 /// The side column is the same in every workspace: going from one to

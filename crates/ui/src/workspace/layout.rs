@@ -157,6 +157,18 @@ impl Shown {
     }
 }
 
+/// What a workspace's panels are shown for, each mode as it left them: the
+/// terminals' area changes on going from one to another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Mode {
+    Editing,
+    /// A debug session runs, whatever is in front.
+    Debugging,
+    /// The History tab shows: without the terminals unless they were shown
+    /// there (`Config::history_terminals`).
+    History,
+}
+
 /// A side panel dragged by its header: onto another's header it goes above
 /// it, onto a place's icon into that place.
 #[derive(Clone)]
@@ -220,19 +232,61 @@ impl Workspace {
             return;
         }
         self.debugging = debugging;
-        let now = self.panels.shown();
-        let next = if debugging {
-            self.edit_shown = Some(now);
-            self.debug_shown.take().unwrap_or_else(Shown::debugging)
+        if self.change_mode(cx) {
+            self.layout_changed(cx);
+        }
+    }
+
+    /// The mode follows what's drawn: the History tab came into sight or
+    /// left it. Remembered right after, not while drawing.
+    pub(super) fn sync_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.change_mode(cx) {
+            cx.defer_in(window, |this, _, cx| this.layout_changed(cx));
+        }
+    }
+
+    fn current_mode(&self) -> Mode {
+        if self.debugging {
+            Mode::Debugging
+        } else if self.history_visible() {
+            Mode::History
         } else {
-            self.debug_shown = Some(now);
-            self.edit_shown.take().unwrap_or(now)
+            Mode::Editing
+        }
+    }
+
+    /// Into the mode it's in now, if it wasn't: the panels of the one left
+    /// are kept, and those of the next come back as it left them, or as it
+    /// starts (the History's terminals as they last were there). Whether it
+    /// changed.
+    fn change_mode(&mut self, cx: &App) -> bool {
+        let mode = self.current_mode();
+        if mode == self.mode {
+            return false;
+        }
+        let now = self.panels.shown();
+        self.kept_shown.insert(self.mode, now);
+        self.mode = mode;
+        let kept = self.kept_shown.remove(&mode);
+        let next = match mode {
+            Mode::Editing => kept.unwrap_or(now),
+            Mode::Debugging => kept.unwrap_or_else(Shown::debugging),
+            Mode::History => Shown { terminals: Config::get(cx).history_terminals, ..kept.unwrap_or(now) },
         };
         self.panels.show(next);
         if !next.terminals {
             self.terminals_maximized = false;
         }
-        self.layout_changed(cx);
+        true
+    }
+
+    /// What's saved with the workspace: editing's panels, as it opens
+    /// editing.
+    pub(super) fn saved_panels(&self) -> SavedPanels {
+        match self.kept_shown.get(&Mode::Editing) {
+            Some(editing) if self.mode != Mode::Editing => SavedPanels { terminals: editing.terminals },
+            _ => self.panels.saved(),
+        }
     }
 
     /// The layout in use follows the workspace drawn: the debugging one while
@@ -253,6 +307,10 @@ impl Workspace {
 
     /// What shows changed: saved with what's open, and drawn.
     pub(crate) fn layout_changed(&mut self, cx: &mut Context<Self>) {
+        let terminals = self.panels.terminals;
+        if self.mode == Mode::History && Config::get(cx).history_terminals != terminals {
+            Config::update(cx, |config| config.history_terminals = terminals);
+        }
         self.remember(cx);
         cx.notify();
     }
@@ -468,7 +526,7 @@ impl Workspace {
     }
 
     /// The app's worktrees panel, the same for every workspace; it shows
-    /// only while the project has worktrees (it's a repo).
+    /// only while the project has worktrees besides its checkout.
     pub fn set_worktrees(&mut self, view: &Entity<WorkspacesPanel>, has_worktrees: bool, cx: &mut Context<Self>) {
         if self.worktrees.is_none() {
             self.worktrees = Some(view.clone());
@@ -575,7 +633,7 @@ impl Workspace {
     fn render_side(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let layout = Config::get(cx).layout.clone();
         let mut panels = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
-        // A folder that isn't a repo has no worktrees to list.
+        // Only the checkout, or a folder that isn't a repo: nothing to list.
         panels.retain(|panel| *panel != Panel::Worktrees || self.has_worktrees);
         let open: Vec<Panel> = panels.iter().copied().filter(|panel| !layout.collapsed.contains(panel)).collect();
         let filler = Layout::filler(&open);

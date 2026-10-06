@@ -345,9 +345,9 @@ impl Workspace {
 /// Dots in the color of Claude's state (see `set_badges`).
 #[derive(Clone, Copy, Default, PartialEq)]
 pub struct TaskBadges {
-    /// The most urgent of the other workspaces.
+    /// The most urgent of the workspaces.
     pub workspaces: Option<Hsla>,
-    /// The most urgent of the project's other worktrees.
+    /// The most urgent of the project's worktrees.
     pub worktrees: Option<Hsla>,
     /// The most urgent of the agents.
     pub agents: Option<Hsla>,

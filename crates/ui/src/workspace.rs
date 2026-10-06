@@ -319,10 +319,10 @@ pub struct Workspace {
     /// A debug session runs (connecting or connected): the debugging layout
     /// and panels are in use.
     debugging: bool,
-    /// The panels of the mode not in use, as it left them: editing's while
-    /// debugging, debugging's while editing.
-    edit_shown: Option<layout::Shown>,
-    debug_shown: Option<layout::Shown>,
+    /// What the panels are shown for: editing, debugging or the history.
+    mode: layout::Mode,
+    /// The panels of the modes not in use, as they left them.
+    kept_shown: HashMap<layout::Mode, layout::Shown>,
     /// The task's key in `config.json`, to remember what was open.
     session_key: String,
     /// Last session's tabs were already reopened (nothing is saved before that).
@@ -331,7 +331,7 @@ pub struct Workspace {
     /// The app's projects panel.
     workspaces: Option<Entity<WorkspacesPanel>>,
     /// The app's worktrees panel, and whether its project has worktrees
-    /// (a folder that isn't a repo has none: the panel doesn't show).
+    /// besides its checkout (with none the panel doesn't show).
     worktrees: Option<Entity<WorkspacesPanel>>,
     has_worktrees: bool,
     /// The app's agents panel (see `set_agents`).
@@ -550,8 +550,8 @@ impl Workspace {
             root,
             panels: Panels::new(),
             debugging: false,
-            edit_shown: None,
-            debug_shown: None,
+            mode: layout::Mode::Editing,
+            kept_shown: HashMap::new(),
             session_key,
             restored: false,
             focus_handle,
@@ -712,7 +712,7 @@ impl Workspace {
     fn session(&self, cx: &App) -> Session {
         let mut session = Session {
             split: self.editor_split,
-            shows: Some(self.panels.saved()),
+            shows: Some(self.saved_panels()),
             ..Session::default()
         };
         // A page is a doc that opens again; the shortcuts guide isn't.
@@ -2467,8 +2467,23 @@ impl Workspace {
         if !in_front {
             return self.show_notes(window, cx);
         }
-        if self.notes_tab().is_none() {
-            self.hide_panel(Panel::Notes, cx);
+        match self.notes_tab() {
+            None => self.hide_panel(Panel::Notes, cx),
+            // In a tab of the code: the tab shown before it comes back in
+            // front; with none, the tab closes and they're the terminals'.
+            Some(ix) => {
+                let group = self.tabs[ix].group;
+                let before = (0..self.tabs.len())
+                    .filter(|other| *other != ix && self.tabs[*other].group == group)
+                    .max_by_key(|other| self.tabs[*other].shown);
+                match before {
+                    Some(before) => self.activate_with(before, false, window, cx),
+                    None => {
+                        self.close(ix, window, cx);
+                        self.hide_panel(Panel::Notes, cx);
+                    }
+                }
+            }
         }
         self.focus_ide(window, cx);
     }
@@ -4186,6 +4201,7 @@ impl Render for Workspace {
             }
         }
         self.apply_word_wrap(window, cx);
+        self.sync_mode(window, cx);
         // What the panels show follows what's drawn here, told to them right
         // after: told while drawing, the ones drawn from cache wouldn't see
         // it until something else redrew them.
