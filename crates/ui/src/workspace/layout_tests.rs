@@ -573,3 +573,106 @@ fn a_stop_near_the_edge_goes_to_the_middle(cx: &mut TestAppContext) {
     let (above, below) = (low as usize - now.start, now.end - low as usize);
     assert!(above.abs_diff(below) <= 2, "{low} in {now:?}");
 }
+
+fn debug(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, on: bool) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.debugger.update(cx, |debugger, cx| if on { debugger.pretend_connected(cx) } else { debugger.stop(cx) })
+    });
+    cx.run_until_parked();
+}
+
+/// A debug session puts the debugging layout in use: the first time, the
+/// side column closed and the debugger's tab in front. Its end puts back
+/// the editing layout exactly as it was.
+#[gpui_kit::test]
+fn a_session_uses_the_debugging_layout(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| {
+        layout.dock = Dock::Bottom;
+        layout.side_width = 300.;
+    });
+    let editing = cx.update(|_, cx| Config::get(cx).layout.clone());
+    let shown = workspace.read_with(cx, |workspace, _| workspace.panels.shown());
+    debug(&workspace, cx, true);
+    assert!(cx.debug_bounds("side-column").is_none(), "the side column closes");
+    bounds(cx, "debug-tab");
+    assert!(cx.update(|_, cx| Config::get(cx).debugging()));
+    let whereabouts = workspace.read_with(cx, |workspace, cx| workspace.whereabouts(cx));
+    assert_eq!(whereabouts["layout"], "debugging");
+    debug(&workspace, cx, false);
+    assert!(cx.update(|_, cx| Config::get(cx).layout == editing), "the editing layout back as it was");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.panels.shown()), shown);
+    bounds(cx, "side-column");
+    assert!(cx.debug_bounds("debug-tab").is_none());
+}
+
+/// What changes while debugging stays for the next session, and not in the
+/// editing layout.
+#[gpui_kit::test]
+fn a_change_while_debugging_stays_for_the_next_session(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    debug(&workspace, cx, true);
+    assert!(cx.debug_bounds("side-column").is_none());
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Files, cx));
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    cx.run_until_parked();
+    debug(&workspace, cx, false);
+    // editing: as before the session
+    bounds(cx, "side-column");
+    bounds(cx, "terminals");
+    debug(&workspace, cx, true);
+    bounds(cx, "side-column");
+    assert!(cx.debug_bounds("terminals").is_none(), "the terminals hidden, as the last session left them");
+}
+
+/// A restart is one session: the layout doesn't go back to editing in
+/// between. A session that never connects ends, and the editing layout is
+/// back.
+#[gpui_kit::test]
+fn a_restart_does_not_flip_and_a_failed_start_restores(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    debug(&workspace, cx, true);
+    let flips = Rc::new(Cell::new(0));
+    let _watch = cx.update(|_, cx| {
+        let flips = flips.clone();
+        let mut last = Config::get(cx).debugging();
+        cx.observe_global::<Config>(move |cx| {
+            let now = Config::get(cx).debugging();
+            if now != last {
+                flips.set(flips.get() + 1);
+                last = now;
+            }
+        })
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.debugger.update(cx, |debugger, cx| debugger.restart(window, cx));
+    });
+    assert!(workspace.read_with(cx, |workspace, _| workspace.debugging), "still the same session");
+    assert_eq!(flips.get(), 0);
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, _| workspace.debugging), "restarting");
+    assert_eq!(flips.get(), 0);
+    // the program restarted never listens: the session fails and ends
+    workspace.update(cx, |workspace, cx| workspace.debugger.update(cx, |debugger, cx| debugger.pretend_failed(cx)));
+    cx.run_until_parked();
+    assert_eq!(flips.get(), 1);
+    assert!(!workspace.read_with(cx, |workspace, _| workspace.debugging));
+    assert!(!cx.update(|_, cx| Config::get(cx).debugging()));
+    bounds(cx, "side-column");
+}
+
+/// No debug session outlives the app: a config saved while debugging loads
+/// with the editing layout in use and the debugging one kept.
+#[test]
+fn the_app_starts_editing() {
+    let mut config = Config::default();
+    config.layout.side_width = 300.;
+    config.use_debug_layout(true);
+    assert!(!config.layout.side, "the first debugging layout closes the side column");
+    config.layout.dock = Dock::Bottom;
+    let saved = serde_json::to_vec(&config).unwrap();
+    let mut loaded: Config = serde_json::from_slice(&saved).unwrap();
+    assert!(loaded.debugging());
+    loaded.use_debug_layout(false);
+    assert!(loaded.layout.side && loaded.layout.side_width == 300. && loaded.layout.dock == Dock::Right);
+    assert_eq!(loaded.debug_layout.as_ref().map(|layout| layout.dock), Some(Dock::Bottom));
+}

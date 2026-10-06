@@ -198,6 +198,12 @@ watches and the breakpoints side by side (two rows of two when the tab is
 narrower than 760 pixels); and the console under them at the tab's width.
 The line between the parts and the console is dragged to size them.
 
+A session has a layout of its own: while the workspace in front debugs, Den
+uses the debugging layout (the side column closed and the debugger's tab in
+front the first time), and puts the editing one back when the session ends,
+fails to start or the program goes. A restart is one session. What changes
+while debugging stays for the next one (docs/guide.md, Layout).
+
 When a VM stops, its line is marked and, unless it's at least five lines
 inside the view, scrolled to the middle of the code; the values of the variables are written
 at the end of the lines of its function, and hovering a name shows its value

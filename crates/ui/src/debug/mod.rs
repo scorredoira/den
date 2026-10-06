@@ -773,6 +773,22 @@ impl Debugger {
         cx.notify();
     }
 
+    /// A session connected, for tests.
+    #[cfg(test)]
+    pub fn pretend_connected(&mut self, cx: &mut Context<Self>) {
+        // attached to a program on a port nothing listens on: a restart tries it again
+        let launch = parse_launch_file(r#"{"port":1}"#).map(|file| file.launch).ok();
+        self.started = launch.map(|launch| Started { launch, test: None, file: None });
+        self.status = Status::Connected;
+        cx.notify();
+    }
+
+    /// The program never listened, for tests: the session fails.
+    #[cfg(test)]
+    pub fn pretend_failed(&mut self, cx: &mut Context<Self>) {
+        self.fail("the program ended before it listened".into(), cx);
+    }
+
     /// A line from the program, for tests.
     #[cfg(test)]
     pub fn receive(&mut self, line: &str, cx: &mut Context<Self>) {

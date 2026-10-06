@@ -316,6 +316,13 @@ pub struct Workspace {
     head: Option<String>,
     /// What of it shows (see `layout::Panels`).
     panels: Panels,
+    /// A debug session runs (connecting or connected): the debugging layout
+    /// and panels are in use.
+    debugging: bool,
+    /// The panels of the mode not in use, as it left them: editing's while
+    /// debugging, debugging's while editing.
+    edit_shown: Option<layout::Shown>,
+    debug_shown: Option<layout::Shown>,
     /// The task's key in `config.json`, to remember what was open.
     session_key: String,
     /// Last session's tabs were already reopened (nothing is saved before that).
@@ -425,7 +432,11 @@ impl Workspace {
         let subscriptions = vec![
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
             cx.subscribe_in(&outline, window, Self::on_outline),
-            cx.observe(&debugger, |_, _, cx| cx.notify()),
+            cx.observe(&debugger, |this, debugger, cx| {
+                let debugging = debugger.read(cx).is_active();
+                this.debug_changed(debugging, cx);
+                cx.notify();
+            }),
             // The dot on its tab and icon, when it fills or empties.
             cx.observe(&notes, |_, _, cx| cx.notify()),
             // The count on the changes' icon.
@@ -534,6 +545,9 @@ impl Workspace {
             head: None,
             root,
             panels: Panels::new(),
+            debugging: false,
+            edit_shown: None,
+            debug_shown: None,
             session_key,
             restored: false,
             focus_handle,
@@ -4171,6 +4185,7 @@ impl Render for Workspace {
         // it until something else redrew them.
         cx.defer_in(window, |this, _, cx| {
             this.shape_terminals(cx);
+            this.sync_debug_layout(cx);
             this.place_shown(cx);
             if this.is_shown(Panel::Outline, cx) {
                 this.sync_outline(cx);

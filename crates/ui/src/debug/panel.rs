@@ -1046,7 +1046,7 @@ impl Render for DebugView {
         let console = self.debugger.update(cx, |debugger, cx| debugger.render_console_part(cx));
         let wide = f32::from(size.width) >= GRID_COLUMNS_WIDTH;
         let state = self.rows.state(size.height, wide, cx).clone();
-        let height = Config::get(cx).layout.debug_height.unwrap_or(f32::from(size.height) / 2.);
+        let height = Config::get(cx).layout.debug_height.unwrap_or(f32::from(size.height) * 0.6);
         let painted = self.size.clone();
         let view = cx.entity().downgrade();
         v_flex()
