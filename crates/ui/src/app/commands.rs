@@ -318,7 +318,7 @@ impl Den {
     /// `den workspaces`: one per line, `*` the active one.
     fn workspace_list(&self, cx: &App) -> String {
         let mut out = String::new();
-        for (key, task) in self.ordered(cx) {
+        for (key, task) in self.ordered_all(cx) {
             let state = match self.workspace_state(&key, cx).2 {
                 "done" => "finished",
                 state => state,

@@ -136,10 +136,15 @@ impl Layout {
             });
         }
         for group in Group::ALL {
-            for panel in group.panels().iter().filter(|panel| !seen.contains(panel)) {
-                // With those of its group, or a place of its own.
+            for (ix, panel) in group.panels().iter().enumerate().filter(|(_, panel)| !seen.contains(panel)) {
+                // With those of its group, right after the one before it
+                // there (a new panel goes where it would in a new layout),
+                // or a place of its own.
                 match self.places.iter_mut().find(|place| place.iter().any(|other| group.panels().contains(other))) {
-                    Some(place) => place.push(*panel),
+                    Some(place) => {
+                        let at = ix.checked_sub(1).and_then(|before| place.iter().position(|other| *other == group.panels()[before]));
+                        place.insert(at.map_or(place.len(), |at| at + 1), *panel);
+                    }
                     None => self.places.push(vec![*panel]),
                 }
             }
@@ -269,6 +274,7 @@ impl Layout {
     pub fn height(&self, panel: Panel) -> f32 {
         self.heights.get(&panel).copied().unwrap_or(match panel {
             Panel::Workspaces | Panel::Changes => 240.,
+            Panel::Worktrees => 140.,
             Panel::Agents => 110.,
             _ => 180.,
         })
@@ -303,7 +309,7 @@ impl Group {
     /// Its panels, top to bottom.
     pub fn panels(self) -> &'static [Panel] {
         match self {
-            Group::Explorer => &[Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline],
+            Group::Explorer => &[Panel::Workspaces, Panel::Worktrees, Panel::Agents, Panel::Files, Panel::Outline],
             Group::Search => &[Panel::Search, Panel::References],
             Group::Git => &[Panel::Changes],
         }
@@ -337,7 +343,11 @@ impl Group {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Panel {
+    /// The projects: the folders and repos opened, by server. Its name in
+    /// the config is from before it had the worktrees in a panel of their own.
     Workspaces,
+    /// The checkout and the worktrees of the project in front.
+    Worktrees,
     Files,
     Changes,
     Search,
@@ -358,8 +368,9 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 11] = [
+    pub const ALL: [Panel; 12] = [
         Panel::Workspaces,
+        Panel::Worktrees,
         Panel::Agents,
         Panel::Files,
         Panel::Outline,
@@ -559,11 +570,18 @@ pub struct Config {
     /// Look for new releases every few hours; unset, it does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check_for_updates: Option<bool>,
-    /// The workspaces column shows only the worktrees made from it (New
+    /// The Worktrees panel shows only the worktrees made from it (New
     /// Worktree), not those the agents make on their own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub only_own_worktrees: bool,
-    /// The worktrees made from the workspaces column (same keys as `order`).
+    /// Projects hidden from the Projects panel, Cmd-E and Cmd-K: a repo's
+    /// checkout or a folder (same keys as `order`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_projects: Vec<String>,
+    /// The Projects panel shows the hidden ones too, dimmed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub show_hidden_projects: bool,
+    /// The worktrees made from the Worktrees panel (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub own_worktrees: Vec<String>,
     /// The History tab's sizes, as dragged.
@@ -1113,10 +1131,10 @@ mod layout_tests {
         use super::Place;
         let mut layout = Layout::default();
         let explorer = Place(Panel::Workspaces);
-        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Files, Panel::Outline]);
+        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Worktrees, Panel::Files, Panel::Outline]);
         assert_eq!(layout.place_of(Panel::Files), Some(explorer));
         layout.move_panel(Panel::Files, explorer, Some(Panel::Workspaces));
-        assert_eq!(layout.panels(explorer), [Panel::Files, Panel::Workspaces, Panel::Outline]);
+        assert_eq!(layout.panels(explorer), [Panel::Files, Panel::Workspaces, Panel::Worktrees, Panel::Outline]);
         // Dropped past the icons, a panel gets one of its own, last.
         let mut last = layout.clone();
         last.own_place(Panel::Outline);
@@ -1161,10 +1179,11 @@ mod layout_tests {
         assert_eq!(layout.place, Place(Panel::Files));
         layout.move_panel(Panel::Files, git, None);
         assert_eq!(layout.current(), layout.place_of(Panel::Outline));
-        assert_eq!(layout.panels(layout.current().unwrap()), [Panel::Workspaces, Panel::Outline]);
+        assert_eq!(layout.panels(layout.current().unwrap()), [Panel::Workspaces, Panel::Worktrees, Panel::Outline]);
         // As a click names it, by its first panel in sight.
         layout.place = layout.current().unwrap();
         layout.move_panel(Panel::Workspaces, git, None);
+        layout.move_panel(Panel::Worktrees, git, None);
         assert_eq!(layout.panels(layout.current().unwrap()), [Panel::Outline]);
         // The last one leaves: the column goes with it.
         layout.move_panel(Panel::Outline, git, None);
@@ -1177,10 +1196,10 @@ mod layout_tests {
         let mut layout = Layout::default();
         let explorer = Place(Panel::Workspaces);
         layout.move_panel(Panel::Files, explorer, None);
-        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Files, Panel::Outline]);
+        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Worktrees, Panel::Files, Panel::Outline]);
         // A hidden one comes back where it was.
         layout.move_panel(Panel::Agents, explorer, None);
-        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline]);
+        assert_eq!(layout.panels(explorer), [Panel::Workspaces, Panel::Worktrees, Panel::Agents, Panel::Files, Panel::Outline]);
         // Above another, it moves.
         layout.move_panel(Panel::Outline, explorer, Some(Panel::Workspaces));
         assert_eq!(layout.panels(explorer)[0], Panel::Outline);
@@ -1204,7 +1223,7 @@ mod layout_tests {
     fn a_layout_edited_by_hand_is_mended() {
         let mut layout: Layout = serde_json::from_str(r#"{"places": [["files", "files", "code"], []]}"#).unwrap();
         layout.repair();
-        assert_eq!(layout.places[0], [Panel::Files, Panel::Workspaces, Panel::Agents, Panel::Outline]);
+        assert_eq!(layout.places[0], [Panel::Files, Panel::Outline, Panel::Workspaces, Panel::Worktrees, Panel::Agents]);
         assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some()).all(|panel| layout.place_of(*panel).is_some()));
         // The History and Commit Files panels of before the History tab are left out.
         let config: super::Config = serde_json::from_str(

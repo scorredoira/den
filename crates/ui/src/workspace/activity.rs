@@ -303,11 +303,16 @@ impl Workspace {
         }
     }
 
-    /// What goes on `place`'s icon: the first of its panels' news.
+    /// What goes on `place`'s icon: the first of its panels' news. The
+    /// agents' dots only while the place doesn't show: then their panels
+    /// say it (on their header, folded).
     fn badge(&self, place: Place, cx: &App) -> Option<Badge> {
+        let hidden = self.side_place(cx) != Some(place);
+        let dot = |color: Option<Hsla>| color.filter(|_| hidden).map(Badge::Dot);
         Config::get(cx).layout.panels(place).into_iter().find_map(|panel| match panel {
-            Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
-            Panel::Agents => self.badges.agents.map(Badge::Dot),
+            Panel::Workspaces => dot(self.badges.workspaces),
+            Panel::Worktrees => dot(self.badges.worktrees),
+            Panel::Agents => dot(self.badges.agents),
             Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
             _ => None,
         })
@@ -327,8 +332,8 @@ impl Workspace {
         }
     }
 
-    /// The state of the app's tasks: the most urgent of the others' and of
-    /// the agents', on the explorer's icon.
+    /// The state of the app's tasks: the most urgent of the others', of the
+    /// project's and of the agents', on the explorer's icon or its headers.
     pub fn set_badges(&mut self, badges: TaskBadges, cx: &mut Context<Self>) {
         if self.badges != badges {
             self.badges = badges;
@@ -342,6 +347,8 @@ impl Workspace {
 pub struct TaskBadges {
     /// The most urgent of the other workspaces.
     pub workspaces: Option<Hsla>,
+    /// The most urgent of the project's other worktrees.
+    pub worktrees: Option<Hsla>,
     /// The most urgent of the agents.
     pub agents: Option<Hsla>,
 }
