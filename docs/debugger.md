@@ -193,10 +193,10 @@ Chrome the pick is an Alt-click in the page (docs/chrome.md).
 
 It is a tab after the terminals' (closing the tab hides it; F5 or Cmd-Shift-D
 bring it back), with the debugger's state on it: yellow while stopped, green
-while running. The toolbar at its top; the call stack, the variables, the
-watches and the breakpoints side by side (two rows of two when the tab is
-narrower than 760 pixels); and the console under them at the tab's width.
-The line between the parts and the console is dragged to size them.
+while running. The toolbar at its top; a grid of two rows of two, the call
+stack and the variables above, the watches and the breakpoints below; and
+the console under it at the tab's width. Every line between them is dragged
+to size them; the console always keeps a few lines.
 
 A session has a layout of its own: while the workspace in front debugs, Den
 uses the debugging layout (the side column closed and the debugger's tab in

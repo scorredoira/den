@@ -254,14 +254,12 @@ fn the_debugger_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     let console = bounds(cx, "debug-console");
     assert!(bar.top() >= code.bottom(), "under the code: {bar:?} {code:?}");
     assert!(bar.bottom() <= grid.top() && grid.bottom() <= console.top(), "{bar:?} {grid:?} {console:?}");
-    // Wide, the four side by side, the variables the widest.
-    let cells: Vec<Bounds<Pixels>> =
-        ["debug-cell-Stack", "debug-cell-Variables", "debug-cell-Watch", "debug-cell-Breakpoints"].into_iter().map(|cell| bounds(cx, cell)).collect();
-    assert!(f32::from(grid.size.width) >= crate::debug::panel::GRID_COLUMNS_WIDTH, "{grid:?}");
-    assert!(cells.iter().all(|cell| cell.top() == cells[0].top()), "{cells:?}");
-    assert!(cells.windows(2).all(|pair| pair[0].right() <= pair[1].left() + px(1.)), "{cells:?}");
-    assert!(cells[1].size.width > cells[0].size.width, "{cells:?}");
+    // Wide too, two rows of two, the variables wider than the call stack.
+    two_by_two(cx);
+    let (stack, variables) = (bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-cell-Variables"));
+    assert!(variables.size.width > stack.size.width, "{stack:?} {variables:?}");
     assert!(console.size.width >= grid.size.width - px(1.), "the console at the tab's width");
+    console_shows(cx);
     // Cmd-Shift-D hides it and shows it.
     workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Console, cx));
     cx.run_until_parked();
@@ -276,7 +274,24 @@ fn the_debugger_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
 }
 
-/// In a narrow tab (the terminals on the code's right), two rows of two.
+/// The grid's cells are two rows of two: the call stack and the variables
+/// above, the watches and the breakpoints below; the console under them.
+fn two_by_two(cx: &mut VisualTestContext) {
+    let (stack, variables) = (bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-cell-Variables"));
+    let (watch, breakpoints) = (bounds(cx, "debug-cell-Watch"), bounds(cx, "debug-cell-Breakpoints"));
+    assert!(stack.top() == variables.top() && stack.right() <= variables.left() + px(1.), "{stack:?} {variables:?}");
+    assert!(watch.top() >= stack.bottom() - px(1.) && watch.top() == breakpoints.top(), "{stack:?} {watch:?} {breakpoints:?}");
+    assert!(watch.right() <= breakpoints.left() + px(1.), "{watch:?} {breakpoints:?}");
+    assert!(bounds(cx, "debug-console").top() >= watch.bottom() - px(1.));
+}
+
+/// The console is inside the tab, with a few lines at least.
+fn console_shows(cx: &mut VisualTestContext) {
+    let (tab, console) = (bounds(cx, "debug-tab"), bounds(cx, "debug-console"));
+    assert!(console.bottom() <= tab.bottom() + px(1.) && console.size.height >= px(60.), "{tab:?} {console:?}");
+}
+
+/// In a narrow tab (the terminals on the code's right), the same two rows of two.
 #[gpui_kit::test]
 fn a_narrow_debugger_has_two_rows_of_two(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |layout| {
@@ -285,13 +300,24 @@ fn a_narrow_debugger_has_two_rows_of_two(cx: &mut TestAppContext) {
     });
     workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
     cx.run_until_parked();
-    let grid = bounds(cx, "debug-grid");
-    assert!(f32::from(grid.size.width) < crate::debug::panel::GRID_COLUMNS_WIDTH, "{grid:?}");
-    let (stack, variables) = (bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-cell-Variables"));
-    let (watch, breakpoints) = (bounds(cx, "debug-cell-Watch"), bounds(cx, "debug-cell-Breakpoints"));
-    assert!(stack.top() == variables.top() && stack.right() <= variables.left() + px(1.), "{stack:?} {variables:?}");
-    assert!(watch.top() >= stack.bottom() - px(1.) && watch.top() == breakpoints.top(), "{stack:?} {watch:?} {breakpoints:?}");
-    assert!(bounds(cx, "debug-console").top() >= watch.bottom() - px(1.));
+    two_by_two(cx);
+    console_shows(cx);
+}
+
+/// A tall grid saved before (or a tab that got shorter) never covers the
+/// console.
+#[gpui_kit::test]
+fn a_saved_grid_height_leaves_the_console(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| {
+        layout.dock = Dock::Right;
+        layout.dock_width = Some(1000.);
+        layout.side = false;
+        layout.debug_height = Some(5000.);
+    });
+    workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
+    cx.run_until_parked();
+    two_by_two(cx);
+    console_shows(cx);
 }
 
 /// The notes are a tab at the far end of the terminals': the activity bar
