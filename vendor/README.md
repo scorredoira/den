@@ -41,6 +41,11 @@ drag redistributes, so dragging beside it went over the container and the
 dragged panel jumped back to its minimum on every move. Hidden, it now
 counts as 0.
 
+Also `(den)`, for a find like VS Code's: `SearchOptions` in
+`src/input/editor/search.rs` (whole words, regular expressions with `$1` in
+the replacement, and replacements that keep the case), matched with `regex`
+instead of `aho-corasick`.
+
 ## gpui-component 0.7.0
 
 The crates.io release the same way (its `tests/` and `[[test]]` entries left
@@ -63,6 +68,13 @@ booleans as `number` and `boolean`); and `src/highlighter/highlighter.rs`
 skips the `local.*` captures, which shadowed the highlights of the same node. Brackets are colored by nesting depth like VS Code's bracket pair colors
 (`bracket_depth` there, the `punctuation.bracket.1`–`3` colors, and Go's
 `highlights.scm` capturing its brackets).
+
+And `(den)` for the find bar (Cmd-F) as VS Code's: `src/input/search.rs`
+floats at the editor's top right (placed in `render_editor` in
+`src/input/input.rs`), its left edge drags its width, and ↑↓ go through the
+queries searched; `FindBarMemory` holds the width, the history and the
+toggles for the app to save. Its icons not in the default set (`whole-word`,
+`regex`, `replace-all`, `case-upper`) come from the app's assets.
 
 Updating: copy the new release over it, drop `benches/`, `tests/` and their
 `[[bench]]`/`[[test]]` entries, and reapply the `(den)` functions.

@@ -190,6 +190,7 @@ fn main() {
         gpui_kit::init(cx);
         ui_term::init(cx);
         config::Config::init(cx);
+        config::sync_find_bar(cx);
         language::register();
         bind_keys(cx);
         app_menu::init(cx);

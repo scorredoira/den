@@ -9,13 +9,17 @@ use gpui_kit::component::{
     ActiveTheme as _, h_flex,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use crate::menu::PanelItems as _;
-use proto::{Request, Response, SearchHit};
+use proto::{Request, Response, SearchHit, SearchQuery};
 
-use crate::{config::UiText, menu};
+use crate::{
+    config::{Config, UiText},
+    menu,
+};
 
 /// Wait after the last keystroke before searching.
 const DEBOUNCE: Duration = Duration::from_millis(200);
@@ -41,10 +45,18 @@ pub struct SearchPanel {
     root: PathBuf,
     input: Entity<InputState>,
     replacement: Entity<InputState>,
+    /// The globs of the files searched, and of those left out.
+    include: Entity<InputState>,
+    exclude: Entity<InputState>,
     regex: bool,
     case_sensitive: bool,
+    whole_word: bool,
     /// Each replacement takes the case of what it replaces.
     preserve_case: bool,
+    /// The replace box shows (the chevron on the left).
+    show_replace: bool,
+    /// The files to include and exclude show (the ⋯ under the search box).
+    show_files: bool,
     /// What the last Replace All did.
     replaced: Option<SharedString>,
     /// Changed only through `set_hits`, which works out the rows from them.
@@ -63,28 +75,45 @@ pub struct SearchPanel {
     search: Option<Task<()>>,
     /// References panel: what is shown instead of the search box.
     title: Option<SharedString>,
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<SearchEvent> for SearchPanel {}
 
 impl SearchPanel {
     pub fn new(root: PathBuf, client: Option<Arc<Client>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search in Workspace"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search (↑↓ for history)"));
         let replacement = cx.new(|cx| InputState::new(window, cx).placeholder("Replace"));
-        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
-            InputEvent::Change => this.schedule(DEBOUNCE, cx),
-            InputEvent::PressEnter { .. } => this.step(1, cx),
-            _ => {}
-        });
+        let include = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. *.ts, src/**/include"));
+        let exclude = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. *.ts, src/**/exclude"));
+        let globs_changed = |this: &mut Self, _: Entity<InputState>, event: &InputEvent, cx: &mut Context<Self>| {
+            if let InputEvent::Change = event {
+                this.schedule(DEBOUNCE, cx)
+            }
+        };
+        let subscriptions = vec![
+            cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
+                InputEvent::Change => this.schedule(DEBOUNCE, cx),
+                InputEvent::PressEnter { .. } => this.step(1, cx),
+                _ => {}
+            }),
+            cx.subscribe(&include, globs_changed),
+            cx.subscribe(&exclude, globs_changed),
+        ];
+        let saved = &Config::get(cx).search;
         Self {
             client,
             root,
             input,
             replacement,
-            regex: false,
-            case_sensitive: false,
-            preserve_case: false,
+            include,
+            exclude,
+            regex: saved.regex,
+            case_sensitive: saved.case_sensitive,
+            whole_word: saved.whole_word,
+            preserve_case: saved.preserve_case,
+            show_replace: false,
+            show_files: false,
             replaced: None,
             hits: Rc::default(),
             rows: Rc::default(),
@@ -97,7 +126,7 @@ impl SearchPanel {
             error: None,
             search: None,
             title: None,
-            _subscription: subscription,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -186,9 +215,9 @@ impl SearchPanel {
         let scope = self.scope.clone();
         let request = Request::Search {
             path: scope.as_ref().map_or_else(|| self.root.clone(), |scope| self.root.join(scope)),
-            query,
-            regex: self.regex,
-            case_sensitive: self.case_sensitive,
+            query: self.query(query),
+            include: globs(&self.include.read(cx).value()),
+            exclude: globs(&self.exclude.read(cx).value()),
             max_hits: MAX_HITS,
         };
         self.searching = true;
@@ -219,6 +248,49 @@ impl SearchPanel {
             .ok();
         }));
         cx.notify();
+    }
+
+    fn query(&self, text: String) -> SearchQuery {
+        SearchQuery { text, regex: self.regex, case_sensitive: self.case_sensitive, whole_word: self.whole_word }
+    }
+
+    /// A toggle flipped: kept for the next time, and searched again.
+    fn toggle(&mut self, change: impl FnOnce(&mut Self), cx: &mut Context<Self>) {
+        change(self);
+        let (regex, case_sensitive, whole_word, preserve_case) =
+            (self.regex, self.case_sensitive, self.whole_word, self.preserve_case);
+        Config::update(cx, |config| {
+            let saved = &mut config.search;
+            (saved.regex, saved.case_sensitive, saved.whole_word, saved.preserve_case) =
+                (regex, case_sensitive, whole_word, preserve_case);
+        });
+        self.schedule(Duration::ZERO, cx);
+    }
+
+    /// The query searched goes last in the history.
+    fn remember(&self, cx: &mut App) {
+        let query = self.input.read(cx).value().to_string();
+        Config::update_quietly(cx, |config| config.search.remember(&query));
+    }
+
+    /// ↑ and ↓ in the search box: the query before or after in the
+    /// history. What was typed and not searched yet is kept in it first.
+    fn browse_history(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.input.read(cx).value().to_string();
+        if !Config::get(cx).search.history.contains(&current) {
+            self.remember(cx);
+        }
+        let history = &Config::get(cx).search.history;
+        let at = history.iter().rposition(|query| *query == current).unwrap_or(history.len());
+        let to = if back { at.checked_sub(1) } else { (at + 1 < history.len()).then_some(at + 1) };
+        let Some(query) = to.and_then(|ix| history.get(ix)).cloned() else {
+            return;
+        };
+        self.input.update(cx, |input, cx| {
+            input.set_value(query, window, cx);
+            input.select_all(window, cx);
+        });
+        self.schedule(Duration::ZERO, cx);
     }
 
     /// Asks before replacing every match shown.
@@ -264,12 +336,11 @@ impl SearchPanel {
         let Some(client) = self.client.clone() else {
             return;
         };
+        self.remember(cx);
         let request = Request::Replace {
             path: self.root.clone(),
             files,
-            query: self.input.read(cx).value().to_string(),
-            regex: self.regex,
-            case_sensitive: self.case_sensitive,
+            query: self.query(self.input.read(cx).value().to_string()),
             replacement: self.replacement.read(cx).value().to_string(),
             preserve_case: self.preserve_case,
         };
@@ -311,6 +382,9 @@ impl SearchPanel {
     }
 
     fn open(&mut self, ix: usize, pin: bool, cx: &mut Context<Self>) {
+        if self.title.is_none() {
+            self.remember(cx);
+        }
         self.selected = Some(ix);
         let hit = &self.hits[ix];
         cx.emit(SearchEvent::Open {
@@ -387,6 +461,11 @@ fn dismiss(hits: &mut Vec<SearchHit>, selected: Option<usize>, remove: impl Fn(u
     now
 }
 
+/// The globs written in a files box: separated by commas.
+fn globs(text: &str) -> Vec<String> {
+    text.split(',').map(str::trim).filter(|glob| !glob.is_empty()).map(String::from).collect()
+}
+
 /// "1 file", "3 files".
 fn count(n: usize, what: &str) -> String {
     if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
@@ -395,79 +474,155 @@ fn count(n: usize, what: &str) -> String {
 impl SearchPanel {
     fn render_search_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let toggle = |id: &'static str, label: &'static str, on: bool| {
-            div()
-                .id(id)
-                .px_1p5()
-                .py_0p5()
-                .text_ui_small(cx)
-                .rounded(theme.radius)
-                .font_family(theme.mono_font_family.clone())
-                .when(on, |el| el.bg(theme.sidebar_accent).text_color(theme.sidebar_foreground))
-                .when(!on, |el| el.text_color(theme.muted_foreground))
-                .hover(|style| style.text_color(theme.sidebar_foreground))
-                .child(label)
-        };
         let can_replace = !self.hits.is_empty() && !self.searching;
-        v_flex()
-            .px_2()
+        let label = |text: &'static str| div().text_ui_small(cx).text_color(theme.sidebar_foreground).child(text);
+        h_flex()
+            .items_start()
+            .pl_1()
+            .pr_2()
             .pt_2()
-            .gap_1()
+            .gap_0p5()
             .child(
-                h_flex()
-                    .gap_1()
-                    .child(div().flex_1().child(Input::new(&self.input)))
-                    .child(toggle("search-case", "Aa", self.case_sensitive).on_click(cx.listener(|this, _, _, cx| {
-                        this.case_sensitive = !this.case_sensitive;
-                        this.schedule(Duration::ZERO, cx);
-                    })))
-                    .child(toggle("search-regex", ".*", self.regex).on_click(cx.listener(|this, _, _, cx| {
-                        this.regex = !this.regex;
-                        this.schedule(Duration::ZERO, cx);
-                    }))),
+                icon_button(
+                    "search-replace-toggle",
+                    if self.show_replace { "icons/tree-chevron-down.svg" } else { "icons/tree-chevron-right.svg" },
+                    "Toggle Replace",
+                    false,
+                    cx,
+                )
+                .mt(px(5.))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.show_replace = !this.show_replace;
+                    if this.show_replace {
+                        this.replacement.update(cx, |input, cx| input.focus(window, cx));
+                    }
+                    cx.notify();
+                })),
             )
             .child(
-                h_flex()
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
                     .gap_1()
-                    .child(div().flex_1().child(Input::new(&self.replacement)))
-                    .child(toggle("replace-case", "AB", self.preserve_case).on_click(cx.listener(|this, _, _, cx| {
-                        this.preserve_case = !this.preserve_case;
-                        cx.notify();
-                    })))
                     .child(
-                        toggle("replace-all", "All", false)
-                            .when(!can_replace, |el| el.opacity(0.5))
-                            .when(can_replace, |el| {
-                                el.on_click(cx.listener(|this, _, window, cx| this.confirm_replace(window, cx)))
-                            }),
-                    ),
+                        div()
+                            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                let keystroke = &event.keystroke;
+                                if keystroke.modifiers.modified() {
+                                    return;
+                                }
+                                let back = match keystroke.key.as_str() {
+                                    "up" => true,
+                                    "down" => false,
+                                    _ => return,
+                                };
+                                cx.stop_propagation();
+                                this.browse_history(back, window, cx);
+                            }))
+                            .child(
+                                Input::new(&self.input).suffix(
+                                    h_flex()
+                                        .gap_0p5()
+                                        .child(
+                                            icon_button("search-case", "icons/case-sensitive.svg", "Match Case", self.case_sensitive, cx)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.toggle(|this| this.case_sensitive = !this.case_sensitive, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            icon_button("search-word", "icons/whole-word.svg", "Match Whole Word", self.whole_word, cx)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.toggle(|this| this.whole_word = !this.whole_word, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            icon_button("search-regex", "icons/regex.svg", "Use Regular Expression", self.regex, cx)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.toggle(|this| this.regex = !this.regex, cx)
+                                                })),
+                                        ),
+                                ),
+                            ),
+                    )
+                    .when(self.show_replace, |el| {
+                        el.child(
+                            h_flex()
+                                .gap_0p5()
+                                .child(
+                                    div().flex_1().min_w_0().child(
+                                        Input::new(&self.replacement).suffix(
+                                            icon_button("replace-case", "icons/case-upper.svg", "Preserve Case", self.preserve_case, cx)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.toggle(|this| this.preserve_case = !this.preserve_case, cx)
+                                                })),
+                                        ),
+                                    ),
+                                )
+                                .child(
+                                    icon_button("replace-all", "icons/replace-all.svg", "Replace All", false, cx)
+                                        .when(!can_replace, |el| el.opacity(0.5))
+                                        .when(can_replace, |el| {
+                                            el.on_click(cx.listener(|this, _, window, cx| this.confirm_replace(window, cx)))
+                                        }),
+                                ),
+                        )
+                    })
+                    .child(
+                        h_flex().justify_end().child(
+                            icon_button("search-files-toggle", "icons/ellipsis.svg", "Toggle Search Details", self.show_files, cx)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_files = !this.show_files;
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .when(self.show_files, |el| {
+                        el.child(label("files to include"))
+                            .child(Input::new(&self.include))
+                            .child(label("files to exclude"))
+                            .child(Input::new(&self.exclude))
+                    })
+                    // Find in Folder: where it searches, with × to search everywhere again.
+                    .children(self.scope.clone().map(|scope| {
+                        h_flex()
+                            .gap_1()
+                            .text_ui_small(cx)
+                            .text_color(theme.muted_foreground)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(format!("In {scope}")),
+                            )
+                            .child(
+                                div()
+                                    .id("search-scope-clear")
+                                    .px_1()
+                                    .rounded(theme.radius)
+                                    .hover(|style| style.text_color(theme.sidebar_foreground))
+                                    .child("×")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_scope(None, cx))),
+                            )
+                    })),
             )
-            // Find in Folder: where it searches, with × to search everywhere again.
-            .children(self.scope.clone().map(|scope| {
-                h_flex()
-                    .gap_1()
-                    .text_ui_small(cx)
-                    .text_color(theme.muted_foreground)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(format!("In {scope}")),
-                    )
-                    .child(
-                        div()
-                            .id("search-scope-clear")
-                            .px_1()
-                            .rounded(theme.radius)
-                            .hover(|style| style.text_color(theme.sidebar_foreground))
-                            .child("×")
-                            .on_click(cx.listener(|this, _, _, cx| this.set_scope(None, cx))),
-                    )
-            }))
     }
+}
+
+/// A small icon that toggles, or acts: highlighted while `on`.
+fn icon_button(id: &'static str, icon: &'static str, tip: &'static str, on: bool, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    div()
+        .id(id)
+        .flex_none()
+        .p(px(3.))
+        .rounded(theme.radius)
+        .when(on, |el| el.bg(theme.sidebar_accent))
+        .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
+        .child(svg().path(icon).size(px(14.)).text_color(if on { theme.sidebar_foreground } else { theme.muted_foreground }))
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
 }
 
 impl Render for SearchPanel {
@@ -535,16 +690,36 @@ impl Render for SearchPanel {
                                 .px_3()
                                 .gap_2()
                                 .text_ui_small(cx)
-                                .child(
-                                    div()
+                                // The name, and its folder in grey, as VS Code.
+                                .child({
+                                    let (folder, name) = path.rsplit_once(['/', '\\']).unwrap_or(("", path));
+                                    h_flex()
                                         .flex_1()
+                                        .min_w_0()
+                                        .gap_1p5()
                                         .overflow_hidden()
                                         .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .text_color(theme.sidebar_foreground)
-                                        .child(path.clone()),
+                                        .child(div().flex_none().text_color(theme.sidebar_foreground).child(name.to_string()))
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .text_color(theme.muted_foreground)
+                                                .child(folder.to_string()),
+                                        )
+                                })
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .min_w(px(18.))
+                                        .px_1p5()
+                                        .rounded_full()
+                                        .bg(theme.primary)
+                                        .text_color(theme.primary_foreground)
+                                        .text_center()
+                                        .child(count.to_string()),
                                 )
-                                .child(div().text_color(theme.muted_foreground).child(count.to_string()))
                                 .context_menu({
                                     let panel = view.downgrade();
                                     let path = path.clone();
@@ -590,22 +765,18 @@ impl Render for SearchPanel {
                                 let after: String = chars[end..].iter().collect();
                                 let hit_ix = *hit_ix;
                                 let view = view.clone();
+                                let line = hit.line;
+                                // The line's number only in its tooltip: the
+                                // width goes to the text, as in VS Code.
                                 h_flex()
                                     .id(ix)
                                     .h(px(22.))
-                                    .pl(px(20.))
+                                    .pl(px(24.))
                                     .pr_2()
-                                    .gap_2()
                                     .text_ui_small(cx)
                                     .when(is_selected, |el| el.bg(crate::app::selected_row(cx)))
                                     .when(!is_selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
-                                    .child(
-                                        div()
-                                            .w(px(32.))
-                                            .flex_none()
-                                            .text_color(theme.muted_foreground)
-                                            .child(hit.line.to_string()),
-                                    )
+                                    .tooltip(move |window, cx| Tooltip::new(format!("Line {line}")).build(window, cx))
                                     .child(
                                         h_flex()
                                             .flex_1()

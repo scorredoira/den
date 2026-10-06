@@ -864,24 +864,21 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
         Request::Search {
             path,
             query,
-            regex,
-            case_sensitive,
+            include,
+            exclude,
             max_hits,
         } => {
-            let (hits, truncated) = search::search(&path, &query, regex, case_sensitive, max_hits)?;
+            let (hits, truncated) = search::search(&path, &query, &include, &exclude, max_hits)?;
             Ok(Response::SearchResults { hits, truncated })
         }
         Request::Replace {
             path,
             files,
             query,
-            regex,
-            case_sensitive,
             replacement,
             preserve_case,
         } => {
-            let (files, replacements) =
-                search::replace(&path, &files, &query, regex, case_sensitive, &replacement, preserve_case)?;
+            let (files, replacements) = search::replace(&path, &files, &query, &replacement, preserve_case)?;
             Ok(Response::Replaced { files, replacements })
         }
         Request::ReadFile { path } => Ok(Response::Bytes(fs::read(&path)?)),

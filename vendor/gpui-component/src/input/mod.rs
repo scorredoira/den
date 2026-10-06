@@ -6,6 +6,7 @@ pub use gpui_base::input::{
     ActivateToken, InlineToken, InlineTokenClickEvent, InlineTokenContext, InlineTokenError,
     InlineTokenSpan, InputContent,
 };
+pub use search::FindBarMemory;
 pub use token::InputToken;
 pub mod language_config;
 mod number_input;
@@ -32,7 +33,7 @@ pub use gpui_base::input::{
     Lsp, MaskPattern, MoveDown, MoveEnd, MoveHome, MoveLeft, MovePageDown, MovePageUp, MoveRight,
     MoveToEnd, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveToStart, MoveToStartOfLine,
     MoveUp, Outdent, OutdentInline, Paste, Point, RangeDecoration, RangeDecorationCollection,
-    RangeDecorationStyle, Redo, Replace, Rope, RopeExt, RopeLines, Search, SelectAll, SelectToEnd,
+    RangeDecorationStyle, Redo, Replace, Rope, RopeExt, RopeLines, Search, SearchOptions, SelectAll, SelectToEnd,
     SelectToEndOfLine, SelectToNextWordEnd, SelectToPreviousWordStart, SelectToStart,
     SelectToStartOfLine, Selection, ShowCharacterPalette, ShowDocumentHandler, TabSize,
     TextDecoration, TextDecorationCollection, TextareaState, ToggleCodeActions, Undo,

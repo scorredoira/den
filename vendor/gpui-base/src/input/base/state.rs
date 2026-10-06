@@ -5007,7 +5007,7 @@ mod tests {
     use crate::theme::Theme;
     use gpui::{TestAppContext, VisualTestContext, size};
 
-    use crate::input::{EditorMode, EditorState, InputMode, LanguageConfig, TextareaMode};
+    use crate::input::{EditorMode, EditorState, InputMode, LanguageConfig, SearchOptions, TextareaMode};
 
     fn set_test_syntax_provider(
         provider: Rc<dyn crate::input::SyntaxContextProvider>,
@@ -5744,7 +5744,7 @@ mod tests {
             input.update(cx, |state, cx| {
                 state.set_cursor_surrounding_lines(Some(3), window, cx);
                 state.set_value(text, window, cx);
-                state.set_search_query("match", true, cx);
+                state.set_search_query("match", SearchOptions::default(), cx);
                 if previous {
                     state.search_session.matcher.next();
                     state.search_session.matcher.next();
@@ -5876,7 +5876,7 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
                 state.set_value("foo bar foo", window, cx);
-                state.set_search_query("foo", true, cx);
+                state.set_search_query("foo", SearchOptions::default(), cx);
             });
         });
         cx.run_until_parked();
@@ -5904,14 +5904,14 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
                 state.set_value("foo bar foo", window, cx);
-                state.set_search_query("foo", true, cx);
+                state.set_search_query("foo", SearchOptions::default(), cx);
                 state.close_search(cx);
 
                 state.set_value("bar foo", window, cx);
                 assert_eq!(state.next_search_match(cx), Some(4..7));
 
                 state.set_value("foo foo foo", window, cx);
-                state.set_search_query("foo", true, cx);
+                state.set_search_query("foo", SearchOptions::default(), cx);
                 assert_eq!(state.search_session().matcher.len(), 3);
             });
         });
@@ -5932,7 +5932,7 @@ mod tests {
             input.update(cx, |state, cx| {
                 state.set_cursor_surrounding_lines(Some(3), window, cx);
                 state.set_value(text, window, cx);
-                state.set_search_query("match", true, cx);
+                state.set_search_query("match", SearchOptions::default(), cx);
             });
         });
         cx.run_until_parked();

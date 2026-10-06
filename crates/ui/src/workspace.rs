@@ -1598,7 +1598,7 @@ impl Workspace {
             return;
         };
         editor.update(cx, |state, cx| {
-            let case_insensitive = state.search_session().case_insensitive;
+            let case_insensitive = state.search_session().options.case_insensitive;
             if let Some(selections) = editing::select_next_occurrence(&state.value(), &state.selections(), case_insensitive) {
                 let reveal = selections[0].1;
                 state.set_selections(&selections, cx);
@@ -2076,9 +2076,9 @@ impl Workspace {
         };
         let request = Request::Search {
             path: self.root.clone(),
-            query: format!(r"\b{word}\b"),
-            regex: true,
-            case_sensitive: true,
+            query: proto::SearchQuery { text: word, regex: false, case_sensitive: true, whole_word: true },
+            include: Vec::new(),
+            exclude: Vec::new(),
             max_hits: 5_000,
         };
         cx.spawn(async move |this, cx| {
