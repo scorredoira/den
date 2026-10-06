@@ -140,6 +140,7 @@ pub(super) struct EditorScrollbarSnapshot {
     layout: EditorScrollbarLayout,
     cursor_scroll_offset: Point<Pixels>,
     soft_wrap: bool,
+    line_height: Pixels,
 }
 
 impl EditorScrollbarSnapshot {
@@ -159,6 +160,7 @@ impl EditorScrollbarSnapshot {
             ),
             cursor_scroll_offset,
             soft_wrap: state.soft_wrap,
+            line_height: last_layout.line_height,
         }
     }
 }
@@ -213,9 +215,27 @@ impl<M: InputModeKind> IntoElement for EditorScrollbar<M> {
     }
 }
 
+/// (den) Where the scrollbar marks go in the track: each line at its share
+/// of the content's height, so a click on a mark (which centers the thumb
+/// there) centers its lines; at least 2 px tall, in the thumb's lane.
+fn scrollbar_mark_bounds(
+    track: Bounds<Pixels>,
+    content_height: Pixels,
+    top: Pixels,
+    height: Pixels,
+) -> Bounds<Pixels> {
+    const MIN_HEIGHT: Pixels = px(2.);
+    const WIDTH: Pixels = px(6.);
+    const INSET: Pixels = px(4.);
+    let scale = track.size.height / content_height.max(track.size.height);
+    let height = (height * scale).max(MIN_HEIGHT);
+    let y = (track.origin.y + top * scale).min(track.bottom() - height);
+    Bounds::new(point(track.right() - INSET - WIDTH, y), size(WIDTH, height))
+}
+
 impl<M: InputModeKind> Element for EditorScrollbar<M> {
     type RequestLayoutState = ();
-    type PrepaintState = Option<AnyElement>;
+    type PrepaintState = (Vec<(Bounds<Pixels>, Hsla)>, Option<AnyElement>);
 
     fn id(&self) -> Option<ElementId> {
         Some("editor-scrollbar".into())
@@ -251,8 +271,25 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
     ) -> Self::PrepaintState {
         let state = self.state.read(cx);
         let Some(snapshot) = state.editor_scrollbar_snapshot.get() else {
-            return None;
+            return (Vec::new(), None);
         };
+        let line_height = snapshot.line_height;
+        let marks = state
+            .scrollbar_marks
+            .iter()
+            .filter(|mark| !mark.lines.is_empty())
+            .map(|mark| {
+                let first = state.display_map.buffer_line_to_display_row(mark.lines.start);
+                let last = state.display_map.buffer_line_to_display_row(mark.lines.end - 1);
+                let bounds = scrollbar_mark_bounds(
+                    snapshot.layout.bounds,
+                    snapshot.layout.scroll_size.height,
+                    line_height * first,
+                    line_height * (last + 1 - first),
+                );
+                (bounds, mark.color)
+            })
+            .collect();
         let scroll_handle = state.scroll_handle.clone();
 
         if scroll_handle.offset() != snapshot.cursor_scroll_offset {
@@ -274,7 +311,7 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
             window,
             cx,
         );
-        Some(scrollbar)
+        (marks, Some(scrollbar))
     }
 
     fn paint(
@@ -287,7 +324,11 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(scrollbar) = prepaint.as_mut() {
+        let (marks, scrollbar) = prepaint;
+        for (bounds, color) in marks.iter() {
+            window.paint_quad(fill(*bounds, *color));
+        }
+        if let Some(scrollbar) = scrollbar.as_mut() {
             scrollbar.paint(window, cx);
         }
     }
