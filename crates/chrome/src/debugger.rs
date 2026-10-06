@@ -50,6 +50,28 @@ pub enum Input {
     Shutdown,
 }
 
+/// The binding the page calls on an Alt+click, and the script that listens
+/// for it: in the capture phase, before the page's own listeners, the press,
+/// the release and the click with Alt alone are kept from the page, and the
+/// click keeps its element where the bridge reads it.
+const PICK_BINDING: &str = "__denInspect";
+const ALT_CLICK_SCRIPT: &str = r#"(() => {
+  if (window.__denAltClick) return;
+  Object.defineProperty(window, "__denAltClick", { value: true });
+  const alt = (e) => e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+  const keep = (e) => { if (alt(e)) { e.preventDefault(); e.stopImmediatePropagation(); } };
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "auxclick", "dblclick"]) {
+    addEventListener(type, keep, true);
+  }
+  addEventListener("click", (e) => {
+    if (!alt(e)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    Object.defineProperty(window, "__denPicked", { value: e.target, configurable: true, writable: true });
+    __denInspect("");
+  }, true);
+})()"#;
+
 /// The connected client, written to by the bridge's threads.
 #[derive(Clone, Default)]
 pub struct Out(Arc<Mutex<Option<(u64, TcpStream)>>>);
@@ -508,23 +530,7 @@ impl Core {
             "inspectNode" => {
                 let vm = self.page_arg(request)?;
                 let expr = request.get("expr").and_then(Value::as_str).context("expr is missing")?;
-                // run with every pause skipped: a breakpoint in what it calls would stop the
-                // page while this thread waits for the answer
-                self.page_call(vm, "Debugger.setSkipAllPauses", json!({ "skip": true }))?;
-                let result = self.page_call(vm, "Runtime.evaluate", json!({ "expression": expr, "silent": true }));
-                self.page_call(vm, "Debugger.setSkipAllPauses", json!({ "skip": false }))?;
-                let result = result?;
-                if let Some(details) = result.get("exceptionDetails") {
-                    bail!("{expr}: {}", values::exception_text(details));
-                }
-                let object = &result["result"];
-                if values::str_of(object, "subtype") != "node" {
-                    bail!("{expr} is not an element: {}", values::preview(object));
-                }
-                let object_id = values::str_of(object, "objectId").to_string();
-                self.page_call(vm, "DOM.getDocument", json!({ "depth": 0 }))?;
-                let node = self.page_call(vm, "DOM.requestNode", json!({ "objectId": object_id }))?;
-                let node = node["nodeId"].as_i64().context("DOM.requestNode gave no node")?;
+                let node = self.node_of(vm, expr)?;
                 let picked = self.pick(vm, node)?;
                 if let Value::Object(picked) = picked {
                     body = picked;
@@ -677,9 +683,11 @@ impl Core {
                 let x = request.get("x").and_then(Value::as_f64).context("x is missing")?;
                 let y = request.get("y").and_then(Value::as_f64).context("y is missing")?;
                 // the press, then the release, which this answers
-                let press = json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 });
+                // Alt 1, Ctrl 2, Meta 4, Shift 8, as Input.dispatchMouseEvent takes them
+                let modifiers = request.get("modifiers").and_then(Value::as_i64).unwrap_or(0);
+                let press = json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1, "modifiers": modifiers });
                 before = Some(("Input.dispatchMouseEvent", press));
-                let release = json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 });
+                let release = json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1, "modifiers": modifiers });
                 ("Input.dispatchMouseEvent", release, String::new())
             }
             _ => {
@@ -1017,6 +1025,9 @@ impl Core {
                 }
             }
             "Overlay.inspectNodeRequested" => self.on_inspect_requested(vm, params)?,
+            "Runtime.bindingCalled" if values::str_of(params, "name") == PICK_BINDING => {
+                self.on_alt_click(vm)?
+            }
             "Runtime.consoleAPICalled" => self.on_console(vm, params),
             "Runtime.exceptionThrown" => self.on_exception_thrown(vm, params),
             _ => {}
@@ -1088,6 +1099,23 @@ impl Core {
         // these can wait for it to run, so they go without waiting, before it is let run
         self.call_in_background(Some(session.clone()), "DOM.enable", json!({}));
         self.call_in_background(Some(session.clone()), "DOM.setNodeStackTracesEnabled", json!({ "enable": true }));
+        // Alt+click in the page picks the element, as inspect does
+        self.call_in_background(Some(session.clone()), "Runtime.addBinding", json!({ "name": PICK_BINDING }));
+        // a script for every new document is only kept with the Page domain on
+        self.call_in_background(Some(session.clone()), "Page.enable", json!({}));
+        self.call_in_background(
+            Some(session.clone()),
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": ALT_CLICK_SCRIPT }),
+        );
+        if !waiting {
+            // a page already loaded gets it now
+            self.call_in_background(
+                Some(session.clone()),
+                "Runtime.evaluate",
+                json!({ "expression": ALT_CLICK_SCRIPT, "silent": true }),
+            );
+        }
         if waiting {
             self.call_in_background(Some(session), "Runtime.runIfWaitingForDebugger", json!({}));
         }
@@ -1531,6 +1559,53 @@ impl Core {
         let node = pushed["nodeIds"][0].as_i64().context("DOM.pushNodesByBackendIdsToFrontend gave no node")?;
         self.pick(vm, node)?;
         Ok(())
+    }
+
+    /// The person Alt+clicked an element of the page: the line that made it,
+    /// with the element highlighted a moment.
+    fn on_alt_click(&mut self, vm: u64) -> Result<()> {
+        let node = self.node_of(vm, "window.__denPicked")?;
+        let session = self.pages.get(&vm).map(|page| page.session.clone()).with_context(|| format!("no vm {vm}"))?;
+        self.page_call(vm, "Overlay.enable", json!({}))?;
+        self.page_call(
+            vm,
+            "Overlay.highlightNode",
+            json!({ "nodeId": node, "highlightConfig": { "contentColor": { "r": 111, "g": 168, "b": 220, "a": 0.66 } } }),
+        )?;
+        let cdp = self.cdp.clone();
+        let out = self.out.clone();
+        let hide = thread::Builder::new().name("chrome-highlight".into()).spawn(move || {
+            thread::sleep(Duration::from_millis(600));
+            if let Err(err) = cdp.call(Some(&session), "Overlay.hideHighlight", json!({})) {
+                out.send(&json!({ "event": "output", "text": format!("hide the highlight: {err:#}\n"), "file": "", "line": 0 }));
+            }
+        });
+        if let Err(err) = hide {
+            self.report(&format!("hide the highlight: start its thread: {err}"));
+        }
+        self.pick(vm, node)?;
+        Ok(())
+    }
+
+    /// The node of the element an expression gives, evaluated in the page.
+    fn node_of(&mut self, vm: u64, expr: &str) -> Result<i64> {
+        // run with every pause skipped: a breakpoint in what it calls would stop the
+        // page while this thread waits for the answer
+        self.page_call(vm, "Debugger.setSkipAllPauses", json!({ "skip": true }))?;
+        let result = self.page_call(vm, "Runtime.evaluate", json!({ "expression": expr, "silent": true }));
+        self.page_call(vm, "Debugger.setSkipAllPauses", json!({ "skip": false }))?;
+        let result = result?;
+        if let Some(details) = result.get("exceptionDetails") {
+            bail!("{expr}: {}", values::exception_text(details));
+        }
+        let object = &result["result"];
+        if values::str_of(object, "subtype") != "node" {
+            bail!("{expr} is not an element: {}", values::preview(object));
+        }
+        let object_id = values::str_of(object, "objectId").to_string();
+        self.page_call(vm, "DOM.getDocument", json!({ "depth": 0 }))?;
+        let node = self.page_call(vm, "DOM.requestNode", json!({ "objectId": object_id }))?;
+        node["nodeId"].as_i64().context("DOM.requestNode gave no node")
     }
 
     /// The line that made a node, or its nearest ancestor that a script made:

@@ -104,6 +104,13 @@ unless the VM stopped for that exception.
 
 ## Inspect
 
+Alt+click on an element of a debugged tab reveals in Den the line of the
+TypeScript that made it. The press, the release and the click with Alt alone
+never reach the page: a script the bridge adds to every document before the
+page's own (`Page.addScriptToEvaluateOnNewDocument`) keeps them, and tells the
+bridge through a binding (`Runtime.addBinding`). The element is highlighted a
+moment, and the pick is the one below.
+
 `inspect` with `on: true` lets the person pick an element on the debugged
 tabs, with Chrome's highlight; `on: false` stops it. Chrome keeps, for every
 node, the stack of the script that made it (`DOM.setNodeStackTracesEnabled`,
@@ -124,7 +131,7 @@ when missing.
 | `navigate` | `url`, `vm?` | Loads the URL in the tab. |
 | `reload` | `vm?` | Reloads the tab. |
 | `evaluate` | `expr`, `vm?` | Runs the expression in the page, awaiting a promise: a `Var` named `expr`, with no `ref`. It answers when the code ends, after any stop it makes. |
-| `click` | `x`, `y`, `vm?` | A left click at that point of the tab, in CSS pixels. |
+| `click` | `x`, `y`, `modifiers?`, `vm?` | A left click at that point of the tab, in CSS pixels; `modifiers` as `Input.dispatchMouseEvent` takes them (Alt 1, Ctrl 2, Meta 4, Shift 8). |
 | `inspectNode` | `expr`, `vm?` | The pick of `inspect` for the element the expression gives (run with no breakpoint stopping it): reveals the line and answers `{file, line, stack}`; `{}` when no script made it. |
 | `pages` | | `pages: [{vm, url, title}]` |
 
