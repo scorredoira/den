@@ -684,6 +684,10 @@ pub struct Config {
     /// current branch (as gitk does without `--all`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_all_branches: bool,
+    /// The History tab's columns, as dragged by their headers; those not
+    /// in it go where they go by default.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "known_history_parts")]
+    pub history_order: Vec<HistoryPart>,
     /// Files is off in the History tab: the selected commit's files don't
     /// show beside the commits, as they do by default.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -709,13 +713,32 @@ pub struct Config {
     pub recent_commands: Vec<String>,
 }
 
+/// A column of the History tab's top: the commits, the selected one's
+/// message and its files.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum HistoryPart {
+    Commits,
+    Message,
+    Files,
+}
+
+impl HistoryPart {
+    pub const ALL: [HistoryPart; 3] = [HistoryPart::Commits, HistoryPart::Message, HistoryPart::Files];
+}
+
+fn known_history_parts<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<HistoryPart>, D::Error> {
+    let names = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(names.into_iter().filter_map(|name| HistoryPart::deserialize(name).ok()).collect())
+}
+
 /// The parts of the History tab and its columns, in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistorySizes {
     /// The commits' height, over the selected one.
     pub commits: f32,
-    /// The commit's files, beside it.
+    /// The commit's message and its files, beside the commits.
+    pub message: f32,
     pub files: f32,
     /// The commits' author and date columns.
     pub author: f32,
@@ -724,7 +747,7 @@ pub struct HistorySizes {
 
 impl Default for HistorySizes {
     fn default() -> Self {
-        Self { commits: 345., files: 450., author: 340., date: 185. }
+        Self { commits: 345., message: 450., files: 450., author: 340., date: 185. }
     }
 }
 
@@ -881,6 +904,27 @@ impl Config {
             layout.repair();
         }
         config
+    }
+
+    /// The History tab's columns in order: as saved, each once, with any
+    /// missing where it goes by default.
+    pub fn history_order(&self) -> [HistoryPart; 3] {
+        let mut order: Vec<HistoryPart> = Vec::new();
+        for part in self.history_order.iter().copied().chain(HistoryPart::ALL) {
+            if !order.contains(&part) {
+                order.push(part);
+            }
+        }
+        [order[0], order[1], order[2]]
+    }
+
+    /// Swaps two of the History tab's columns.
+    pub fn swap_history(&mut self, a: HistoryPart, b: HistoryPart) {
+        let mut order = self.history_order();
+        if let (Some(i), Some(j)) = (order.iter().position(|part| *part == a), order.iter().position(|part| *part == b)) {
+            order.swap(i, j);
+            self.history_order = order.to_vec();
+        }
     }
 
     /// The debugging layout is in use.
