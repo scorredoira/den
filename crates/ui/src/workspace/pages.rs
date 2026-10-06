@@ -1,6 +1,7 @@
 //! Tabs of the code that show a view of their own rather than a file: the
-//! history, and the device out of its column, side by side with the code in
-//! a split. Saved with what's open as a `den:` path no file has.
+//! history, and the device or the notes out of their place, side by side
+//! with the code in a split. Saved with what's open as a `den:` path no file
+//! has.
 
 use super::*;
 
@@ -11,18 +12,23 @@ pub(super) enum Page {
     Device,
     /// The repo's history, as gitk shows it (one such tab too).
     History,
+    /// The workspace's notes, out of the terminals' place.
+    Notes,
 }
 
 /// The device's tab, as saved.
 const DEVICE: &str = "den:device";
 /// The history's.
 const HISTORY: &str = "den:history";
+/// The notes'.
+const NOTES: &str = "den:notes";
 
 impl Page {
     pub(super) fn view(&self, workspace: &Workspace) -> AnyElement {
         match self {
             Page::Device => workspace.device.clone().into_any_element(),
             Page::History => workspace.history.clone().into_any_element(),
+            Page::Notes => workspace.notes.clone().into_any_element(),
         }
     }
 
@@ -30,6 +36,7 @@ impl Page {
         match self {
             Page::Device => workspace.device.read(cx).focus_handle(cx),
             Page::History => workspace.history.read(cx).focus_handle(),
+            Page::Notes => workspace.notes.read(cx).focus_handle(cx),
         }
     }
 
@@ -38,6 +45,7 @@ impl Page {
         match self {
             Page::Device => "Device".to_string(),
             Page::History => "History".to_string(),
+            Page::Notes => "Notes".to_string(),
         }
     }
 
@@ -46,6 +54,7 @@ impl Page {
         match self {
             Page::Device => PathBuf::from(DEVICE),
             Page::History => PathBuf::from(HISTORY),
+            Page::Notes => PathBuf::from(NOTES),
         }
     }
 }
@@ -91,6 +100,33 @@ impl Workspace {
     pub(super) fn sync_device_place(&mut self, cx: &mut Context<Self>) {
         let in_tab = self.device_tab().is_some();
         self.device.update(cx, |device, cx| device.set_in_tab(in_tab, cx));
+    }
+
+    /// The tab the notes are in, if they're in one.
+    pub(crate) fn notes_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|tab| matches!(tab.page, Some(Page::Notes)))
+    }
+
+    /// Open in Editor Tab: the notes leave the terminals' place for a tab of
+    /// the code, in the group with the focus, to write at length.
+    pub(crate) fn notes_to_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.notes_tab() {
+            return self.activate_with(ix, true, window, cx);
+        }
+        self.hide_panel(Panel::Notes, cx);
+        let tab = self.page_tab(Page::Notes, window, cx);
+        let ix = self.place_tab(tab, true);
+        self.activate_with(ix, true, window, cx);
+        self.layout_changed(cx);
+    }
+
+    /// Move to Terminals: their tab closes and they're a tab of the
+    /// terminals' again, in front.
+    pub(crate) fn notes_to_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.notes_tab() {
+            self.close(ix, window, cx);
+        }
+        self.show_notes(window, cx);
     }
 
     /// The tab the history is in, if it's open.
@@ -146,6 +182,7 @@ impl Workspace {
         let page = match saved.path.to_str() {
             Some(DEVICE) => Page::Device,
             Some(HISTORY) => Page::History,
+            Some(NOTES) => Page::Notes,
             _ => return false,
         };
         let mut tab = self.page_tab(page.clone(), window, cx);
@@ -153,7 +190,7 @@ impl Workspace {
         self.tabs.push(tab);
         match page {
             Page::Device => self.sync_device_place(cx),
-            Page::History => {}
+            Page::History | Page::Notes => {}
         }
         true
     }

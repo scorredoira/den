@@ -266,19 +266,40 @@ fn the_debug_console_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
 }
 
+/// The notes are a tab at the far end of the terminals': the activity bar
+/// brings them in front of the terminals and back. Open in Editor Tab takes
+/// them to the code, and closing that tab brings them back to the terminals.
 #[gpui_kit::test]
-fn the_notes_open_over_the_window(cx: &mut TestAppContext) {
+fn the_notes_are_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    assert!(cx.debug_bounds("notes-modal").is_none());
+    bounds(cx, "notes-tab");
+    assert!(cx.debug_bounds("notes").is_none(), "behind their tab");
     click(cx, "activity-Notes");
-    let notes = bounds(cx, "notes-modal");
-    let code = bounds(cx, "editor-body-0");
-    assert!(notes.left() > code.left() && notes.right() < code.right() + px(400.), "{notes:?}");
-    // A click outside closes them.
-    cx.simulate_click(point(px(5.), px(5.)), Modifiers::default());
+    let notes = bounds(cx, "notes");
+    assert!(notes.left() >= bounds(cx, "editor-body-0").right(), "{notes:?}");
+    click(cx, "activity-Notes");
+    assert!(cx.debug_bounds("notes").is_none());
+    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
+
+    // Show Notes, in the terminals' right-click menus.
+    workspace.update(cx, |workspace, cx| {
+        workspace.terminals.update(cx, |_, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(Panel::Notes))))
+    });
     cx.run_until_parked();
-    assert!(cx.debug_bounds("notes-modal").is_none());
-    assert!(!workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Notes, cx)));
+    bounds(cx, "notes");
+    click(cx, "activity-Notes");
+
+    workspace.update_in(cx, |workspace, window, cx| workspace.notes_to_tab(window, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("notes-tab").is_none());
+    let notes = bounds(cx, "notes");
+    assert!(notes.right() <= bounds(cx, "editor-body-0").right() + px(1.), "{notes:?}");
+    workspace.update_in(cx, |workspace, window, cx| {
+        let ix = workspace.notes_tab().expect("their tab");
+        workspace.close(ix, window, cx);
+    });
+    cx.run_until_parked();
+    bounds(cx, "notes-tab");
 }
 
 /// The side column is the same in every workspace: going from one to

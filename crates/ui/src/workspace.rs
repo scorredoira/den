@@ -464,7 +464,10 @@ impl Workspace {
                         this.message = Some(message.clone());
                         cx.notify();
                     }
+                    TerminalAreaEvent::ShowPanel(Some(Panel::Notes)) => this.show_notes(window, cx),
                     TerminalAreaEvent::ShowPanel(Some(panel)) => this.show_panel(*panel, cx),
+                    TerminalAreaEvent::ToEditorTab(Panel::Notes) => this.notes_to_tab(window, cx),
+                    TerminalAreaEvent::ToEditorTab(_) => {}
                     TerminalAreaEvent::ShowPanel(None) => this.show_panel(Panel::Terminals, cx),
                     TerminalAreaEvent::ClosePanel(panel) => this.hide_panel(*panel, cx),
                     TerminalAreaEvent::DebugTerminal(view) => {
@@ -2408,20 +2411,30 @@ impl Workspace {
         self.notes.clone()
     }
 
-    /// The notes, with the focus to write in them.
-    fn show_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_panel(Panel::Notes, cx);
+    /// The notes where they are (their tab of the code, or in front of the
+    /// terminals), with the focus to write in them.
+    pub(crate) fn show_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.notes_tab() {
+            Some(ix) => self.activate_with(ix, false, window, cx),
+            None => self.show_panel(Panel::Notes, cx),
+        }
         self.notes.update(cx, |notes, cx| notes.focus(window, cx));
     }
 
-    /// Cmd-Alt-N: the notes, to write in them; written in, back to the code.
+    /// Cmd-Alt-N: the notes, to write in them; written in, back to the code
+    /// (and the terminals, where they were).
     fn toggle_notes(&mut self, _: &ToggleNotes, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_shown(Panel::Notes, cx) {
-            self.hide_panel(Panel::Notes, cx);
-            self.focus_ide(window, cx);
-        } else {
-            self.show_notes(window, cx);
+        let in_front = match self.notes_tab() {
+            Some(ix) => self.active == Some(ix),
+            None => self.is_shown(Panel::Notes, cx),
+        };
+        if !in_front {
+            return self.show_notes(window, cx);
         }
+        if self.notes_tab().is_none() {
+            self.hide_panel(Panel::Notes, cx);
+        }
+        self.focus_ide(window, cx);
     }
 
     fn new_tab(&mut self, path: PathBuf, preview: bool, window: &mut Window, cx: &mut Context<Self>) -> FileTab {
@@ -3556,6 +3569,7 @@ impl Workspace {
         let markdown = tab.markdown.is_some() && tab.is_file();
         let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
         let in_preview = tab.preview;
+        let notes = matches!(tab.page, Some(pages::Page::Notes));
         // The file's own changes, from its tab or a view of it.
         let changeable = !diff && !tab.doc;
         let changed = self.has_changes(&tab.path);
@@ -3571,7 +3585,11 @@ impl Workspace {
             let (close, others, moved, right, down, preview) =
                 (editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone());
             let (to_the_right, saved, keep) = (editor.clone(), editor.clone(), editor.clone());
-            menu.item(
+            menu.when(notes, |menu| {
+                menu.item(menu::item("Move to Terminals", &workspace, |this, window, cx| this.notes_to_terminals(window, cx)))
+                    .separator()
+            })
+            .item(
                 menu::item("Close", &workspace, move |this, window, cx| {
                     if let Some(ix) = this.tab_index(&close) {
                         this.close(ix, window, cx);
@@ -4268,7 +4286,6 @@ impl Render for Workspace {
                     .map(|picker| div().absolute().top(px(44.)).left_0().right_0().flex().justify_center().child(picker)),
             )
             .child(self.debug_hover.clone())
-            .children(self.render_notes(cx))
     }
 }
 
