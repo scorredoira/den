@@ -250,6 +250,10 @@ impl Session {
     }
 
     fn start_with(url: Option<&str>) -> Result<Session> {
+        Session::start_skipping(url, &[])
+    }
+
+    fn start_skipping(url: Option<&str>, inspect_skip: &[&str]) -> Result<Session> {
         static COUNT: AtomicU64 = AtomicU64::new(0);
         let profile = std::env::temp_dir().join(format!(
             "den-chrome-test-{}-{}",
@@ -265,6 +269,7 @@ impl Session {
             headless: true,
             profile: Some(profile.clone()),
             hosts: vec!["localhost".into(), "127.0.0.1".into(), "*.localhost".into()],
+            inspect_skip: inspect_skip.iter().map(|glob| glob.to_string()).collect(),
         };
         let bridge = match Bridge::start(options) {
             Ok(bridge) => bridge,
@@ -341,7 +346,7 @@ fn the_first_line_must_be_hello() -> Result<()> {
     ensure!(pages["pages"].as_array().is_some_and(|pages| !pages.is_empty()), "{pages}");
     let error = session.client.error("jump", json!({ "vm": 1, "line": 3 }))?;
     ensure!(error.contains("Chrome can't set the next statement"), "{error}");
-    let error = session.client.error("inspect", json!({ "on": true }))?;
+    let error = session.client.error("stepBack", json!({}))?;
     ensure!(error.contains("unknown command"), "{error}");
     let error = session.client.error("hello", json!({ "version": 2 }))?;
     ensure!(error.contains("not supported"), "{error}");
@@ -360,6 +365,9 @@ fn breakpoints_before_load_values_and_eval() -> Result<()> {
     let stop = session.client.stopped()?;
     expect_stop(&stop, "breakpoint", "src/app.ts", main)?;
     ensure!(stop["frames"][0]["function"] == "main", "{stop}");
+    // a const before its declaration runs
+    let order = var(&stop["locals"], "order")?;
+    ensure!(order["value"] == "<value unavailable>" && order["ref"] == 0, "{order}");
     let vm = stop["vm"].as_u64().context("vm")?;
     let threads = session.client.request("threads", json!({}))?;
     ensure!(threads["stopped"] == json!([vm]), "{threads}");
@@ -376,6 +384,11 @@ fn breakpoints_before_load_values_and_eval() -> Result<()> {
     ensure!(order["value"] == "{id: 3, name: \"Ann\", items: Array(3)}", "{order}");
     let counter = var(locals, "counter")?;
     ensure!(counter["type"] == "Counter", "{counter}");
+    // its own fields, then its class's getter, run
+    let fields = session.client.request("expand", json!({ "ref": counter["ref"] }))?["vars"].clone();
+    let names: Vec<&str> = fields.as_array().context("vars")?.iter().filter_map(|field| field["name"].as_str()).collect();
+    ensure!(names == ["name", "count", "doubled"], "{fields}");
+    ensure!(var(&fields, "doubled")?["value"] == "2", "{fields}");
     let order_ref = order["ref"].clone();
     let children = session.client.request("expand", json!({ "ref": order_ref }))?["vars"].clone();
     ensure!(var(&children, "id")?["value"] == "3" && var(&children, "id")?["type"] == "int", "{children}");
@@ -691,6 +704,7 @@ fn a_new_session_loads_the_page_again() -> Result<()> {
         headless: true,
         profile: Some(first.profile.clone()),
         hosts: vec!["localhost".into(), "127.0.0.1".into(), "*.localhost".into()],
+        inspect_skip: Vec::new(),
     };
     let second = Bridge::start(options)?;
     let mut client = Client::connect(second.port())?;
@@ -711,6 +725,7 @@ fn a_new_session_loads_the_page_again() -> Result<()> {
         headless: true,
         profile: Some(first.profile.clone()),
         hosts: vec!["localhost".into(), "127.0.0.1".into(), "*.localhost".into()],
+        inspect_skip: Vec::new(),
     };
     let third = Bridge::start(options)?;
     let mut client = Client::connect(third.port())?;
@@ -728,5 +743,78 @@ fn a_new_session_loads_the_page_again() -> Result<()> {
     }
     client.close();
     drop(third);
+    Ok(())
+}
+
+#[test]
+fn an_element_lists_its_accessors() -> Result<()> {
+    let mut session = Session::start()?;
+    let style = line("app.ts", "style")?;
+    session.breakpoints("src/app.ts", json!([{ "line": style }]))?;
+    session.navigate("/index.html")?;
+    let stop = session.client.stopped()?;
+    expect_stop(&stop, "breakpoint", "src/app.ts", style)?;
+    let vm = stop["vm"].as_u64().context("vm")?;
+    let element = var(&stop["locals"], "box")?.clone();
+    ensure!(element["value"] == "div#box" && element["ref"].as_u64() > Some(0), "{element}");
+    let all = session.client.request("expand", json!({ "ref": element["ref"] }))?["vars"].clone();
+    let all = all.as_array().context("vars")?.clone();
+    ensure!(all.len() > 100, "a div has its accessors: {}", all.len());
+    let tag = all.iter().find(|var| var["name"] == "tagName").context("tagName")?;
+    ensure!(tag["value"] == "\"DIV\"", "{tag}");
+    let id = all.iter().find(|var| var["name"] == "id").context("id")?;
+    ensure!(id["value"] == "\"box\"", "{id}");
+    let names: Vec<&str> = all.iter().filter_map(|var| var["name"].as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    ensure!(names == sorted, "accessors come sorted: {names:?}");
+    // a page of them, as Den asks for them
+    let page = session.client.request("expand", json!({ "ref": element["ref"], "start": 10, "count": 5 }))?["vars"].clone();
+    ensure!(page.as_array().map(Vec::len) == Some(5) && page[0]["name"] == all[10]["name"], "{page}");
+    session.client.request("continue", json!({ "vm": vm }))?;
+    Ok(())
+}
+
+#[test]
+fn inspecting_an_element_reveals_the_line_that_made_it() -> Result<()> {
+    let create = line("util.ts", "create")?;
+    let caller = line("app.ts", "box")?;
+
+    // the helper's own line, with nothing skipped
+    let mut session = Session::start()?;
+    session.navigate("/index.html")?;
+    session.client.output("total 6 Ann")?;
+    let picked = session.client.request("inspectNode", json!({ "expr": "document.getElementById(\"box\")" }))?;
+    ensure!(picked["file"] == "src/util.ts" && picked["line"] == create, "{picked}");
+    let stack = picked["stack"].as_array().context("stack")?;
+    ensure!(stack.iter().any(|frame| frame.as_str().is_some_and(|frame| frame.starts_with(&format!("src/app.ts:{caller} ")))), "{picked}");
+    let reveal = session.client.event("reveal", |event| event["event"] == "reveal")?;
+    ensure!(reveal["file"] == "src/util.ts" && reveal["line"] == create, "{reveal}");
+    // text the HTML parser made: its nearest ancestor a script made
+    let parsed = session.client.request("inspectNode", json!({ "expr": "document.getElementById(\"box\").firstChild" }))?;
+    ensure!(parsed["file"] == "src/util.ts", "{parsed}");
+    let none = session.client.request("inspectNode", json!({ "expr": "document.body" }))?;
+    ensure!(none.get("file").is_none(), "{none}");
+    let error = session.client.error("inspectNode", json!({ "expr": "1 + 1" }))?;
+    ensure!(error.contains("is not an element"), "{error}");
+    drop(session);
+
+    // the helper skipped: the line that asked for it
+    let mut session = Session::start_skipping(None, &["src/util.ts"])?;
+    session.navigate("/index.html")?;
+    session.client.output("total 6 Ann")?;
+    let picked = session.client.request("inspectNode", json!({ "expr": "document.getElementById(\"box\")" }))?;
+    ensure!(picked["file"] == "src/app.ts" && picked["line"] == caller, "{picked}");
+
+    // the real pick: inspect on, a click on the element
+    session.client.request("inspect", json!({ "on": true }))?;
+    let center = session.client.request(
+        "evaluate",
+        json!({ "expr": "(() => { const r = document.getElementById(\"box\").getBoundingClientRect(); return JSON.stringify([r.x + r.width / 2, r.y + r.height / 2]) })()" }),
+    )?;
+    let center: Vec<f64> = serde_json::from_str(center["value"].as_str().context("center")?.trim_matches('"'))?;
+    session.client.request("click", json!({ "x": center[0], "y": center[1] }))?;
+    let reveal = session.client.event("reveal", |event| event["event"] == "reveal")?;
+    ensure!(reveal["file"] == "src/app.ts" && reveal["line"] == caller, "{reveal}");
     Ok(())
 }
