@@ -65,11 +65,13 @@ pub struct PanelTab {
     pub showing: bool,
     /// With a close button, or always there.
     pub closable: bool,
+    /// A dot of this color on it: the debugger's state.
+    pub dot: Option<Hsla>,
 }
 
 impl PanelTab {
-    fn key(&self) -> (Panel, EntityId, &'static str, bool, bool) {
-        (self.panel, self.view.entity_id(), self.icon, self.showing, self.closable)
+    fn key(&self) -> (Panel, EntityId, &'static str, bool, bool, Option<Hsla>) {
+        (self.panel, self.view.entity_id(), self.icon, self.showing, self.closable, self.dot)
     }
 }
 
@@ -970,6 +972,14 @@ impl TerminalArea {
             .when(!showing, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
             .child(svg().path(tab.icon).size(px(14.)).flex_none().text_color(theme.muted_foreground))
             .child(tab.title)
+            .children(tab.dot.map(|color| {
+                div()
+                    .when(cfg!(test), |el| el.debug_selector(move || format!("{name}-tab-dot")))
+                    .size(px(6.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(color)
+            }))
             // The notes' tab, with no close button, takes the same room.
             .when(!tab.closable, |el| el.pr_3())
             .when(tab.closable, |el| el.child(

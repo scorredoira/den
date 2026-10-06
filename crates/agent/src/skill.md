@@ -47,7 +47,8 @@ full list; the main ones:
   frames, the locals), `den debug eval <expr>`, `den debug next|in|out|continue`,
   `den debug stop`. `den debug state` prints the state at any time.
   `den debug inspect` lets the user pick a widget in the app being
-  debugged; the line that made it opens, and is `revealed` in the state. To test
+  debugged (in Chrome, an Alt-click in the page); the line that made it
+  opens, Den comes to the front, and the line is `revealed` in the state. To test
   a program, start it, trigger what reaches the breakpoint (a request, a
   test) and wait. `den debug restart` stops it and starts it again.
   `den debug target` prints the target the launch command runs the

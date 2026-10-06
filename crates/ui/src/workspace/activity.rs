@@ -75,7 +75,6 @@ impl Item {
             Ok(Panel::References) => Box::new(ShowReferences),
             Ok(Panel::Changes) | Err(Group::Git) => Box::new(ShowChanges),
             Ok(Panel::Outline) => Box::new(ShowOutline),
-            Ok(Panel::CallStack) | Err(Group::Debug) => Box::new(crate::ToggleDebugPanel),
             _ => return None,
         };
         Some(action)
@@ -286,6 +285,7 @@ impl Workspace {
         let mut panels: Vec<(Panel, bool)> =
             Group::ALL.into_iter().flat_map(|group| group.panels()).map(|panel| (*panel, here.contains(panel))).collect();
         panels.push((Panel::Terminals, self.is_shown(Panel::Terminals, cx)));
+        panels.push((Panel::Console, self.is_shown(Panel::Console, cx)));
         panels.push((Panel::Notes, self.is_shown(Panel::Notes, cx)));
         panels
     }
@@ -297,6 +297,7 @@ impl Workspace {
         match panel {
             Panel::Terminals => self.set_terminals_visible(!self.is_shown(panel, cx), window, cx),
             Panel::Notes => self.toggle_notes(&ToggleNotes, window, cx),
+            Panel::Console => self.toggle_panel(Panel::Console, cx),
             _ if self.in_side(panel, cx) => self.remove_panel(panel, cx),
             _ => self.bring_panel(panel, None, cx),
         }
@@ -308,14 +309,6 @@ impl Workspace {
             Panel::Workspaces => self.badges.workspaces.map(Badge::Dot),
             Panel::Agents => self.badges.agents.map(Badge::Dot),
             Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
-            Panel::CallStack => {
-                let debugger = self.debugger.read(cx);
-                if debugger.is_stopped() {
-                    Some(Badge::Dot(cx.theme().warning))
-                } else {
-                    debugger.is_active().then(|| Badge::Dot(cx.theme().success))
-                }
-            }
             _ => None,
         })
     }

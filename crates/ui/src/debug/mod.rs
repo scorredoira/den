@@ -29,7 +29,7 @@ use serde_json::{Map, Value, json};
 
 pub use breakpoints::{Breakpoint, Breakpoints, LineEdit};
 pub use commands::WaitFor;
-pub use panel::{DebugPart, DebugView};
+pub use panel::DebugView;
 use protocol::{Event, Message, Stop, Var};
 
 use ui_term::TerminalView;
@@ -208,6 +208,9 @@ pub enum DebugEvent {
     Refocus,
     /// Show the panel (it started or stopped somewhere).
     Reveal,
+    /// The program asked to show a place (an inspect pick on a phone or in
+    /// Chrome): Den's window comes to the front.
+    Raise,
     /// Its close button.
     Hide,
 }
@@ -1292,6 +1295,7 @@ impl Debugger {
                 let path = self.local_path(&file);
                 self.revealed = Some((file, line));
                 cx.emit(DebugEvent::Show { path, line: line.saturating_sub(1), focus: true });
+                cx.emit(DebugEvent::Raise);
             }
             Ok(Message::Event(Event::Output { text, file, line })) => {
                 let path = (!file.is_empty()).then(|| self.local_path(&file));

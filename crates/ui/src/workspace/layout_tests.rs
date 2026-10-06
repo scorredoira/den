@@ -101,10 +101,9 @@ fn a_panel_folds_by_its_header(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Workspaces, cx)));
     // Showing a panel of another group shows that group.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Watch, cx));
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Changes, cx));
     cx.run_until_parked();
-    bounds(cx, "stack-Watch");
-    bounds(cx, "debugger");
+    bounds(cx, "stack-Changes");
     assert!(cx.debug_bounds("stack-Files").is_none());
 }
 
@@ -211,37 +210,6 @@ fn the_history_icon_toggles_its_tab(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, _| assert!(workspace.history_tab().is_none()));
 }
 
-/// Hiding the debugger leaves the panels it shares the column with.
-#[gpui_kit::test]
-fn the_debugger_hides_alone(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    // The debugger's parts in the explorer: hidden, the files stay.
-    cx.update(|_, cx| {
-        Config::update(cx, |config| {
-            let explorer = config.layout.place_of(Panel::Files).unwrap();
-            config.layout.move_panel(Panel::CallStack, explorer, None);
-            config.layout.move_panel(Panel::Variables, explorer, None);
-        })
-    });
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Debugger, cx));
-    cx.run_until_parked();
-    bounds(cx, "stack-CallStack");
-    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Debugger, cx));
-    cx.run_until_parked();
-    bounds(cx, "stack-Files");
-    assert!(cx.debug_bounds("stack-CallStack").is_none() && cx.debug_bounds("stack-Variables").is_none());
-    // Shown again, they're all back.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Debugger, cx));
-    cx.run_until_parked();
-    bounds(cx, "stack-CallStack");
-    bounds(cx, "stack-Variables");
-    // Alone in their place, they close the column.
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Watch, cx));
-    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Debugger, cx));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("side-column").is_none());
-}
-
 #[gpui_kit::test]
 fn the_workspaces_are_a_panel_of_the_explorer(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
@@ -259,24 +227,63 @@ fn the_workspaces_are_a_panel_of_the_explorer(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("side-column").is_none());
 }
 
+/// The debugger is one tab of the terminals': its toolbar, its four parts
+/// side by side and its console under them; the side column keeps the files.
 #[gpui_kit::test]
-fn the_debug_console_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
+fn the_debugger_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| layout.dock = Dock::Bottom);
     assert!(cx.debug_bounds("console-tab").is_none());
-    // A session starts: the Run and Debug group, and the console's tab.
+    // No icon of its own on the activity bar, nor panels in the side column.
+    assert!(Config::default().layout.places.iter().flatten().all(|panel| config::Group::of(*panel).is_some()));
+    // A session starts: the debugger's tab, in front.
     workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
     cx.run_until_parked();
-    bounds(cx, "debugger");
-    bounds(cx, "stack-CallStack");
-    assert!(cx.debug_bounds("debug-console").is_none(), "behind its tab");
-    click(cx, "console-tab");
+    bounds(cx, "console-tab");
+    bounds(cx, "stack-Files");
+    let code = bounds(cx, "editor-body-0");
+    let bar = bounds(cx, "debugger");
+    let grid = bounds(cx, "debug-grid");
     let console = bounds(cx, "debug-console");
-    assert!(console.left() >= bounds(cx, "editor-body-0").right());
+    assert!(bar.top() >= code.bottom(), "under the code: {bar:?} {code:?}");
+    assert!(bar.bottom() <= grid.top() && grid.bottom() <= console.top(), "{bar:?} {grid:?} {console:?}");
+    // Wide, the four side by side, the variables the widest.
+    let cells: Vec<Bounds<Pixels>> =
+        ["debug-cell-Stack", "debug-cell-Variables", "debug-cell-Watch", "debug-cell-Breakpoints"].into_iter().map(|cell| bounds(cx, cell)).collect();
+    assert!(f32::from(grid.size.width) >= crate::debug::panel::GRID_COLUMNS_WIDTH, "{grid:?}");
+    assert!(cells.iter().all(|cell| cell.top() == cells[0].top()), "{cells:?}");
+    assert!(cells.windows(2).all(|pair| pair[0].right() <= pair[1].left() + px(1.)), "{cells:?}");
+    assert!(cells[1].size.width > cells[0].size.width, "{cells:?}");
+    assert!(console.size.width >= grid.size.width - px(1.), "the console at the tab's width");
+    // Cmd-Shift-D hides it and shows it.
+    workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Console, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("debug-tab").is_none());
+    workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Console, cx));
+    cx.run_until_parked();
+    bounds(cx, "debug-tab");
     // Closed, the terminals show again and the tab goes.
     click(cx, "console-tab-close");
     assert!(cx.debug_bounds("console-tab").is_none());
     assert!(cx.debug_bounds("debug-console").is_none());
     workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
+}
+
+/// In a narrow tab (the terminals on the code's right), two rows of two.
+#[gpui_kit::test]
+fn a_narrow_debugger_has_two_rows_of_two(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| {
+        layout.dock = Dock::Right;
+        layout.dock_width = Some(500.);
+    });
+    workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
+    cx.run_until_parked();
+    let grid = bounds(cx, "debug-grid");
+    assert!(f32::from(grid.size.width) < crate::debug::panel::GRID_COLUMNS_WIDTH, "{grid:?}");
+    let (stack, variables) = (bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-cell-Variables"));
+    let (watch, breakpoints) = (bounds(cx, "debug-cell-Watch"), bounds(cx, "debug-cell-Breakpoints"));
+    assert!(stack.top() == variables.top() && stack.right() <= variables.left() + px(1.), "{stack:?} {variables:?}");
+    assert!(watch.top() >= stack.bottom() - px(1.) && watch.top() == breakpoints.top(), "{stack:?} {watch:?} {breakpoints:?}");
+    assert!(bounds(cx, "debug-console").top() >= watch.bottom() - px(1.));
 }
 
 /// The notes are a tab at the far end of the terminals': the activity bar
@@ -502,7 +509,7 @@ fn the_outline_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_toolbar_picks_the_target(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Debugger, cx));
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Console, cx));
     cx.run_until_parked();
     assert!(cx.debug_bounds("debug-target").is_none(), "no picker without targets");
     let debugger = workspace.read_with(cx, |workspace, _| workspace.debugger());
@@ -518,4 +525,51 @@ fn the_toolbar_picks_the_target(cx: &mut TestAppContext) {
     bounds(cx, "debug-target");
     let saved = cx.update(|_, cx| Config::get(cx).debug.get("layout-test").and_then(|saved| saved.target.clone()));
     assert_eq!(saved.as_deref(), Some("android"));
+}
+
+/// A stop near the bottom of the view scrolls its line to the middle: on
+/// the last lines a step looked as if it did nothing. Well inside the view,
+/// it stays where it is.
+#[gpui_kit::test]
+fn a_stop_near_the_edge_goes_to_the_middle(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let path = PathBuf::from("/stop-test/a.ts");
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/stop-test"), None, true, "stop-test".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        let mut tab = workspace.new_tab(PathBuf::from("/stop-test/a.ts"), false, window, cx);
+        tab.content = Content::Ready;
+        let code = (0..400).map(|line| format!("let value{line} = {line}\n")).collect::<String>();
+        tab.editor.update(cx, |state, cx| state.set_value(code, window, cx));
+        workspace.tabs.push(tab);
+        workspace.activate(0, window, cx);
+        workspace
+    });
+    cx.run_until_parked();
+    let visible = |cx: &mut VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| workspace.tabs[0].editor.read(cx).visible_row_range()).expect("laid out")
+    };
+    let stop = |cx: &mut VisualTestContext, line: u32| {
+        let path = path.clone();
+        workspace.update(cx, |workspace, cx| {
+            workspace.debugger.update(cx, |_, cx| cx.emit(crate::debug::DebugEvent::Show { path, line, focus: false }));
+        });
+        cx.run_until_parked();
+    };
+    let start = visible(cx);
+    assert!(start.len() > 20, "{start:?}");
+    // well inside: nothing moves
+    let middle = (start.start + start.len() / 2) as u32;
+    stop(cx, middle);
+    assert_eq!(visible(cx), start);
+    // the line before the last: it goes to the middle
+    let low = (start.end - 2) as u32;
+    stop(cx, low);
+    let now = visible(cx);
+    let (above, below) = (low as usize - now.start, now.end - low as usize);
+    assert!(above.abs_diff(below) <= 2, "{low} in {now:?}");
 }
