@@ -529,6 +529,27 @@ fn the_notes_icon_toggles_them(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
 }
 
+/// The notes' tab in the terminals' bar shows them and, clicked again, the
+/// terminals; opened for the notes alone, these close again.
+#[gpui_kit::test]
+fn the_notes_tab_toggles_them(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    click(cx, "notes-tab");
+    bounds(cx, "notes");
+    click(cx, "notes-tab");
+    assert!(cx.debug_bounds("notes").is_none());
+    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
+    click(cx, "notes-tab");
+    bounds(cx, "notes");
+
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    cx.run_until_parked();
+    click(cx, "activity-Notes");
+    click(cx, "notes-tab");
+    assert!(cx.debug_bounds("notes").is_none());
+    workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
+}
+
 /// In a tab of the code, the notes' icon brings them in front and, on the
 /// next click, the tab that was in front before.
 #[gpui_kit::test]
