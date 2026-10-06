@@ -1,6 +1,7 @@
 //! The activity bar, on the window's left edge: an icon for each group of
 //! the side column and each panel with an icon of its own, which shows it
-//! or, if it's the one showing, closes the column; and at the bottom the
+//! or, if it's the one showing, closes the column; after them the History
+//! tab's, which opens it or closes it; and at the bottom the
 //! notes, connecting to a server and Settings. Its right-click menu, as Show Panel, lists every panel.
 use super::*;
 use super::layout::{PanelDrag, group_icon, icon, notes_icon, title};
@@ -27,6 +28,8 @@ pub(crate) enum Badge {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Item {
     Place(Place),
+    /// The History tab.
+    History,
     /// The notes, and whether they have something (a sticky note written on).
     Notes { filled: bool },
 }
@@ -47,8 +50,10 @@ impl Item {
     }
 
     fn icon(self, cx: &App) -> &'static str {
-        if let Item::Notes { filled } = self {
-            return notes_icon(filled);
+        match self {
+            Item::Notes { filled } => return notes_icon(filled),
+            Item::History => return "icons/history.svg",
+            Item::Place(_) => {}
         }
         match self.stands_for(cx) {
             Ok(panel) => icon(panel),
@@ -59,8 +64,10 @@ impl Item {
     /// What its key does, for its tooltip: showing the panel or group it
     /// stands for.
     fn action(self, cx: &App) -> Option<Box<dyn Action>> {
-        if let Item::Notes { .. } = self {
-            return Some(Box::new(ToggleNotes));
+        match self {
+            Item::Notes { .. } => return Some(Box::new(ToggleNotes)),
+            Item::History => return Some(Box::new(ShowHistory)),
+            Item::Place(_) => {}
         }
         let action: Box<dyn Action> = match self.stands_for(cx) {
             Ok(Panel::Files) | Err(Group::Explorer) => Box::new(ShowFiles),
@@ -75,6 +82,9 @@ impl Item {
     }
 
     pub(crate) fn title(self, cx: &App) -> &'static str {
+        if self == Item::History {
+            return "History";
+        }
         match self.stands_for(cx) {
             Ok(panel) => title(panel),
             Err(group) => group.title(),
@@ -255,6 +265,7 @@ impl Workspace {
             .places()
             .into_iter()
             .map(|place| (Item::Place(place), side == Some(place), self.badge(place, cx)))
+            .chain([(Item::History, self.history_visible(), None)])
             .collect();
         let notes = Item::Notes { filled: self.notes.read(cx).filled() };
         let notes_shown = self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix));
@@ -310,7 +321,7 @@ impl Workspace {
     }
 
     /// A place shows, or closes the side column if it's the one showing;
-    /// the notes show or hide. The search gets the focus,
+    /// the History tab and the notes show or hide. The search gets the focus,
     /// as its key does.
     pub(crate) fn click_activity(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
         match item {
@@ -318,6 +329,7 @@ impl Workspace {
                 self.show_search(&ShowSearch, window, cx)
             }
             Item::Place(place) => self.click_place(place, cx),
+            Item::History => self.toggle_history(window, cx),
             Item::Notes { .. } => self.toggle_notes(&ToggleNotes, window, cx),
         }
     }

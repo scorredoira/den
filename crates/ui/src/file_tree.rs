@@ -1256,7 +1256,7 @@ impl FileTree {
             }))
         })
         .when(path != self.root, |menu| {
-            menu.separator().item(item("Show History", {
+            menu.separator().item(item(if is_dir { "Show Folder History" } else { "Show File History" }, {
                 let path = path.clone();
                 Box::new(move |_, _, cx| cx.emit(FileTreeEvent::ShowHistory { path: path.clone(), dir: is_dir }))
             }))

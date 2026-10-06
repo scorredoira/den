@@ -198,6 +198,19 @@ fn the_history_is_a_tab_that_reopens(cx: &mut TestAppContext) {
     assert!(workspace.read_with(cx, |workspace, _| workspace.history_tab().is_none()));
 }
 
+/// The History tab has an icon on the activity bar, after the places': a
+/// click opens it, another closes it.
+#[gpui_kit::test]
+fn the_history_icon_toggles_its_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    assert!(bounds(cx, "activity-History").top() > bounds(cx, "activity-Place(Place(Changes))").top());
+    click(cx, "activity-History");
+    workspace.read_with(cx, |workspace, _| assert!(workspace.history_visible()));
+    bounds(cx, "history-commits");
+    click(cx, "activity-History");
+    workspace.read_with(cx, |workspace, _| assert!(workspace.history_tab().is_none()));
+}
+
 /// Hiding the debugger leaves the panels it shares the column with.
 #[gpui_kit::test]
 fn the_debugger_hides_alone(cx: &mut TestAppContext) {
