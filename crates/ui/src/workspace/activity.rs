@@ -4,7 +4,7 @@
 //! there's one; and at the bottom the notes, connecting to a server and
 //! Settings. Its right-click menu, as Show Panel, lists every panel.
 use super::*;
-use super::layout::{PanelDrag, group_icon, icon, title};
+use super::layout::{PanelDrag, group_icon, icon, notes_icon, title};
 use crate::config::{Group, Panel, Place};
 
 pub(crate) const ACTIVITY_WIDTH: f32 = 48.;
@@ -29,7 +29,8 @@ pub(crate) enum Badge {
 pub(crate) enum Item {
     Place(Place),
     Device,
-    Notes,
+    /// The notes, and whether they have something (a sticky note written on).
+    Notes { filled: bool },
 }
 
 impl Item {
@@ -48,10 +49,31 @@ impl Item {
     }
 
     fn icon(self, cx: &App) -> &'static str {
+        if let Item::Notes { filled } = self {
+            return notes_icon(filled);
+        }
         match self.stands_for(cx) {
             Ok(panel) => icon(panel),
             Err(group) => group_icon(group),
         }
+    }
+
+    /// What its key does, for its tooltip: showing the panel or group it
+    /// stands for.
+    fn action(self, cx: &App) -> Option<Box<dyn Action>> {
+        if let Item::Notes { .. } = self {
+            return Some(Box::new(ToggleNotes));
+        }
+        let action: Box<dyn Action> = match self.stands_for(cx) {
+            Ok(Panel::Files) | Err(Group::Explorer) => Box::new(ShowFiles),
+            Ok(Panel::Search) | Err(Group::Search) => Box::new(ShowSearch),
+            Ok(Panel::References) => Box::new(ShowReferences),
+            Ok(Panel::Changes) | Err(Group::Git) => Box::new(ShowChanges),
+            Ok(Panel::Outline) => Box::new(ShowOutline),
+            Ok(Panel::CallStack) | Err(Group::Debug) => Box::new(crate::ToggleDebugPanel),
+            _ => return None,
+        };
+        Some(action)
     }
 
     pub(crate) fn title(self, cx: &App) -> &'static str {
@@ -87,8 +109,19 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: O
             .relative()
             .child(
                 activity_button(item, shown, cx)
-                    .when(cfg!(test), |el| el.debug_selector(move || format!("activity-{item:?}")))
-                    .tooltip(move |window, cx| Tooltip::new(item.title(cx)).build(window, cx))
+                    .when(cfg!(test), |el| el.debug_selector(move || match item {
+                        Item::Notes { .. } => "activity-Notes".to_string(),
+                        _ => format!("activity-{item:?}"),
+                    }))
+                    // With its key, as VS Code's: what the user set, if anything.
+                    .tooltip(move |window, cx| {
+                        let tooltip = Tooltip::new(item.title(cx));
+                        match item.action(cx) {
+                            Some(action) => tooltip.action(action.as_ref(), None),
+                            None => tooltip,
+                        }
+                        .build(window, cx)
+                    })
                     .on_click(move |_, window, cx| click(item, window, cx))
                     // A place's icon drags up or down the bar.
                     .map(|el| match item {
@@ -228,8 +261,9 @@ impl Workspace {
         if self.device.read(cx).available() {
             icons.push((Item::Device, self.is_shown(Panel::Device, cx) || self.device_tab().is_some(), None));
         }
-        let notes = self.notes.read(cx).filled().then(|| Badge::Dot(cx.theme().primary));
-        let bottom = vec![(Item::Notes, self.is_shown(Panel::Notes, cx), notes)];
+        let notes = Item::Notes { filled: self.notes.read(cx).filled() };
+        let notes_shown = self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix));
+        let bottom = vec![(notes, notes_shown, None)];
         let workspace = cx.entity().downgrade();
         let click: OnActivity = Rc::new(move |item, window, cx| {
             workspace.update(cx, |this, cx| this.click_activity(item, window, cx)).ok();
@@ -259,7 +293,7 @@ impl Workspace {
     pub(crate) fn toggle_from_menu(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
         match panel {
             Panel::Terminals => self.set_terminals_visible(!self.is_shown(panel, cx), window, cx),
-            Panel::Notes => self.click_activity(Item::Notes, window, cx),
+            Panel::Notes => self.toggle_notes(&ToggleNotes, window, cx),
             Panel::Device => self.toggle_panel(panel, cx),
             _ if self.in_side(panel, cx) => self.remove_panel(panel, cx),
             _ => self.bring_panel(panel, None, cx),
@@ -296,11 +330,7 @@ impl Workspace {
             // In a tab, it comes to the front there.
             Item::Device if self.device_tab().is_some() => self.show_device(window, cx),
             Item::Device => self.toggle_panel(Panel::Device, cx),
-            Item::Notes if self.is_shown(Panel::Notes, cx) => {
-                self.hide_panel(Panel::Notes, cx);
-                self.focus_ide(window, cx);
-            }
-            Item::Notes => self.show_notes(window, cx),
+            Item::Notes { .. } => self.toggle_notes(&ToggleNotes, window, cx),
         }
     }
 

@@ -48,6 +48,8 @@ pub enum TerminalAreaEvent {
     ShowPanel(Option<Panel>),
     /// A panel's tab closed.
     ClosePanel(Panel),
+    /// Open in Editor Tab, from a panel tab's menu (the notes').
+    ToEditorTab(Panel),
     /// The debugger's terminal, drawn in its console: a new one, or (`None`)
     /// it's gone.
     DebugTerminal(Option<Entity<TerminalView>>),
@@ -707,6 +709,7 @@ impl TerminalArea {
                 .action(Box::new(CloseTab)),
         )
         .separator()
+        .item(notes_item(&area))
     }
 
     fn select(&mut self, term: TermId, cx: &mut Context<Self>) {
@@ -891,6 +894,7 @@ impl TerminalArea {
                                     .disabled(alone),
                                 )
                                 .separator()
+                                .item(notes_item(&area))
                                 .panel_items(hide_item(&area), window, cx)
                         }
                     })
@@ -930,6 +934,7 @@ impl TerminalArea {
                                     .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::MoveTerminals), cx)),
                             )
                             .separator()
+                            .item(notes_item(&area))
                             .panel_items(hide_item(&area), window, cx)
                         }
                     }),
@@ -943,6 +948,7 @@ impl TerminalArea {
         let (panel, showing) = (tab.panel, tab.showing);
         let name = match panel {
             Panel::Console => "console",
+            Panel::Notes => "notes",
             _ => tab.title,
         };
         let group = SharedString::from(format!("{name}-tab"));
@@ -992,13 +998,20 @@ impl TerminalArea {
             .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(panel)))))
             .context_menu({
                 let (area, closable) = (self.weak.clone(), tab.closable);
-                // The notes' tab stays: Hide Panel hides the terminals' place.
+                // The notes' tab stays: Hide Panel hides the terminals' place,
+                // and they can go to a tab of the code.
                 move |menu, window, cx| {
                     let hide = match closable {
                         true => menu::item("Hide Panel", &area, move |_, _, cx| cx.emit(TerminalAreaEvent::ClosePanel(panel))),
                         false => hide_item(&area),
                     };
-                    menu.panel_items(hide, window, cx)
+                    menu.when(panel == Panel::Notes, |menu| {
+                        menu.item(menu::item("Open in Editor Tab", &area, move |_, _, cx| {
+                            cx.emit(TerminalAreaEvent::ToEditorTab(panel))
+                        }))
+                        .separator()
+                    })
+                    .panel_items(hide, window, cx)
                 }
             })
             .into_any_element()
@@ -1194,4 +1207,10 @@ impl SavedLayouts {
 /// Hide Panel: the terminals' place.
 fn hide_item(area: &WeakEntity<TerminalArea>) -> menu::PopupMenuItem {
     menu::item("Hide Panel", area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide))
+}
+
+/// The notes, a tab of this place (or of the code): in front, to write.
+fn notes_item(area: &WeakEntity<TerminalArea>) -> menu::PopupMenuItem {
+    menu::item("Show Notes", area, |_, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(Panel::Notes))))
+        .action(Box::new(crate::ToggleNotes))
 }

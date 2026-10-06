@@ -53,7 +53,7 @@ Each workspace in the Workspaces panel has a dot for the coding agents (Claude C
 
 The side column, what it shows and where things go are the same in every workspace: going from one to another moves nothing. Each workspace keeps whether its terminals and its device show; a new one shows the terminals. Reset Layout (View, or the activity bar's right-click) puts it all back as it starts.
 
-Each workspace has its notes, which open over the window from the activity bar or with Cmd-Alt-N (Esc or a click outside closes them): plain Markdown for what's next there, kept by Den in its config folder, never in the repo, and forgotten when the worktree is removed. Their icon gets a dot while they have something, and Cmd-E shows their first line on the way in.
+Each workspace has its notes, a tab at the far end of the terminals' bar that the activity bar or Cmd-Alt-N brings in front (again, back to the terminals): plain Markdown for what's next there, kept by Den in its config folder, never in the repo, and forgotten when the worktree is removed. To write at length, Open in Editor Tab (the tab's right-click) puts them in a tab of the code; Move to Terminals, or closing that tab, brings them back. Their icon is a sticky note written on while they have something, and Cmd-E shows their first line on the way in.
 
 ## Debugging
 

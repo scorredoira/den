@@ -55,6 +55,11 @@ pub(super) fn icon(panel: Panel) -> &'static str {
     }
 }
 
+/// The notes' icon: a blank sticky note, or one written on.
+pub(crate) fn notes_icon(filled: bool) -> &'static str {
+    if filled { "icons/sticky-note-text.svg" } else { "icons/sticky-note.svg" }
+}
+
 pub(super) fn group_icon(group: Group) -> &'static str {
     match group {
         Group::Explorer => "icons/files.svg",
@@ -96,11 +101,11 @@ const MIN_BODY: f32 = 40.;
 pub(super) struct Panels {
     terminals: bool,
     device: bool,
-    /// The notes, over the window.
-    notes: bool,
-    /// The debugger's console, a tab of the terminals'; in front of them.
+    /// The debugger's console, a tab after the terminals' once shown.
     console: bool,
-    console_front: bool,
+    /// The panel tab in front of the terminals, if one is: the console or
+    /// the notes (always a tab at the bar's far end).
+    front: Option<Panel>,
     /// Search or References, whichever showed last: F4 steps through it.
     pub results: Panel,
     /// The side panels open in the column this workspace last drew: one
@@ -118,9 +123,8 @@ impl Panels {
         Self {
             terminals: saved.terminals,
             device: saved.device,
-            notes: false,
             console: false,
-            console_front: false,
+            front: None,
             results: Panel::Search,
             seen: Vec::new(),
         }
@@ -169,10 +173,11 @@ impl Workspace {
         match panel {
             Panel::Code => true,
             Panel::Terminals => panels.terminals,
-            Panel::Console => panels.terminals && panels.console && panels.console_front,
+            Panel::Console => panels.terminals && panels.console && panels.front == Some(Panel::Console),
             // In a tab of the code it's not in its column.
             Panel::Device => panels.device && self.device.read(cx).available() && self.device_tab().is_none(),
-            Panel::Notes => panels.notes,
+            // In a tab of the code it's not among the terminals.
+            Panel::Notes => panels.terminals && panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
             Panel::Debugger => DEBUG_PANELS.into_iter().any(|panel| self.in_side(panel, cx)),
             _ => self.in_side(panel, cx) && !Config::get(cx).layout.collapsed.contains(&panel),
         }
@@ -241,18 +246,21 @@ impl Workspace {
             Panel::Code => {}
             Panel::Terminals => {
                 panels.terminals = true;
-                panels.console_front = false;
+                panels.front = None;
             }
             Panel::Console => {
                 panels.terminals = true;
                 panels.console = true;
-                panels.console_front = true;
+                panels.front = Some(Panel::Console);
             }
             Panel::Device => {
                 panels.device = true;
                 self.device.update(cx, |device, cx| device.shown(cx));
             }
-            Panel::Notes => panels.notes = true,
+            Panel::Notes => {
+                panels.terminals = true;
+                panels.front = Some(Panel::Notes);
+            }
             _ => {
                 // The debugger's parts it took off a place they share (see
                 // `hide_panel`) come back with it.
@@ -296,10 +304,17 @@ impl Workspace {
             }
             Panel::Console => {
                 panels.console = false;
-                panels.console_front = false;
+                if panels.front == Some(Panel::Console) {
+                    panels.front = None;
+                }
             }
             Panel::Device => panels.device = false,
-            Panel::Notes => panels.notes = false,
+            // The terminals show again.
+            Panel::Notes => {
+                if panels.front == Some(Panel::Notes) {
+                    panels.front = None;
+                }
+            }
             Panel::Debugger => {
                 let layout = &Config::get(cx).layout;
                 let here = self.side_place(cx).map(|place| layout.panels(place)).unwrap_or_default();
@@ -738,7 +753,8 @@ impl Workspace {
         }
     }
 
-    /// The debugger's console, a tab after the terminals' once shown.
+    /// The tabs after the terminals': the debugger's console once shown, and
+    /// at the far end the notes, always there unless in a tab of the code.
     pub(super) fn shape_terminals(&mut self, cx: &mut Context<Self>) {
         let mut tabs = Vec::new();
         if self.panels.console
@@ -749,58 +765,21 @@ impl Workspace {
                 view: view.clone().into(),
                 icon: icon(Panel::Console),
                 title: "Debug Console",
-                showing: self.panels.console_front,
+                showing: self.panels.front == Some(Panel::Console),
                 closable: true,
             });
         }
-        self.terminals.update(cx, |terminals, cx| terminals.set_panel_tabs(tabs, cx));
-    }
-
-    /// The notes, over the window: a click outside or Esc closes them.
-    pub(super) fn render_notes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.panels.notes {
-            return None;
+        if self.notes_tab().is_none() {
+            tabs.push(PanelTab {
+                panel: Panel::Notes,
+                view: self.notes.clone().into(),
+                icon: notes_icon(self.notes.read(cx).filled()),
+                title: "Notes",
+                showing: self.panels.front == Some(Panel::Notes),
+                closable: false,
+            });
         }
-        let theme = cx.theme();
-        Some(
-            div()
-                .id("notes-scrim")
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(hsla(0., 0., 0., 0.3))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                    this.hide_panel(Panel::Notes, cx);
-                    this.focus_ide(window, cx);
-                }))
-                .child(
-                    v_flex()
-                        .id("notes-modal")
-                        .when(cfg!(test), |el| el.debug_selector(|| "notes-modal".into()))
-                        .w(px(560.))
-                        .h(px(420.))
-                        .max_w(relative(0.9))
-                        .max_h(relative(0.8))
-                        .bg(theme.background)
-                        .border_1()
-                        .border_color(theme.border)
-                        .rounded(theme.radius_lg)
-                        .shadow_lg()
-                        .overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                            if event.keystroke.key == "escape" {
-                                this.hide_panel(Panel::Notes, cx);
-                                this.focus_ide(window, cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .child(self.notes.clone()),
-                )
-                .into_any_element(),
-        )
+        self.terminals.update(cx, |terminals, cx| terminals.set_panel_tabs(tabs, cx));
     }
 }
 

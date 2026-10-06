@@ -1,7 +1,8 @@
 //! The Notes panel: what's next in a workspace, as plain Markdown that Den
 //! keeps (in `notes.json` in its config folder, by workspace), never in the
-//! repo. They open over the window, from the activity bar or Cmd-Alt-N;
-//! while they have something, their icon has a dot. Cmd-E's notice shows
+//! repo. They're a tab at the far end of the terminals' bar, or a tab of the
+//! code (Open in Editor Tab), shown by the activity bar or Cmd-Alt-N; their
+//! icon is a sticky note written on while they have something. Cmd-E's notice shows
 //! their first line, and removing the worktree forgets them. `den notes`
 //! reads and writes them from a terminal.
 
@@ -12,7 +13,7 @@ use gpui_kit::component::{
     input::{Editor, EditorState, InputEvent},
     v_flex,
 };
-use gpui_kit::*;
+use gpui_kit::{prelude::FluentBuilder as _, *};
 
 /// How long typing pauses before it's written.
 const SAVE_AFTER: Duration = Duration::from_millis(400);
@@ -130,6 +131,10 @@ impl NotesPanel {
         cx.notify();
     }
 
+    pub fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.editor.read(cx).focus_handle(cx)
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         self.editor.update(cx, |editor, cx| editor.focus(window, cx));
     }
@@ -156,6 +161,7 @@ impl Render for NotesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
+            .when(cfg!(test), |el| el.debug_selector(|| "notes".into()))
             .pl_3()
             .pt_2()
             .bg(cx.theme().background)
