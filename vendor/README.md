@@ -15,7 +15,8 @@ Also `(den)`, for side-by-side diffs: `LineStyle` and `set_line_styles`
 (a background across the whole line, a hatched gap and a label of its own in
 the gutter, painted in `src/input/base/element.rs`), `target_scroll_offset`,
 and a notification when the scrollbar moves the offset, so the other side can
-follow it.
+follow it. And `ScrollbarMark` and `set_scrollbar_marks`: the changes'
+marks in the scrollbar's track, painted under the thumb by `EditorScrollbar`.
 
 Also `(den)`, for the debugger: `set_gutter_column` reserves a column
 before the line numbers (`GUTTER_COLUMN_WIDTH` in `src/input/base/element.rs`),

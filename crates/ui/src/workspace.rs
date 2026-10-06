@@ -7,7 +7,7 @@ use std::{
 };
 
 use client::Client;
-use gpui_base::input::{ExecutionLine, GutterMark, LineStyle};
+use gpui_base::input::{ExecutionLine, GutterMark, LineStyle, ScrollbarMark};
 use proto::{CommitInfo, GitOp, LspLocation, LspOp, PortInfo, Request, Response, SearchHit};
 
 use gpui_kit::component::{
@@ -1309,6 +1309,7 @@ impl Workspace {
                                 state.set_highlighter(language, cx);
                             }
                             state.set_line_styles(Vec::new(), cx);
+                            state.set_scrollbar_marks(Vec::new(), cx);
                             state.set_value(text, window, cx);
                         });
                         if let Some(focused) = focused {
@@ -1369,13 +1370,15 @@ impl Workspace {
         let theme = cx.theme();
         let removed = (theme.danger.opacity(0.14), theme.danger.opacity(0.3));
         let added = (theme.success.opacity(0.14), theme.success.opacity(0.3));
+        let (removed_mark, added_mark) = (theme.danger.opacity(0.7), theme.success.opacity(0.7));
         let focused = window.focused(cx);
         let tab = &mut self.tabs[ix];
         tab.saved = sides.new.text.clone();
         tab.content = Content::Ready;
         let old = tab.old.as_mut().expect("the old side was just created");
         let mut marks = Vec::new();
-        for (editor, side, (line, word), marker) in [(&old.editor, &sides.old, removed, '−'), (&new, &sides.new, added, '+')] {
+        let sides_marks = [(&old.editor, &sides.old, removed, '−', removed_mark, added_mark), (&new, &sides.new, added, '+', added_mark, removed_mark)];
+        for (editor, side, (line, word), marker, own, other) in sides_marks {
             let decorations = side
                 .lines
                 .iter()
@@ -1389,6 +1392,14 @@ impl Workspace {
                 state.set_soft_wrap(false, window, cx);
                 state.set_value(side.text.clone(), window, cx);
                 state.set_line_styles(line_styles(side, marker, line), cx);
+                state.set_scrollbar_marks(
+                    scrollbar_marks(side.lines.iter().map(|line| match line.kind {
+                        diff::Kind::Changed => Some(own),
+                        diff::Kind::Gap => Some(other),
+                        _ => None,
+                    })),
+                    cx,
+                );
             });
             marks.push(decorations);
         }
@@ -1422,6 +1433,14 @@ impl Workspace {
             state.set_soft_wrap(false, window, cx);
             state.set_value(inline.text.clone(), window, cx);
             state.set_line_styles(inline_line_styles(&inline, removed.0, added.0), cx);
+            state.set_scrollbar_marks(
+                scrollbar_marks(inline.lines.iter().map(|line| match (line.old, line.new) {
+                    (Some(_), None) => Some(removed_mark),
+                    (None, Some(_)) => Some(added_mark),
+                    _ => None,
+                })),
+                cx,
+            );
         });
         match &old.inline_marks {
             Some(collection) => collection.set(inline_marks, cx),
@@ -4609,6 +4628,21 @@ fn inline_line_styles(inline: &diff::Inline, removed: Hsla, added: Hsla) -> Vec<
         .collect()
 }
 
+/// The scrollbar marks of a diff: each run of lines of one color, by line.
+fn scrollbar_marks(colors: impl Iterator<Item = Option<Hsla>>) -> Vec<ScrollbarMark> {
+    let mut marks: Vec<ScrollbarMark> = Vec::new();
+    for (line, color) in colors.enumerate() {
+        let Some(color) = color else {
+            continue;
+        };
+        match marks.last_mut() {
+            Some(mark) if mark.lines.end == line && mark.color == color => mark.lines.end += 1,
+            _ => marks.push(ScrollbarMark { lines: line..line + 1, color }),
+        }
+    }
+    marks
+}
+
 /// How a side of a diff shows each line: changed ones in `color` and with
 /// `marker` after the number, gaps hatched.
 fn line_styles(side: &diff::Side, marker: char, color: Hsla) -> Vec<LineStyle> {
@@ -4689,8 +4723,17 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{LspStatus, normalize, percent_decode, word_at};
+    use super::{LspStatus, normalize, percent_decode, scrollbar_marks, word_at};
+    use gpui_kit::{blue, red};
     use proto::Response;
+
+    #[test]
+    fn scrollbar_marks_join_runs_of_one_color() {
+        let (r, b) = (Some(red()), Some(blue()));
+        let marks = scrollbar_marks([None, r, r, b, None, r].into_iter());
+        let runs: Vec<_> = marks.iter().map(|mark| (mark.lines.clone(), mark.color)).collect();
+        assert_eq!(runs, [(1..3, red()), (3..4, blue()), (5..6, red())]);
+    }
 
     #[test]
     fn lsp_failure_persists_until_a_server_responds() {

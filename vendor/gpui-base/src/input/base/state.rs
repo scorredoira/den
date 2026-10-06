@@ -354,6 +354,15 @@ pub struct LineStyle {
     pub number: Option<SharedString>,
 }
 
+/// A mark in the vertical scrollbar's track, as a diff's changes show
+/// where they are: `lines` (buffer lines) in `color`, at the height of
+/// the document they're at. (den)
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollbarMark {
+    pub lines: Range<usize>,
+    pub color: Hsla,
+}
+
 /// A debugger's mark in the gutter column before the line numbers (see
 /// [`InputBaseState::set_gutter_column`]): a breakpoint's dot, filled, or a
 /// ring when `hollow`. (den)
@@ -451,6 +460,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) center_row: Option<usize>,
     /// (den) How each line looks, by buffer line; see [`LineStyle`].
     pub(crate) line_styles: Vec<LineStyle>,
+    /// (den) Marks in the scrollbar's track; see [`ScrollbarMark`].
+    pub(crate) scrollbar_marks: Vec<ScrollbarMark>,
     /// (den) A column for debugger marks before the line numbers, its
     /// marks, the line stopped at and what a click in the gutter does.
     pub(crate) gutter_column: bool,
@@ -800,6 +811,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             deferred_scroll_offset: None,
             center_row: None,
             line_styles: Vec::new(),
+            scrollbar_marks: Vec::new(),
             gutter_column: false,
             gutter_marks: Vec::new(),
             execution_line: None,
@@ -3126,6 +3138,14 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub fn set_gutter_column(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.gutter_column != on {
             self.gutter_column = on;
+            cx.notify();
+        }
+    }
+
+    /// The marks in the scrollbar's track. (den)
+    pub fn set_scrollbar_marks(&mut self, marks: Vec<ScrollbarMark>, cx: &mut Context<Self>) {
+        if self.scrollbar_marks != marks {
+            self.scrollbar_marks = marks;
             cx.notify();
         }
     }
