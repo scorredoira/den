@@ -9,7 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     input::Input,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu},
-    h_resizable, resizable_panel,
+    ResizableState, h_resizable, resizable_panel,
     tooltip::Tooltip,
     v_flex, v_resizable,
 };
@@ -903,22 +903,22 @@ impl DebugPart {
         }
     }
 
-    /// Its share of the row with the four side by side: the variables get
-    /// the most.
+    /// Its share of its row of the grid: the variables get the most of the
+    /// top one.
     fn share(self) -> f32 {
         match self {
-            DebugPart::Variables => 0.34,
-            _ => 0.22,
+            DebugPart::Stack => 0.4,
+            DebugPart::Variables => 0.6,
+            DebugPart::Watch | DebugPart::Breakpoints => 0.5,
         }
     }
 }
 
-/// How wide the tab is for the four parts side by side; narrower, they go
-/// in two rows of two.
-pub(crate) const GRID_COLUMNS_WIDTH: f32 = 760.;
-
 /// How tall a cell's header is.
 const CELL_HEADER: f32 = 24.;
+
+/// The least the console keeps: a few lines, so the grid never covers it.
+const CONSOLE_MIN: f32 = 72.;
 
 impl Debugger {
     /// A cell of the grid: its header and what it shows.
@@ -981,58 +981,78 @@ impl Debugger {
     }
 }
 
-/// The debugger's tab: its toolbar; its call stack, variables, watches and
-/// breakpoints side by side (two rows of two when the tab is narrow); and
-/// its console under them, at the tab's width.
+/// The debugger's tab: its toolbar; a grid of two rows of two, the call
+/// stack and the variables above, the watches and the breakpoints below;
+/// and its console under them, at the tab's width.
 pub struct DebugView {
     debugger: Entity<Debugger>,
     /// The tab's size as last painted.
     size: Rc<Cell<Option<Size<Pixels>>>>,
+    /// The grid and the console.
     rows: Split,
-    columns: Split,
+    /// The grid's two rows, and the two cells of each.
+    grid_rows: Split,
+    top: Split,
+    bottom: Split,
     _observe: Subscription,
 }
 
 impl DebugView {
     pub fn new(debugger: Entity<Debugger>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&debugger, |_, _, cx| cx.notify());
-        Self { debugger, size: Rc::new(Cell::new(None)), rows: Split::new(cx), columns: Split::new(cx), _observe: observe }
+        Self {
+            debugger,
+            size: Rc::new(Cell::new(None)),
+            rows: Split::new(cx),
+            grid_rows: Split::new(cx),
+            top: Split::new(cx),
+            bottom: Split::new(cx),
+            _observe: observe,
+        }
     }
 
-    fn render_grid(&mut self, size: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
-        let cells: Vec<AnyElement> =
-            DebugPart::ALL.into_iter().map(|part| self.debugger.update(cx, |debugger, cx| debugger.render_part(part, cx))).collect();
+    /// The grid: two rows of two, each edge draggable.
+    fn render_grid(&mut self, size: Size<Pixels>, grid_height: f32, cx: &mut Context<Self>) -> AnyElement {
+        let mut cells: Vec<(DebugPart, AnyElement)> = DebugPart::ALL
+            .into_iter()
+            .map(|part| (part, self.debugger.update(cx, |debugger, cx| debugger.render_part(part, cx))))
+            .collect();
+        let bottom_cells = cells.split_off(2);
         let border = cx.theme().border;
-        if f32::from(size.width) >= GRID_COLUMNS_WIDTH {
-            let state = self.columns.state(size.width, "columns", cx).clone();
-            let mut row = h_resizable("debug-columns").with_state(&state);
-            for (part, cell) in DebugPart::ALL.into_iter().zip(cells) {
+        let width = size.width;
+        let row = |id: &'static str, state: &Entity<ResizableState>, cells: Vec<(DebugPart, AnyElement)>| {
+            let mut row = h_resizable(id).with_state(state);
+            for (part, cell) in cells {
                 row = row.child(
                     resizable_panel()
-                        .size(size.width * part.share())
+                        .size(width * part.share())
                         .size_range(px(120.)..Pixels::MAX)
                         .child(div().size_full().border_r_1().border_color(border).child(cell)),
                 );
             }
-            return div().id("debug-grid").when(cfg!(test), |el| el.debug_selector(|| "debug-grid".into())).size_full().child(row).into_any_element();
-        }
-        // two rows of two: the call stack and the variables, the watches and the breakpoints
-        let mut cells = cells.into_iter();
-        let mut pair = || {
-            h_flex()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .children(cells.by_ref().take(2).map(|cell| div().flex_1().min_w_0().h_full().border_r_1().border_color(border).child(cell)))
+            row
         };
-        let top = pair();
-        let bottom = pair();
-        v_flex()
+        let top_state = self.top.state(width, "top", cx).clone();
+        let bottom_state = self.bottom.state(width, "bottom", cx).clone();
+        let top = row("debug-grid-top", &top_state, cells);
+        let bottom = row("debug-grid-bottom", &bottom_state, bottom_cells);
+        let rows_state = self.grid_rows.state(px(grid_height), "rows", cx).clone();
+        let half = px((grid_height / 2.).max(CELL_HEADER * 2.));
+        div()
             .id("debug-grid")
             .when(cfg!(test), |el| el.debug_selector(|| "debug-grid".into()))
             .size_full()
-            .child(top.border_b_1().border_color(border))
-            .child(bottom)
+            .child(
+                v_resizable("debug-grid-rows")
+                    .with_state(&rows_state)
+                    .child(
+                        resizable_panel()
+                            .size(half)
+                            .size_range(px(CELL_HEADER * 2.)..Pixels::MAX)
+                            .child(div().size_full().border_b_1().border_color(border).child(top)),
+                    )
+                    .child(resizable_panel().size_range(px(CELL_HEADER * 2.)..Pixels::MAX).child(bottom)),
+            )
             .into_any_element()
     }
 }
@@ -1042,11 +1062,12 @@ impl Render for DebugView {
         // until the first paint, the window's size
         let size = self.size.get().unwrap_or_else(|| window.viewport_size());
         let bar = self.debugger.update(cx, |debugger, cx| debugger.render_bar(cx));
-        let grid = self.render_grid(size, cx);
+        // the console keeps a few lines whatever was saved: the grid can't cover it
+        let most = (f32::from(size.height) - CONSOLE_MIN).max(CELL_HEADER * 4.);
+        let height = Config::get(cx).layout.debug_height.unwrap_or(f32::from(size.height) * 0.6).clamp(CELL_HEADER * 4., most);
+        let grid = self.render_grid(size, height, cx);
         let console = self.debugger.update(cx, |debugger, cx| debugger.render_console_part(cx));
-        let wide = f32::from(size.width) >= GRID_COLUMNS_WIDTH;
-        let state = self.rows.state(size.height, wide, cx).clone();
-        let height = Config::get(cx).layout.debug_height.unwrap_or(f32::from(size.height) * 0.6);
+        let state = self.rows.state(size.height, "rows", cx).clone();
         let painted = self.size.clone();
         let view = cx.entity().downgrade();
         v_flex()
@@ -1065,13 +1086,13 @@ impl Render for DebugView {
                             .with_state(&state)
                             .child(
                                 resizable_panel()
-                                    .size(px(height.clamp(CELL_HEADER * 2., 4000.)))
-                                    .size_range(px(CELL_HEADER * 2.)..Pixels::MAX)
+                                    .size(px(height))
+                                    .size_range(px(CELL_HEADER * 4.)..Pixels::MAX)
                                     .child(grid),
                             )
                             .child(
                                 resizable_panel()
-                                    .size_range(px(60.)..Pixels::MAX)
+                                    .size_range(px(CONSOLE_MIN)..Pixels::MAX)
                                     .child(div().size_full().border_t_1().border_color(cx.theme().border).child(console)),
                             )
                             .on_resize(|state, _, cx| {
@@ -1080,7 +1101,7 @@ impl Render for DebugView {
                                 }
                             }),
                     )
-                    // the size it's painted at: two rows of two when narrow
+                    // the size it's painted at, which the rows and cells start from
                     .child(
                         canvas(
                             move |bounds, _, cx| {
