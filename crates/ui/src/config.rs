@@ -55,7 +55,7 @@ pub struct Layout {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dock_height: Option<f32>,
     /// The debugger's call stack, variables, watches and breakpoints, the
-    /// row above its console; unset, half of the tab.
+    /// row above its console; unset, three fifths of the tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug_height: Option<f32>,
 }
@@ -119,6 +119,12 @@ fn known_heights<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Ha
 }
 
 impl Layout {
+    /// The first layout of debugging, made from the editing one: the side
+    /// column closed, as everything of the debugger is in its tab.
+    pub fn for_debugging(&self) -> Layout {
+        Layout { side: false, ..self.clone() }
+    }
+
     /// Mends one edited by hand: every side panel in one place, once.
     pub fn repair(&mut self) {
         let mut seen = Vec::new();
@@ -526,9 +532,18 @@ pub struct Config {
     pub last: Option<SavedTask>,
     /// Folders and tasks opened, the most recent first (Open Recent).
     pub recent: Vec<SavedTask>,
-    /// Where things go and their sizes.
+    /// Where things go and their sizes: the layout in use, the editing one
+    /// or, while the workspace in front debugs, the debugging one.
     #[serde(deserialize_with = "lenient")]
     pub layout: Layout,
+    /// The debugging layout while it isn't in use, as the last debug session
+    /// left it; unset, `Layout::for_debugging` of the editing one.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub debug_layout: Option<Layout>,
+    /// The editing layout while the debugging one is in use: set only while
+    /// debugging.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub edit_layout: Option<Layout>,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
     pub font_sizes: FontSizes,
@@ -740,8 +755,32 @@ impl Config {
             // writes over it.
             let _ = std::fs::write(path.with_extension("json.bad"), &bytes);
         }
+        // no debug session outlives the app
+        config.use_debug_layout(false);
         config.layout.repair();
+        if let Some(layout) = &mut config.debug_layout {
+            layout.repair();
+        }
         config
+    }
+
+    /// The debugging layout is in use.
+    pub fn debugging(&self) -> bool {
+        self.edit_layout.is_some()
+    }
+
+    /// Puts the debugging layout in use, or the editing one back, each as it
+    /// was left: what changes while debugging stays in the debugging one.
+    pub fn use_debug_layout(&mut self, debugging: bool) {
+        if debugging == self.debugging() {
+            return;
+        }
+        if debugging {
+            let debug = self.debug_layout.take().unwrap_or_else(|| self.layout.for_debugging());
+            self.edit_layout = Some(std::mem::replace(&mut self.layout, debug));
+        } else if let Some(edit) = self.edit_layout.take() {
+            self.debug_layout = Some(std::mem::replace(&mut self.layout, edit));
+        }
     }
 
     /// The config in `bytes`, and whether all of it was read. A value this

@@ -125,6 +125,34 @@ impl Panels {
     pub fn saved(&self) -> SavedPanels {
         SavedPanels { terminals: self.terminals }
     }
+
+    /// What of the terminals' area shows: kept apart for editing and for
+    /// debugging (`Workspace::debug_changed`).
+    pub fn shown(&self) -> Shown {
+        Shown { terminals: self.terminals, console: self.console, front: self.front }
+    }
+
+    pub fn show(&mut self, shown: Shown) {
+        self.terminals = shown.terminals;
+        self.console = shown.console;
+        self.front = shown.front;
+        self.notes_alone = false;
+    }
+}
+
+/// The terminals and the debugger's tab, shown or not, and the tab in front.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Shown {
+    pub terminals: bool,
+    pub console: bool,
+    pub front: Option<Panel>,
+}
+
+impl Shown {
+    /// The first time a workspace debugs: the debugger's tab in front.
+    pub fn debugging() -> Self {
+        Self { terminals: true, console: true, front: Some(Panel::Console) }
+    }
 }
 
 /// A side panel dragged by its header: onto another's header it goes above
@@ -179,6 +207,39 @@ impl Workspace {
         self.panels = Panels::new();
         self.terminals_maximized = false;
         self.layout_changed(cx);
+    }
+
+    /// A debug session started or ended: the workspace's panels go to how
+    /// they were the last time it debugged (the debugger's tab in front the
+    /// first time) or back to how they were before. A restart is one
+    /// session: it never ends in between.
+    pub(super) fn debug_changed(&mut self, debugging: bool, cx: &mut Context<Self>) {
+        if debugging == self.debugging {
+            return;
+        }
+        self.debugging = debugging;
+        let now = self.panels.shown();
+        let next = if debugging {
+            self.edit_shown = Some(now);
+            self.debug_shown.take().unwrap_or_else(Shown::debugging)
+        } else {
+            self.debug_shown = Some(now);
+            self.edit_shown.take().unwrap_or(now)
+        };
+        self.panels.show(next);
+        if !next.terminals {
+            self.terminals_maximized = false;
+        }
+        self.layout_changed(cx);
+    }
+
+    /// The layout in use follows the workspace drawn: the debugging one while
+    /// it debugs (`Config::use_debug_layout`).
+    pub(super) fn sync_debug_layout(&self, cx: &mut App) {
+        if Config::get(cx).debugging() != self.debugging {
+            let debugging = self.debugging;
+            Config::update(cx, |config| config.use_debug_layout(debugging));
+        }
     }
 
     /// What showed, as saved with the workspace.

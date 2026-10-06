@@ -119,6 +119,7 @@ impl Workspace {
             "root": self.root,
             "tabs": tabs,
             "panels": panels,
+            "layout": if self.debugging { "debugging" } else { "editing" },
             "debugger": session,
         });
         if let Some(branch) = &self.branch {
