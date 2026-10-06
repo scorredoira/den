@@ -100,6 +100,17 @@ keyboard stays in the terminal unless --focus.
                       waits for a VM to stop (or for the session to
                       connect, or to end), 30 seconds at most, and prints
                       the state. A session that fails ends the wait too.
+  den debug target [<name>]
+                      prints the target the launch command runs the
+                      program on, and the list (`targets` in
+                      .den/debug.json); with a name, picks it.
+  den debug join --port <port> [--no-page] -- <command>... -- <command>...
+                      one session over several programs: starts each
+                      command once the one before listens ({port} in it is
+                      a free port of its own) and serves them as one
+                      program on <port>. See docs/debugger.md.
+  den chrome ...      the Chrome bridge: a page in Chrome debugged like a
+                      program. See docs/chrome.md.
 ";
 
 /// Folder holding the `den` link, which the agent puts in its terminals' PATH.

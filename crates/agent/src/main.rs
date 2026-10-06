@@ -5,6 +5,8 @@
 //!   if needed. It's what `ssh host den-agent bridge` runs (phase 3).
 //! - `den <path>`, `den worktree <name>`, `den show <file>`…: from a
 //!   terminal (see `cli.rs`).
+//! - `den debug join …` (crate `join`) and `den chrome …` (crate `chrome`):
+//!   programs of their own, run in a terminal.
 
 mod blocked;
 mod cli;
@@ -42,6 +44,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("term") => cli::term(&args[1..]),
+        // the agent isn't needed: join runs in the terminal, as its programs do
+        Some("debug") if args.get(1).is_some_and(|arg| arg == "join") => join::run(&args[2..]),
+        Some("chrome") => chrome::run(&args[1..]),
         Some("-s" | "--server") if cli::invoked_as_den() => cli::server(&args[1..]),
         Some("-n" | "--new-window") if cli::invoked_as_den() => cli::open_new(&args[1..]),
         Some(

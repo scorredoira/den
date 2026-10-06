@@ -95,6 +95,10 @@ pub struct LaunchFile {
     /// How the project runs a test, for the Run and Debug on each one's line.
     #[serde(default)]
     pub tests: Option<Tests>,
+    /// Where the launch command runs the program (`${target}`): names of
+    /// the project's, picked in the panel's toolbar.
+    #[serde(default)]
+    pub targets: Vec<String>,
     /// Files from when there were several to choose from: the first one.
     #[serde(default)]
     configurations: Vec<Launch>,
@@ -148,6 +152,21 @@ fn page_of(hello: &Map<String, Value>) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|url| Client::loopback_port(url).is_some())
         .map(str::to_string)
+}
+
+/// The target a launch runs on: the one picked, if the launch file still
+/// lists it, else its first. None without targets.
+fn current_target<'a>(targets: &'a [String], chosen: Option<&str>) -> Option<&'a str> {
+    targets
+        .iter()
+        .find(|target| Some(target.as_str()) == chosen)
+        .or_else(|| targets.first())
+        .map(String::as_str)
+}
+
+/// `${target}` in a command is the target picked, empty without targets.
+pub fn with_target(command: &str, target: Option<&str>) -> String {
+    command.replace("${target}", target.unwrap_or_default())
 }
 
 /// A configuration's `command` as it is run: `${file}` is the open file,
@@ -314,6 +333,9 @@ pub struct Debugger {
     launch_error: Option<String>,
     /// How the project runs a test (`tests` in the launch file).
     pub tests: Option<Tests>,
+    /// The launch file's `targets`, and the one picked (kept per workspace).
+    pub targets: Vec<String>,
+    chosen_target: Option<String>,
 
     status: Status,
     conn: Option<Conn>,
@@ -417,6 +439,8 @@ impl Debugger {
             uncaught: saved.uncaught,
             all: saved.all,
             term: saved.terminal,
+            chosen_target: saved.target,
+            targets: Vec::new(),
             term_view: None,
             term_unknown: None,
             root,
@@ -476,6 +500,7 @@ impl Debugger {
             uncaught: self.uncaught,
             all: self.all,
             terminal: self.term,
+            target: self.chosen_target.clone(),
         };
         let key = self.session_key.clone();
         Config::update(cx, move |config| {
@@ -488,6 +513,26 @@ impl Debugger {
     }
 
     // ---- state the workspace reads ----
+
+    /// The target the launch command runs the program on (`${target}`).
+    pub fn target(&self) -> Option<&str> {
+        current_target(&self.targets, self.chosen_target.as_deref())
+    }
+
+    /// Picks the target the next launch runs on.
+    pub fn set_target(&mut self, target: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        if !self.targets.iter().any(|known| known == target) {
+            return Err(if self.targets.is_empty() {
+                format!("{target}: {LAUNCH_FILE} has no targets")
+            } else {
+                format!("{target}: not a target; one of {}", self.targets.join(", "))
+            });
+        }
+        self.chosen_target = Some(target.to_string());
+        self.save(cx);
+        cx.notify();
+        Ok(())
+    }
 
     /// The terminal the launch command runs in.
     pub fn terminal(&self) -> Option<TermId> {
@@ -599,9 +644,14 @@ impl Debugger {
                     Err(_) => Err(format!("There is no {LAUNCH_FILE}: create it to say how to start the program.")),
                 };
                 match file {
-                    Ok(file) => {
+                    Ok(mut file) => {
                         this.tests = file.tests;
+                        this.targets = file.targets;
                         this.launch_error = None;
+                        let target = this.target().map(str::to_string);
+                        if let Some(command) = &mut file.launch.command {
+                            *command = with_target(command, target.as_deref());
+                        }
                         this.begin(file.launch, true, window, cx);
                     }
                     Err(error) => {
@@ -655,14 +705,17 @@ impl Debugger {
                 }) {
                     Some(Ok(file)) => {
                         this.tests = file.tests;
+                        this.targets = file.targets;
                         this.launch_error = None;
                     }
                     Some(Err(error)) => {
                         this.tests = None;
+                        this.targets = Vec::new();
                         this.launch_error = Some(error);
                     }
                     None => {
                         this.tests = None;
+                        this.targets = Vec::new();
                         this.launch_error = Some(format!("There is no {LAUNCH_FILE}."));
                     }
                 }
@@ -2172,7 +2225,10 @@ pub fn expression_span(line: &str, offset: usize) -> Option<std::ops::Range<usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{changed_locals, child_path, command_line, expression_span, is_assignment, names_in, page_of, parse_launch_file, starts_function};
+    use super::{
+        changed_locals, child_path, command_line, current_target, expression_span, is_assignment, names_in, page_of,
+        parse_launch_file, starts_function, with_target,
+    };
     use serde_json::{Map, Value};
     use super::protocol::{Frame, Stop, Var};
 
@@ -2199,6 +2255,21 @@ mod tests {
         assert_eq!(tests.command(false, "testRefund"), "sim test ${file} testRefund -x");
         assert_eq!(tests.command(true, "testRefund"), "sim -d test ${file} testRefund -x");
         assert!(parse_launch_file(r#"{"tests":{"match":"(","run":"","debug":""}}"#).is_err());
+    }
+
+    #[test]
+    fn targets_go_in_the_commands() {
+        let file = parse_launch_file(r#"{"command":"app run ${target} ${file}","targets":["ios","android"]}"#).unwrap();
+        assert_eq!(file.targets, ["ios", "android"]);
+        // the first until one is picked; a picked one the file no longer lists falls back to it
+        assert_eq!(current_target(&file.targets, None), Some("ios"));
+        assert_eq!(current_target(&file.targets, Some("android")), Some("android"));
+        assert_eq!(current_target(&file.targets, Some("chrome")), Some("ios"));
+        assert_eq!(current_target(&[], Some("ios")), None);
+        assert_eq!(with_target("app run ${target} ${file}", Some("android")), "app run android ${file}");
+        assert_eq!(with_target("app run ${target}", None), "app run ");
+        assert!(parse_launch_file(r#"{"command":"x"}"#).unwrap().targets.is_empty());
+        assert!(parse_launch_file(r#"{"targets":"ios"}"#).is_err());
     }
 
     #[test]

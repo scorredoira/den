@@ -480,11 +480,14 @@ pub struct DebugSaved {
     /// The terminal the launch command ran in: the next launch reuses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal: Option<u64>,
+    /// The target picked in the toolbar (`targets` in the launch file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 impl Default for DebugSaved {
     fn default() -> Self {
-        Self { breakpoints: Vec::new(), watches: Vec::new(), uncaught: true, all: false, terminal: None }
+        Self { breakpoints: Vec::new(), watches: Vec::new(), uncaught: true, all: false, terminal: None, target: None }
     }
 }
 

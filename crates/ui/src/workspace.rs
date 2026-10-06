@@ -4366,7 +4366,7 @@ impl Workspace {
             return;
         };
         let file = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        let command = tests.command(debug, test);
+        let command = debug::with_target(&tests.command(debug, test), self.debugger.read(cx).target());
         let line = debug::command_line(&command, Some(&file));
         if debug {
             self.debugger.update(cx, |debugger, cx| {

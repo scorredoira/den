@@ -50,6 +50,13 @@ full list; the main ones:
   debugged; the line that made it opens, and is `revealed` in the state. To test
   a program, start it, trigger what reaches the breakpoint (a request, a
   test) and wait. `den debug restart` stops it and starts it again.
+  `den debug target` prints the target the launch command runs the
+  program on (`${target}`, from `targets` in `.den/debug.json`) and the
+  list; `den debug target <name>` picks one for the next start.
+- `den debug join --port <port> -- <cmd> -- <cmd>` runs several programs
+  as one debug session (a server and `den chrome`, a server and an app);
+  it is what a launch command runs, not something to drive. `den chrome`
+  is the Chrome bridge: a page in Chrome debugged like a program.
 
 Lines and columns start at 1. A command that fails prints why and exits
 with an error.

@@ -21,6 +21,8 @@ serde_json = "1"
 proto = { path = "crates/proto" }
 client = { path = "crates/client" }
 ui-term = { path = "crates/ui-term" }
+join = { path = "crates/join" }
+chrome = { path = "crates/chrome" }
 ignore = "0.4"
 notify = "7"
 smol = "2"
