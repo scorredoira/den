@@ -388,7 +388,7 @@ pub struct Workspace {
     signature_task: Task<()>,
     debugger: Entity<Debugger>,
     /// Its parts with a panel or a tab of their own.
-    debug_views: HashMap<Panel, Entity<DebugView>>,
+    debug_view: Entity<DebugView>,
     debug_hover: Entity<debug::hover::HoverCard>,
     notes: Entity<NotesPanel>,
     /// The terminal the tests run in, reused by the next one.
@@ -418,7 +418,7 @@ impl Workspace {
         let outline = cx.new(|_| OutlinePanel::new());
         let debugger = cx.new(|cx| Debugger::new(root.clone(), agent.clone(), session_key.clone(), window, cx));
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
-        let debug_views = layout::debug_views(&debugger, cx);
+        let debug_view = layout::debug_view(&debugger, cx);
         let notes = cx.new(|cx| NotesPanel::new(session_key.clone(), window, cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
@@ -578,7 +578,7 @@ impl Workspace {
             signature_at: None,
             signature_task: Task::ready(()),
             debugger,
-            debug_views,
+            debug_view,
             debug_hover,
             notes,
             test_term: None,
@@ -2239,10 +2239,10 @@ impl Workspace {
                 let goto = Position::new(*line, 0);
                 let open = self.tabs.iter().position(|tab| tab.path == *path && tab.is_file());
                 self.open_at_with(path.clone(), goto, true, *focus, window, cx);
-                // a file already open only scrolls if the line isn't in view
+                // a file already open only scrolls if the line isn't well in view
                 if let Some(ix) = open {
                     let editor = self.tabs[ix].editor.clone();
-                    reveal_centered(&editor, *line, false, cx);
+                    reveal_in_center(&editor, *line, Some(STOP_MARGIN), cx);
                 }
                 if *focus && debugger.read(cx).is_stopped() {
                     window.activate_window();
@@ -2273,7 +2273,13 @@ impl Workspace {
             }
             DebugEvent::Refocus => self.focus_active(window, cx),
             DebugEvent::Reveal => self.reveal_debugger(cx),
-            DebugEvent::Hide => self.hide_panel(Panel::Debugger, cx),
+            DebugEvent::Hide => self.hide_panel(Panel::Console, cx),
+            // the person picked something in the app or the page: Den comes
+            // to the front, with that line
+            DebugEvent::Raise => {
+                cx.activate(true);
+                window.activate_window();
+            }
         }
     }
 
@@ -2383,7 +2389,7 @@ impl Workspace {
     fn add_to_watch(&mut self, _: &AddToWatch, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(expr) = self.expression_at_cursor(cx) {
             self.debugger.update(cx, |debugger, cx| debugger.add_watch(expr, cx));
-            self.show_panel(Panel::Watch, cx);
+            self.show_panel(Panel::Console, cx);
         }
     }
 
@@ -2414,7 +2420,7 @@ impl Workspace {
     }
 
     fn toggle_debug_panel(&mut self, _: &ToggleDebugPanel, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_panel(Panel::Debugger, cx);
+        self.toggle_panel(Panel::Console, cx);
     }
 
     pub fn notes(&self) -> Entity<NotesPanel> {
@@ -4560,6 +4566,19 @@ fn symbols_of(response: anyhow::Result<Response>, no_server: &'static str) -> Re
 /// at the edge on its own, so being visible there doesn't mean it was. If not
 /// laid out yet, it's centered on its first layout.
 fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, cx: &mut App) {
+    // Lines at the edge may be half visible: they count as outside.
+    reveal_in_center(editor, line, (!always).then_some(1), cx);
+}
+
+/// How far inside the view a line where the debugger stopped is left
+/// where it is: closer to an edge, it goes to the middle, so a step that
+/// moves a line down isn't missed at the bottom (VS Code's
+/// revealLineInCenterIfOutsideViewport, with a margin).
+const STOP_MARGIN: usize = 5;
+
+/// Scrolls `line` to the middle of the view, unless it's `margin` lines or
+/// more inside it (None: always).
+fn reveal_in_center(editor: &Entity<EditorState>, line: u32, margin: Option<usize>, cx: &mut App) {
     let state = editor.read(cx);
     let (Some(visible), Some(line_height)) = (state.visible_row_range(), state.line_height()) else {
         // Not laid out yet (a freshly opened tab): it lays itself out
@@ -4568,9 +4587,13 @@ fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, cx: &m
         return;
     };
     let line = line as usize;
-    // Lines at the edge may be half visible: they count as outside.
-    if !always && visible.len() > 2 && line > visible.start && line + 1 < visible.end {
-        return;
+    if let Some(margin) = margin {
+        // a short view keeps a third of it as margin at most, and the edge
+        // lines, which may be half visible, count as outside
+        let margin = margin.min((visible.len().saturating_sub(1) / 3).max(1));
+        if visible.len() > 2 && line >= visible.start + margin && line + margin < visible.end {
+            return;
+        }
     }
     let rows = visible.len().max(1) as f32;
     let top = (line as f32 - (rows - 1.) / 2.).max(0.);

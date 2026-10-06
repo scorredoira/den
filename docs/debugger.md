@@ -181,19 +181,25 @@ page itself, so `--no-page` keeps Den from opening the server's too:
 | Ctrl-F10 | Run to the cursor |
 | Ctrl-Shift-F10 | Make the cursor's line the next statement |
 | right-click the code | While debugging: Toggle Breakpoint, Add Conditional Breakpoint, Add Logpoint; while stopped also Run to Cursor, Set Next Statement, Add to Watch and Evaluate in Console (the selection, or the name under the cursor) |
-| Cmd-Shift-D | Show or hide the panel |
+| Cmd-Shift-D | Show or hide the debugger's tab |
 
 All of them can be changed in Settings.
 
-Inspect, the crosshair in the panel's bar, asks the program being debugged
+Inspect, in the debugger's right-click menu, asks the program being debugged
 to let the person pick a widget on its screen (`inspect`, below); the line
-that made it opens in the editor.
+that made it opens in the editor, and Den's window comes to the front. Every
+`reveal` the program sends does that; a stop doesn't raise the window. In
+Chrome the pick is an Alt-click in the page (docs/chrome.md).
 
 It is a tab after the terminals' (closing the tab hides it; F5 or Cmd-Shift-D
-bring it back). Like every panel, it goes wherever its icon in the activity
-bar is dragged: see Layout in the README.
+bring it back), with the debugger's state on it: yellow while stopped, green
+while running. The toolbar at its top; the call stack, the variables, the
+watches and the breakpoints side by side (two rows of two when the tab is
+narrower than 760 pixels); and the console under them at the tab's width.
+The line between the parts and the console is dragged to size them.
 
-When a VM stops, its line is marked, the values of the variables are written
+When a VM stops, its line is marked and, unless it's at least five lines
+inside the view, scrolled to the middle of the code; the values of the variables are written
 at the end of the lines of its function, and hovering a name shows its value
 in a card that opens like the variables view, already open one level. The
 card waits a moment before it goes, or shows another name's, so the pointer

@@ -54,6 +54,10 @@ pub struct Layout {
     /// The terminals as a row; unset, a third of the window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dock_height: Option<f32>,
+    /// The debugger's call stack, variables, watches and breakpoints, the
+    /// row above its console; unset, half of the tab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_height: Option<f32>,
 }
 
 impl Default for Layout {
@@ -63,12 +67,13 @@ impl Default for Layout {
             place: Place::default(),
             places: Group::ALL.into_iter().map(|group| group.panels().to_vec()).collect(),
             hidden: vec![Panel::Agents],
-            collapsed: vec![Panel::Outline, Panel::References, Panel::Breakpoints],
+            collapsed: vec![Panel::Outline, Panel::References],
             heights: HashMap::new(),
             side_width: 260.,
             dock: Dock::Right,
             dock_width: None,
             dock_height: None,
+            debug_height: None,
         }
     }
 }
@@ -119,7 +124,7 @@ impl Layout {
         let mut seen = Vec::new();
         for place in &mut self.places {
             place.retain(|panel| {
-                let keep = Group::of(*panel).is_some() && *panel != Panel::Debugger && !seen.contains(panel);
+                let keep = Group::of(*panel).is_some() && !seen.contains(panel);
                 seen.push(*panel);
                 keep
             });
@@ -284,11 +289,10 @@ pub enum Group {
     Explorer,
     Search,
     Git,
-    Debug,
 }
 
 impl Group {
-    pub const ALL: [Group; 4] = [Group::Explorer, Group::Search, Group::Git, Group::Debug];
+    pub const ALL: [Group; 3] = [Group::Explorer, Group::Search, Group::Git];
 
     /// Its panels, top to bottom.
     pub fn panels(self) -> &'static [Panel] {
@@ -296,7 +300,6 @@ impl Group {
             Group::Explorer => &[Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline],
             Group::Search => &[Panel::Search, Panel::References],
             Group::Git => &[Panel::Changes],
-            Group::Debug => &[Panel::CallStack, Panel::Variables, Panel::Watch, Panel::Breakpoints],
         }
     }
 
@@ -306,16 +309,12 @@ impl Group {
             Group::Explorer => Panel::Files,
             Group::Search => Panel::Search,
             Group::Git => Panel::Changes,
-            Group::Debug => Panel::Variables,
         }
     }
 
-    /// The group `panel` is in: the debug one for the debugger.
+    /// The group `panel` is in, if it's a side panel.
     pub fn of(panel: Panel) -> Option<Group> {
-        match panel {
-            Panel::Debugger => Some(Group::Debug),
-            _ => Group::ALL.into_iter().find(|group| group.panels().contains(&panel)),
-        }
+        Group::ALL.into_iter().find(|group| group.panels().contains(&panel))
     }
 
     pub fn title(self) -> &'static str {
@@ -323,7 +322,6 @@ impl Group {
             Group::Explorer => "Explorer",
             Group::Search => "Search",
             Group::Git => "Source Control",
-            Group::Debug => "Run and Debug",
         }
     }
 }
@@ -343,23 +341,18 @@ pub enum Panel {
     Outline,
     Code,
     Terminals,
-    Debugger,
     /// What's next in the workspace (see `notes`).
     Notes,
     /// The terminals running a coding agent, in every workspace.
     Agents,
-    /// The debugger's parts, in the side column.
-    #[serde(rename = "callstack")]
-    CallStack,
-    Variables,
-    Watch,
-    Breakpoints,
-    /// The debugger's console, a tab of the terminals'.
+    /// The debugger: a tab of the terminals' with its toolbar, its call
+    /// stack, variables, watches and breakpoints side by side, and its
+    /// console under them.
     Console,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 16] = [
+    pub const ALL: [Panel; 11] = [
         Panel::Workspaces,
         Panel::Agents,
         Panel::Files,
@@ -367,14 +360,9 @@ impl Panel {
         Panel::Search,
         Panel::References,
         Panel::Changes,
-        Panel::CallStack,
-        Panel::Variables,
-        Panel::Watch,
-        Panel::Breakpoints,
         Panel::Code,
         Panel::Terminals,
         Panel::Console,
-        Panel::Debugger,
         Panel::Notes,
     ];
 }
@@ -1069,13 +1057,13 @@ mod layout_tests {
     fn every_side_panel_is_in_one_group() {
         for panel in Panel::ALL {
             let groups = Group::ALL.into_iter().filter(|group| group.panels().contains(&panel)).count();
-            let side = !matches!(panel, Panel::Code | Panel::Terminals | Panel::Console | Panel::Notes | Panel::Debugger);
+            let side = !matches!(panel, Panel::Code | Panel::Terminals | Panel::Console | Panel::Notes);
             assert_eq!(groups, usize::from(side), "{panel:?}");
         }
         for group in Group::ALL {
             assert!(group.panels().contains(&group.filler()));
         }
-        assert_eq!(Group::of(Panel::Debugger), Some(Group::Debug));
+        assert_eq!(Group::of(Panel::Console), None);
     }
 
     #[test]
@@ -1109,7 +1097,7 @@ mod layout_tests {
         assert_eq!(layout.panels(workspaces), [Panel::Workspaces]);
         assert_eq!(layout.places()[1], workspaces);
         layout.merge(workspaces, git);
-        assert!(layout.places().len() == 4 && layout.panels(git).ends_with(&[Panel::Workspaces]));
+        assert!(layout.places().len() == 3 && layout.panels(git).ends_with(&[Panel::Workspaces]));
         // Icons reorder.
         layout.move_place(git, Some(explorer));
         assert_eq!(layout.places()[0], git);
@@ -1157,11 +1145,25 @@ mod layout_tests {
     }
 
     #[test]
+    fn the_debuggers_old_side_panels_load_as_gone() {
+        let mut layout: Layout = serde_json::from_str(
+            r#"{"place": "variables", "places": [["files"], ["callstack", "variables", "watch", "breakpoints"]], "hidden": ["watch", "agents"], "collapsed": ["breakpoints"], "heights": {"variables": 100, "files": 200}}"#,
+        )
+        .unwrap();
+        layout.repair();
+        assert!(layout.places.iter().flatten().all(|panel| Group::of(*panel).is_some()));
+        assert_eq!(layout.hidden, [Panel::Agents]);
+        assert!(layout.collapsed.is_empty());
+        assert_eq!(layout.heights.len(), 1);
+        assert_eq!(layout.current().map(|place| layout.panels(place).contains(&Panel::Files)), Some(true));
+    }
+
+    #[test]
     fn a_layout_edited_by_hand_is_mended() {
         let mut layout: Layout = serde_json::from_str(r#"{"places": [["files", "files", "code"], []]}"#).unwrap();
         layout.repair();
         assert_eq!(layout.places[0], [Panel::Files, Panel::Workspaces, Panel::Agents, Panel::Outline]);
-        assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some() && **panel != Panel::Debugger).all(|panel| layout.place_of(*panel).is_some()));
+        assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some()).all(|panel| layout.place_of(*panel).is_some()));
         // The History and Commit Files panels of before the History tab are left out.
         let config: super::Config = serde_json::from_str(
             r#"{"layout": {"place": "history", "places": [["files"], ["changes", "history", "commit"]], "hidden": ["agents", "commit"], "collapsed": ["history"], "heights": {"history": 100, "changes": 200}}}"#,

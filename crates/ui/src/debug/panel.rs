@@ -1,15 +1,15 @@
-//! The debugger's parts: its toolbar, at the top of the side column's
-//! Run and Debug group; the call stack, the variables, the watches and the
-//! breakpoints, panels of that group; the console, a tab of the terminals'.
+//! The debugger's tab, after the terminals': its toolbar; the call stack,
+//! the variables, the watches and the breakpoints side by side; and the
+//! console under them.
 
-use std::path::Path;
+use std::{cell::Cell, path::Path, rc::Rc};
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex,
     button::{Button, ButtonVariants as _},
     input::Input,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu},
-    resizable_panel,
+    h_resizable, resizable_panel,
     tooltip::Tooltip,
     v_flex, v_resizable,
 };
@@ -20,7 +20,7 @@ use crate::menu::PanelItems as _;
 use super::{ConsoleLine, DebugEvent, Debugger, EditKind, Status, Var, child_path};
 use crate::{
     DebugContinue, DebugPause, DebugRestart, DebugStop, StepInto, StepOut, StepOver,
-    config::UiText,
+    config::{Config, Split, UiText},
     menu,
 };
 
@@ -140,6 +140,14 @@ impl Debugger {
                 .item(menu::item("Restart", &debugger, |this, window, cx| this.restart(window, cx)).action(Box::new(DebugRestart)))
                 .item(menu::item("Stop", &debugger, |this, _, cx| this.stop(cx)).action(Box::new(DebugStop)).disabled(!active))
                 .separator()
+                // a phone app's widget picker; in Chrome, Alt-click in the page
+                .item(
+                    menu::item("Inspect", &debugger, |this, _, _| {
+                        this.inspect();
+                    })
+                    .disabled(!connected),
+                )
+                .separator()
                 .panel_items(hide_item(&debugger), window, cx)
         }
     }
@@ -227,12 +235,6 @@ impl Debugger {
             .child(
                 tool("debug-stop", "icons/square.svg", "Stop (Shift-F5)", active, theme.danger, cx)
                     .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
-            )
-            .child(
-                tool("debug-inspect", "icons/crosshair.svg", "Inspect: tap a widget to see the line that made it", self.status == Status::Connected, theme.foreground, cx)
-                    .on_click(cx.listener(|this, _, _, _| {
-                        this.inspect();
-                    })),
             )
             .child(
                 div()
@@ -880,49 +882,78 @@ impl Debugger {
     }
 }
 
-/// A part of the debugger, drawn where its panel is.
+/// A part of the debugger, a cell of its tab's grid.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DebugPart {
+enum DebugPart {
     Stack,
     Variables,
     Watch,
     Breakpoints,
-    Console,
 }
 
+impl DebugPart {
+    const ALL: [DebugPart; 4] = [DebugPart::Stack, DebugPart::Variables, DebugPart::Watch, DebugPart::Breakpoints];
+
+    fn title(self) -> &'static str {
+        match self {
+            DebugPart::Stack => "Call Stack",
+            DebugPart::Variables => "Variables",
+            DebugPart::Watch => "Watch",
+            DebugPart::Breakpoints => "Breakpoints",
+        }
+    }
+
+    /// Its share of the row with the four side by side: the variables get
+    /// the most.
+    fn share(self) -> f32 {
+        match self {
+            DebugPart::Variables => 0.34,
+            _ => 0.22,
+        }
+    }
+}
+
+/// How wide the tab is for the four parts side by side; narrower, they go
+/// in two rows of two.
+pub(crate) const GRID_COLUMNS_WIDTH: f32 = 760.;
+
+/// How tall a cell's header is.
+const CELL_HEADER: f32 = 24.;
+
 impl Debugger {
-    pub fn render_part(&mut self, part: DebugPart, cx: &mut Context<Self>) -> AnyElement {
+    /// A cell of the grid: its header and what it shows.
+    fn render_part(&mut self, part: DebugPart, cx: &mut Context<Self>) -> AnyElement {
         let (id, body) = match part {
             DebugPart::Stack => ("debug-stack", self.render_stack(cx)),
             DebugPart::Variables => ("debug-variables", self.render_variables(cx)),
             DebugPart::Watch => ("debug-watch", self.render_watches(cx)),
             DebugPart::Breakpoints => ("debug-breakpoints", self.render_breakpoints(cx)),
-            DebugPart::Console => {
-                if self.console_written != self.console_seen {
-                    self.console_seen = self.console_written;
-                    self.console_scroll.scroll_to_bottom();
-                }
-                let console = self.render_console(cx);
-                return div()
-                    .id("debug-console")
-                    .when(cfg!(test), |el| el.debug_selector(|| "debug-console".into()))
-                    .size_full()
-                    .bg(cx.theme().background)
-                    .text_ui(cx)
-                    .child(console)
-                    .context_menu(self.panel_menu(cx))
-                    .into_any_element();
-            }
         };
         let panel_menu = self.panel_menu(cx);
         let watches = part == DebugPart::Watch && !self.watches.is_empty();
         let debugger = cx.entity().downgrade();
-        div()
-            .id(id)
+        let theme = cx.theme();
+        v_flex()
+            .id(SharedString::from(format!("debug-cell-{part:?}")))
+            .when(cfg!(test), |el| el.debug_selector(move || format!("debug-cell-{part:?}")))
             .size_full()
-            .overflow_y_scroll()
-            .text_ui(cx)
-            .child(body)
+            .min_w_0()
+            .bg(theme.sidebar)
+            .text_color(theme.sidebar_foreground)
+            .child(
+                div()
+                    .h(px(CELL_HEADER))
+                    .flex_none()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .text_ui_small(cx)
+                    .text_color(theme.muted_foreground)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(part.title().to_uppercase()),
+            )
+            .child(div().id(id).flex_1().min_h_0().overflow_y_scroll().text_ui(cx).child(body))
             // the Watch panel's own first
             .context_menu(move |menu, window, cx| {
                 let menu = menu.when(watches, |menu| menu.item(remove_watches_item(&debugger)).separator());
@@ -930,26 +961,147 @@ impl Debugger {
             })
             .into_any_element()
     }
+
+    /// The console, under the grid.
+    fn render_console_part(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.console_written != self.console_seen {
+            self.console_seen = self.console_written;
+            self.console_scroll.scroll_to_bottom();
+        }
+        let console = self.render_console(cx);
+        div()
+            .id("debug-console")
+            .when(cfg!(test), |el| el.debug_selector(|| "debug-console".into()))
+            .size_full()
+            .bg(cx.theme().background)
+            .text_ui(cx)
+            .child(console)
+            .context_menu(self.panel_menu(cx))
+            .into_any_element()
+    }
 }
 
-/// A part of the debugger as a view of its own, to go in a panel or a tab.
+/// The debugger's tab: its toolbar; its call stack, variables, watches and
+/// breakpoints side by side (two rows of two when the tab is narrow); and
+/// its console under them, at the tab's width.
 pub struct DebugView {
     debugger: Entity<Debugger>,
-    part: DebugPart,
+    /// The tab's size as last painted.
+    size: Rc<Cell<Option<Size<Pixels>>>>,
+    rows: Split,
+    columns: Split,
     _observe: Subscription,
 }
 
 impl DebugView {
-    pub fn new(debugger: Entity<Debugger>, part: DebugPart, cx: &mut Context<Self>) -> Self {
+    pub fn new(debugger: Entity<Debugger>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&debugger, |_, _, cx| cx.notify());
-        Self { debugger, part, _observe: observe }
+        Self { debugger, size: Rc::new(Cell::new(None)), rows: Split::new(cx), columns: Split::new(cx), _observe: observe }
+    }
+
+    fn render_grid(&mut self, size: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
+        let cells: Vec<AnyElement> =
+            DebugPart::ALL.into_iter().map(|part| self.debugger.update(cx, |debugger, cx| debugger.render_part(part, cx))).collect();
+        let border = cx.theme().border;
+        if f32::from(size.width) >= GRID_COLUMNS_WIDTH {
+            let state = self.columns.state(size.width, "columns", cx).clone();
+            let mut row = h_resizable("debug-columns").with_state(&state);
+            for (part, cell) in DebugPart::ALL.into_iter().zip(cells) {
+                row = row.child(
+                    resizable_panel()
+                        .size(size.width * part.share())
+                        .size_range(px(120.)..Pixels::MAX)
+                        .child(div().size_full().border_r_1().border_color(border).child(cell)),
+                );
+            }
+            return div().id("debug-grid").when(cfg!(test), |el| el.debug_selector(|| "debug-grid".into())).size_full().child(row).into_any_element();
+        }
+        // two rows of two: the call stack and the variables, the watches and the breakpoints
+        let mut cells = cells.into_iter();
+        let mut pair = || {
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .children(cells.by_ref().take(2).map(|cell| div().flex_1().min_w_0().h_full().border_r_1().border_color(border).child(cell)))
+        };
+        let top = pair();
+        let bottom = pair();
+        v_flex()
+            .id("debug-grid")
+            .when(cfg!(test), |el| el.debug_selector(|| "debug-grid".into()))
+            .size_full()
+            .child(top.border_b_1().border_color(border))
+            .child(bottom)
+            .into_any_element()
     }
 }
 
 impl Render for DebugView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let part = self.part;
-        self.debugger.update(cx, |debugger, cx| debugger.render_part(part, cx))
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // until the first paint, the window's size
+        let size = self.size.get().unwrap_or_else(|| window.viewport_size());
+        let bar = self.debugger.update(cx, |debugger, cx| debugger.render_bar(cx));
+        let grid = self.render_grid(size, cx);
+        let console = self.debugger.update(cx, |debugger, cx| debugger.render_console_part(cx));
+        let wide = f32::from(size.width) >= GRID_COLUMNS_WIDTH;
+        let state = self.rows.state(size.height, wide, cx).clone();
+        let height = Config::get(cx).layout.debug_height.unwrap_or(f32::from(size.height) / 2.);
+        let painted = self.size.clone();
+        let view = cx.entity().downgrade();
+        v_flex()
+            .id("debug-tab")
+            .when(cfg!(test), |el| el.debug_selector(|| "debug-tab".into()))
+            .size_full()
+            .bg(cx.theme().background)
+            .child(bar)
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_resizable("debug-rows")
+                            .with_state(&state)
+                            .child(
+                                resizable_panel()
+                                    .size(px(height.clamp(CELL_HEADER * 2., 4000.)))
+                                    .size_range(px(CELL_HEADER * 2.)..Pixels::MAX)
+                                    .child(grid),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .size_range(px(60.)..Pixels::MAX)
+                                    .child(div().size_full().border_t_1().border_color(cx.theme().border).child(console)),
+                            )
+                            .on_resize(|state, _, cx| {
+                                if let Some(size) = state.read(cx).sizes().first().copied() {
+                                    Config::update_quietly(cx, |config| config.layout.debug_height = Some(f32::from(size)));
+                                }
+                            }),
+                    )
+                    // the size it's painted at: two rows of two when narrow
+                    .child(
+                        canvas(
+                            move |bounds, _, cx| {
+                                if painted.get() != Some(bounds.size) {
+                                    painted.set(Some(bounds.size));
+                                    // drawn again once this frame is done: a notify
+                                    // while painting is lost with the frame
+                                    let view = view.clone();
+                                    cx.defer(move |cx| {
+                                        if let Some(view) = view.upgrade() {
+                                            view.update(cx, |_, cx| cx.notify());
+                                        }
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
+            )
     }
 }
 
@@ -973,7 +1125,7 @@ fn remove_watches_item(debugger: &WeakEntity<Debugger>) -> menu::PopupMenuItem {
     menu::item("Remove All Watches", debugger, |this, _, cx| this.remove_all_watches(cx))
 }
 
-/// Hide Panel: the Run and Debug group closes.
+/// Hide Panel: the debugger's tab closes.
 fn hide_item(debugger: &WeakEntity<Debugger>) -> menu::PopupMenuItem {
     menu::item("Hide Panel", debugger, |_, _, cx| cx.emit(DebugEvent::Hide))
 }

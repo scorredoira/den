@@ -7,7 +7,7 @@ use std::rc::Rc;
 use super::*;
 use crate::config::{Dock, Group, Layout, Panel, Place, SavedPanels};
 use super::activity::PlaceDrag;
-use crate::debug::{DebugPart, DebugView};
+use crate::debug::DebugView;
 use crate::menu::PanelItems as _;
 
 /// Draws something of the app's in a workspace.
@@ -48,7 +48,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Outline => "icons/list-tree.svg",
         Panel::Code => "icons/code.svg",
         Panel::Terminals => "icons/terminal.svg",
-        Panel::Debugger | Panel::CallStack | Panel::Variables | Panel::Watch | Panel::Breakpoints | Panel::Console => "icons/bug.svg",
+        Panel::Console => "icons/bug.svg",
         Panel::Notes => "icons/sticky-note.svg",
     }
 }
@@ -63,7 +63,6 @@ pub(super) fn group_icon(group: Group) -> &'static str {
         Group::Explorer => "icons/files.svg",
         Group::Search => "icons/search.svg",
         Group::Git => "icons/git-branch.svg",
-        Group::Debug => "icons/bug.svg",
     }
 }
 
@@ -78,12 +77,7 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Outline => "Outline",
         Panel::Code => "Code",
         Panel::Terminals => "Terminals",
-        Panel::Debugger => "Run and Debug",
-        Panel::CallStack => "Call Stack",
-        Panel::Variables => "Variables",
-        Panel::Watch => "Watch",
-        Panel::Breakpoints => "Breakpoints",
-        Panel::Console => "Debug Console",
+        Panel::Console => "Debug",
         Panel::Notes => "Notes",
     }
 }
@@ -97,9 +91,9 @@ const MIN_BODY: f32 = 40.;
 /// what isn't saved: the notes, the debugger's console.
 pub(super) struct Panels {
     terminals: bool,
-    /// The debugger's console, a tab after the terminals' once shown.
+    /// The debugger, a tab after the terminals' once shown.
     console: bool,
-    /// The panel tab in front of the terminals, if one is: the console or
+    /// The panel tab in front of the terminals, if one is: the debugger or
     /// the notes (always a tab at the bar's far end).
     front: Option<Panel>,
     /// The terminals were opened for the notes: hiding these closes them.
@@ -148,22 +142,10 @@ impl Render for ResizeSide {
     }
 }
 
-/// The parts of the debugger with a panel or a tab of their own.
-pub(super) fn debug_views(debugger: &Entity<Debugger>, cx: &mut App) -> HashMap<Panel, Entity<DebugView>> {
-    [
-        (Panel::CallStack, DebugPart::Stack),
-        (Panel::Variables, DebugPart::Variables),
-        (Panel::Watch, DebugPart::Watch),
-        (Panel::Breakpoints, DebugPart::Breakpoints),
-        (Panel::Console, DebugPart::Console),
-    ]
-    .into_iter()
-    .map(|(panel, part)| (panel, cx.new(|cx| DebugView::new(debugger.clone(), part, cx))))
-    .collect()
+/// The debugger's tab.
+pub(super) fn debug_view(debugger: &Entity<Debugger>, cx: &mut App) -> Entity<DebugView> {
+    cx.new(|cx| DebugView::new(debugger.clone(), cx))
 }
-
-/// The debugger's parts in the side column.
-const DEBUG_PANELS: [Panel; 4] = [Panel::CallStack, Panel::Variables, Panel::Watch, Panel::Breakpoints];
 
 impl Workspace {
     pub(crate) fn is_shown(&self, panel: Panel, cx: &App) -> bool {
@@ -174,7 +156,6 @@ impl Workspace {
             Panel::Console => panels.terminals && panels.console && panels.front == Some(Panel::Console),
             // In a tab of the code it's not among the terminals.
             Panel::Notes => panels.terminals && panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
-            Panel::Debugger => DEBUG_PANELS.into_iter().any(|panel| self.in_side(panel, cx)),
             _ => self.in_side(panel, cx) && !Config::get(cx).layout.collapsed.contains(&panel),
         }
     }
@@ -229,9 +210,6 @@ impl Workspace {
         if panels.contains(&Panel::Changes) {
             self.changes.update(cx, |changes, cx| changes.shown(cx));
         }
-        if panels.iter().any(|panel| DEBUG_PANELS.contains(panel)) {
-            self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
-        }
     }
 
     /// Shows `panel`: where it is in the side column, unfolded and back if
@@ -250,6 +228,8 @@ impl Workspace {
                 panels.console = true;
                 panels.front = Some(Panel::Console);
                 panels.notes_alone = false;
+                // its targets and tests come from the launch file, which may have changed
+                self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
             }
             Panel::Notes => {
                 panels.notes_alone = !panels.terminals || (panels.front == Some(Panel::Notes) && panels.notes_alone);
@@ -257,16 +237,6 @@ impl Workspace {
                 panels.front = Some(Panel::Notes);
             }
             _ => {
-                // The debugger's parts it took off a place they share (see
-                // `hide_panel`) come back with it.
-                let layout = &Config::get(cx).layout;
-                let parts: Vec<Panel> =
-                    DEBUG_PANELS.into_iter().filter(|part| layout.place_of(*part) == layout.place_of(Panel::CallStack)).collect();
-                if panel == Panel::Debugger && parts.iter().all(|part| layout.hidden.contains(part)) {
-                    Config::update(cx, |config| config.layout.hidden.retain(|other| !parts.contains(other)));
-                }
-                // The debugger is its call stack's place.
-                let panel = if panel == Panel::Debugger { Panel::CallStack } else { panel };
                 if matches!(panel, Panel::Search | Panel::References) {
                     panels.results = panel;
                 }
@@ -286,9 +256,7 @@ impl Workspace {
         self.layout_changed(cx);
     }
 
-    /// Hides `panel`: a side panel's place closes the side column; the
-    /// debugger's parts go
-    /// off a column they share with others, or close it.
+    /// Hides `panel`: a side panel's place closes the side column.
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         let panels = &mut self.panels;
         match panel {
@@ -314,17 +282,6 @@ impl Workspace {
                     }
                 }
                 panels.notes_alone = false;
-            }
-            Panel::Debugger => {
-                let layout = &Config::get(cx).layout;
-                let here = self.side_place(cx).map(|place| layout.panels(place)).unwrap_or_default();
-                let parts: Vec<Panel> = here.iter().copied().filter(|panel| DEBUG_PANELS.contains(panel)).collect();
-                if parts.len() == here.len() {
-                    close_side(cx);
-                } else if !parts.is_empty() {
-                    // The others stay in sight.
-                    Config::update(cx, |config| config.layout.hidden.extend(parts));
-                }
             }
             _ => {
                 if self.is_shown(panel, cx) || self.in_side(panel, cx) {
@@ -537,25 +494,21 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The side column: its place's panels, one above the other, under the
-    /// debugger's toolbar if they're its parts. One open panel takes the
-    /// height the others leave (see `Layout::filler`). A place's icon
-    /// dropped on it brings its panels.
+    /// The side column: its place's panels, one above the other. One open
+    /// panel takes the height the others leave (see `Layout::filler`). A
+    /// place's icon dropped on it brings its panels.
     fn render_side(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let layout = Config::get(cx).layout.clone();
         let panels = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
         let open: Vec<Panel> = panels.iter().copied().filter(|panel| !layout.collapsed.contains(panel)).collect();
         let filler = Layout::filler(&open);
-        let debug = panels.iter().any(|panel| DEBUG_PANELS.contains(panel));
-        let bar = debug.then(|| self.debugger.update(cx, |debugger, cx| debugger.render_bar(cx)));
-        // The first one's header needs no line above it, unless the
-        // debugger's toolbar is there.
+        // The first one's header needs no line above it.
         let sections: Vec<AnyElement> = panels
             .iter()
             .enumerate()
             .map(|(ix, &panel)| {
                 let height = (!layout.collapsed.contains(&panel) && Some(panel) != filler).then(|| layout.height(panel));
-                self.render_section(panel, open.contains(&panel), height, ix > 0 || debug, window, cx)
+                self.render_section(panel, open.contains(&panel), height, ix > 0, window, cx)
             })
             .collect();
         let theme = cx.theme();
@@ -568,7 +521,6 @@ impl Workspace {
             .text_color(theme.sidebar_foreground)
             .drag_over::<PlaceDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.1)))
             .on_drop(cx.listener(|this, drag: &PlaceDrag, _, cx| this.merge_place(drag.0, cx)))
-            .children(bar)
             .children(sections)
             // Every panel folded: the space below them.
             .when(filler.is_none(), |el| el.child(div().flex_1()))
@@ -670,7 +622,7 @@ impl Workspace {
             Panel::Search => Some(self.search.clone().cached(cached()).into_any_element()),
             Panel::References => Some(self.references.clone().cached(cached()).into_any_element()),
             Panel::Changes => Some(self.changes.clone().cached(cached()).into_any_element()),
-            _ => self.debug_views.get(&panel).map(|view| view.clone().cached(cached()).into_any_element()),
+            _ => None,
         };
         let hide = workspace.clone();
         let hide_workspace = workspace.clone();
@@ -729,20 +681,26 @@ impl Workspace {
         }
     }
 
-    /// The tabs after the terminals': the debugger's console once shown, and
-    /// at the far end the notes, always there unless in a tab of the code.
+    /// The tabs after the terminals': the debugger once shown, with its
+    /// state on it (yellow while stopped, green while running), and at the
+    /// far end the notes, always there unless in a tab of the code.
     pub(super) fn shape_terminals(&mut self, cx: &mut Context<Self>) {
         let mut tabs = Vec::new();
-        if self.panels.console
-            && let Some(view) = self.debug_views.get(&Panel::Console)
-        {
+        if self.panels.console {
+            let debugger = self.debugger.read(cx);
+            let dot = if debugger.is_stopped() {
+                Some(cx.theme().warning)
+            } else {
+                debugger.is_active().then(|| cx.theme().success)
+            };
             tabs.push(PanelTab {
                 panel: Panel::Console,
-                view: view.clone().into(),
+                view: self.debug_view.clone().into(),
                 icon: icon(Panel::Console),
-                title: "Debug Console",
+                title: title(Panel::Console),
                 showing: self.panels.front == Some(Panel::Console),
                 closable: true,
+                dot,
             });
         }
         if self.notes_tab().is_none() {
@@ -753,6 +711,7 @@ impl Workspace {
                 title: "Notes",
                 showing: self.panels.front == Some(Panel::Notes),
                 closable: false,
+                dot: None,
             });
         }
         self.terminals.update(cx, |terminals, cx| terminals.set_panel_tabs(tabs, cx));
@@ -760,12 +719,10 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// A session started or stopped somewhere: the Run and Debug group, and
-    /// the console's tab after the terminals'.
+    /// A session started or stopped somewhere: the debugger's tab, in front.
     pub(super) fn reveal_debugger(&mut self, cx: &mut Context<Self>) {
-        self.panels.console = true;
-        if !self.is_shown(Panel::Debugger, cx) {
-            self.show_panel(Panel::Debugger, cx);
+        if !self.is_shown(Panel::Console, cx) {
+            self.show_panel(Panel::Console, cx);
         } else {
             self.layout_changed(cx);
         }
