@@ -1364,7 +1364,11 @@ impl Render for FileTree {
                                     move |_, _, cx| view.update(cx, |tree, _| tree.row_pressed = true)
                                 })
                                 // The menu belongs to the container; the row only says what it opens on.
-                                .on_mouse_down(MouseButton::Right, move |_, _, cx| {
+                                // In the capture phase: the container's menu stops the bubble before the row.
+                                .capture_any_mouse_down(move |event, _, cx| {
+                                    if event.button != MouseButton::Right {
+                                        return;
+                                    }
                                     menu_view.update(cx, |tree, cx| {
                                         tree.row_pressed = true;
                                         // Outside the selection, the row is selected alone.
