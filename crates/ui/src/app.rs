@@ -1001,13 +1001,13 @@ impl Den {
         .detach();
     }
 
-    /// Shuts down the server's agent; reconnecting starts the new one.
+    /// Restarts the server's agent with the new build; reconnecting finds it.
     fn restart_agent(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         if self.confirm_restart.take().is_some() {
             self.focus_active(window, cx);
         }
         if let Some(client) = self.client(&name) {
-            client.notify(Request::Shutdown);
+            client.restart();
         }
         cx.notify();
     }

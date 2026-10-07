@@ -60,6 +60,15 @@ mod unix {
             Ok(Self(listener))
         }
 
+        /// The socket the agent this process was before listened on.
+        pub fn handed(fd: std::os::fd::OwnedFd) -> Self {
+            Self(UnixListener::from(fd))
+        }
+
+        pub fn raw_fd(&self) -> std::os::fd::RawFd {
+            std::os::fd::AsRawFd::as_raw_fd(&self.0)
+        }
+
         pub fn accept(&self) -> Result<Box<dyn Stream>> {
             let (stream, _) = self.0.accept()?;
             Ok(Box::new(stream))

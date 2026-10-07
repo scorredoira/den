@@ -84,6 +84,9 @@ pub struct Client {
     close_stream: Mutex<Option<CloseStream>>,
     /// The connected agent is from a different build than the one that would be launched now.
     outdated: std::sync::atomic::AtomicBool,
+    /// When outdated, the new agent's binary on the agent's machine, for it
+    /// to replace itself with.
+    replacement: Mutex<Option<PathBuf>>,
     connected: Arc<std::sync::atomic::AtomicBool>,
     /// What goes to the agent, written by a thread of its own: sending never
     /// waits for the connection, and keys get ahead of large requests.
@@ -217,7 +220,10 @@ impl Client {
         if let Ok(client) = Self::connect(&socket) {
             match smol::block_on(client.request(Request::Hello { protocol: PROTOCOL }))? {
                 Response::Hello { protocol, .. } if protocol == PROTOCOL => {
-                    client.check_version(agent_bin);
+                    client.check_version(agent_bin, || {
+                        let state_dir = proto::state_dir().ok()?;
+                        stable_copy(agent_bin, &state_dir).ok()
+                    });
                     return Ok(client);
                 }
                 other => bail!("the agent at {} does not speak protocol {PROTOCOL}: {other:?}", socket.display()),
@@ -257,6 +263,7 @@ impl Client {
             process: Mutex::new(process),
             close_stream: Mutex::new(close_stream),
             outdated: std::sync::atomic::AtomicBool::new(false),
+            replacement: Mutex::new(None),
             connected: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             outgoing: Arc::default(),
             next_id: AtomicU64::new(1),
@@ -423,7 +430,8 @@ impl Client {
 
     /// Checks whether the connected agent is the `expected` binary (its fingerprint);
     /// one that doesn't know the request predates it, so it's also old.
-    fn check_version(&self, expected: &Path) {
+    /// `replacement`: where the agent finds that binary, if it's old.
+    fn check_version(&self, expected: &Path, replacement: impl FnOnce() -> Option<PathBuf>) {
         let Ok(bytes) = std::fs::read(expected) else {
             return;
         };
@@ -431,14 +439,35 @@ impl Client {
             Ok(Response::Text(id)) => id,
             _ => String::new(),
         };
-        self.outdated
-            .store(current != proto::build_id(&bytes), Ordering::Relaxed);
+        let outdated = current != proto::build_id(&bytes);
+        self.outdated.store(outdated, Ordering::Relaxed);
+        if outdated {
+            *self.replacement.lock().unwrap() = replacement();
+        }
     }
 
-    /// The connected agent is from an older build: restarting it (with
-    /// `Shutdown`) starts the new one, at the cost of closing its terminals.
+    /// The connected agent is from an older build: `restart` starts the new one.
     pub fn outdated(&self) -> bool {
         self.outdated.load(Ordering::Relaxed)
+    }
+
+    /// Restarts the agent with the new build: it replaces itself, keeping
+    /// its terminals running. One that can't (older than that, on Windows)
+    /// shuts down, and the next to start reopens them.
+    pub fn restart(self: &Arc<Self>) {
+        let Some(exe) = self.replacement.lock().unwrap().clone() else {
+            return self.notify(Request::Shutdown);
+        };
+        let client = Arc::downgrade(self);
+        self.request_with(Request::ReplaceAgent { exe }, move |result| {
+            // Replaced, the connection closes; still open, the agent refused.
+            if result.is_err()
+                && let Some(client) = client.upgrade()
+                && client.is_connected()
+            {
+                client.notify(Request::Shutdown);
+            }
+        });
     }
 
     /// Whether the connection to the agent is still alive.

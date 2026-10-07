@@ -29,6 +29,7 @@ use crate::{
     blocked, format, fs, git, lsp, ports, search,
     snapshot::{self, snapshot},
     tasks,
+    handover::Handover,
 };
 
 /// With no terminals and no connected UIs, the agent exits after this long.
@@ -199,6 +200,9 @@ struct State {
     next_command: u64,
     /// The terminals running an agent, as last sent.
     agents: Vec<AgentInfo>,
+    /// The socket's descriptor, for the agent that replaces this one.
+    #[cfg(unix)]
+    listener: std::os::fd::RawFd,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -391,11 +395,19 @@ impl State {
     }
 }
 
-pub fn run(listener: Listener) -> Result<()> {
+/// `handover`: what the agent this process was before left running.
+pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
     let state: Shared = Arc::default();
+    #[cfg(unix)]
+    {
+        state.lock().unwrap().listener = listener.raw_fd();
+    }
     // Before any terminal starts: they're told where it listens.
-    if let Err(err) = crate::ide::start(Arc::new(IdeHost(state.clone()))) {
+    if let Err(err) = crate::ide::start(Arc::new(IdeHost(state.clone())), handover.as_mut().and_then(handed_ide)) {
         eprintln!("no IDE integration for Claude Code: {err:#}");
+    }
+    if let Some(handover) = handover {
+        take_over(&state, handover);
     }
     let older = shut_down_older_agents();
     let mut resumed = HashSet::new();
@@ -781,6 +793,7 @@ fn own_separators(request: &mut Request) {
         | Request::Git { path, .. }
         | Request::Replace { path, .. }
         | Request::Command { cwd: path, .. }
+        | Request::ReplaceAgent { exe: path }
         | Request::Resolve { path } => fix(path),
         Request::Rename { from, to } | Request::Copy { from, to } | Request::Untrash { item: from, to } => {
             fix(from);
@@ -972,6 +985,10 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             protocol: PROTOCOL,
             pid: std::process::id(),
         }),
+        Request::ReplaceAgent { exe } => {
+            let state = state.lock().unwrap();
+            replace_agent(&state, &tasks::expand_home(&exe))
+        }
         Request::Shutdown => {
             let mut state = state.lock().unwrap();
             save_for_restart(&state);
@@ -1309,6 +1326,79 @@ fn restart_file() -> Result<PathBuf> {
 
 fn restart_file_of(socket: &Path) -> PathBuf {
     socket.with_extension("restart.json")
+}
+
+/// Replaces this agent with `exe` in the same process, handing it the
+/// terminals (see `handover.rs`). Saved first as for a restart, so that a
+/// new agent that doesn't start leaves them for the next one.
+#[cfg(unix)]
+fn replace_agent(state: &State, exe: &Path) -> Result<Response> {
+    save_for_restart(state);
+    let terms = state
+        .terms
+        .iter()
+        .filter_map(|(term, entry)| {
+            Some(crate::handover::Term {
+                term: *term,
+                group: entry.group.clone(),
+                cwd: entry.cwd.path.clone(),
+                fd: entry.pty.raw_fd()?,
+                pid: entry.pty.pid()?,
+                cols: entry.emulator.columns() as u16,
+                rows: entry.emulator.screen_lines() as u16,
+                title: entry.title.clone(),
+                screen: snapshot(&entry.emulator, entry.title.as_deref()),
+            })
+        })
+        .collect();
+    let ide = crate::ide::handover().map(|(fd, token)| crate::handover::Ide { fd, token });
+    let handover = Handover { listener: state.listener, next_term: state.next_term, terms, ide };
+    eprintln!("replacing the agent with {}", exe.display());
+    Err(crate::handover::replace(exe, &handover))
+}
+
+#[cfg(windows)]
+fn replace_agent(_: &State, _: &Path) -> Result<Response> {
+    anyhow::bail!("on Windows the agent can't replace itself: it restarts")
+}
+
+/// The listener for Claude Code the agent before had.
+fn handed_ide(handover: &mut Handover) -> Option<(std::net::TcpListener, String)> {
+    let ide = handover.ide.take()?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: the agent before left it open for this one, which takes it once.
+        Some((unsafe { std::net::TcpListener::from_raw_fd(ide.fd) }, ide.token))
+    }
+    #[cfg(windows)]
+    {
+        let _ = ide;
+        None
+    }
+}
+
+/// Goes on with the terminals the agent this process was before handed over,
+/// under the same ids, with their screens.
+fn take_over(state: &Shared, handover: Handover) {
+    {
+        let mut state = state.lock().unwrap();
+        state.next_term = state.next_term.max(handover.next_term);
+    }
+    for handed in handover.terms {
+        #[cfg(unix)]
+        let pty = Pty::adopt(crate::handover::own(handed.fd), handed.pid);
+        #[cfg(windows)]
+        let pty: Result<(Pty, crate::pty::PtyIo)> = Err(anyhow::anyhow!("no handover on Windows"));
+        match pty {
+            Ok(pty) => {
+                let screen = Screen { data: handed.screen, title: handed.title };
+                start(state, handed.term, handed.group, handed.cwd, pty, handed.cols, handed.rows, Some(screen));
+            }
+            Err(err) => eprintln!("could not take over terminal {}: {err:#}", handed.term),
+        }
+    }
+    eprintln!("took over the terminals of the agent before");
 }
 
 /// Agents of earlier protocols still running (Den was updated to a newer
@@ -1654,12 +1744,34 @@ fn create(
         term
     };
     let (pty, io) = Pty::spawn(term, &cwd, command.as_deref(), cols, rows)?;
+    start(state, term, group, cwd, (pty, io), cols, rows, None);
+    Ok(Response::TermCreated { term })
+}
+
+/// What a terminal the previous agent left running had on screen.
+struct Screen {
+    data: Vec<u8>,
+    title: Option<String>,
+}
+
+/// Puts a started terminal (or one taken over, with its `screen`) in the
+/// state, and starts reading its output and waiting for its process.
+#[allow(clippy::too_many_arguments)]
+fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (Pty, crate::pty::PtyIo), cols: u16, rows: u16, screen: Option<Screen>) {
     let events = Listener_::default();
-    let emulator = Term::new(
+    let mut emulator = Term::new(
         Config::default(),
         &TermSize::new(cols as usize, rows as usize),
         events.clone(),
     );
+    let mut parser = Processor::new();
+    let mut title = None;
+    let settled = screen.is_some();
+    if let Some(screen) = screen {
+        parser.advance(&mut emulator, &screen.data);
+        events.0.lock().unwrap().clear();
+        title = screen.title;
+    }
     {
         let mut state = state.lock().unwrap();
         state.terms.insert(
@@ -1669,13 +1781,13 @@ fn create(
                 pty,
                 cwd: crate::shell_cwd::ShellCwd::new(cwd),
                 emulator,
-                parser: Processor::new(),
+                parser,
                 events,
-                title: None,
+                title,
                 subscribers: HashSet::new(),
                 last_output: Instant::now(),
                 burst_start: Instant::now(),
-                settled: false,
+                settled,
                 blocked: false,
                 checked: Instant::now(),
                 foreground: None,
@@ -1750,8 +1862,6 @@ fn create(
             state.update_idle();
         }
     });
-
-    Ok(Response::TermCreated { term })
 }
 
 #[cfg(test)]
