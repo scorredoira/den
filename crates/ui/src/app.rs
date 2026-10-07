@@ -129,7 +129,7 @@ struct ServerWindow {
     /// The server, or `LOCAL`.
     name: SharedString,
     /// What to open once it connects: a folder (or a file) or, with no
-    /// path, a folder to pick; taken then.
+    /// path, the home folder; taken then.
     start: Option<Option<PathBuf>>,
 }
 
@@ -284,7 +284,7 @@ pub(crate) fn window_workspace(window: &Window, cx: &App) -> Option<Entity<Works
 }
 
 /// `den -s <server> [<path>]`: `path` on `server` in a window of its own
-/// (relative to the home folder there), or a folder to pick; in the window
+/// (relative to the home folder there), or that home folder; in the window
 /// already open on that server, if there's one.
 pub fn open_server_window(destination: String, path: Option<PathBuf>, cx: &mut App) {
     let name = server_name(&destination, cx);
@@ -697,7 +697,7 @@ impl Den {
     }
 
     /// `den -s <server> [<path>]`: a window with only that server, which
-    /// opens `path` (or asks for a folder) once connected. Nothing open in
+    /// opens `path` (or the home folder) once connected. Nothing open in
     /// it is remembered (see `keep`), and the workspaces column starts
     /// hidden.
     pub fn for_server(destination: String, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -1914,7 +1914,7 @@ impl Den {
     }
 
     /// `den -s`: opens `path` on the window's server (a file in its repo),
-    /// relative to its home folder, or asks for a folder with none. Not
+    /// relative to its home folder, or the home folder with none. Not
     /// there, the folder picker starts at it. Before the server connects,
     /// it waits.
     fn open_start(&mut self, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1927,10 +1927,7 @@ impl Den {
             }
             return;
         };
-        let Some(path) = path else {
-            self.open_folder_picker(name, window, cx);
-            return;
-        };
+        let path = path.unwrap_or_else(|| PathBuf::from("~"));
         let path = if path.is_absolute() || path.starts_with("~") { path } else { Path::new("~").join(path) };
         cx.spawn_in(window, async move |this, cx| {
             let target = match client.request(Request::Resolve { path: path.clone() }).await {

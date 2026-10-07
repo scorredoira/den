@@ -20,7 +20,7 @@ Usage:
   den -s <server> [<path>]
                       opens a window on the server (a name from
                       ~/.ssh/config or user@host) with the path there,
-                      relative to its home folder, or a folder to pick.
+                      relative to its home folder, or the home folder.
                       What's open in it isn't remembered unless kept.
   den worktree <name> creates a worktree in the repo of the current folder,
                       running its .den/create if it has one, and prints its
