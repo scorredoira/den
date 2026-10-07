@@ -188,7 +188,8 @@ pub fn connect_ssh(destination: &str, agents: &Path, step: &dyn Fn(&'static str)
             if let Some(distro) = crate::wsl::distro(destination) {
                 crate::wsl::hold(distro, pid)?;
             }
-            client.check_version(&local);
+            // `ssh` runs the agent from the home folder: so does the path.
+            client.check_version(&local, || Some(std::path::Path::new("~").join(&remote)));
             Ok(client)
         }
         other => bail!("the agent on {destination} does not speak protocol {PROTOCOL}: {other:?}"),

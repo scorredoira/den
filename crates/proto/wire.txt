@@ -64,6 +64,7 @@ pub type TermId = u64;
     Copy { from: PathBuf, to: PathBuf }
     Untrash { item: PathBuf, to: PathBuf }
     IdeSelection { group: String, selection: Option<IdeSelection> }
+    ReplaceAgent { exe: PathBuf }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct IdeSelection {
     pub file: PathBuf

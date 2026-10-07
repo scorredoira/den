@@ -218,6 +218,12 @@ pub enum Request {
     /// or none. For Claude Code in that workspace's terminals, which the
     /// agent tells as an IDE would (`ide.rs`). Sent as a notification.
     IdeSelection { group: String, selection: Option<IdeSelection> },
+    /// Replaces the agent with the binary `exe` (on the agent's machine,
+    /// relative to its home folder): the same process runs it, keeping its
+    /// terminals and what runs in them. No response once it did, as the
+    /// connection closes; an error if it can't (Windows), and an agent
+    /// older than this request rejects it: then only `Shutdown` updates it.
+    ReplaceAgent { exe: PathBuf },
 }
 
 /// The file in front in an editor, and what's selected in it (the cursor

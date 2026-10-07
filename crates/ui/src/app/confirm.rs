@@ -132,7 +132,7 @@ impl Den {
     pub(super) fn render_confirm_restart(&self, name: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let name = name.clone();
         let title = format!("Restart the agent on {name}?");
-        let detail = "A new version of the agent is available. Restarting it restarts its terminals: they reopen in place, without their scrollback, and Claude Code resumes its conversation.";
+        let detail = "A new version of the agent is available. Its terminals keep running through the restart, except on Windows or with an agent too old to hand them over: then they reopen in place, without their scrollback, and Claude Code resumes its conversation.";
         self.render_confirm(focus, title, None, detail, "Restart", false, move |this, window, cx| this.restart_agent(name.clone(), window, cx), cx)
     }
 

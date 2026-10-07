@@ -1,6 +1,7 @@
 //! `den-agent`: the daemon that keeps a machine's terminals.
 //!
-//! - `den-agent daemon`: listens on the local socket (started by the UI).
+//! - `den-agent daemon`: listens on the local socket (started by the UI, or
+//!   by the agent it replaces: see `handover.rs`).
 //! - `den-agent bridge`: joins stdin/stdout to the socket, starting the daemon
 //!   if needed. It's what `ssh host den-agent bridge` runs (phase 3).
 //! - `den <path>`, `den worktree <name>`, `den show <file>`…: from a
@@ -14,6 +15,7 @@ mod format;
 mod fs;
 mod ide;
 mod git;
+mod handover;
 mod lsp;
 mod platform;
 mod ports;
@@ -63,6 +65,7 @@ fn main() -> Result<()> {
 }
 
 fn daemon() -> Result<()> {
+    let handover = handover::take();
     platform::detach_session();
     if let Err(err) = cli::install() {
         eprintln!("could not install the `den` command for terminals: {err:#}");
@@ -71,14 +74,18 @@ fn daemon() -> Result<()> {
         eprintln!("could not install the skill for Claude Code: {err:#}");
     }
     let socket = proto::socket_path()?;
-    let listener = platform::Listener::bind(&socket)?;
+    let listener = match &handover {
+        #[cfg(unix)]
+        Some(handover) => platform::Listener::handed(handover::own(handover.listener)),
+        _ => platform::Listener::bind(&socket)?,
+    };
     eprintln!(
         "agent {} listening on {} (protocol {})",
         std::process::id(),
         socket.display(),
         proto::PROTOCOL
     );
-    server::run(listener)
+    server::run(listener, handover)
 }
 
 fn bridge() -> Result<()> {

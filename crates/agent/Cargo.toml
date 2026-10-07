@@ -20,6 +20,7 @@ chrome.workspace = true
 smol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_bytes = "0.11"
 ignore.workspace = true
 notify.workspace = true
 trash.workspace = true

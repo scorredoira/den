@@ -43,6 +43,9 @@ pub trait Host: Send + Sync {
 struct Ide {
     port: u16,
     token: String,
+    /// The listener's descriptor, which an agent replacing this one keeps.
+    #[cfg(unix)]
+    listener: std::os::fd::RawFd,
     lock: PathBuf,
     host: Arc<dyn Host>,
     /// The last selection of each workspace, as `selection_changed` says it.
@@ -61,15 +64,21 @@ struct Client {
 static IDE: OnceLock<Arc<Ide>> = OnceLock::new();
 
 /// Listens and announces itself. Without a home folder or a free port the
-/// terminals go on without it.
-pub fn start(host: Arc<dyn Host>) -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).context("could not listen for Claude Code")?;
+/// terminals go on without it. `handed`: the listener and token of the agent
+/// this one replaces, which its terminals' Claude Codes know.
+pub fn start(host: Arc<dyn Host>, handed: Option<(TcpListener, String)>) -> Result<()> {
+    let (listener, token) = match handed {
+        Some(handed) => handed,
+        None => (TcpListener::bind(("127.0.0.1", 0)).context("could not listen for Claude Code")?, token()?),
+    };
     let port = listener.local_addr()?.port();
     let dir = lock_dir()?;
     std::fs::create_dir_all(&dir)?;
     let ide = Arc::new(Ide {
         port,
-        token: token()?,
+        token,
+        #[cfg(unix)]
+        listener: std::os::fd::AsRawFd::as_raw_fd(&listener),
         lock: dir.join(format!("{port}.lock")),
         host,
         selections: Mutex::default(),
@@ -114,6 +123,13 @@ fn lock_dir() -> Result<PathBuf> {
 /// The port for the terminals' `CLAUDE_CODE_SSE_PORT`.
 pub fn port() -> Option<u16> {
     IDE.get().map(|ide| ide.port)
+}
+
+/// What an agent replacing this one needs to go on listening where its
+/// terminals' Claude Codes look: the listener's descriptor and the token.
+#[cfg(unix)]
+pub fn handover() -> Option<(std::os::fd::RawFd, String)> {
+    IDE.get().map(|ide| (ide.listener, ide.token.clone()))
 }
 
 /// The lock file goes with the agent (Claude Code also drops those whose

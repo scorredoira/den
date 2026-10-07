@@ -132,6 +132,7 @@ dependencies = [
  "proto",
  "regex",
  "serde",
+ "serde_bytes",
  "serde_json",
  "smol",
  "tempfile",
