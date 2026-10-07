@@ -637,13 +637,15 @@ impl Workspace {
         panels.retain(|panel| *panel != Panel::Worktrees || self.has_worktrees);
         let open: Vec<Panel> = panels.iter().copied().filter(|panel| !layout.collapsed.contains(panel)).collect();
         let filler = Layout::filler(&open);
+        let filler_at = filler.and_then(|filler| panels.iter().position(|panel| *panel == filler));
         // The first one's header needs no line above it.
         let sections: Vec<AnyElement> = panels
             .iter()
             .enumerate()
             .map(|(ix, &panel)| {
                 let height = (!layout.collapsed.contains(&panel) && Some(panel) != filler).then(|| layout.height(panel));
-                self.render_section(panel, open.contains(&panel), height, ix > 0, window, cx)
+                let below = filler_at.is_some_and(|at| ix > at);
+                self.render_section(panel, open.contains(&panel), height, below, ix > 0, window, cx)
             })
             .collect();
         let theme = cx.theme();
@@ -663,12 +665,16 @@ impl Workspace {
     }
 
     /// A side panel: its header, which folds it, and while open its content;
-    /// `height` it has unless it takes what the others leave.
+    /// `height` it has unless it takes what the others leave. One `below`
+    /// the panel that takes it is sized by its upper edge, as in VS Code:
+    /// the last one has no lower edge to drag.
+    #[allow(clippy::too_many_arguments)]
     fn render_section(
         &mut self,
         panel: Panel,
         open: bool,
         height: Option<f32>,
+        below: bool,
         line: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -798,9 +804,10 @@ impl Workspace {
         match height {
             // It takes what the others leave.
             None => section.flex_1().min_h(px(HEADER_HEIGHT + MIN_BODY)).into_any_element(),
-            // Its lower edge sizes it.
+            // Its lower edge sizes it, or its upper one below the filler.
             Some(height) => section
                 .flex_none()
+                .relative()
                 .h(px(height.max(HEADER_HEIGHT + MIN_BODY)))
                 .child(
                     div()
@@ -808,6 +815,7 @@ impl Workspace {
                         .h(px(4.))
                         .w_full()
                         .flex_none()
+                        .when(below, |el| el.absolute().top_0().left_0())
                         .cursor_row_resize()
                         .on_drag(ResizeSide(panel), |drag, _, _, cx| cx.new(|_| drag.clone())),
                 )
@@ -815,7 +823,12 @@ impl Workspace {
                     if event.drag(cx).0 != panel {
                         return;
                     }
-                    let height = f32::from(event.event.position.y - event.bounds.top()).max(HEADER_HEIGHT + MIN_BODY);
+                    let edge = if below {
+                        event.bounds.bottom() - event.event.position.y
+                    } else {
+                        event.event.position.y - event.bounds.top()
+                    };
+                    let height = f32::from(edge).max(HEADER_HEIGHT + MIN_BODY);
                     Config::update_quietly(cx, |config| {
                         config.layout.heights.insert(panel, height);
                     });
