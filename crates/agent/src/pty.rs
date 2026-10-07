@@ -51,7 +51,7 @@ impl Pty {
             cmd.env("LANG", lang);
         }
         // `den` in the PATH is the agent itself: `den task <name>` creates tasks.
-        if let Ok(bin) = crate::cli::bin_dir() {
+        if let Ok(bin) = proto::bin_dir() {
             let path = std::env::var_os("PATH").unwrap_or_default();
             let mut paths = vec![bin];
             paths.extend(std::env::split_paths(&path));

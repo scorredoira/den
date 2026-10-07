@@ -769,6 +769,58 @@ pub fn older_socket_paths() -> Result<Vec<PathBuf>> {
 /// App name: paths and binaries derive from it.
 pub const APP: &str = "den";
 
+/// Folder holding the `den` link, which the agent puts in its terminals' PATH.
+pub fn bin_dir() -> Result<PathBuf> {
+    Ok(state_dir()?.join("bin"))
+}
+
+/// An agent with a state of its own: a test's, or a development one.
+pub fn isolated() -> bool {
+    std::env::var_os("DEN_STATE_DIR").is_some() || std::env::var_os("DEN_AGENT_SOCKET").is_some()
+}
+
+/// Links `den` to the agent binary `exe`, for den's terminals and, in
+/// `~/.local/bin` if there is one, for any other (unless something else is
+/// called `den` there). The agent links itself on starting, and the app the
+/// new copy it makes, which deletes the older ones. An isolated agent (tests,
+/// a development agent) leaves `~/.local/bin` alone: its link would outlive it.
+pub fn link_den(exe: &std::path::Path) -> Result<()> {
+    let dir = bin_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    symlink(exe, &dir.join(APP))?;
+    if !isolated()
+        && let Some(local) = std::env::home_dir().map(|home| home.join(".local/bin")).filter(|dir| dir.is_dir())
+    {
+        let link = local.join(APP);
+        let ours = match std::fs::read_link(&link) {
+            // The agent runs from versioned copies: `den-agent-6-…`.
+            Ok(target) => target.file_name().is_some_and(|name| name.to_string_lossy().starts_with("den-agent")),
+            Err(_) => !link.exists(),
+        };
+        if ours {
+            symlink(exe, &link)?;
+        }
+    }
+    Ok(())
+}
+
+/// Link `link` pointing to `target` (replaces any previous one).
+#[cfg(unix)]
+fn symlink(target: &std::path::Path, link: &std::path::Path) -> Result<()> {
+    let _ = std::fs::remove_file(link);
+    std::os::unix::fs::symlink(target, link)?;
+    Ok(())
+}
+
+/// Hard links need no symlink privilege, and keep the exact agent binary.
+#[cfg(windows)]
+fn symlink(target: &std::path::Path, link: &std::path::Path) -> Result<()> {
+    let link = link.with_extension("exe");
+    let _ = std::fs::remove_file(&link);
+    std::fs::hard_link(target, &link).or_else(|_| std::fs::copy(target, &link).map(|_| ()))?;
+    Ok(())
+}
+
 /// Where the app writes its own binary's path on starting, for `den <path>`
 /// to start it when it isn't running (the agent runs from a copy, elsewhere).
 pub fn app_file() -> Result<PathBuf> {

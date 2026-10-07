@@ -114,8 +114,8 @@ pub struct Client {
 /// running binary can kill the process (the system detects that its code
 /// changed): the daemon, which holds the terminals, can't run from
 /// `target/`. The copy's name includes the binary's timestamp, so a new build
-/// gets a new copy; older ones are deleted (an old agent still running
-/// doesn't notice: its file keeps existing for it until it exits).
+/// gets a new copy, which `den` links to; older ones are deleted (an old agent
+/// still running doesn't notice: its file keeps existing for it until it exits).
 fn stable_copy(agent_bin: &Path, state_dir: &Path) -> Result<std::path::PathBuf> {
     let dir = state_dir.join("agents");
     std::fs::create_dir_all(&dir)?;
@@ -130,6 +130,10 @@ fn stable_copy(agent_bin: &Path, state_dir: &Path) -> Result<std::path::PathBuf>
         let partial = dir.join(format!("{name}.part"));
         std::fs::copy(agent_bin, &partial)?;
         std::fs::rename(&partial, &copy)?;
+    }
+    // The `den` links would point to a deleted copy until the agent restarts.
+    if let Err(err) = proto::link_den(&copy) {
+        eprintln!("could not link `den` to {}: {err:#}", copy.display());
     }
     for entry in std::fs::read_dir(&dir)?.flatten() {
         if entry.file_name() != name.as_str() {

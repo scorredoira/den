@@ -113,38 +113,9 @@ keyboard stays in the terminal unless --focus.
                       program. See docs/chrome.md.
 ";
 
-/// Folder holding the `den` link, which the agent puts in its terminals' PATH.
-pub fn bin_dir() -> Result<PathBuf> {
-    Ok(proto::state_dir()?.join("bin"))
-}
-
-/// An agent with a state of its own: a test's, or a development one.
-pub fn isolated() -> bool {
-    std::env::var_os("DEN_STATE_DIR").is_some() || std::env::var_os("DEN_AGENT_SOCKET").is_some()
-}
-
-/// Links `den` to this binary, for den's terminals and, in `~/.local/bin`
-/// if there is one, for any other (unless something else is called `den` there).
-/// An agent with a state of its own (tests, a development agent) leaves
-/// `~/.local/bin` alone: its link would outlive it.
+/// Links `den` to this binary (see `proto::link_den`).
 pub fn install() -> Result<()> {
-    let dir = bin_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    let exe = std::env::current_exe()?;
-    platform::symlink(&exe, &dir.join(proto::APP))?;
-    if !isolated()
-        && let Some(local) = std::env::home_dir().map(|home| home.join(".local/bin")).filter(|dir| dir.is_dir()) {
-        let link = local.join(proto::APP);
-        let ours = match std::fs::read_link(&link) {
-            // The agent runs from versioned copies: `den-agent-6-…`.
-            Ok(target) => target.file_name().is_some_and(|name| name.to_string_lossy().starts_with("den-agent")),
-            Err(_) => !link.exists(),
-        };
-        if ours {
-            platform::symlink(&exe, &link)?;
-        }
-    }
-    Ok(())
+    proto::link_den(&std::env::current_exe()?)
 }
 
 /// The Claude Code skill that tells Claude about the `den` commands.

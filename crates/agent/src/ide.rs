@@ -110,7 +110,7 @@ pub fn start(host: Arc<dyn Host>, handed: Option<(TcpListener, String)>) -> Resu
 /// Where Claude Code looks for IDEs; an isolated agent's own folder
 /// instead, which outlives no test.
 fn lock_dir() -> Result<PathBuf> {
-    if crate::cli::isolated() {
+    if proto::isolated() {
         return Ok(proto::state_dir()?.join("claude-ide"));
     }
     let config = match std::env::var_os("CLAUDE_CONFIG_DIR") {
