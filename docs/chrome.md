@@ -44,9 +44,11 @@ Chrome is `DEN_CHROME` when set, otherwise Google Chrome where it is usually
 installed (on macOS `/Applications/Google Chrome.app`), or `google-chrome`,
 `chromium` on the `PATH`. If a Chrome with the profile is running already
 (its `DevToolsActivePort` answers), it is used; otherwise one is started with
-`--remote-debugging-port=0`. When `den chrome` ends, a Chrome with windows
-stays open, like a booted simulator; a headless one it started is closed.
-When Chrome closes, `den chrome` ends.
+`--remote-debugging-port=0`. When `den chrome` ends (Den's Stop interrupts
+it), the Chrome it started closes, every window of it; in a Chrome it found
+running, the tabs of the app (those that showed a debugged host) close.
+When Chrome closes, or the app's last tab or window does, `den chrome`
+ends, and with it `den debug join` and the debug session.
 
 The launch file for an app served on port 9092:
 

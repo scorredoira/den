@@ -117,16 +117,55 @@ impl Options {
     }
 }
 
-/// Runs `den chrome` until Chrome goes away. `args` exclude "chrome".
+/// Runs `den chrome` until Chrome goes away, the app's last tab closes or
+/// it's interrupted. `args` exclude "chrome".
 pub fn run(args: &[String]) -> Result<()> {
     let options = Options::parse(args)?;
     let url = options.url.clone();
     let bridge = Bridge::start(options)?;
+    on_interrupt(bridge.inputs.clone())?;
     println!("debugger listening on 127.0.0.1:{}", bridge.port());
     if let Some(url) = url {
         println!("{url} opens when the debugger connects");
     }
     bridge.wait()
+}
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn interrupted(_: libc::c_int) {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+/// Ctrl-C (Den's Stop), or the terminal closing, ends the bridge as the
+/// app's tab closing does: the Chrome it launched closes with it.
+#[cfg(unix)]
+fn on_interrupt(inputs: Sender<Input>) -> Result<()> {
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only stores to an atomic.
+        let previous = unsafe { libc::signal(signal, interrupted as *const () as libc::sighandler_t) };
+        if previous == libc::SIG_ERR {
+            return Err(std::io::Error::last_os_error()).context("could not handle interrupts");
+        }
+    }
+    thread::Builder::new()
+        .name("chrome-interrupt".into())
+        .spawn(move || {
+            while !INTERRUPTED.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(50));
+            }
+            // the bridge may have ended already
+            let _ = inputs.send(Input::Shutdown);
+        })
+        .context("watch for interrupts")?;
+    Ok(())
+}
+
+/// On Windows Ctrl-C ends every process of the console.
+#[cfg(not(unix))]
+fn on_interrupt(_: Sender<Input>) -> Result<()> {
+    Ok(())
 }
 
 /// A running bridge: Chrome, the connection to it, and the port Den
