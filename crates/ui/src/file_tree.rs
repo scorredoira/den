@@ -1665,6 +1665,34 @@ mod tests {
         tree
     }
 
+    /// Right-clicking a row opens the menu on that row, selected alone,
+    /// whichever row was right-clicked before; below them, on the folder.
+    #[gpui_kit::test]
+    fn right_click_opens_the_menu_of_the_row_under_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (tree, cx) = cx.add_window_view(|_, cx| sample(cx));
+        cx.run_until_parked();
+        // docs, src, a.rs, b.rs, c.md.
+        let row = |ix: usize| point(px(40.), ROW_HEIGHT * (ix as f32 + 0.5));
+        for (ix, path) in [(4, "/t/c.md"), (2, "/t/src/a.rs"), (1, "/t/src")] {
+            cx.simulate_mouse_down(row(ix), MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(row(ix), MouseButton::Right, Modifiers::default());
+            cx.simulate_keystrokes("escape");
+            tree.read_with(cx, |tree, _| {
+                assert_eq!(tree.menu_target.as_deref(), Some(Path::new(path)));
+                assert!(tree.is_marked(Path::new(path)));
+                assert_eq!(tree.selection(), [p(path)], "{path} selected alone");
+            });
+        }
+        // Below the rows, the menu is the task folder's.
+        cx.simulate_mouse_down(row(8), MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(row(8), MouseButton::Right, Modifiers::default());
+        tree.read_with(cx, |tree, _| assert_eq!(tree.menu_target, None));
+    }
+
     /// New Folder on a folder never opened: its name is typed in it while
     /// the agent lists it, and the edit isn't dropped.
     #[gpui_kit::test]

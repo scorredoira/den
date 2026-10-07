@@ -902,6 +902,20 @@ mod tests {
         }
     }
 
+    fn terminal(cx: &mut TestAppContext, text: &[u8]) -> (Entity<Terminal>, Rc<Backend>, smol::channel::Sender<crate::PtyEvent>) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let backend = Rc::new(Backend::default());
+        // Kept: a closed channel is a lost connection, which takes no keys.
+        let (sender, output) = smol::channel::unbounded();
+        let process: Rc<dyn TerminalBackend> = Rc::new(backend.clone());
+        let text = text.to_vec();
+        let terminal = cx.new(|cx| Terminal::new(process, output, 40, 5, &text, cx));
+        (terminal, backend, sender)
+    }
+
     fn status(view: &TerminalView) -> (usize, Option<usize>) {
         let bar = view.find.as_ref().expect("the find bar is open");
         (bar.matches.len(), bar.active)
@@ -911,17 +925,7 @@ mod tests {
     /// shell; Enter goes up; Escape closes it and gives the keys back.
     #[gpui_kit::test]
     fn find_bar_keys_stay_out_of_the_shell(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            crate::init(cx);
-        });
-        let backend = Rc::new(Backend::default());
-        // Kept: a closed channel is a lost connection, which takes no keys.
-        let (_sender, output) = smol::channel::unbounded();
-        let process: Rc<dyn TerminalBackend> = Rc::new(backend.clone());
-        let terminal = cx.new(|cx| {
-            Terminal::new(process, output, 40, 5, b"error 1\r\nok\r\nerror 2\r\nok\r\nok\r\nok\r\n$ ", cx)
-        });
+        let (terminal, backend, _sender) = terminal(cx, b"error 1\r\nok\r\nerror 2\r\nok\r\nok\r\nok\r\n$ ");
         let (view, cx) = cx.add_window_view(|window, cx| TerminalView::new(terminal, true, window, cx));
         cx.update(|window, cx| view.read(cx).focus_handle.clone().focus(window, cx));
         cx.run_until_parked();
@@ -942,5 +946,92 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_input("x");
         assert_eq!(backend.0.borrow().as_slice(), b"x");
+    }
+
+    /// The terminal beside something else that waits for the mouse.
+    struct Beside {
+        terminal: Entity<TerminalView>,
+        releases: Rc<StdCell<usize>>,
+    }
+
+    impl Render for Beside {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let releases = self.releases.clone();
+            div()
+                .flex()
+                .size_full()
+                .child(div().w(px(400.)).h(px(200.)).child(self.terminal.clone()))
+                .child(div().id("other").flex_1().h_full().on_mouse_up(MouseButton::Left, move |_, _, _| {
+                    releases.set(releases.get() + 1)
+                }))
+        }
+    }
+
+    fn beside(cx: &mut TestAppContext) -> (Entity<TerminalView>, Rc<StdCell<usize>>, &mut VisualTestContext) {
+        let (terminal, _, sender) = terminal(cx, b"one two three\r\nfour five\r\nsix");
+        std::mem::forget(sender);
+        let releases = Rc::new(StdCell::new(0));
+        let shared = releases.clone();
+        let (beside, cx) = cx.add_window_view(move |window, cx| Beside {
+            terminal: cx.new(|cx| TerminalView::new(terminal, true, window, cx)),
+            releases: shared,
+        });
+        cx.run_until_parked();
+        let view = beside.read_with(cx, |beside, _| beside.terminal.clone());
+        (view, releases, cx)
+    }
+
+    /// Where a cell is in the window, in its left half: a selection that
+    /// starts there takes it, one that ends there stops before it.
+    fn cells(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> impl Fn(usize, usize) -> Point<Pixels> + use<> {
+        let layout = view.read_with(cx, |view, _| view.layout.get().expect("drawn"));
+        move |row, col| {
+            point(
+                layout.origin.x + layout.size.cell_width * (col as f32 + 0.3),
+                layout.origin.y + layout.size.line_height * (row as f32 + 0.5),
+            )
+        }
+    }
+
+    fn selected(view: &Entity<TerminalView>, cx: &mut VisualTestContext) -> Option<String> {
+        view.read_with(cx, |view, cx| view.terminal.read(cx).selection_text())
+    }
+
+    /// A selection dragged out of the terminal ends where it's released,
+    /// and that release still reaches whatever is there.
+    #[gpui_kit::test]
+    fn releasing_a_selection_outside_reaches_what_is_there(cx: &mut TestAppContext) {
+        let (view, releases, cx) = beside(cx);
+        let cell = cells(&view, cx);
+        let none = Modifiers::default();
+        cx.simulate_mouse_down(cell(0, 0), MouseButton::Left, none);
+        cx.simulate_mouse_move(cell(0, 3), MouseButton::Left, none);
+        let outside = point(px(600.), cell(0, 3).y);
+        cx.simulate_mouse_up(outside, MouseButton::Left, none);
+        assert_eq!(releases.get(), 1);
+        view.read_with(cx, |view, _| assert!(!view.selecting()));
+        assert_eq!(selected(&view, cx).as_deref(), Some("one"));
+
+        // Released inside, it ends too, and nothing else hears it.
+        cx.simulate_mouse_down(cell(1, 0), MouseButton::Left, none);
+        cx.simulate_mouse_move(cell(1, 4), MouseButton::Left, none);
+        cx.simulate_mouse_up(cell(1, 4), MouseButton::Left, none);
+        view.read_with(cx, |view, _| assert!(!view.selecting()));
+        assert_eq!(releases.get(), 1);
+        assert_eq!(selected(&view, cx).as_deref(), Some("four"));
+    }
+
+    /// Shift-click extends the selection to where it's clicked.
+    #[gpui_kit::test]
+    fn shift_click_extends_the_selection(cx: &mut TestAppContext) {
+        let (view, _, cx) = beside(cx);
+        let cell = cells(&view, cx);
+        let none = Modifiers::default();
+        cx.simulate_mouse_down(cell(0, 0), MouseButton::Left, none);
+        cx.simulate_mouse_move(cell(0, 3), MouseButton::Left, none);
+        cx.simulate_mouse_up(cell(0, 3), MouseButton::Left, none);
+        cx.simulate_mouse_down(cell(1, 4), MouseButton::Left, Modifiers::shift());
+        cx.simulate_mouse_up(cell(1, 4), MouseButton::Left, Modifiers::shift());
+        assert_eq!(selected(&view, cx).as_deref(), Some("one two three\nfour"));
     }
 }
