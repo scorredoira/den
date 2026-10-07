@@ -547,7 +547,7 @@ impl SearchPanel {
                     .when(self.show_replace, |el| {
                         el.child(
                             h_flex()
-                                .gap_0p5()
+                                .gap_2()
                                 .child(
                                     div().flex_1().min_w_0().child(
                                         Input::new(&self.replacement).suffix(
