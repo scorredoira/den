@@ -668,6 +668,13 @@ pub struct Config {
     pub auto_save_on_focus_loss: bool,
     /// Extensions (`json`, `ts`…) formatted on saving.
     pub format_on_save: Vec<String>,
+    /// Spaces per indentation level in a file that doesn't show its own
+    /// (new, or nothing indented yet); unset, 4.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab_size: Option<usize>,
+    /// Such a file indents with tabs, not spaces.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub indent_with_tabs: bool,
     /// Look for new releases every few hours; unset, it does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check_for_updates: Option<bool>,
@@ -865,6 +872,7 @@ impl DiffLayout {
 }
 
 /// Narrower than this, an automatic diff shows in one column.
+pub const DEFAULT_TAB_SIZE: usize = 4;
 pub const DEFAULT_SIDE_BY_SIDE_WIDTH: f32 = 1200.;
 pub const MIN_SIDE_BY_SIDE_WIDTH: f32 = 600.;
 pub const MAX_SIDE_BY_SIDE_WIDTH: f32 = 3000.;
@@ -934,6 +942,11 @@ impl Config {
     }
 
     /// The width under which an automatic diff shows in one column.
+    /// The indentation of a file that doesn't show its own.
+    pub fn tab(&self) -> gpui_base::input::TabSize {
+        gpui_base::input::TabSize { tab_size: self.tab_size.unwrap_or(DEFAULT_TAB_SIZE), hard_tabs: self.indent_with_tabs }
+    }
+
     pub fn side_by_side_width(&self) -> f32 {
         self.side_by_side_width.unwrap_or(DEFAULT_SIDE_BY_SIDE_WIDTH).clamp(MIN_SIDE_BY_SIDE_WIDTH, MAX_SIDE_BY_SIDE_WIDTH)
     }
