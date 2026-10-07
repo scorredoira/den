@@ -199,11 +199,12 @@ impl EditorScrollbarLayout {
 
 pub(super) struct EditorScrollbar<M: InputModeKind> {
     state: Entity<InputBaseState<M>>,
+    snapshot: Option<EditorScrollbarSnapshot>,
 }
 
 impl<M: InputModeKind> EditorScrollbar<M> {
     pub(super) fn new(state: Entity<InputBaseState<M>>) -> Self {
-        Self { state }
+        Self { state, snapshot: None }
     }
 }
 
@@ -235,7 +236,7 @@ fn scrollbar_mark_bounds(
 
 impl<M: InputModeKind> Element for EditorScrollbar<M> {
     type RequestLayoutState = ();
-    type PrepaintState = (Vec<(Bounds<Pixels>, Hsla)>, Option<AnyElement>);
+    type PrepaintState = (Vec<(Bounds<Pixels>, Hsla, Pixels)>, Option<AnyElement>);
 
     fn id(&self) -> Option<ElementId> {
         Some("editor-scrollbar".into())
@@ -273,6 +274,7 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
         let Some(snapshot) = state.editor_scrollbar_snapshot.get() else {
             return (Vec::new(), None);
         };
+        self.snapshot = Some(snapshot);
         let line_height = snapshot.line_height;
         let marks = state
             .scrollbar_marks
@@ -287,7 +289,7 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
                     line_height * first,
                     line_height * (last + 1 - first),
                 );
-                (bounds, mark.color)
+                (bounds, mark.color, line_height * (first + last + 1) as f32 / 2.)
             })
             .collect();
         let scroll_handle = state.scroll_handle.clone();
@@ -325,8 +327,52 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
         cx: &mut App,
     ) {
         let (marks, scrollbar) = prepaint;
-        for (bounds, color) in marks.iter() {
+        for (bounds, color, _) in marks.iter() {
             window.paint_quad(fill(*bounds, *color));
+        }
+        // (den) A click by a mark centers its lines even while the scrollbar
+        // is hidden (when visible, the scrollbar takes the click first). The
+        // track is wider than the marks and they can be 2 px tall, so the
+        // click counts within a few pixels of one and goes to the nearest.
+        if let Some(snapshot) = self.snapshot
+            && !marks.is_empty()
+        {
+            const SLACK: Pixels = px(4.);
+            let viewport = snapshot.layout.bounds;
+            let scroll_height = snapshot.layout.scroll_size.height;
+            let track_left = viewport.right() - Scrollbar::width();
+            let targets: Vec<(Bounds<Pixels>, Pixels)> =
+                marks.iter().map(|(bounds, _, center)| (*bounds, *center)).collect();
+            let state = self.state.clone();
+            window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, _, cx| {
+                let position = event.position;
+                if !phase.bubble()
+                    || event.button != MouseButton::Left
+                    || position.x < track_left
+                    || position.x > viewport.right()
+                {
+                    return;
+                }
+                let distance = |bounds: &Bounds<Pixels>| {
+                    (bounds.top() - position.y).max(position.y - bounds.bottom()).max(px(0.))
+                };
+                let Some((_, center)) = targets
+                    .iter()
+                    .filter(|(bounds, _)| distance(bounds) <= SLACK)
+                    .min_by(|a, b| f32::from(distance(&a.0)).total_cmp(&f32::from(distance(&b.0))))
+                else {
+                    return;
+                };
+                cx.stop_propagation();
+                let max = (scroll_height - viewport.size.height).max(px(0.));
+                let top = (*center - viewport.size.height / 2.).clamp(px(0.), max);
+                state.update(cx, |state, cx| {
+                    let mut offset = state.scroll_handle.offset();
+                    offset.y = -top;
+                    state.scroll_handle.set_offset(offset);
+                    cx.notify();
+                });
+            });
         }
         if let Some(scrollbar) = scrollbar.as_mut() {
             scrollbar.paint(window, cx);
