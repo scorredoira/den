@@ -12,9 +12,8 @@ the agent, so a program on a server is debugged like a local one.
 { "command": "sim -d -dp 127.0.0.1:${port} ${file}" }
 ```
 
-- `command`: a shell line run in the debugger's own terminal, which the
-  console tab shows above its evaluations, never among the terminals' tabs
-  (its output stays there). `${file}` is the open file, relative to the workspace: there is one
+- `command`: a shell line run in the debugger's own terminal, a part of
+  its tab, never among the terminals' tabs (its output stays there). `${file}` is the open file, relative to the workspace: there is one
   command, which debugs whatever is open, and the program decides what that
   means (a script, a test file, the server it is part of). With no file open
   `${file}` is empty, and the program decides what to debug without one (sim:
@@ -161,11 +160,11 @@ page itself, so `--no-page` keeps Den from opening the server's too:
   `hello` and closed when it goes: each program then does what it does when
   its client goes (clears its breakpoints, resumes its VMs), and nothing
   holds a program while nobody debugs.
-- A program that ends is told in the console (an `output` event); its
-  stopped VMs resume and join goes on with the others. join ends when every
-  program has ended, or when interrupted (Stop interrupts the launch
-  command): it then ends its programs, with SIGINT and, after 3 seconds,
-  SIGKILL.
+- The programs are one session: a program that ends is told in the console
+  (an `output` event), and join ends the others and itself (closing the
+  browser of `den chrome` ends the server with it, and the session). join
+  also ends when interrupted (Stop interrupts the launch command): it then
+  ends its programs, with SIGINT and, after 3 seconds, SIGKILL.
 
 ## Keys
 
@@ -193,16 +192,18 @@ Chrome the pick is an Alt-click in the page (docs/chrome.md).
 
 It is a tab after the terminals' (closing the tab hides it; F5 or Cmd-Shift-D
 bring it back), with the debugger's state on it: yellow while stopped, green
-while running. The toolbar at its top; a grid of two rows of two, the call
-stack and the variables above, the watches and the breakpoints below; and
-the console under it at the tab's width. Every line between them is dragged
-to size them; the console always keeps a few lines. A part's header dragged
-onto another part swaps the two. A part's right-click menu hides it and its
-row mate takes the row; a row with none goes and the other takes the grid;
-with all four hidden the console has the tab. Show, in the tab's right-click
-menu, lists the four. Sizes, order and hidden parts are kept with the layout
-(the debugging one has its own), and `den where` lists the grid's order and
-the parts hidden.
+while running. The toolbar at its top, and its parts under it: the call
+stack and the variables, the watches and the breakpoints, in two rows of
+two; then the launch's terminal (while there is one) and the console, which
+always keeps a few lines. A part's header dragged near another part's edge
+puts it beside it on that side: side by side, or one above the other, as
+the terminals' splits do. Dropped in its middle, the two swap. Every line
+between them is dragged to size them. A part's right-click menu hides it
+and its neighbours take its space; Show, in the tab's right-click menu,
+lists the parts that hide (all but the console). Where each part is, the
+sizes and the hidden parts are kept with the layout (the debugging one has
+its own), and `den where` lists the parts as placed (`tree`) and those
+hidden.
 
 A session has a layout of its own: while the workspace in front debugs, Den
 uses the debugging layout (the side column closed and the debugger's tab in
