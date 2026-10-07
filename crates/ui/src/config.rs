@@ -666,6 +666,9 @@ pub struct Config {
     /// Worktree), not those the agents make on their own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub only_own_worktrees: bool,
+    /// A split terminal tab shows no title over each pane.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hide_pane_titles: bool,
     /// Projects hidden from the Projects panel, Cmd-E and Cmd-K: a repo's
     /// checkout or a folder (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
