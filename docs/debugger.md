@@ -54,7 +54,7 @@ Visual Studio's debugger does: where the program says (sim: the first line of
 `main`, or of the function `-de` names). A program with a page (`page` in
 `hello`) is a server: it is released without `entry`, so it runs. Stop
 (Shift-F5) interrupts a program it started and leaves one it attached to
-running. Restart (Cmd-Shift-F5) starts the session again as it started: the
+running; once the session has ended, it closes the debugger. Restart (Cmd-Shift-F5) starts the session again as it started: the
 same file (not the one a stop opened since), or the same test. A program it
 started frees its terminal and its port first, so the new session doesn't
 attach to the one that is ending.
@@ -207,8 +207,10 @@ hidden.
 
 A session has a layout of its own: while the workspace in front debugs, Den
 uses the debugging layout (the side column closed and the debugger's tab in
-front the first time), and puts the editing one back when the session ends,
-fails to start or the program goes. A restart is one session. What changes
+front the first time), and puts the editing one back on Stop. A session that
+ends on its own (the program ended, failed to start or went) leaves the
+debugger in sight with what its console said, until Stop. A restart is one
+session. What changes
 while debugging stays for the next one (docs/guide.md, Layout).
 
 When a VM stops, its line is marked and, unless it's at least five lines
@@ -313,7 +315,7 @@ asked for.
 |-------|--------|
 | `stopped` | a `Stop` |
 | `resumed` | `vm`, sent before the VM runs again |
-| `output` | `text`, `file`, `line` |
+| `output` | `text`, `file`, `line`, `error?`: true for what went wrong in the program (the error that ended it), in red |
 | `reveal` | `file`, `line`: a place the program asks to show. Den opens it in the editor. |
 
 Programs that implement it: sim (`sim -d`, see its `debugger.md`).

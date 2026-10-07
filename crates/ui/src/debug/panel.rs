@@ -123,6 +123,7 @@ impl Debugger {
         let debugger = cx.entity().downgrade();
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
         let active = self.status != Status::Idle;
+        let shown = self.is_shown();
         let connected = self.status == Status::Connected;
         move |menu, window, cx| {
             let menu = if stopped {
@@ -140,7 +141,7 @@ impl Debugger {
                 .item(menu::item("Step Out", &debugger, |this, _, cx| this.step_out(cx)).action(Box::new(StepOut)).disabled(!stopped))
                 .separator()
                 .item(menu::item("Restart", &debugger, |this, window, cx| this.restart(window, cx)).action(Box::new(DebugRestart)))
-                .item(menu::item("Stop", &debugger, |this, _, cx| this.stop(cx)).action(Box::new(DebugStop)).disabled(!active))
+                .item(menu::item("Stop", &debugger, |this, _, cx| this.stop(cx)).action(Box::new(DebugStop)).disabled(!shown))
                 .separator()
                 // a phone app's widget picker; in Chrome, Alt-click in the page
                 .item(
@@ -177,6 +178,7 @@ impl Debugger {
         let active = self.status != Status::Idle;
 
         let status: SharedString = match &self.status {
+            Status::Idle if self.ended => "Ended".into(),
             Status::Idle => "Not running".into(),
             Status::Connecting(what) => what.clone().into(),
             Status::Connected => match self.current() {
@@ -237,7 +239,7 @@ impl Debugger {
                     .on_click(cx.listener(|this, _, window, cx| this.restart(window, cx))),
             )
             .child(
-                tool("debug-stop", "icons/square.svg", "Stop (Shift-F5)", active, theme.danger, cx)
+                tool("debug-stop", "icons/square.svg", "Stop (Shift-F5)", self.is_shown(), theme.danger, cx)
                     .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
             )
             .child(
@@ -778,7 +780,7 @@ impl Debugger {
                     .whitespace_normal()
                     .child(text(ix, line.clone()))
                     .into_any_element(),
-                ConsoleLine::Output { text: output, path, line } => h_flex()
+                ConsoleLine::Output { text: output, path, line, error } => h_flex()
                     .px_2()
                     .gap_2()
                     .child(
@@ -786,7 +788,7 @@ impl Debugger {
                             .flex_1()
                             .min_w_0()
                             .whitespace_normal()
-                            .text_color(theme.foreground)
+                            .text_color(if *error { theme.danger } else { theme.foreground })
                             .child(text(ix, output.clone())),
                     )
                     // the place it was written from, which opens it

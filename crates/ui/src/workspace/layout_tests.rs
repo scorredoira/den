@@ -908,10 +908,10 @@ fn a_change_while_debugging_stays_for_the_next_session(cx: &mut TestAppContext) 
 }
 
 /// A restart is one session: the layout doesn't go back to editing in
-/// between. A session that never connects ends, and the editing layout is
-/// back.
+/// between. A session that never connects ends, and the debugger stays in
+/// sight with what it said until Stop puts the editing layout back.
 #[gpui_kit::test]
-fn a_restart_does_not_flip_and_a_failed_start_restores(cx: &mut TestAppContext) {
+fn a_restart_does_not_flip_and_an_ended_session_stays_until_stop(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     debug(&workspace, cx, true);
     let flips = Rc::new(Cell::new(0));
@@ -937,6 +937,13 @@ fn a_restart_does_not_flip_and_a_failed_start_restores(cx: &mut TestAppContext) 
     // the program restarted never listens: the session fails and ends
     workspace.update(cx, |workspace, cx| workspace.debugger.update(cx, |debugger, cx| debugger.pretend_failed(cx)));
     cx.run_until_parked();
+    assert_eq!(flips.get(), 0);
+    assert!(workspace.read_with(cx, |workspace, _| workspace.debugging), "ended, still in sight");
+    let state = workspace.read_with(cx, |workspace, cx| workspace.debugger.read(cx).state());
+    assert_eq!(state["status"], "idle");
+    assert_eq!(state["console"].as_array().and_then(|lines| lines.last()), Some(&serde_json::json!("error: the program ended before it listened")));
+    bounds(cx, "debug-tab");
+    debug(&workspace, cx, false);
     assert_eq!(flips.get(), 1);
     assert!(!workspace.read_with(cx, |workspace, _| workspace.debugging));
     assert!(!cx.update(|_, cx| Config::get(cx).debugging()));

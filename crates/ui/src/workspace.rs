@@ -441,7 +441,7 @@ impl Workspace {
             cx.subscribe_in(&debugger, window, Self::on_debug_event),
             cx.subscribe_in(&outline, window, Self::on_outline),
             cx.observe(&debugger, |this, debugger, cx| {
-                let debugging = debugger.read(cx).is_active();
+                let debugging = debugger.read(cx).is_shown();
                 this.debug_changed(debugging, cx);
                 cx.notify();
             }),
