@@ -203,6 +203,110 @@ impl Workspace {
         }
         found
     }
+
+    /// Claude Code in this workspace's terminals hears what its editor shows
+    /// (the agent's `ide.rs`): the file in front and its selection, once they
+    /// stay put for a moment. Checked on each render; told only when changed.
+    pub(super) fn report_ide_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.active.map(|ix| &self.tabs[ix]).filter(|tab| tab.diff.is_none() && !tab.doc) else {
+            return;
+        };
+        if !matches!(tab.content, Content::Ready) || tab.image.is_some() {
+            return;
+        }
+        let shown = (tab.path.clone(), tab.editor.read(cx).selections());
+        if self.ide_reported.as_ref() == Some(&shown) {
+            return;
+        }
+        self.ide_reported = Some(shown);
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let group = self.terminals.read(cx).group().to_string();
+        let (path, editor) = (tab.path.clone(), tab.editor.clone());
+        self.ide_report = Some(cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+            let selection = cx.update(|cx| ide_selection(path, editor.read(cx)));
+            client.notify(Request::IdeSelection { group, selection: Some(selection) });
+        }));
+    }
+
+    /// One of Claude Code's tools that needs the editor (the agent's
+    /// `ide.rs`), answered with the text it expects.
+    pub fn ide_tool(&mut self, tool: &str, params: &serde_json::Value, window: &mut Window, cx: &mut Context<Self>) -> Task<Result<String, String>> {
+        let Some(path) = params["filePath"].as_str().map(|path| normalize(Path::new(path))) else {
+            return Task::ready(self.ide_editors(tool));
+        };
+        let open = self.tabs.iter().position(|tab| tab.is_file() && tab.path == path);
+        let not_open = || Ok(serde_json::json!({ "success": false, "message": format!("Document not open: {}", path.display()) }).to_string());
+        match (tool, open) {
+            ("openFile", _) => {
+                let focus = params["makeFrontmost"].as_bool().unwrap_or(true);
+                self.open_with(path.clone(), true, focus, window, cx);
+                Task::ready(Ok(format!("Opened file: {}", path.display())))
+            }
+            ("checkDocumentDirty", Some(ix)) => Task::ready(Ok(serde_json::json!({
+                "success": true,
+                "filePath": path,
+                "isDirty": self.tabs[ix].dirty,
+                "isUntitled": false,
+            })
+            .to_string())),
+            ("saveDocument", Some(ix)) => {
+                let saving = self.save_tab(ix, cx);
+                cx.spawn(async move |_, _| {
+                    let saved = saving.await;
+                    Ok(serde_json::json!({
+                        "success": saved,
+                        "filePath": path,
+                        "saved": saved,
+                        "message": if saved { "Document saved" } else { "Couldn't save the document" },
+                    })
+                    .to_string())
+                })
+            }
+            ("checkDocumentDirty" | "saveDocument", None) => Task::ready(not_open()),
+            _ => Task::ready(Err(format!("den doesn't have {tool}"))),
+        }
+    }
+
+    /// `getOpenEditors`: the files open, as VS Code's tabs.
+    fn ide_editors(&self, tool: &str) -> Result<String, String> {
+        if tool != "getOpenEditors" {
+            return Err(format!("{tool}: filePath is missing"));
+        }
+        let tabs: Vec<serde_json::Value> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.is_file())
+            .map(|(ix, tab)| {
+                serde_json::json!({
+                    "uri": format!("file://{}", tab.path.display()),
+                    "isActive": Some(ix) == self.active,
+                    "label": file_name(&tab.path),
+                    "languageId": crate::language::for_path(&tab.path),
+                    "isDirty": tab.dirty,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "tabs": tabs }).to_string())
+    }
+}
+
+/// What Claude Code is told an editor shows: its file, and its first
+/// selection or the cursor. A huge selection is cut.
+fn ide_selection(file: PathBuf, state: &EditorState) -> proto::IdeSelection {
+    const MAX_TEXT: usize = 1 << 20;
+    let text = state.text();
+    let (anchor, cursor) = state.selections().first().copied().unwrap_or_default();
+    let (start, end) = (anchor.min(cursor), anchor.max(cursor));
+    let point = |offset| {
+        let position = text.offset_to_position(offset);
+        (position.line, position.character)
+    };
+    let selected = text.slice(start..end.min(start + MAX_TEXT)).to_string();
+    proto::IdeSelection { file, text: selected, start: point(start), end: point(end) }
 }
 
 /// Selects from `from` to `to`, with the cursor at `from` so that it's the

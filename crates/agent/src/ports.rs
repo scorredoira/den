@@ -24,6 +24,26 @@ pub fn listening(shells: &HashMap<u32, String>) -> Vec<PortInfo> {
     }
 }
 
+/// What `shells` says of the terminal whose shell is `pid` or one of its
+/// ancestors: `shells` maps the pid of each terminal's shell to it. Linux
+/// and macOS; elsewhere, none.
+pub fn shell_of<T: Clone>(pid: u32, shells: &HashMap<u32, T>) -> Option<T> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::shell_group(pid, shells)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let tree = macos::output("ps", &["-axo", "pid=,ppid="])?;
+        macos::shell_group(pid, &macos::parse_tree(&tree), shells)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (pid, shells);
+        None
+    }
+}
+
 /// Without `/proc`: `ps` gives the tree of processes and `lsof` the sockets
 /// of those started from a terminal.
 #[cfg(any(target_os = "macos", test))]
@@ -66,13 +86,13 @@ mod macos {
     /// Its standard output, also when it fails: `lsof` does when one of the
     /// processes has nothing to list.
     #[cfg(target_os = "macos")]
-    fn output(program: &str, args: &[&str]) -> Option<String> {
+    pub(super) fn output(program: &str, args: &[&str]) -> Option<String> {
         let output = std::process::Command::new(program).args(args).output().ok()?;
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// The group of the terminal whose shell is `pid` or one of its ancestors.
-    fn shell_group(mut pid: u32, parents: &HashMap<u32, u32>, shells: &HashMap<u32, String>) -> Option<String> {
+    pub(super) fn shell_group<T: Clone>(mut pid: u32, parents: &HashMap<u32, u32>, shells: &HashMap<u32, T>) -> Option<T> {
         for _ in 0..64 {
             if let Some(group) = shells.get(&pid) {
                 return Some(group.clone());
@@ -202,7 +222,7 @@ mod linux {
 
     /// The group of the terminal whose shell is `pid` or one of its ancestors.
     #[cfg(target_os = "linux")]
-    fn shell_group(mut pid: u32, shells: &HashMap<u32, String>) -> Option<String> {
+    pub(super) fn shell_group<T: Clone>(mut pid: u32, shells: &HashMap<u32, T>) -> Option<T> {
         for _ in 0..64 {
             if let Some(group) = shells.get(&pid) {
                 return Some(group.clone());

@@ -27,8 +27,11 @@ full list; the main ones:
 - `den diff [<file>]` shows the uncommitted changes, so the user can review them.
 - `echo "# Title ..." | den doc "<title>"` shows Markdown in a tab: plans,
   reports, tables, anything longer than a chat answer.
-- `den selection` prints the file, the range and the text the user has
-  selected: what they mean by "this". `den tabs` lists the open files.
+- Claude Code in Den's terminals is connected to it as to an IDE: the
+  file in front and the user's selection come with each message ("Selected
+  N lines from …"). `den selection` prints them on demand (the file, the
+  range and the text: what they mean by "this"); `den tabs` lists the open
+  files.
 - `den message <text>` shows a short message in the status bar.
 - `den notes` prints the workspace's notes: what's next there, kept by Den
   outside the repo. `den notes add <text>` adds a line (e.g. what's left

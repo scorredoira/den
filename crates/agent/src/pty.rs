@@ -68,6 +68,11 @@ impl Pty {
             }
         }
 
+        // Claude Code connects to the agent as to an IDE (`ide.rs`).
+        if let Some(port) = crate::ide::port() {
+            cmd.env("CLAUDE_CODE_SSE_PORT", port.to_string());
+        }
+
         let child = match pair.slave.spawn_command(cmd) {
             Ok(child) => child,
             Err(error) => {

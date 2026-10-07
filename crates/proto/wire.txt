@@ -1,4 +1,4 @@
-protocol 8
+protocol 9
 
 pub type TermId = u64;
 
@@ -63,6 +63,13 @@ pub type TermId = u64;
     TermClear { term: TermId }
     Copy { from: PathBuf, to: PathBuf }
     Untrash { item: PathBuf, to: PathBuf }
+    IdeSelection { group: String, selection: Option<IdeSelection> }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct IdeSelection {
+    pub file: PathBuf
+    pub text: String
+    pub start: (u32, u32)
+    pub end: (u32, u32)
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)] pub enum LspOp {
     Definition

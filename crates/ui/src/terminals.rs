@@ -119,6 +119,11 @@ pub struct TerminalArea {
 impl EventEmitter<TerminalAreaEvent> for TerminalArea {}
 
 impl TerminalArea {
+    /// Its terminals' group in the agent: the workspace's folder.
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
     pub fn new(cwd: PathBuf, client: Option<Arc<Client>>, local: bool, cx: &mut Context<Self>) -> Self {
         Self {
             client,
