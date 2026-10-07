@@ -314,9 +314,58 @@ pub fn shift(selections: &[Selection], range: &Range<usize>, len: usize) -> Vec<
     selections.iter().map(|&(anchor, cursor)| (moved(anchor), moved(cursor))).collect()
 }
 
+/// How a file indents, as VS Code guesses it: tabs if more lines start with
+/// a tab than with spaces; else the step most often seen from a line to the
+/// next one indented further (so `/** … * */` comments, one space in, don't
+/// count). `None` if nothing is indented: the settings decide.
+pub fn indentation(text: &str) -> Option<input::TabSize> {
+    let (mut tabs, mut spaces) = (0, 0);
+    let mut steps = [0usize; 9];
+    let mut previous = 0;
+    for line in text.lines() {
+        let rest = line.trim_start_matches([' ', '\t']);
+        if rest.is_empty() {
+            continue;
+        }
+        if line.starts_with('\t') {
+            tabs += 1;
+            continue;
+        }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if indent > 0 {
+            spaces += 1;
+        }
+        if indent > previous && indent - previous >= 2 && indent - previous < steps.len() {
+            steps[indent - previous] += 1;
+        }
+        previous = indent;
+    }
+    if tabs == 0 && spaces == 0 {
+        return None;
+    }
+    if tabs > spaces {
+        return Some(input::TabSize { tab_size: 4, hard_tabs: true });
+    }
+    // On a tie, the larger step: 4 over 2 when a file has both.
+    let step = (2..steps.len()).rev().max_by_key(|&step| steps[step]).filter(|&step| steps[step] > 0)?;
+    Some(input::TabSize { tab_size: step, hard_tabs: false })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indentation_is_guessed_from_the_text() {
+        let guess = |text: &str| indentation(text).map(|tab| (tab.tab_size, tab.hard_tabs));
+        assert_eq!(guess("fn main() {\n    let a = 1;\n    if a {\n        b();\n    }\n}\n"), Some((4, false)));
+        assert_eq!(guess("a:\n  b:\n    c: 1\n  d: 2\n"), Some((2, false)));
+        assert_eq!(guess("func main() {\n\tif a {\n\t\tb()\n\t}\n}\n"), Some((4, true)));
+        // a doc comment's single space doesn't make it 1
+        assert_eq!(guess("/**\n * Doc.\n */\nclass A {\n    f() {\n        g();\n    }\n}\n"), Some((4, false)));
+        assert_eq!(guess("nothing\nindented\n"), None);
+        assert_eq!(guess(""), None);
+    }
 
     /// Applies the edits (disjoint, in any order) as the editor would.
     fn apply(text: &str, edit: &Edit) -> String {

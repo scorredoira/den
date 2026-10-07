@@ -44,6 +44,8 @@ On Windows, repository hooks can use `.den/create.ps1`, `.den/remove.ps1` and `.
 
 Format Document (Shift-Opt-F), and Format on Save for the types chosen in Settings, use the repo's executable `.den/format <file>` if it has one (the text on stdin, the result on stdout; exiting with 2 leaves that type to the next way), else the language server; JSON is formatted even without either.
 
+The editor indents a file as it already is (spaces, how many, or tabs, guessed from its lines, like VS Code). A new file, or one with nothing indented yet, uses Tab Size and Indent with Tabs in Settings: 4 spaces by default.
+
 Cmd-E goes straight into the next one with a coding agent, in the panel's order, and Cmd-Alt-Shift-E into the next one of all. Cmd-Alt-E switches between the ones being worked on as Cmd-Tab does between apps: the previous one, then those with a coding agent, the ones waiting for an answer first and each the most recently used first (all of them while no other has an agent); holding Cmd, each E goes one further (Shift-E back) and letting go enters it. Cmd-K finds one across servers, the most recently used first. On Linux and Windows these are Ctrl-Alt-E, Ctrl-Alt-Shift-E, Ctrl-Tab and Ctrl-Shift-K, so that Ctrl plus a letter stays the shell's inside a terminal. Every shortcut can be changed in Settings (Cmd-,).
 
 Cmd-D splits a terminal down and Cmd-Alt-D to the right (Ctrl-Alt-D and Ctrl-Shift-5 on Linux and Windows), and Cmd-Alt-arrows move between the panes. Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open.

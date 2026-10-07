@@ -335,7 +335,7 @@ impl Den {
     }
 
     fn render_editor(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[1], "Auto Save", "autosave", "focus", "Format on Save", "Format Document", "json", "Diff Layout", "Side by Side", "One Column", "One-Column Width", "Automatic"]
+        let visible = [SECTIONS[1], "Auto Save", "autosave", "focus", "Format on Save", "Format Document", "json", "Diff Layout", "Side by Side", "One Column", "One-Column Width", "Automatic", "Tab Size", "Indent with Tabs", "indentation", "spaces"]
             .iter().any(|text| matches(text));
         let layout = Config::get(cx).diff_layout;
         let layouts = h_flex().gap_2().children(
@@ -361,6 +361,26 @@ impl Den {
             .when(width != config::DEFAULT_SIDE_BY_SIDE_WIDTH, |el| {
                 el.child(link("diff-width-reset", "↺", cx).on_click(set_width(None)))
             });
+        let tab = Config::get(cx).tab();
+        let set_tab_size = |size: Option<usize>| {
+            cx.listener(move |_, _, _, cx| {
+                Config::update(cx, |config| config.tab_size = size.map(|size| size.clamp(1, 8)).filter(|size| *size != config::DEFAULT_TAB_SIZE));
+                cx.refresh_windows();
+            })
+        };
+        let tab_size = h_flex()
+            .gap_2()
+            .child(step("tab-size-smaller".into(), "−", cx).on_click(set_tab_size(Some(tab.tab_size.saturating_sub(1)))))
+            .child(div().w(px(48.)).flex().justify_center().child(tab.tab_size.to_string()))
+            .child(step("tab-size-larger".into(), "+", cx).on_click(set_tab_size(Some(tab.tab_size + 1))))
+            .when(tab.tab_size != config::DEFAULT_TAB_SIZE, |el| el.child(link("tab-size-reset", "↺", cx).on_click(set_tab_size(None))));
+        let hard_tabs = Switch::new("indent-with-tabs")
+            .accessibility_label("Indent with Tabs")
+            .checked(tab.hard_tabs)
+            .on_click(cx.listener(|_, checked, _, cx| {
+                Config::update(cx, |config| config.indent_with_tabs = *checked);
+                cx.refresh_windows();
+            }));
         let input = div().max_w(px(480.)).child(Input::new(&settings.format_on_save));
         let auto_save = Switch::new("auto-save-on-focus-loss")
             .accessibility_label("Auto Save on Focus Loss")
@@ -370,6 +390,16 @@ impl Den {
                 cx.notify();
             }));
         let rows = vec![setting(
+            "Tab Size",
+            "Spaces per indentation level, for new files and files with nothing indented yet. A file that's already indented keeps its own, with spaces or tabs.",
+            tab_size,
+            cx,
+        ), setting(
+            "Indent with Tabs",
+            "Tabs instead of spaces, for the same files.",
+            hard_tabs,
+            cx,
+        ), setting(
             "Auto Save on Focus Loss",
             "Save changed files when switching editor tabs, moving focus to another panel, or leaving the window. Uses Format on Save when enabled for the file type.",
             auto_save,

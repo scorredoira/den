@@ -7,7 +7,7 @@ use std::{
 };
 
 use client::Client;
-use gpui_base::input::{ExecutionLine, GutterMark, LineStyle, ScrollbarMark};
+use gpui_base::input::{ExecutionLine, GutterMark, LineStyle, ScrollbarMark, TabSize};
 use proto::{CommitInfo, GitOp, LspLocation, LspOp, PortInfo, Request, Response, SearchHit};
 
 use gpui_kit::component::{
@@ -391,6 +391,9 @@ pub struct Workspace {
     shown: u64,
     /// Word wrap as applied to the tabs (it follows the config).
     word_wrap: bool,
+    /// The indentation applied to files that don't show their own (see
+    /// `apply_tab`): its size and whether it's tabs.
+    tab: (usize, bool),
     message: Option<SharedString>,
     /// On a server, ports the task's terminals are listening on.
     ports: Vec<PortInfo>,
@@ -594,6 +597,7 @@ impl Workspace {
             group: 0,
             shown: 0,
             word_wrap: Config::get(cx).word_wrap,
+            tab: (Config::get(cx).tab().tab_size, Config::get(cx).tab().hard_tabs),
             message,
             ports: Vec::new(),
             signature: None,
@@ -2511,7 +2515,8 @@ impl Workspace {
             let mut editor = EditorState::new(window, cx)
                 .language(language)
                 .line_number(true)
-                .soft_wrap(Config::get(cx).word_wrap);
+                .soft_wrap(Config::get(cx).word_wrap)
+                .tab_size(Config::get(cx).tab());
             let lsp = editor.lsp_mut();
             lsp.completion_provider = Some(Rc::new(Completions::new(workspace.clone(), cx.entity().downgrade())));
             lsp.completion_menu.max_width = px(480.);
@@ -2639,6 +2644,7 @@ impl Workspace {
                             let cursor = state.cursor_position();
                             let scroll = state.scroll_offset();
                             state.set_value(text.clone(), window, cx);
+                            state.set_tab_size(indentation(&text, cx), cx);
                             if reload {
                                 state.set_cursor_position(cursor, window, cx);
                                 state.set_scroll_offset(scroll, cx);
@@ -2662,6 +2668,7 @@ impl Workspace {
                                 let cursor = goto.unwrap_or_else(|| state.cursor_position());
                                 let scroll = state.scroll_offset();
                                 state.set_value(text.clone(), window, cx);
+                                state.set_tab_size(indentation(&text, cx), cx);
                                 state.set_cursor_position(cursor, window, cx);
                                 if goto.is_none() {
                                     state.set_scroll_offset(scroll, cx);
@@ -2831,6 +2838,7 @@ impl Workspace {
             };
             let focused = window.focused(cx);
             view.editor.update(cx, |state, cx| {
+                state.set_tab_size(indentation(&text, cx), cx);
                 state.set_value(text, window, cx);
                 state.set_cursor_position(cursor, window, cx);
             });
@@ -3414,6 +3422,22 @@ impl Workspace {
         Config::update(cx, |config| config.word_wrap = !config.word_wrap);
         crate::app_menu::set(cx);
         cx.notify();
+    }
+
+    /// Applies the config's indentation to the files that don't show their
+    /// own, if it changed (in any task).
+    fn apply_tab(&mut self, cx: &mut Context<Self>) {
+        let tab = Config::get(cx).tab();
+        if (tab.tab_size, tab.hard_tabs) == self.tab {
+            return;
+        }
+        self.tab = (tab.tab_size, tab.hard_tabs);
+        for tab in self.tabs.iter().filter(|tab| tab.is_file()) {
+            tab.editor.update(cx, |state, cx| {
+                let tab = indentation(&state.value(), cx);
+                state.set_tab_size(tab, cx);
+            });
+        }
     }
 
     /// Applies the config's word wrap to the tabs if it changed (in any task).
@@ -4203,6 +4227,7 @@ impl Render for Workspace {
             }
         }
         self.apply_word_wrap(window, cx);
+        self.apply_tab(cx);
         self.sync_mode(window, cx);
         // What the panels show follows what's drawn here, told to them right
         // after: told while drawing, the ones drawn from cache wouldn't see
@@ -4557,6 +4582,11 @@ fn breakpoint_edit_box(editor: &Entity<EditorState>, path: &Path, debugger: &Ent
 
 /// At the end of the cursor's line, in gray: the commit that last changed it.
 /// Positioned from the editor's last layout; nothing if the line isn't visible.
+/// How a file's text indents: its own, else the settings'.
+fn indentation(text: &str, cx: &App) -> TabSize {
+    editing::indentation(text).unwrap_or_else(|| Config::get(cx).tab())
+}
+
 fn inline_blame(editor: &Entity<EditorState>, blame: &Blame, cx: &App) -> Option<AnyElement> {
     let state = editor.read(cx);
     if state.selections().len() != 1 {
