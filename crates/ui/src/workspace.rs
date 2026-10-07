@@ -4565,7 +4565,12 @@ fn inline_blame(editor: &Entity<EditorState>, blame: &Blame, cx: &App) -> Option
     let line = state.cursor_position().line as usize;
     let commit = &blame.commits[(*blame.lines.get(line)?)? as usize];
     let text = state.text();
-    let end = text.line_start_offset(line) + text.slice_line(line).to_string().trim_end_matches('\r').len();
+    let content = text.slice_line(line).to_string();
+    // A blank line says nothing worth blaming, like VS Code.
+    if content.trim().is_empty() {
+        return None;
+    }
+    let end = text.line_start_offset(line) + content.trim_end_matches('\r').len();
     let at = state.range_to_bounds(&(end..end))?;
     let area = state.input_bounds();
     let origin = point(at.origin.x + px(48.), at.origin.y);
@@ -4582,7 +4587,7 @@ fn inline_blame(editor: &Entity<EditorState>, blame: &Blame, cx: &App) -> Option
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis()
-        .text_color(theme.muted_foreground.opacity(0.8))
+        .text_color(theme.muted_foreground.opacity(0.65))
         .font_family(theme.mono_font_family.clone())
         .child(format!("{}, {} ({})", commit.subject, commit.author, changes::ago(commit.time)));
     // In window coordinates, like the editor's layout.
