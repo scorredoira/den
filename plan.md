@@ -287,7 +287,7 @@ From here on den is developed inside den (Claude Code in a terminal of the `den/
 - Settings in a modal (Cmd-, or the gear) with search and an index: Appearance, Servers, Repos, Hidden Tasks and Keyboard Shortcuts (changed by recording the combination; a conflict is reported before anything is removed; in `config.json`, `keys`).
 - Settings: folder browser through the agent for adding repos (remote too) and a finder for the `Host` entries in `~/.ssh/config` for adding servers.
 - Jump history: Ctrl-Opt-← goes back and Ctrl-Opt-→ goes forward. When jumping, the target line is centered if it wasn't visible.
-- Tasks turn red when Claude is waiting for a reply: the agent reads the bottom of the screen once it goes quiet, using herdr's Claude rules (`blocked.rs`). Still to be tested with real Claude (needs an agent restart).
+- Tasks turn red when Claude is waiting for a reply: the agent reads the bottom of the screen once it goes quiet, using herdr's Claude rules (`blocked.rs`).
 - Right-click menus show the shortcut for each entry that has one.
 - Code highlighting with the colors of VS Code's 2026 theme, light and dark (`assets/themes/vscode-2026.json`).
 - Close All Tabs (Cmd-Alt-W) and Collapse All Folders (Cmd-Alt-C), also in the tab and tree menus.
@@ -305,10 +305,9 @@ From here on den is developed inside den (Claude Code in a terminal of the `den/
 
 **Next, in order:**
 
-1. Polish whatever comes up in daily use (highlighting and theme colors, UI details).
-2. Try out with real use: tasks turning red, terminals reopening after an agent restart, links in Markdown.
-3. New tasks start `claude` in their first terminal (`task_command` in `config.json`).
-4. The rest of phase 6 (Developer ID and notarization; Linux package) and phase 7 (Windows).
+1. Polish whatever comes up in daily use.
+2. New tasks start `claude` in their first terminal (`task_command` in `config.json`).
+3. Developer ID signing and notarization on macOS: needs a Developer ID Application certificate (only Apple Development ones exist so far).
 
 **Editor and git, requested (VS Code as the model):**
 
@@ -323,7 +322,7 @@ From here on den is developed inside den (Claude Code in a terminal of the `den/
 - [x] **Menu bar (macOS):** Den, File, Edit, Selection, View, Go, Terminal, Window and Help, as in VS Code; each entry is an existing action and shows its shortcut (`app_menu.rs`).
 - [x] **Word wrap:** Opt-Z (and View > Word Wrap), for every tab and task, saved in `config.json` (`word_wrap`).
 - [x] **Split editor:** two groups of tabs, side by side (Cmd-Opt-S) or one above the other (Cmd-Opt-Shift-S; not VS Code's Cmd-\, which on a Spanish keyboard needs Opt), or from the tab's menu. As in VS Code, splitting opens the active file on the other side too: another view with its own editor (cursor, scroll, undo), kept in sync with the first by applying the same edit; saving, unsaved changes and the blame are the file's, and if the file's tab closes a view takes over. A Markdown file opens its preview on the other side (Open Preview to the Side, Cmd-Opt-V), updating as you type. Move to Other Side moves a tab; a group left empty closes the split.
-- [ ] **Drag tabs** to split the editor or move them between groups (later: the menu and the shortcuts cover it).
+- [x] **Drag tabs** to split the editor or move them between groups (`workspace/tab_drag.rs`).
 
 ## Risks and open questions
 
