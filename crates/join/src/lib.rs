@@ -585,18 +585,16 @@ impl Hub {
                 return Ok(());
             }
             self.reap()?;
-            if self.kids.0.iter().all(|kid| kid.exit.is_some()) {
+            // one session: a program that ends (the browser closed, the
+            // server failed) ends the others, which serve nothing alone
+            if let Some(kid) = self.kids.0.iter().find(|kid| kid.exit.is_some()) {
+                let (name, status) = (kid.name.clone(), kid.exit.unwrap_or_default());
                 self.end_session();
-                let failed: Vec<String> = self
-                    .kids
-                    .0
-                    .iter()
-                    .filter_map(|kid| kid.exit.filter(|status| !status.success()).map(|status| format!("{} ({status})", kid.name)))
-                    .collect();
-                if failed.is_empty() {
+                if status.success() {
+                    eprintln!("den debug join: {name} ended: ending the others");
                     return Ok(());
                 }
-                bail!("every program ended: {}", failed.join(", "));
+                bail!("{name} ended ({status})");
             }
             match rx.recv_timeout(TICK) {
                 Ok(msg) => self.handle(msg),

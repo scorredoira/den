@@ -386,8 +386,9 @@ fn a_program_that_ends_before_listening_fails_the_join() {
 }
 
 #[test]
-fn a_program_that_ends_leaves_the_others() {
+fn a_program_that_ends_ends_the_others() {
     let mut join = two(true);
+    let ports = join.ports.clone();
     let (mut client, hello) = join.client();
     assert_eq!(hello["ok"], true);
 
@@ -397,12 +398,10 @@ fn a_program_that_ends_leaves_the_others() {
     assert_eq!(answer["ok"], false);
     let told = events.iter().any(|event| event["event"] == "output" && event["text"].as_str().unwrap().contains("phone"));
     assert!(told, "{events:?}");
-    assert!(events.iter().any(|event| event["event"] == "resumed" && event["vm"] == 17), "{events:?}");
-
-    let threads = client.ask("threads", json!({}));
-    assert_eq!(threads["stopped"], json!([16]), "the server goes on");
-    assert_eq!(client.ask("eval", json!({"vm": 17, "frame": 0, "expr": "a"}))["ok"], false);
-    join.stop().unwrap();
+    join.wait().unwrap();
+    for port in ports {
+        assert!(TcpStream::connect(loopback(port)).is_err(), "the server is ended too");
+    }
 }
 
 #[test]

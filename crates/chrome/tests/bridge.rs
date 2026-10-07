@@ -756,7 +756,6 @@ fn a_new_session_loads_the_page_again() -> Result<()> {
     expect_stop(&stop, "breakpoint", "src/app.ts", main)?;
     client.request("continue", json!({ "vm": stop["vm"] }))?;
     client.close();
-    drop(second);
 
     // another address of the same site goes in that same tab, not a new one per session
     let options = Options {
@@ -783,7 +782,12 @@ fn a_new_session_loads_the_page_again() -> Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     client.close();
+    // a bridge that ends closes the site's tabs: the last one gone, the bridge that launched
+    // Chrome ends too, closing it
     drop(third);
+    let bridge = first.bridge.take().context("the first bridge")?;
+    bridge.wait()?;
+    drop(second);
     Ok(())
 }
 

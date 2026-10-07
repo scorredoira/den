@@ -5,7 +5,7 @@
 //! they run can stop at a breakpoint.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
     io::Write,
     net::{Shutdown, TcpStream},
@@ -302,6 +302,10 @@ pub struct Core {
     pause_any: bool,
     /// Inline source maps already parsed, by a hash of their URL.
     maps: HashMap<u64, Arc<SourceMap>>,
+    /// The tabs that have shown the app (a debugged host), open or not.
+    app_tabs: HashSet<String>,
+    /// The app showed, and every tab of it has closed since: the bridge ends.
+    app_closed: bool,
 }
 
 impl Core {
@@ -324,6 +328,8 @@ impl Core {
             next_ref: 1,
             pause_any: false,
             maps: HashMap::new(),
+            app_tabs: HashSet::new(),
+            app_closed: false,
         }
     }
 
@@ -372,10 +378,37 @@ impl Core {
                         self.report(&format!("open {url}: {err:#}"));
                     }
                 }
-                Input::Shutdown => return Ok(()),
+                Input::Shutdown => {
+                    self.close_app();
+                    return Ok(());
+                }
+            }
+            if self.app_closed {
+                self.close_app();
+                return Ok(());
             }
         }
         Ok(())
+    }
+
+    /// The bridge ends: so does the Chrome it launched, every window of it;
+    /// in a Chrome it found running, the tabs of the app close.
+    fn close_app(&mut self) {
+        // Chrome may go before it answers: nothing to tell then
+        if self.settings.launched {
+            let _ = self.cdp.call(None, "Browser.close", json!({}));
+            return;
+        }
+        for target in self.app_tabs.drain() {
+            let _ = self.cdp.call(None, "Target.closeTarget", json!({ "targetId": target }));
+        }
+    }
+
+    /// A tab showed `url`: one of the app's, if its host is debugged.
+    fn note_tab(&mut self, target: &str, url: &str) {
+        if self.debugged_url(url) {
+            self.app_tabs.insert(target.to_string());
+        }
     }
 
     /// Says something went wrong: on stderr and in the client's console.
@@ -997,15 +1030,19 @@ impl Core {
                 return Ok(());
             }
             "Target.targetDestroyed" => {
-                if let Some(vm) =
-                    params.get("targetId").and_then(Value::as_str).and_then(|target| self.targets.get(target).copied())
-                {
+                let target = values::str_of(params, "targetId");
+                if let Some(vm) = self.targets.get(target).copied() {
                     self.remove_page(vm);
+                }
+                // closed, not a session detached (a navigation to another site can do that)
+                if self.app_tabs.remove(target) && self.app_tabs.is_empty() {
+                    self.app_closed = true;
                 }
                 return Ok(());
             }
             "Target.targetInfoChanged" => {
                 let info = &params["targetInfo"];
+                self.note_tab(values::str_of(info, "targetId"), values::str_of(info, "url"));
                 if let Some(vm) = self.targets.get(values::str_of(info, "targetId")).copied()
                     && let Some(page) = self.pages.get_mut(&vm)
                 {
@@ -1080,6 +1117,7 @@ impl Core {
             return Ok(());
         }
         let target = values::str_of(info, "targetId").to_string();
+        self.note_tab(&target, values::str_of(info, "url"));
         let vm = match self.targets.get(&target) {
             Some(vm) => *vm,
             None => {

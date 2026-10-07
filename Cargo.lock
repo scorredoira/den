@@ -964,6 +964,7 @@ version = "2.15.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
+ "libc",
  "serde_json",
  "tungstenite",
 ]

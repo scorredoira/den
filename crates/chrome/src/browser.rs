@@ -118,8 +118,8 @@ pub fn open(profile: &Path, headless: bool) -> Result<Browser> {
     command.arg("about:blank").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(unix)]
     if !headless {
-        // its own process group: a Chrome with windows outlives the bridge
-        // and the terminal that started it
+        // its own process group: Ctrl-C reaches the bridge, which closes it
+        // (Browser.close), not Chrome in the middle of a write
         use std::os::unix::process::CommandExt as _;
         command.process_group(0);
     }
