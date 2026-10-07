@@ -333,6 +333,12 @@ impl Terminal {
         cx.notify();
     }
 
+    /// Scrolls the least needed for `point` to be in view.
+    pub(crate) fn scroll_to(&mut self, point: AlacPoint, cx: &mut Context<Self>) {
+        self.term.scroll_to_point(point);
+        cx.notify();
+    }
+
     pub fn display_offset(&self) -> usize {
         self.term.grid().display_offset()
     }

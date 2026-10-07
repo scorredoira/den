@@ -35,6 +35,9 @@ fn editor_keys(id: &str) -> Option<&'static str> {
         "AddCursorBelow" if windows => "ctrl-alt-down",
         "Search" => "secondary-f",
         "Replace" if !mac => "ctrl-h",
+        // The terminal's, in `ui-term`: off the Mac Ctrl-F is the shell's.
+        "TerminalFind" if mac => "cmd-f",
+        "TerminalFind" => "ctrl-alt-f",
         _ => return None,
     })
 }

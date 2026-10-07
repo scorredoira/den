@@ -2,7 +2,11 @@
 //! (GPL-3.0-or-later): cells grouped into runs of the same style, and each run
 //! with the cell width forced so everything lines up in columns.
 
-use std::{cell::Cell as StdCell, ops::Range, rc::Rc};
+use std::{
+    cell::Cell as StdCell,
+    ops::{Range, RangeInclusive},
+    rc::Rc,
+};
 
 use alacritty_terminal::{
     index::{Line, Point as AlacPoint},
@@ -34,6 +38,8 @@ pub struct TerminalElement {
     layout: Rc<StdCell<Option<GridLayout>>>,
     /// Cells of the link under the mouse (with Cmd), which get underlined.
     link_cells: Vec<(Line, Range<usize>)>,
+    /// The find bar's matches in view, and whether each is the active one.
+    matches: Vec<(RangeInclusive<AlacPoint>, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -51,6 +57,7 @@ impl TerminalElement {
         font_size: Pixels,
         layout: Rc<StdCell<Option<GridLayout>>>,
         link_cells: Vec<(Line, Range<usize>)>,
+        matches: Vec<(RangeInclusive<AlacPoint>, bool)>,
     ) -> Self {
         Self {
             terminal,
@@ -60,6 +67,7 @@ impl TerminalElement {
             font_size,
             layout,
             link_cells,
+            matches,
         }
     }
 }
@@ -210,8 +218,12 @@ impl Element for TerminalElement {
             let selected = content
                 .selection
                 .is_some_and(|selection| selection.contains(indexed.point));
-            if selected {
+            // As the editor's: the matches a faint selection, the active one a full one.
+            let found = self.matches.iter().find(|(found, _)| found.contains(&indexed.point));
+            if selected || found.is_some_and(|(_, active)| *active) {
                 bg = palette.selection;
+            } else if found.is_some() {
+                bg = Hsla { s: 0.1, ..palette.selection };
             }
             if indexed.point == cursor_point {
                 cursor_cell = Some((Cell::clone(cell), fg, bg));

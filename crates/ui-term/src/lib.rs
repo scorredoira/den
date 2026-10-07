@@ -5,6 +5,7 @@
 mod backend;
 mod colors;
 mod element;
+mod find;
 mod keys;
 pub mod links;
 mod platform;
@@ -17,7 +18,7 @@ pub use backend::{PtyEvent, TerminalBackend};
 pub use terminal::{Terminal, TerminalEvent};
 pub use view::{TerminalFontSize, TerminalView, TerminalViewEvent, grid_for};
 
-actions!(terminal, [Copy, Paste, SendTab, SendBackTab, SendInterrupt]);
+actions!(terminal, [Copy, Paste, SendTab, SendBackTab, SendInterrupt, Find]);
 
 pub fn init(cx: &mut App) {
     cx.bind_keys(platform::keymap());

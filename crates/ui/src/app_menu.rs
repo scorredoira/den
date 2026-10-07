@@ -153,6 +153,8 @@ pub fn set(cx: &mut App) {
             MenuItem::action("New Terminal", NewTerminal),
             MenuItem::action("Split Terminal Right", SplitRight),
             MenuItem::action("Split Terminal Down", SplitDown),
+            MenuItem::separator(),
+            MenuItem::action("Find in Terminal", ui_term::Find),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
