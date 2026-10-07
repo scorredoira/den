@@ -892,13 +892,14 @@ impl DebugPart {
     }
 
     /// Its share of its split until dragged: the variables get more than the
-    /// call stack, the console less than the rest.
+    /// call stack, the terminal more than the breakpoints, which are few.
     fn weight(self) -> f32 {
         match self {
-            DebugPart::Stack | DebugPart::Terminal => 0.8,
+            DebugPart::Stack => 0.8,
             DebugPart::Variables => 1.2,
-            DebugPart::Watch | DebugPart::Breakpoints => 1.,
-            DebugPart::Console => 0.6,
+            DebugPart::Watch | DebugPart::Console => 1.,
+            DebugPart::Terminal => 1.4,
+            DebugPart::Breakpoints => 0.6,
         }
     }
 
@@ -1083,7 +1084,7 @@ impl DebugView {
             .iter()
             .map(|child| match (axis, child) {
                 (Axis::Row, _) => CELL_MIN_WIDTH,
-                (Axis::Column, Tree::Leaf(DebugPart::Console)) => CELL_HEADER + CONSOLE_MIN,
+                (Axis::Column, child) if child.leaves().contains(&DebugPart::Console) => CELL_HEADER + CONSOLE_MIN,
                 (Axis::Column, _) => CELL_HEADER * 2.,
             })
             .collect();
