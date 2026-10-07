@@ -1038,7 +1038,7 @@ impl TerminalArea {
                 let Some(view) = self.views.get(term) else {
                     return div().into_any_element();
                 };
-                let split = matches!(tab.tree, Tree::Split { .. });
+                let split = matches!(tab.tree, Tree::Split { .. }) && !crate::config::Config::get(cx).hide_pane_titles;
                 let theme = cx.theme();
                 let term = *term;
                 let this = self.weak.clone();
