@@ -715,7 +715,8 @@ impl TerminalView {
                 .top_1()
                 .right_3()
                 .w(px(400.))
-                .gap_1()
+                // Wide enough for the input's focus ring, drawn outside it.
+                .gap_2()
                 .p_1()
                 .bg(theme.tokens.popover)
                 .border_1()

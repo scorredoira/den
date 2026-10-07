@@ -526,7 +526,7 @@ impl<M: crate::input::overlay::OverlayMode> Render for SearchPanel<M> {
                     .child(
                         h_flex()
                             .w_full()
-                            .gap_1()
+                            .gap_2()
                             .child(
                                 div()
                                     .flex_1()
@@ -665,7 +665,7 @@ impl<M: crate::input::overlay::OverlayMode> Render for SearchPanel<M> {
                         this.child(
                             h_flex()
                                 .w_full()
-                                .gap_1()
+                                .gap_2()
                                 .child(
                                     Input::new(&self.replace_input)
                                         .focus_bordered(true)
