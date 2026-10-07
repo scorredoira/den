@@ -385,7 +385,7 @@ mod tests {
     }
 
     /// A `reveal` from the program is in `den debug state`, the program's
-    /// page from its `hello` too.
+    /// page from its `hello` too, and its output, an error said as one.
     #[gpui_kit::test]
     fn debug_state_says_what_the_program_said(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -398,11 +398,14 @@ mod tests {
         let debugger = workspace.read_with(cx, |workspace, _| workspace.debugger());
         debugger.update(cx, |debugger, cx| {
             debugger.receive(r#"{"event":"reveal","file":"client/home.ts","line":12}"#, cx);
+            debugger.receive(r#"{"event":"output","text":"3\n","file":"","line":0}"#, cx);
+            debugger.receive(r#"{"event":"output","text":"Unclosed block\n","file":"x.ts","line":2,"error":true}"#, cx);
             debugger.set_ran(0, "scl -d apps/padel/app.xml".into(), None);
         });
         let state = debugger.read_with(cx, |debugger, _| debugger.state());
         assert_eq!(state["revealed"], serde_json::json!({ "file": "client/home.ts", "line": 12 }));
         assert_eq!(state["command"], "scl -d apps/padel/app.xml");
+        assert_eq!(state["console"], serde_json::json!(["3", "error: Unclosed block"]));
     }
 
     #[test]

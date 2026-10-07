@@ -258,7 +258,7 @@ const MAX_CONSOLE: usize = 5000;
 
 enum ConsoleLine {
     Info(String),
-    Output { text: String, path: Option<PathBuf>, line: u32 },
+    Output { text: String, path: Option<PathBuf>, line: u32, error: bool },
     Input(String),
     /// A value and the VM it was evaluated in: its `ref` is cleared once
     /// that VM goes on, as it no longer names anything.
@@ -409,6 +409,9 @@ pub struct Debugger {
     page: Option<String>,
     /// The last place the program asked to show (`reveal`), 1-based line.
     revealed: Option<(String, u32)>,
+    /// The session ended without Stop (the program ended, or failed to
+    /// start): the debugger stays in sight, with what it said, until Stop.
+    ended: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -489,6 +492,7 @@ impl Debugger {
             ran: None,
             page: None,
             revealed: None,
+            ended: false,
             tests: None,
             _subscriptions: subscriptions,
         }
@@ -574,6 +578,12 @@ impl Debugger {
     /// A session started or connected.
     pub fn is_active(&self) -> bool {
         self.status != Status::Idle
+    }
+
+    /// The debugger is in sight: a session is active, or one ended and
+    /// Stop hasn't closed it.
+    pub fn is_shown(&self) -> bool {
+        self.is_active() || self.ended
     }
 
     fn current(&self) -> Option<&VmStop> {
@@ -1133,6 +1143,9 @@ impl Debugger {
     /// to goes on running.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         if self.status == Status::Idle {
+            if std::mem::take(&mut self.ended) {
+                cx.notify();
+            }
             return;
         }
         if self.launched {
@@ -1147,6 +1160,7 @@ impl Debugger {
             }
         }
         self.end("Stopped", cx);
+        self.ended = false;
     }
 
     /// Stops the session and starts it again as it started: the same
@@ -1248,6 +1262,7 @@ impl Debugger {
             watch.result = None;
         }
         if was {
+            self.ended = true;
             self.info(why.into(), cx);
         }
         cx.emit(DebugEvent::Marks);
@@ -1323,9 +1338,9 @@ impl Debugger {
                 cx.emit(DebugEvent::Show { path, line: line.saturating_sub(1), focus: true });
                 cx.emit(DebugEvent::Raise);
             }
-            Ok(Message::Event(Event::Output { text, file, line })) => {
+            Ok(Message::Event(Event::Output { text, file, line, error })) => {
                 let path = (!file.is_empty()).then(|| self.local_path(&file));
-                self.push_console(ConsoleLine::Output { text: text.trim_end().to_string(), path, line });
+                self.push_console(ConsoleLine::Output { text: text.trim_end().to_string(), path, line, error });
                 cx.notify();
             }
             Ok(Message::Unknown) => {}

@@ -61,7 +61,9 @@ pub struct Stop {
 pub enum Event {
     Stopped(Box<Stop>),
     Resumed { vm: u64 },
-    Output { text: String, file: String, line: u32 },
+    /// `error`: what went wrong in the program (the error that ended it),
+    /// shown in red.
+    Output { text: String, file: String, line: u32, error: bool },
     /// The program asks to show a place of its files: the line that made a
     /// widget picked on a phone (its `inspect` command).
     Reveal { file: String, line: u32 },
@@ -91,6 +93,7 @@ pub fn parse(line: &str) -> Result<Message, String> {
                 text: value["text"].as_str().unwrap_or_default().to_string(),
                 file: value["file"].as_str().unwrap_or_default().to_string(),
                 line: value["line"].as_u64().unwrap_or(0) as u32,
+                error: value["error"].as_bool().unwrap_or(false),
             }),
             "reveal" => Message::Event(Event::Reveal {
                 file: value["file"].as_str().unwrap_or_default().to_string(),

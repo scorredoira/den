@@ -104,6 +104,7 @@ impl Debugger {
             .iter()
             .map(|line| match line {
                 ConsoleLine::Info(text) => text.clone(),
+                ConsoleLine::Output { text, error: true, .. } => format!("error: {text}"),
                 ConsoleLine::Output { text, .. } => text.clone(),
                 ConsoleLine::Input(text) => format!("> {text}"),
                 ConsoleLine::Result(var, _) => var.value.clone(),
