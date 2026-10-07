@@ -6,7 +6,7 @@
 
 `den -n <path>` opens it in a window of its own instead, also from Den's terminals (on a server, a window on that server). If it's already open in a window, that window comes to the front. Like a `den -s` window, what's open in it isn't remembered unless kept.
 
-`den -s <server> [<path>]` opens a window of its own on a server (a name from `~/.ssh/config` or `user@host`) with the path there, relative to its home folder, or the folder picker without one. That window is for a quick look: its Workspaces panel starts hidden, and neither the server nor the folders opened in it are remembered once it closes, unless kept with Keep in Workspaces (in its title bar or the server's right-click menu). Running it again for the same server opens in that window.
+`den -s <server> [<path>]` opens a window of its own on a server (a name from `~/.ssh/config` or `user@host`) with the path there, relative to its home folder, or the home folder without one. That window is for a quick look: its Workspaces panel starts hidden, and neither the server nor the folders opened in it are remembered once it closes, unless kept with Keep in Workspaces (in its title bar or the server's right-click menu). Running it again for the same server opens in that window.
 
 In Den's terminals, more commands act on the workspace of the terminal they run in, the same over SSH (`den --help` lists them all):
 
