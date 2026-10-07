@@ -45,8 +45,6 @@ Tree-sitter highlighting, language servers, project search, go to file, an outli
 
 Download a package from [Releases](https://github.com/scorredoira/den/releases).
 
-Download a package from [Releases](https://github.com/scorredoira/den/releases).
-
 | Platform | Package | Installation |
 | --- | --- | --- |
 | macOS 15+, Apple Silicon | `den-<version>-macos-aarch64.zip` | Unzip and drag `Den.app` to Applications. |
