@@ -311,7 +311,6 @@ impl Workspace {
         let dot = |color: Option<Hsla>| color.filter(|_| hidden).map(Badge::Dot);
         Config::get(cx).layout.panels(place).into_iter().find_map(|panel| match panel {
             Panel::Workspaces => dot(self.badges.workspaces),
-            Panel::Worktrees => dot(self.badges.worktrees),
             Panel::Agents => dot(self.badges.agents),
             Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
             _ => None,
@@ -347,8 +346,6 @@ impl Workspace {
 pub struct TaskBadges {
     /// The most urgent of the workspaces.
     pub workspaces: Option<Hsla>,
-    /// The most urgent of the project's worktrees.
-    pub worktrees: Option<Hsla>,
     /// The most urgent of the agents.
     pub agents: Option<Hsla>,
 }

@@ -328,12 +328,8 @@ pub struct Workspace {
     /// Last session's tabs were already reopened (nothing is saved before that).
     restored: bool,
     focus_handle: FocusHandle,
-    /// The app's projects panel.
+    /// The app's workspaces panel.
     workspaces: Option<Entity<WorkspacesPanel>>,
-    /// The app's worktrees panel, and whether its project has worktrees
-    /// besides its checkout (with none the panel doesn't show).
-    worktrees: Option<Entity<WorkspacesPanel>>,
-    has_worktrees: bool,
     /// The app's agents panel (see `set_agents`).
     agents: Option<Entity<WorkspacesPanel>>,
     /// The app's tasks' state, on the activity bar's icons.
@@ -557,8 +553,6 @@ impl Workspace {
             restored: false,
             focus_handle,
             workspaces: None,
-            worktrees: None,
-            has_worktrees: false,
             agents: None,
             badges: TaskBadges::default(),
             file_tree,

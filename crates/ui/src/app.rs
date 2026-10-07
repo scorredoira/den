@@ -563,9 +563,6 @@ pub struct Den {
     split: config::Split,
     /// The tasks column, drawn by the workspace where its panel is placed.
     workspaces_panel: Entity<WorkspacesPanel>,
-    /// The worktrees of the project in front, drawn by the workspace where
-    /// its panel is placed.
-    worktrees_panel: Entity<WorkspacesPanel>,
     /// The agents panel, drawn by the workspace where it's placed.
     agents_panel: Entity<WorkspacesPanel>,
     /// Settings, if open.
@@ -635,15 +632,6 @@ impl Den {
                             .unwrap_or_else(|_| div().into_any_element())
                     })
                     .with_actions(move |_, _| tasks_add_button(&actions).into_any_element())
-                })
-            },
-            worktrees_panel: {
-                let den = cx.entity().downgrade();
-                cx.new(|_| {
-                    WorkspacesPanel::new(move |_, cx| {
-                        den.update(cx, |den, cx| den.render_worktrees(cx))
-                            .unwrap_or_else(|_| div().into_any_element())
-                    })
                 })
             },
             agents_panel: {
@@ -1314,7 +1302,7 @@ impl Den {
         Config::get(cx).hidden_projects.contains(&project.config()) || is_hidden_host(&project.host, cx)
     }
 
-    /// Hides `project` from the Projects panel, Cmd-E and Cmd-K, or shows it
+    /// Hides `project` from the Workspaces panel, Cmd-E and Cmd-K, or shows it
     /// again. Its agents still count in the dots.
     fn set_project_hidden(&mut self, project: &TaskKey, hidden: bool, cx: &mut Context<Self>) {
         let key = project.config();
@@ -1327,7 +1315,7 @@ impl Den {
         cx.notify();
     }
 
-    /// Hides a server and its projects from the Projects panel, Cmd-E and
+    /// Hides a server and its projects from the Workspaces panel, Cmd-E and
     /// Cmd-K, or shows them again. It stays connected: its agents still
     /// count in the dots.
     fn set_host_hidden(&mut self, host: &SharedString, hidden: bool, cx: &mut Context<Self>) {
@@ -1345,8 +1333,21 @@ impl Den {
         cx.notify();
     }
 
+    /// Folds `project` to its row, or shows its workspaces under it.
+    fn set_project_folded(&mut self, project: &TaskKey, folded: bool, cx: &mut Context<Self>) {
+        let key = project.config();
+        if Config::get(cx).folded_projects.contains(&key) == folded {
+            return;
+        }
+        Config::update(cx, |config| match folded {
+            true => config.folded_projects.push(key),
+            false => config.folded_projects.retain(|other| *other != key),
+        });
+        cx.notify();
+    }
+
     /// Whether `project` (on its server) is a git repo: it has a branch or
-    /// worktrees, and so a Worktrees panel.
+    /// worktrees.
     fn is_repo(&self, project: &TaskKey) -> bool {
         self.host(&project.host).is_some_and(|host| {
             host.tasks.iter().any(|task| task.repo == project.path && (task.branch.is_some() || !task.main))
@@ -1395,7 +1396,7 @@ impl Den {
         self.host(&key.host).is_some_and(|host| !host.tasks.iter().any(|task| key.path.starts_with(&task.path)))
     }
 
-    /// Keep in Projects, in a window opened with `den -s`: its servers and
+    /// Keep in Workspaces, in a window opened with `den -s`: its servers and
     /// the folders open in it (or only `folder`) are remembered, and the main
     /// window lists them.
     fn keep(&mut self, folder: Option<TaskKey>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1869,7 +1870,6 @@ impl Den {
     /// one in front), of the project's worktrees, and of the agents. Idle
     /// says nothing.
     fn task_badges(&self, cx: &App) -> TaskBadges {
-        let project = self.active_project();
         let tasks = self.ordered_all(cx);
         let most_urgent = |tasks: &mut dyn Iterator<Item = &(TaskKey, &TaskInfo)>| {
             tasks
@@ -1880,7 +1880,6 @@ impl Den {
         };
         TaskBadges {
             workspaces: most_urgent(&mut tasks.iter()),
-            worktrees: most_urgent(&mut tasks.iter().filter(|(key, task)| Some(project_of(key, task)) == project)),
             agents: self.agents_badge(cx),
         }
     }
@@ -2151,13 +2150,11 @@ impl Den {
         if self.client(&host).is_none() {
             return;
         }
-        // It's named in the Worktrees panel, which lists the project in front.
+        // It's named under its project, unfolded, in the Workspaces panel.
         let project = TaskKey { host: host.clone(), path: repo.clone() };
-        if self.active_project().as_ref() != Some(&project) {
-            self.enter_project(project, window, cx);
-        }
+        self.set_project_folded(&project, false, cx);
         if let Some(workspace) = self.active_workspace() {
-            workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Worktrees, cx));
+            workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("branch name"));
         let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
@@ -2773,7 +2770,7 @@ impl Den {
                 .text_ui_small(cx)
                 .text_color(theme.muted_foreground)
                 .child(div().whitespace_normal().child(
-                    "The folders you open stay here. A git repo's worktrees show in the Worktrees panel, each a workspace with its own terminals and Claude Code session.",
+                    "The folders you open stay here. A git repo shows its worktrees under it, each a workspace with its own terminals and Claude Code session.",
                 ))
                 .child(
                     div()
@@ -2807,11 +2804,29 @@ impl Den {
             .into_any_element()
     }
 
-    /// A project's row: the most urgent dot of its workspaces and its name,
-    /// dimmed while hidden. A click enters the worktree of it used last.
+    /// A project's row, dimmed while hidden: a folder, or a repo's checkout
+    /// with its worktrees under it, which its chevron folds away. A click
+    /// enters the checkout; folded, the worktree of it used last, and its
+    /// dot is the most urgent of all of them.
     fn render_project(&self, project: TaskKey, hidden: bool, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
-        let active = self.active_project().as_ref() == Some(&project);
-        let (dot, color) = group
+        let new_task = self
+            .new_task
+            .as_ref()
+            .filter(|form| form.host == project.host && form.repo == project.path)
+            .map(|form| render_new_task(form, cx));
+        let checkout = group.iter().find(|(key, _)| *key == project);
+        let worktrees: Vec<&(TaskKey, &TaskInfo)> = group.iter().filter(|(key, _)| *key != project).collect();
+        let tree = !worktrees.is_empty() || new_task.is_some();
+        let folded = tree && Config::get(cx).folded_projects.contains(&project.config());
+        let active = match folded {
+            true => self.active_project().as_ref() == Some(&project),
+            false => checkout.is_some() && self.active.as_ref() == Some(&project),
+        };
+        let own: Vec<&(TaskKey, &TaskInfo)> = match folded {
+            true => group.iter().collect(),
+            false => checkout.into_iter().collect(),
+        };
+        let (dot, color) = own
             .iter()
             .map(|(key, task)| self.status(key, task, cx))
             .filter(|(dot, _)| *dot != "…")
@@ -2833,8 +2848,39 @@ impl Den {
             .get(&project)
             .is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty());
 
+        // On hover, as in its menu: a repo makes a worktree.
+        let action = (git && connected).then(|| {
+            let (host, repo) = (project.host.clone(), project.path.clone());
+            row_action(
+                format!("task-new-{}", project.config()),
+                "icons/plus.svg",
+                format!("New Worktree in {name}…"),
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.start_new_task(host.clone(), repo.clone(), window, cx)
+                }),
+                cx,
+            )
+        });
+        let chevron = tree.then(|| {
+            let path = match folded {
+                true => "icons/tree-chevron-right.svg",
+                false => "icons/tree-chevron-down.svg",
+            };
+            let project = project.clone();
+            div()
+                .id(SharedString::from(format!("project-fold-{}", project.config())))
+                .flex_none()
+                .child(svg().path(path).size(px(14.)).text_color(theme.muted_foreground))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.set_project_folded(&project, !folded, cx);
+                }))
+        });
+
         let row = h_flex()
             .id(SharedString::from(format!("project-{}", project.config())))
+            .group("task")
             .h(px(24.))
             .px_3()
             .gap_2()
@@ -2842,9 +2888,12 @@ impl Den {
             .when(hidden, |row| row.opacity(0.5))
             .when(active, |el| el.bg(selected_row(cx)))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
-            // The most urgent of its agents' state, and only the dot.
+            // Its agents' state, and only the dot.
             .child(div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.clone()))
+            .child(div().flex_1())
+            .children(action)
+            .children(chevron)
             .on_drag(TaskDrag { key: project.clone(), label }, |drag, _, _, cx| cx.new(|_| DragPreview(drag.label.clone())))
             .drag_over::<TaskDrag>(|style, _, _, cx| style.border_t_2().border_color(cx.theme().primary))
             .on_drop(cx.listener({
@@ -2853,7 +2902,11 @@ impl Den {
             }))
             .on_click(cx.listener({
                 let project = project.clone();
-                move |this, _, window, cx| this.enter_project(project.clone(), window, cx)
+                let enters = checkout.is_some() && !folded;
+                move |this, _, window, cx| match enters {
+                    true => this.activate(project.clone(), window, cx),
+                    false => this.enter_project(project.clone(), window, cx),
+                }
             }))
             .tooltip({
                 let path = project.path.display().to_string();
@@ -2892,7 +2945,7 @@ impl Den {
                     })
                     .when(!known, |menu| {
                         menu.item(
-                            menu::item("Add to Projects", &weak, move |this, window, cx| {
+                            menu::item("Add to Workspaces", &weak, move |this, window, cx| {
                                 if this.remembers() {
                                     this.add_folder(add.host.clone(), add.path.clone(), window, cx)
                                 } else {
@@ -2925,7 +2978,7 @@ impl Den {
                         })
                     })
                     .item(
-                        menu::item("Remove from Projects", &weak, move |this, window, cx| {
+                        menu::item("Remove from Workspaces", &weak, move |this, window, cx| {
                             this.set_project_hidden(&close, false, cx);
                             if known {
                                 this.remove_folder(&close, close.path.clone(), window, cx)
@@ -2941,69 +2994,21 @@ impl Den {
                 }
             });
 
-        // What went wrong with a folder (a repo's show in its worktrees).
+        // What went wrong with it (its worktrees' under them).
         let error = self
             .error
             .as_ref()
-            .filter(|(target, _)| !git && *target == project)
+            .filter(|(target, _)| *target == project)
             .map(|(_, error)| div().mx_3().mb_1().child(error_text(error.clone(), cx)));
-        v_flex().child(row).children(error).into_any_element()
-    }
-
-    /// The Worktrees panel has something to tell: the project in front has
-    /// worktrees besides its checkout, or one being named. With only the
-    /// checkout it doesn't show (the project's row has New Worktree).
-    fn lists_worktrees(&self, cx: &App) -> bool {
-        let Some(project) = self.active_project() else {
-            return false;
+        let rows: Vec<AnyElement> = match tree && !folded {
+            true => worktrees.iter().map(|(key, task)| self.render_task(key, task, cx)).chain(new_task).collect(),
+            false => Vec::new(),
         };
-        let naming = self.new_task.as_ref().is_some_and(|form| form.host == project.host && form.repo == project.path);
-        naming || self.ordered_all(cx).iter().filter(|(key, task)| project_of(key, task) == project).count() > 1
-    }
-
-    /// The Worktrees panel: the checkout and the worktrees of the project in
-    /// front, a row each; then the one being named.
-    fn render_worktrees(&self, cx: &mut Context<Self>) -> AnyElement {
-        let project = self.active_project();
-        let rows: Vec<AnyElement> = self
-            .ordered_all(cx)
-            .into_iter()
-            .filter(|(key, task)| Some(project_of(key, task)) == project)
-            .map(|(key, task)| self.render_task(&key, task, cx))
-            .collect();
-        let new_task = self
-            .new_task
-            .as_ref()
-            .filter(|form| project.as_ref().is_some_and(|project| form.host == project.host && form.repo == project.path))
-            .map(|form| render_new_task(form, cx));
-        let weak = cx.entity().downgrade();
-        let theme = cx.theme();
+        let line = cx.theme().sidebar_border;
         v_flex()
-            .id("worktree-list")
-            .size_full()
-            .bg(theme.sidebar)
-            .text_color(theme.sidebar_foreground)
-            .overflow_y_scroll()
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    this.cancel(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .children(rows)
-            .children(new_task)
-            // The empty space below: right-click for a new one.
-            .child(
-                div()
-                    .id("worktree-list-space")
-                    .flex_1()
-                    .min_h(px(32.))
-                    .context_menu(move |menu, window, cx| {
-                        menu.item(menu::item("New Worktree…", &weak, |this, window, cx| this.new_task_action(&NewTask, window, cx)))
-                            .separator()
-                            .panel_items(hide_panel(&weak, Panel::Worktrees), window, cx)
-                    }),
-            )
+            .child(row)
+            .children(error)
+            .when(!rows.is_empty(), |el| el.child(v_flex().ml(px(18.)).border_l_1().border_color(line).children(rows)))
             .into_any_element()
     }
 
@@ -3017,9 +3022,8 @@ impl Den {
         (dot, color)
     }
 
-    /// A workspace's row in the Worktrees panel: its state's dot and its
-    /// branch; on hover, New Worktree on the checkout, Delete Worktree on a
-    /// worktree.
+    /// A workspace's row under its project: its state's dot and its branch;
+    /// on hover, Delete Worktree on a worktree.
     fn render_task(&self, key: &TaskKey, task: &TaskInfo, cx: &mut Context<Self>) -> AnyElement {
         let active = self.active.as_ref() == Some(key);
         let (dot, color) = self.status(key, task, cx);
@@ -3035,21 +3039,9 @@ impl Den {
         // Only a repo makes worktrees.
         let git = known && self.is_repo(&project_of(key, task));
         let label = worktree_label(task);
-        // On hover, as in its menu: a repo makes a worktree, a worktree is
-        // deleted.
-        let action = if git && task.main && connected {
-            let (host, repo) = (key.host.clone(), task.repo.clone());
-            Some(row_action(
-                format!("task-new-{}", key.config()),
-                "icons/plus.svg",
-                format!("New Worktree in {repo_name}…"),
-                cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.start_new_task(host.clone(), repo.clone(), window, cx)
-                }),
-                cx,
-            ))
-        } else if removable && !self.removing.contains(key) {
+        // On hover, as in its menu: a worktree is deleted (its project's
+        // row makes one).
+        let action = if removable && !self.removing.contains(key) {
             let remove = key.clone();
             Some(row_action(
                 format!("task-delete-{}", key.config()),
@@ -3150,7 +3142,7 @@ impl Den {
                         }))
                     })
                     .separator()
-                    .panel_items(hide_panel(&weak, Panel::Worktrees), window, cx)
+                    .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
                 }
             });
 
@@ -3196,15 +3188,12 @@ impl Render for Den {
             let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let panel = self.workspaces_panel.clone();
-            let worktrees = self.worktrees_panel.clone();
-            let has_worktrees = self.lists_worktrees(cx);
             let agents = self.agents_panel.clone();
             let badges = self.task_badges(cx);
             workspace.update(cx, |workspace, cx| {
                 workspace.set_width(width, cx);
                 workspace.set_branch(branch, cx);
                 workspace.set_workspaces(&panel);
-                workspace.set_worktrees(&worktrees, has_worktrees, cx);
                 workspace.set_agents(&agents);
                 workspace.set_badges(badges, cx);
             });
@@ -3279,9 +3268,9 @@ impl Render for Den {
                                 .text_color(cx.theme().muted_foreground)
                                 .hover(|style| style.bg(cx.theme().secondary_hover).text_color(cx.theme().foreground))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child("Keep in Projects")
+                                .child("Keep in Workspaces")
                                 .tooltip(|window, cx| {
-                                    Tooltip::new("Opened with den -s, this window is forgotten when it closes: keep its server and folders in Projects.")
+                                    Tooltip::new("Opened with den -s, this window is forgotten when it closes: keep its server and folders in Workspaces.")
                                         .build(window, cx)
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| this.keep(None, window, cx))),
@@ -3429,7 +3418,7 @@ fn host_menu(menu: PopupMenu, name: &SharedString, connected: bool, keep: bool, 
     }
     let (open, reconnect, remove) = (name.clone(), name.clone(), name.clone());
     menu.when(keep, |menu| {
-        menu.item(menu::item("Keep in Projects", den, |this, window, cx| this.keep(None, window, cx)))
+        menu.item(menu::item("Keep in Workspaces", den, |this, window, cx| this.keep(None, window, cx)))
             .separator()
     })
     .item(
@@ -3455,7 +3444,7 @@ fn tasks_add_button(den: &WeakEntity<Den>) -> impl IntoElement {
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| add_menu_items(menu, &den))
 }
 
-/// Hide Panel, at the end of every menu in the Projects and Worktrees
+/// Hide Panel, at the end of every menu in the Workspaces
 /// panels: takes `panel` off the side column.
 fn hide_panel(den: &WeakEntity<Den>, panel: Panel) -> menu::PopupMenuItem {
     menu::item("Hide Panel", den, move |this, _, cx| {
@@ -3470,7 +3459,7 @@ fn is_hidden_host(host: &SharedString, cx: &App) -> bool {
     Config::get(cx).hidden_hosts.iter().any(|other| other == host.as_ref())
 }
 
-/// Show Hidden Projects, checked while the Projects panel shows them.
+/// Show Hidden Projects, checked while the Workspaces panel shows them.
 fn show_hidden_item(den: &WeakEntity<Den>, cx: &App) -> menu::PopupMenuItem {
     menu::item("Show Hidden Projects", den, |this, _, cx| this.toggle_hidden_projects(cx))
         .checked(Config::get(cx).show_hidden_projects)
@@ -3481,7 +3470,7 @@ fn project_of(key: &TaskKey, task: &TaskInfo) -> TaskKey {
     TaskKey { host: key.host.clone(), path: task.repo.clone() }
 }
 
-/// A workspace's name in the Worktrees panel: its branch, or its folder.
+/// A workspace's name under its project: its branch, or its folder.
 fn worktree_label(task: &TaskInfo) -> SharedString {
     match &task.branch {
         Some(branch) => branch.clone().into(),
@@ -3769,14 +3758,21 @@ mod palette_tests {
             assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
             assert_eq!(den.ordered_all(cx).len(), 3);
             assert!(den.is_repo(&key("/den")));
-            assert!(den.lists_worktrees(cx), "the checkout and a worktree");
+        });
+        // A repo folds its worktrees away, and unfolds them again.
+        cx.update(|_, cx| {
+            den.update(cx, |den, cx| {
+                den.set_project_folded(&key("/den"), true, cx);
+                assert_eq!(Config::get(cx).folded_projects, [key("/den").config()]);
+                den.set_project_folded(&key("/den"), false, cx);
+                assert!(Config::get(cx).folded_projects.is_empty());
+            })
         });
         // In front, it's gone through as any other.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/stride"), window, cx)));
         den.read_with(cx, |den, cx| {
             assert_eq!(den.active, Some(key("/stride")));
             assert_eq!(paths(den, cx).len(), 3);
-            assert!(!den.lists_worktrees(cx), "only its checkout");
         });
         // Back to den: its worktree, not its checkout.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/den"), window, cx)));
