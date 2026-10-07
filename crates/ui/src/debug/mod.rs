@@ -34,7 +34,8 @@ use protocol::{Event, Message, Stop, Var};
 
 use ui_term::TerminalView;
 
-use crate::config::{Config, DebugSaved};
+use crate::config::{Config, DebugPart, DebugSaved};
+use crate::drag_drop::DropPlacement;
 
 /// Where the launch file is, relative to the workspace.
 pub const LAUNCH_FILE: &str = ".den/debug.json";
@@ -349,6 +350,8 @@ pub struct Debugger {
     /// That terminal, drawn in the console (the terminals' area keeps it
     /// out of its tabs).
     term_view: Option<Entity<TerminalView>>,
+    /// The part a part dragged over its tab would go beside, and where.
+    part_drop: Option<(DebugPart, DropPlacement)>,
     /// The session whose command went to a terminal not known yet (a new
     /// one), and whether Stop was asked meanwhile: that terminal is
     /// interrupted once known, not the one before.
@@ -445,6 +448,7 @@ impl Debugger {
             chosen_target: saved.target,
             targets: Vec::new(),
             term_view: None,
+            part_drop: None,
             term_unknown: None,
             root,
             session_key,
@@ -626,15 +630,18 @@ impl Debugger {
         }
         let Some(client) = self.client.clone() else {
             self.info("No agent: can't debug".into(), cx);
+            cx.emit(DebugEvent::Reveal);
             return;
         };
-        cx.emit(DebugEvent::Reveal);
         self.started = None;
         self.status = Status::Connecting("Reading the launch file…".into());
         self.generation += 1;
         let generation = self.generation;
         let path = self.root.join(LAUNCH_FILE);
         cx.notify();
+        // after the notify: the workspace is debugging by then, and the tab
+        // shows in the debugging layout, not in the editing one it goes back to
+        cx.emit(DebugEvent::Reveal);
         cx.spawn_in(window, async move |this, cx| {
             let read = client.request(Request::ReadFile { path }).await;
             this.update_in(cx, |this, window, cx| {
@@ -678,18 +685,21 @@ impl Debugger {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.emit(DebugEvent::Reveal);
         if self.status != Status::Idle {
             self.info("A program is being debugged: stop it first (Shift-F5)".into(), cx);
+            cx.emit(DebugEvent::Reveal);
             return;
         }
         if self.client.is_none() {
             self.info("No agent: can't debug".into(), cx);
+            cx.emit(DebugEvent::Reveal);
             return;
         }
         self.generation += 1;
         self.launching_test = Some((path, test));
         self.begin(Launch { command: Some(command), port }, false, window, cx);
+        // after begin's notify, as in start
+        cx.emit(DebugEvent::Reveal);
     }
 
     /// Reads the launch file again: its problems show in the panel, its

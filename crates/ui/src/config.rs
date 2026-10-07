@@ -14,6 +14,8 @@ use gpui_kit::component::{
 use gpui_kit::{App, AppContext as _, Bounds, Entity, Global, Pixels, Styled, WindowBounds, point, px, size};
 use serde::{Deserialize, Serialize};
 
+use crate::splits::{Axis, Tree};
+
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeChoice {
@@ -57,87 +59,98 @@ pub struct Layout {
     /// The terminals as a row; unset, a third of the window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dock_height: Option<f32>,
-    /// The debugger's call stack, variables, watches and breakpoints, the
-    /// row above its console; unset, three fifths of the tab.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub debug_height: Option<f32>,
-    /// The debugger's grid: where each part goes, the ones hidden, and the
+    /// The debugger's tab: where each part goes, the ones hidden, and the
     /// sizes dragged.
     #[serde(deserialize_with = "lenient")]
     pub debug_grid: DebugGrid,
 }
 
-/// A part of the debugger, a cell of its tab's grid.
+/// A part of the debugger, a cell of its tab.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum DebugPart {
     Stack,
     Variables,
     Watch,
     Breakpoints,
+    Terminal,
+    Console,
 }
 
 impl DebugPart {
-    pub const ALL: [DebugPart; 4] = [DebugPart::Stack, DebugPart::Variables, DebugPart::Watch, DebugPart::Breakpoints];
+    pub const ALL: [DebugPart; 6] =
+        [DebugPart::Stack, DebugPart::Variables, DebugPart::Watch, DebugPart::Breakpoints, DebugPart::Terminal, DebugPart::Console];
 }
 
-/// The debugger's grid of two rows of two: its parts in order (the first
-/// two above), those hidden, and the sizes as dragged: the upper row's
-/// height and each row's first cell's width.
+/// The debugger's tab as splits (crate::splits): its parts side by side or
+/// one above the other, each where it was dragged; those hidden, which keep
+/// their place; and the sizes as dragged, by the parts of each split.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugGrid {
-    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "known_parts")]
-    pub order: Vec<DebugPart>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub tree: Option<Tree<DebugPart>>,
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "known_parts")]
     pub hidden: Vec<DebugPart>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_height: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_width: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bottom_width: Option<f32>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub sizes: HashMap<String, Vec<f32>>,
 }
 
 impl DebugGrid {
-    /// The four parts in their cells' order: as saved, each once, with any
-    /// missing where it goes by default.
-    pub fn order(&self) -> [DebugPart; 4] {
-        let mut order: Vec<DebugPart> = Vec::new();
-        for part in &self.order {
-            if !order.contains(part) {
-                order.push(*part);
-            }
-        }
-        for part in DebugPart::ALL {
-            if !order.contains(&part) {
-                order.push(part);
-            }
-        }
-        [order[0], order[1], order[2], order[3]]
-    }
-
-    /// The rows as shown, each with whether it's the upper one: the parts
-    /// of each that aren't hidden, a row with none left out.
-    pub fn rows(&self) -> Vec<(bool, Vec<DebugPart>)> {
-        let order = self.order();
-        [(true, &order[..2]), (false, &order[2..])]
-            .into_iter()
-            .map(|(upper, row)| (upper, row.iter().copied().filter(|part| !self.hidden.contains(part)).collect::<Vec<_>>()))
-            .filter(|(_, row)| !row.is_empty())
-            .collect()
-    }
-
-    /// Swaps two parts' cells.
-    pub fn swap(&mut self, a: DebugPart, b: DebugPart) {
-        let mut order = self.order();
-        let (Some(i), Some(j)) = (order.iter().position(|part| *part == a), order.iter().position(|part| *part == b)) else {
-            return;
+    /// The parts as placed: as saved, each once, with any missing under the
+    /// rest. Unset, two rows of two (the call stack and the variables, the
+    /// watches and the breakpoints), the terminal and the console.
+    pub fn tree(&self) -> Tree<DebugPart> {
+        use DebugPart::*;
+        let row = |a, b| Tree::Split { axis: Axis::Row, children: vec![Tree::Leaf(a), Tree::Leaf(b)] };
+        let Some(saved) = self.tree.clone() else {
+            return Tree::Split {
+                axis: Axis::Column,
+                children: vec![row(Stack, Variables), row(Watch, Breakpoints), Tree::Leaf(Terminal), Tree::Leaf(Console)],
+            };
         };
-        order.swap(i, j);
-        self.order = order.to_vec();
+        let seen = std::cell::RefCell::new(Vec::new());
+        let tree = saved.retain(&|part| {
+            let mut seen = seen.borrow_mut();
+            let first = !seen.contains(&part);
+            seen.push(part);
+            first
+        });
+        let seen = seen.into_inner();
+        let missing = DebugPart::ALL.into_iter().filter(|part| !seen.contains(part)).map(Tree::Leaf);
+        match tree {
+            Some(Tree::Split { axis: Axis::Column, mut children }) => {
+                children.extend(missing);
+                Tree::Split { axis: Axis::Column, children }
+            }
+            Some(tree) => {
+                let children: Vec<_> = std::iter::once(tree).chain(missing).collect();
+                if children.len() == 1 { children.into_iter().next().unwrap() } else { Tree::Split { axis: Axis::Column, children } }
+            }
+            None => Tree::Split { axis: Axis::Column, children: missing.collect() },
+        }
     }
 
-    /// Hides a part, or shows it again in its cell.
+    /// `dragged` dropped on `target`: beside it, along `axis` (before it or
+    /// after), or with no axis in its place, `target` going to its own.
+    pub fn place(&mut self, dragged: DebugPart, target: DebugPart, beside: Option<(Axis, bool)>) {
+        if dragged == target {
+            return;
+        }
+        let mut tree = self.tree();
+        match beside {
+            None => tree.swap(dragged, target),
+            Some((axis, before)) => {
+                let Some(mut rest) = tree.remove(dragged) else {
+                    return;
+                };
+                rest.insert(target, &Tree::Leaf(dragged), axis, before);
+                tree = rest;
+            }
+        }
+        self.tree = Some(tree);
+    }
+
+    /// Hides a part, or shows it again in its place.
     pub fn set_hidden(&mut self, part: DebugPart, hidden: bool) {
         self.hidden.retain(|other| *other != part);
         if hidden {
@@ -164,7 +177,6 @@ impl Default for Layout {
             dock: Dock::Right,
             dock_width: None,
             dock_height: None,
-            debug_height: None,
             debug_grid: DebugGrid::default(),
         }
     }

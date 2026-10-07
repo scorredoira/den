@@ -1,5 +1,6 @@
-//! Splits within a terminal tab: a tree whose leaves are terminals and whose
-//! nodes place them side by side or one above the other.
+//! Splits within a terminal tab, or the debugger's tab: a tree whose leaves
+//! are terminals (or the debugger's parts) and whose nodes place them side
+//! by side or one above the other.
 //! Data only, so it can be saved and tested without a UI.
 
 use proto::TermId;
@@ -22,13 +23,13 @@ pub enum Direction {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Tree {
-    Leaf(TermId),
-    Split { axis: Axis, children: Vec<Tree> },
+pub enum Tree<T = TermId> {
+    Leaf(T),
+    Split { axis: Axis, children: Vec<Tree<T>> },
 }
 
-impl Tree {
-    pub fn leaves(&self) -> Vec<TermId> {
+impl<T: Copy + PartialEq> Tree<T> {
+    pub fn leaves(&self) -> Vec<T> {
         match self {
             Tree::Leaf(term) => vec![*term],
             Tree::Split { children, .. } => children.iter().flat_map(Tree::leaves).collect(),
@@ -36,12 +37,12 @@ impl Tree {
     }
 
     /// Places `new` next to `target`, along `axis` (after it).
-    pub fn split(&mut self, target: TermId, new: TermId, axis: Axis) -> bool {
+    pub fn split(&mut self, target: T, new: T, axis: Axis) -> bool {
         self.insert(target, &Tree::Leaf(new), axis, false)
     }
 
     /// Places a terminal or an existing group beside a leaf, preserving its sessions.
-    pub fn insert(&mut self, target: TermId, new: &Tree, axis: Axis, before: bool) -> bool {
+    pub fn insert(&mut self, target: T, new: &Tree<T>, axis: Axis, before: bool) -> bool {
         match self {
             Tree::Leaf(term) if *term == target => {
                 let old = Tree::Leaf(target);
@@ -66,16 +67,16 @@ impl Tree {
 
     /// Removes `target`; a split left with a single branch is replaced by that
     /// branch. Returns `None` if the tree ends up empty.
-    pub fn remove(self, target: TermId) -> Option<Tree> {
+    pub fn remove(self, target: T) -> Option<Tree<T>> {
         self.retain(&|term| term != target)
     }
 
     /// Keeps the leaves that satisfy `keep`.
-    pub fn retain(self, keep: &dyn Fn(TermId) -> bool) -> Option<Tree> {
+    pub fn retain(self, keep: &dyn Fn(T) -> bool) -> Option<Tree<T>> {
         match self {
             Tree::Leaf(term) => keep(term).then_some(Tree::Leaf(term)),
             Tree::Split { axis, children } => {
-                let mut children: Vec<Tree> = children.into_iter().filter_map(|child| child.retain(keep)).collect();
+                let mut children: Vec<Tree<T>> = children.into_iter().filter_map(|child| child.retain(keep)).collect();
                 match children.len() {
                     0 => None,
                     1 => children.pop(),
@@ -85,9 +86,19 @@ impl Tree {
         }
     }
 
+    /// Swaps two leaves' places.
+    pub fn swap(&mut self, a: T, b: T) {
+        match self {
+            Tree::Leaf(leaf) if *leaf == a => *leaf = b,
+            Tree::Leaf(leaf) if *leaf == b => *leaf = a,
+            Tree::Leaf(_) => {}
+            Tree::Split { children, .. } => children.iter_mut().for_each(|child| child.swap(a, b)),
+        }
+    }
+
     /// The terminal closest to `from` in `direction`, assuming the branches of
     /// each split share the space equally.
-    pub fn neighbor(&self, from: TermId, direction: Direction) -> Option<TermId> {
+    pub fn neighbor(&self, from: T, direction: Direction) -> Option<T> {
         let mut rects = Vec::new();
         self.layout(Rect { x: 0., y: 0., w: 1., h: 1. }, &mut rects);
         let (_, origin) = rects.iter().find(|(term, _)| *term == from)?;
@@ -113,7 +124,7 @@ impl Tree {
             .map(|(term, _)| *term)
     }
 
-    fn layout(&self, rect: Rect, out: &mut Vec<(TermId, Rect)>) {
+    fn layout(&self, rect: Rect, out: &mut Vec<(T, Rect)>) {
         match self {
             Tree::Leaf(term) => out.push((*term, rect)),
             Tree::Split { axis, children } => {
