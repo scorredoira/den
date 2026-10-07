@@ -345,6 +345,11 @@ pub struct Workspace {
     /// The checked-out branch, from the workspaces list (see `set_branch`).
     branch: Option<String>,
     client: Option<Arc<Client>>,
+    /// The file and selections Claude Code in this workspace's terminals
+    /// was last told of, and the telling, a moment after they change (see
+    /// `report_ide_selection`).
+    ide_reported: Option<(PathBuf, Vec<(usize, usize)>)>,
+    ide_report: Option<Task<()>>,
     /// The agent reports the root's changes while this lives.
     fs_watch: Option<client::Watch>,
     /// On this machine (not on a server).
@@ -551,6 +556,8 @@ impl Workspace {
             kept_shown: HashMap::new(),
             session_key,
             restored: false,
+            ide_reported: None,
+            ide_report: None,
             focus_handle,
             workspaces: None,
             agents: None,
@@ -4211,6 +4218,7 @@ impl Render for Workspace {
         if !cx.has_active_drag() {
             self.editor_drop = None;
         }
+        self.report_ide_selection(cx);
         v_flex()
             .id("workspace")
             .key_context("Workspace")

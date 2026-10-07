@@ -169,6 +169,14 @@ impl Den {
                     Err(format!("terminal {term} isn't in this workspace"))
                 }
             }),
+            // Claude Code's tools, from the agent's IDE side.
+            ["ide", tool, params] => match here(self, *tool == "openFile", window, cx) {
+                Ok((_, workspace)) => {
+                    let params = serde_json::from_str(params).unwrap_or_default();
+                    return workspace.update(cx, |workspace, cx| workspace.ide_tool(tool, &params, window, cx));
+                }
+                Err(err) => Err(err),
+            },
             _ => Err(format!("den {}: unknown command; see den --help", args.join(" "))),
         };
         Task::ready(answer)

@@ -28,6 +28,8 @@ grep-searcher = "0.1"
 grep-matcher = "0.1"
 regex = "1"
 url = "2"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+getrandom = "0.4"
 dirs.workspace = true
 dunce = "1"
 tempfile = "3"

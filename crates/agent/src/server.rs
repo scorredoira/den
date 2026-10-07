@@ -194,15 +194,57 @@ struct State {
     /// Connections of apps, which run `den` commands: the one showing the
     /// terminal a command ran in or, if none does, the last.
     apps: Vec<ConnId>,
-    /// `den` commands an app is running: the app, and who asked (its
-    /// connection and request).
-    commands: HashMap<u64, (ConnId, ConnId, Option<u64>)>,
+    /// `den` commands an app is running: the app, and who asked.
+    commands: HashMap<u64, (ConnId, Asker)>,
     next_command: u64,
     /// The terminals running an agent, as last sent.
     agents: Vec<AgentInfo>,
 }
 
 type Shared = Arc<Mutex<State>>;
+
+/// Who waits for a `den` command the app runs.
+enum Asker {
+    /// A connection's request (`den` in a terminal).
+    Request(ConnId, Option<u64>),
+    /// Claude Code's IDE side (`ide.rs`), on a thread of its own.
+    Ide(std::sync::mpsc::Sender<Result<String, String>>),
+}
+
+impl Asker {
+    fn answer(self, state: &State, result: Result<String, String>) {
+        match self {
+            Asker::Request(conn, Some(id)) => state.send(conn, ServerMessage::Response { id, result: result.map(Response::Text) }),
+            Asker::Request(_, None) => {}
+            Asker::Ide(sender) => {
+                let _ = sender.send(result);
+            }
+        }
+    }
+}
+
+/// Claude Code's IDE side reaches the terminals and the apps through this.
+struct IdeHost(Shared);
+
+impl crate::ide::Host for IdeHost {
+    fn terminal_of(&self, pid: u32) -> Option<(TermId, String)> {
+        let shells: HashMap<u32, TermId> = {
+            let state = self.0.lock().unwrap();
+            state.terms.iter().filter_map(|(term, entry)| Some((entry.pty.pid()?, *term))).collect()
+        };
+        let term = crate::ports::shell_of(pid, &shells)?;
+        let group = self.0.lock().unwrap().terms.get(&term)?.group.clone();
+        Some((term, group))
+    }
+
+    fn ask_app(&self, term: TermId, group: &str, args: Vec<String>) -> Result<String, String> {
+        let (sender, answer) = std::sync::mpsc::channel();
+        send_command(&self.0, Asker::Ide(sender), args, PathBuf::from(group), Some(term)).map_err(|err| format!("{err:#}"))?;
+        answer
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|_| "den didn't answer".to_string())?
+    }
+}
 
 impl State {
     fn send(&self, conn: ConnId, message: ServerMessage) {
@@ -351,6 +393,10 @@ impl State {
 
 pub fn run(listener: Listener) -> Result<()> {
     let state: Shared = Arc::default();
+    // Before any terminal starts: they're told where it listens.
+    if let Err(err) = crate::ide::start(Arc::new(IdeHost(state.clone()))) {
+        eprintln!("no IDE integration for Claude Code: {err:#}");
+    }
     let older = shut_down_older_agents();
     let mut resumed = HashSet::new();
     if let Ok(path) = restart_file() {
@@ -394,6 +440,7 @@ pub fn run(listener: Listener) -> Result<()> {
             let idle = state.lock().unwrap().idle_since;
             if idle.is_some_and(|since| since.elapsed() >= IDLE_EXIT) {
                 eprintln!("no terminals or connections: exiting");
+                crate::ide::stop();
                 std::process::exit(0);
             }
         }
@@ -482,7 +529,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
             own_separators(&mut message.request);
             // Answered when the app is done, not now.
             if let Request::Command { args, cwd, term } = message.request {
-                if let Err(err) = send_command(&state, conn, id, args, cwd, term) {
+                if let Err(err) = send_command(&state, Asker::Request(conn, id), args, cwd, term) {
                     reply_to(&state, conn, id, Err(err));
                 }
                 continue;
@@ -521,12 +568,9 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     state.relays.remove(&conn);
     state.apps.retain(|app| *app != conn);
     // What that app was running won't be answered.
-    let lost: Vec<_> = state.commands.extract_if(|_, (app, ..)| *app == conn).collect();
-    for (_, (_, asker, id)) in lost {
-        if let Some(id) = id {
-            let result = Err("the app closed before answering".into());
-            state.send(asker, ServerMessage::Response { id, result });
-        }
+    let lost: Vec<_> = state.commands.extract_if(|_, (app, _)| *app == conn).collect();
+    for (_, (_, asker)) in lost {
+        asker.answer(&state, Err("the app closed before answering".into()));
     }
     for entry in state.terms.values_mut() {
         entry.subscribers.remove(&conn);
@@ -540,8 +584,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
 /// with its own connection) or else to the one that last said it runs them.
 fn send_command(
     state: &Shared,
-    conn: ConnId,
-    id: Option<u64>,
+    asker: Asker,
     args: Vec<String>,
     cwd: PathBuf,
     term: Option<TermId>,
@@ -559,7 +602,7 @@ fn send_command(
     let term = term.filter(|_| group.is_some());
     state.next_command += 1;
     let command = state.next_command;
-    state.commands.insert(command, (app, conn, id));
+    state.commands.insert(command, (app, asker));
     state.send(app, ServerMessage::Event(Event::Command { command, args, cwd, term, group }));
     Ok(())
 }
@@ -784,6 +827,11 @@ fn own_separators(request: &mut Request) {
         | Request::TermRead { .. }
         | Request::TermBusy { .. }
         | Request::FreePort => {}
+        Request::IdeSelection { selection, .. } => {
+            if let Some(selection) = selection {
+                fix(&mut selection.file);
+            }
+        }
     }
 }
 
@@ -930,6 +978,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             // Dropping the terminals kills their processes.
             state.terms.clear();
             eprintln!("shutdown requested by a UI");
+            crate::ide::stop();
             std::process::exit(0);
         }
         Request::TermCreate {
@@ -1134,10 +1183,14 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::Ok)
         }
         Request::Command { .. } => unreachable!("answered when the app is done"),
+        Request::IdeSelection { group, selection } => {
+            crate::ide::set_selection(group, selection);
+            Ok(Response::Ok)
+        }
         Request::CommandDone { command, result } => {
             let mut state = state.lock().unwrap();
-            if let Some((_, asker, Some(id))) = state.commands.remove(&command) {
-                state.send(asker, ServerMessage::Response { id, result: result.map(Response::Text) });
+            if let Some((_, asker)) = state.commands.remove(&command) {
+                asker.answer(&state, result);
             }
             Ok(Response::Ok)
         }

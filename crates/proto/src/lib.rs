@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// holds it against `wire.txt`. Each version has its own socket; an agent of a
 /// newer one, on starting, shuts down those of older ones and takes their
 /// terminals, so `Hello` and `Shutdown` stay the first requests of every version.
-pub const PROTOCOL: u32 = 8;
+pub const PROTOCOL: u32 = 9;
 
 /// Maximum frame size, so garbage input can't make us allocate without limit.
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -214,6 +214,20 @@ pub enum Request {
     /// Puts `item`, from a `Trash` response, back at `to`, where it was;
     /// never over anything. Responds `Ok`.
     Untrash { item: PathBuf, to: PathBuf },
+    /// What the editor of workspace `group` shows: its file and selection,
+    /// or none. For Claude Code in that workspace's terminals, which the
+    /// agent tells as an IDE would (`ide.rs`). Sent as a notification.
+    IdeSelection { group: String, selection: Option<IdeSelection> },
+}
+
+/// The file in front in an editor, and what's selected in it (the cursor
+/// alone, if nothing is). Lines and characters from 0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdeSelection {
+    pub file: PathBuf,
+    pub text: String,
+    pub start: (u32, u32),
+    pub end: (u32, u32),
 }
 
 /// The name of the `n`th copy of `name`, as Finder names them: `n` 0 is the

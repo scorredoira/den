@@ -119,6 +119,7 @@ dependencies = [
  "client",
  "dirs 6.0.0",
  "dunce",
+ "getrandom 0.4.3",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
@@ -135,6 +136,7 @@ dependencies = [
  "smol",
  "tempfile",
  "trash",
+ "tungstenite",
  "url",
 ]
 

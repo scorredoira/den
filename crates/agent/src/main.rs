@@ -12,6 +12,7 @@ mod blocked;
 mod cli;
 mod format;
 mod fs;
+mod ide;
 mod git;
 mod lsp;
 mod platform;
