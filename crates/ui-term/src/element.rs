@@ -453,6 +453,27 @@ impl Element for TerminalElement {
             let _ = marked.paint(b.origin, line_height, TextAlign::Left, None, window, cx);
         }
 
+        // While selecting, the drag goes on outside the view (it scrolls past
+        // the edges) and the release ends it wherever it happens.
+        if self.view.read(cx).selecting() {
+            let view = self.view.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                if phase == DispatchPhase::Capture {
+                    view.update(cx, |view, cx| match event.pressed_button {
+                        Some(MouseButton::Left) => view.drag_selection(event.position, cx),
+                        _ => view.end_selection(cx),
+                    });
+                }
+            });
+            let view = self.view.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                    view.update(cx, |view, cx| view.end_selection(cx));
+                    cx.stop_propagation();
+                }
+            });
+        }
+
         window.handle_input(
             &self.focus,
             TerminalInputHandler {

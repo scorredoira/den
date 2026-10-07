@@ -1,4 +1,4 @@
-use std::{cell::Cell as StdCell, ops::Range, path::PathBuf, rc::Rc};
+use std::{cell::Cell as StdCell, ops::Range, path::PathBuf, rc::Rc, time::Duration};
 
 use alacritty_terminal::{
     index::{Line, Point as AlacPoint},
@@ -27,6 +27,9 @@ fn font_size(cx: &App) -> Pixels {
 /// Inner padding of the view, on each side.
 const PADDING_X: f32 = 8.;
 const PADDING_Y: f32 = 4.;
+
+/// How often a selection dragged past the top or bottom edge scrolls.
+const AUTOSCROLL_EVERY: Duration = Duration::from_millis(40);
 
 pub enum TerminalViewEvent {
     TitleChanged,
@@ -61,6 +64,10 @@ pub struct TerminalView {
     marked_text: Option<String>,
     layout: Rc<StdCell<Option<GridLayout>>>,
     selecting: bool,
+    /// Where the mouse is while dragging a selection, inside or outside the view.
+    drag_position: Point<Pixels>,
+    /// Scrolls while a dragged selection is past the top or bottom edge.
+    autoscroll: Option<Task<()>>,
     /// Accumulated scroll that doesn't yet add up to a whole line.
     scroll_remainder: f32,
     _subscriptions: Vec<Subscription>,
@@ -101,6 +108,8 @@ impl TerminalView {
             marked_text: None,
             layout: Rc::default(),
             selecting: false,
+            drag_position: Point::default(),
+            autoscroll: None,
             scroll_remainder: 0.,
             _subscriptions: subscriptions,
         }
@@ -240,12 +249,18 @@ impl TerminalView {
         if event.button != MouseButton::Left {
             return;
         }
+        self.selecting = true;
+        self.drag_position = event.position;
+        if event.modifiers.shift && event.click_count == 1 && self.has_selection(cx) {
+            self.terminal
+                .update(cx, |terminal, cx| terminal.update_selection(point, side, cx));
+            return;
+        }
         let ty = match event.click_count {
             2 => SelectionType::Semantic,
             3.. => SelectionType::Lines,
             _ => SelectionType::Simple,
         };
-        self.selecting = true;
         self.terminal
             .update(cx, |terminal, cx| terminal.start_selection(point, side, ty, cx));
     }
@@ -253,12 +268,8 @@ impl TerminalView {
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.last_mouse = Some(event.position);
         self.update_hovered_link(event.modifiers.platform, cx);
-        if self.selecting && event.pressed_button == Some(MouseButton::Left) {
-            if let Some((point, side)) = self.point_at(event.position, cx) {
-                self.terminal
-                    .update(cx, |terminal, cx| terminal.update_selection(point, side, cx));
-            }
-        } else if let Some(button) = event.pressed_button
+        if !self.selecting
+            && let Some(button) = event.pressed_button
             && self.reports_mouse(&event.modifiers, cx)
             && self
                 .terminal
@@ -271,13 +282,74 @@ impl TerminalView {
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selecting {
-            self.selecting = false;
-            if self.terminal.read(cx).selection_text().is_none() {
-                self.terminal.update(cx, |terminal, cx| terminal.clear_selection(cx));
-            }
-        } else if self.reports_mouse(&event.modifiers, cx) {
+        if !self.selecting && self.reports_mouse(&event.modifiers, cx) {
             self.report_mouse(event.button, false, false, event.position, event.modifiers, cx);
+        }
+    }
+
+    pub(crate) fn selecting(&self) -> bool {
+        self.selecting
+    }
+
+    /// The mouse moves while selecting, wherever it is: past the top or bottom
+    /// edge the terminal scrolls, and keeps scrolling while it stays there.
+    pub(crate) fn drag_selection(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        self.drag_position = position;
+        self.extend_selection(cx);
+        if self.autoscroll.is_none() && self.autoscroll_lines() != 0 {
+            self.autoscroll = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(AUTOSCROLL_EVERY).await;
+                    let Ok(true) = this.update(cx, |this, cx| this.autoscroll_step(cx)) else {
+                        break;
+                    };
+                }
+            }));
+        }
+    }
+
+    pub(crate) fn end_selection(&mut self, cx: &mut Context<Self>) {
+        self.selecting = false;
+        self.autoscroll = None;
+        if !self.has_selection(cx) {
+            self.terminal.update(cx, |terminal, cx| terminal.clear_selection(cx));
+        }
+    }
+
+    fn extend_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some((point, side)) = self.point_at(self.drag_position, cx) {
+            self.terminal
+                .update(cx, |terminal, cx| terminal.update_selection(point, side, cx));
+        }
+    }
+
+    fn autoscroll_step(&mut self, cx: &mut Context<Self>) -> bool {
+        let lines = self.autoscroll_lines();
+        if !self.selecting || lines == 0 {
+            self.autoscroll = None;
+            return false;
+        }
+        self.terminal.update(cx, |terminal, cx| terminal.scroll(lines, cx));
+        self.extend_selection(cx);
+        true
+    }
+
+    /// Lines to scroll per step for the dragged selection: up (positive) above
+    /// the grid, down below it, faster the farther the mouse is.
+    fn autoscroll_lines(&self) -> i32 {
+        let Some(layout) = self.layout.get() else {
+            return 0;
+        };
+        let line_height = layout.size.line_height;
+        let top = layout.origin.y;
+        let bottom = top + line_height * layout.size.rows as f32;
+        let y = self.drag_position.y;
+        if y < top {
+            ((top - y) / line_height) as i32 + 1
+        } else if y >= bottom {
+            -(((y - bottom) / line_height) as i32 + 1)
+        } else {
+            0
         }
     }
 
@@ -311,6 +383,9 @@ impl TerminalView {
             self.terminal.update(cx, |terminal, _| terminal.write_raw(bytes));
         } else {
             self.terminal.update(cx, |terminal, cx| terminal.scroll(lines, cx));
+            if self.selecting {
+                self.extend_selection(cx);
+            }
         }
     }
 
