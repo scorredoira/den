@@ -172,6 +172,9 @@ struct Main {
     /// The main window first.
     windows: Vec<OpenWindow>,
     agent: Option<Arc<Client>>,
+    /// The local tasks, listed while the app started, for the first window
+    /// to open on.
+    start_tasks: Option<Vec<TaskInfo>>,
 }
 
 impl Global for Main {}
@@ -187,6 +190,10 @@ struct OpenWindow {
 /// The local agent, for the main window.
 pub fn set_agent(agent: Option<Arc<Client>>, cx: &mut App) {
     cx.default_global::<Main>().agent = agent;
+}
+
+pub fn set_start_tasks(tasks: Option<Vec<TaskInfo>>, cx: &mut App) {
+    cx.default_global::<Main>().start_tasks = tasks;
 }
 
 /// Whether `client` is the app's connection to the local agent.
@@ -778,51 +785,58 @@ impl Den {
         this.watch_host(LOCAL.into(), client.clone(), window, cx);
         this.track(LOCAL.into(), &client, window, cx);
 
-        // Reads the tasks and enters the one containing the folder, if any;
-        // otherwise the folder on its own.
+        // The tasks listed while the app started: it opens on them now, in
+        // the first frame. Otherwise it reads them first.
+        if let Some(tasks) = cx.default_global::<Main>().start_tasks.take() {
+            this.enter_start(tasks, root, resume, window, cx);
+            return this;
+        }
         let startup = cx.spawn_in(window, async move |this, cx| {
             let tasks = list_tasks(&client).await.unwrap_or_default();
-            this.update_in(cx, |this, window, cx| {
-                this.hosts[0].tasks = tasks;
-                let task = root.as_ref().and_then(|root| {
-                    this.hosts[0]
-                        .tasks
-                        .iter()
-                        .filter(|task| root.starts_with(&task.path))
-                        .max_by_key(|task| task.path.components().count())
-                        .map(|task| task.path.clone())
-                });
-                // No folder at launch, and outside a task: go to the last one.
-                let last = resume.then(|| Config::get(cx).last.clone()).flatten();
-                let key = match (task, last) {
-                    (Some(path), _) => TaskKey { host: LOCAL.into(), path },
-                    (None, Some(last)) if last.host != LOCAL && this.host(&last.host).is_some() => {
-                        let key = TaskKey { host: last.host.into(), path: last.path };
-                        if this.client(&key.host).is_some() {
-                            this.activate(key, window, cx);
-                        } else {
-                            this.pending_last = Some(key);
-                        }
-                        return;
-                    }
-                    (None, Some(last)) if last.host == LOCAL && last.path.is_dir() => {
-                        TaskKey { host: LOCAL.into(), path: last.path }
-                    }
-                    (None, _) => match root {
-                        Some(root) => TaskKey { host: LOCAL.into(), path: root },
-                        // Nothing to open: the welcome screen.
-                        None => {
-                            this.focus_handle.focus(window, cx);
-                            return;
-                        }
-                    },
-                };
-                this.activate(key, window, cx);
-            })
-            .ok();
+            this.update_in(cx, |this, window, cx| this.enter_start(tasks, root, resume, window, cx)).ok();
         });
         this._tasks.push(startup);
         this
+    }
+
+    /// With the local tasks known: enters the one containing the folder, if
+    /// any; otherwise the folder on its own, or the last one visited.
+    fn enter_start(&mut self, tasks: Vec<TaskInfo>, root: Option<PathBuf>, resume: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.hosts[0].tasks = tasks;
+        let task = root.as_ref().and_then(|root| {
+            self.hosts[0]
+                .tasks
+                .iter()
+                .filter(|task| root.starts_with(&task.path))
+                .max_by_key(|task| task.path.components().count())
+                .map(|task| task.path.clone())
+        });
+        // No folder at launch, and outside a task: go to the last one.
+        let last = resume.then(|| Config::get(cx).last.clone()).flatten();
+        let key = match (task, last) {
+            (Some(path), _) => TaskKey { host: LOCAL.into(), path },
+            (None, Some(last)) if last.host != LOCAL && self.host(&last.host).is_some() => {
+                let key = TaskKey { host: last.host.into(), path: last.path };
+                if self.client(&key.host).is_some() {
+                    self.activate(key, window, cx);
+                } else {
+                    self.pending_last = Some(key);
+                }
+                return;
+            }
+            (None, Some(last)) if last.host == LOCAL && last.path.is_dir() => {
+                TaskKey { host: LOCAL.into(), path: last.path }
+            }
+            (None, _) => match root {
+                Some(root) => TaskKey { host: LOCAL.into(), path: root },
+                // Nothing to open: the welcome screen.
+                None => {
+                    self.focus_handle.focus(window, cx);
+                    return;
+                }
+            },
+        };
+        self.activate(key, window, cx);
     }
 
     /// The window's title with no workspace open.
@@ -3379,7 +3393,7 @@ async fn remote_target(client: &Client, path: PathBuf) -> Option<(PathBuf, Optio
     Some((parent, Some(path)))
 }
 
-async fn list_tasks(client: &Client) -> anyhow::Result<Vec<TaskInfo>> {
+pub async fn list_tasks(client: &Client) -> anyhow::Result<Vec<TaskInfo>> {
     match client.request(Request::TaskList).await? {
         Response::Tasks(tasks) => Ok(tasks),
         other => anyhow::bail!("unexpected response: {other:?}"),
