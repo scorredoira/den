@@ -2,7 +2,7 @@
 
 use gpui_kit::KeyBinding;
 
-use crate::{Copy, Paste, SendBackTab, SendInterrupt, SendTab, terminal_key};
+use crate::{Copy, Find, Paste, SendBackTab, SendInterrupt, SendTab, terminal_key};
 
 /// Copy and paste inside the terminal. On Mac it uses Cmd; on Linux and
 /// Windows, Ctrl-Shift so Ctrl-C and Ctrl-V still go to the shell.
@@ -23,5 +23,8 @@ pub fn keymap() -> Vec<KeyBinding> {
             terminal_key("ctrl-shift-v", Paste),
         ]);
     }
+    // Off the Mac, Ctrl-F is the shell's and Ctrl-Shift-F the Search panel.
+    let find = if cfg!(target_os = "macos") { "cmd-f" } else { "ctrl-alt-f" };
+    keys.extend([terminal_key(find, Find), KeyBinding::new(find, Find, Some("TerminalFind"))]);
     keys
 }

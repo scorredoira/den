@@ -146,6 +146,7 @@ The activity bar, on the left, has an icon for each group of the side column: th
 | {{NewTerminal}} | New terminal |
 | {{SplitRight}} / {{SplitDown}} | Split the terminal to the right or down |
 | {{FocusPaneLeft}} {{FocusPaneRight}} {{FocusPaneUp}} {{FocusPaneDown}} | Move to the terminal on that side |
+| {{TerminalFind}} | Find in the terminal, its history included: {{key:enter}} goes up, {{key:shift-enter}} down |
 
 Drag a terminal's tab onto the edge of another to split them; drag a pane's title back to the tab bar to separate it. A `file:line` in a terminal opens with a click.
 
