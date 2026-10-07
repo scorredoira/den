@@ -25,8 +25,8 @@ fn font_size(cx: &App) -> Pixels {
 }
 
 /// Inner padding of the view, on each side.
-const PADDING_X: f32 = 8.;
-const PADDING_Y: f32 = 4.;
+pub(crate) const PADDING_X: f32 = 8.;
+pub(crate) const PADDING_Y: f32 = 4.;
 
 /// How often a selection dragged past the top or bottom edge scrolls.
 const AUTOSCROLL_EVERY: Duration = Duration::from_millis(40);
@@ -282,7 +282,9 @@ impl TerminalView {
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting && self.reports_mouse(&event.modifiers, cx) {
+        if self.selecting {
+            self.end_selection(cx);
+        } else if self.reports_mouse(&event.modifiers, cx) {
             self.report_mouse(event.button, false, false, event.position, event.modifiers, cx);
         }
     }

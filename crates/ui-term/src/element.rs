@@ -18,7 +18,7 @@ use gpui_kit::*;
 use crate::{
     colors::Palette,
     terminal::{GridSize, Terminal},
-    view::TerminalView,
+    view::{PADDING_X, PADDING_Y, TerminalView},
 };
 
 /// Line height relative to the font size.
@@ -454,8 +454,14 @@ impl Element for TerminalElement {
         }
 
         // While selecting, the drag goes on outside the view (it scrolls past
-        // the edges) and the release ends it wherever it happens.
+        // the edges) and a release out there ends it too; inside, the view's
+        // own mouse up does. The release is never swallowed: whoever else
+        // waits for it (a drag, a click) has to see it.
         if self.view.read(cx).selecting() {
+            let view_bounds = Bounds::new(
+                point(bounds.origin.x - px(PADDING_X), bounds.origin.y - px(PADDING_Y)),
+                size(bounds.size.width + px(2. * PADDING_X), bounds.size.height + px(2. * PADDING_Y)),
+            );
             let view = self.view.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                 if phase == DispatchPhase::Capture {
@@ -467,9 +473,11 @@ impl Element for TerminalElement {
             });
             let view = self.view.clone();
             window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                if phase == DispatchPhase::Bubble
+                    && event.button == MouseButton::Left
+                    && !view_bounds.contains(&event.position)
+                {
                     view.update(cx, |view, cx| view.end_selection(cx));
-                    cx.stop_propagation();
                 }
             });
         }
