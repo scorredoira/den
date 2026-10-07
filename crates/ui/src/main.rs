@@ -178,10 +178,14 @@ fn main() {
         let _ = std::fs::write(file, exe.to_string_lossy().as_bytes());
     }
 
-    // Terminals live in the agent; if it doesn't start, the app works without them.
-    let agent = agent::connect()
-        .inspect_err(|err| eprintln!("no agent: {err:#}"))
-        .ok();
+    // Terminals live in the agent; if it doesn't start, the app works without
+    // them. It connects, and lists the tasks, while the app starts: the
+    // window opens on the workspace, without waiting for it.
+    let agent = std::thread::spawn(|| {
+        let client = agent::connect().inspect_err(|err| eprintln!("no agent: {err:#}")).ok()?;
+        let tasks = smol::block_on(app::list_tasks(&client)).ok();
+        Some((client, tasks))
+    });
 
     let application = gpui_kit::application().with_assets(assets::Assets);
     // The Dock icon clicked with the window closed: it opens again.
@@ -198,7 +202,12 @@ fn main() {
         app_menu::set(cx);
 
         update::init(cx);
+        let (agent, tasks) = match agent.join().ok().flatten() {
+            Some((client, tasks)) => (Some(client), tasks),
+            None => (None, None),
+        };
         app::set_agent(agent.clone(), cx);
+        app::set_start_tasks(tasks, cx);
         if let Some(agent) = &agent {
             listen_for_open(agent, cx);
         }
