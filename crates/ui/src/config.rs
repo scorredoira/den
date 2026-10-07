@@ -97,15 +97,16 @@ pub struct DebugGrid {
 
 impl DebugGrid {
     /// The parts as placed: as saved, each once, with any missing under the
-    /// rest. Unset, two rows of two (the call stack and the variables, the
-    /// watches and the breakpoints), the terminal and the console.
+    /// rest. Unset, three rows of two: the call stack and the variables, the
+    /// watches and the console (what evaluates, together, at mid height), the
+    /// terminal and the breakpoints.
     pub fn tree(&self) -> Tree<DebugPart> {
         use DebugPart::*;
         let row = |a, b| Tree::Split { axis: Axis::Row, children: vec![Tree::Leaf(a), Tree::Leaf(b)] };
         let Some(saved) = self.tree.clone() else {
             return Tree::Split {
                 axis: Axis::Column,
-                children: vec![row(Stack, Variables), row(Watch, Breakpoints), Tree::Leaf(Terminal), Tree::Leaf(Console)],
+                children: vec![row(Stack, Variables), row(Watch, Console), row(Terminal, Breakpoints)],
             };
         };
         let seen = std::cell::RefCell::new(Vec::new());

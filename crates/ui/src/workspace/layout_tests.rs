@@ -294,8 +294,8 @@ fn the_workspaces_are_a_panel_of_the_explorer(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("side-column").is_none());
 }
 
-/// The debugger is one tab of the terminals': its toolbar, its four parts
-/// side by side and its console under them; the side column keeps the files.
+/// The debugger is one tab of the terminals': its toolbar and its parts in
+/// rows of two, the console beside the watches; the side column keeps the files.
 #[gpui_kit::test]
 fn the_debugger_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |layout| layout.dock = Dock::Bottom);
@@ -312,12 +312,13 @@ fn the_debugger_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     let (tab, stack, watch) = (bounds(cx, "debug-tab"), bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-cell-Watch"));
     let console = bounds(cx, "debug-console");
     assert!(bar.top() >= code.bottom(), "under the code: {bar:?} {code:?}");
-    assert!(bar.bottom() <= stack.top() && watch.bottom() <= console.top(), "{bar:?} {stack:?} {watch:?} {console:?}");
-    // Wide too, two rows of two, the variables wider than the call stack.
-    two_by_two(cx);
+    assert!(bar.bottom() <= stack.top() && watch.right() <= console.left() + px(1.), "{bar:?} {stack:?} {watch:?} {console:?}");
+    // Wide too, rows of two, the variables wider than the call stack.
+    rows_of_two(cx);
     let (stack, variables) = (bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-cell-Variables"));
     assert!(variables.size.width > stack.size.width, "{stack:?} {variables:?}");
-    assert!(console.size.width >= tab.size.width - px(1.), "the console at the tab's width");
+    let breakpoints = bounds(cx, "debug-cell-Breakpoints");
+    assert!(breakpoints.size.width >= tab.size.width - px(1.), "with no terminal, the breakpoints at the tab's width");
     console_shows(cx);
     // Cmd-Shift-D hides it and shows it.
     workspace.update(cx, |workspace, cx| workspace.toggle_panel(Panel::Console, cx));
@@ -333,15 +334,16 @@ fn the_debugger_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
 }
 
-/// The grid's cells are two rows of two: the call stack and the variables
-/// above, the watches and the breakpoints below; the console under them.
-fn two_by_two(cx: &mut VisualTestContext) {
+/// The grid's cells in rows of two: the call stack and the variables above,
+/// the watches and the console under them; the breakpoints (with no
+/// terminal, alone) at the bottom.
+fn rows_of_two(cx: &mut VisualTestContext) {
     let (stack, variables) = (bounds(cx, "debug-cell-Stack"), bounds(cx, "debug-cell-Variables"));
-    let (watch, breakpoints) = (bounds(cx, "debug-cell-Watch"), bounds(cx, "debug-cell-Breakpoints"));
+    let (watch, console) = (bounds(cx, "debug-cell-Watch"), bounds(cx, "debug-cell-Console"));
     assert!(stack.top() == variables.top() && stack.right() <= variables.left() + px(1.), "{stack:?} {variables:?}");
-    assert!(watch.top() >= stack.bottom() - px(1.) && watch.top() == breakpoints.top(), "{stack:?} {watch:?} {breakpoints:?}");
-    assert!(watch.right() <= breakpoints.left() + px(1.), "{watch:?} {breakpoints:?}");
-    assert!(bounds(cx, "debug-console").top() >= watch.bottom() - px(1.));
+    assert!(watch.top() >= stack.bottom() - px(1.) && watch.top() == console.top(), "{stack:?} {watch:?} {console:?}");
+    assert!(watch.right() <= console.left() + px(1.), "{watch:?} {console:?}");
+    assert!(bounds(cx, "debug-cell-Breakpoints").top() >= watch.bottom() - px(1.));
 }
 
 /// The console is inside the tab, with a few lines at least.
@@ -350,22 +352,22 @@ fn console_shows(cx: &mut VisualTestContext) {
     assert!(console.bottom() <= tab.bottom() + px(1.) && console.size.height >= px(60.), "{tab:?} {console:?}");
 }
 
-/// In a narrow tab (the terminals on the code's right), the same two rows of two.
+/// In a narrow tab (the terminals on the code's right), the same rows of two.
 #[gpui_kit::test]
-fn a_narrow_debugger_has_two_rows_of_two(cx: &mut TestAppContext) {
+fn a_narrow_debugger_has_rows_of_two(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |layout| {
         layout.dock = Dock::Right;
         layout.dock_width = Some(500.);
     });
     workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
     cx.run_until_parked();
-    two_by_two(cx);
+    rows_of_two(cx);
     console_shows(cx);
 }
 
-/// The splits of the tab with no terminal yet: the parts' rows over the
-/// console.
-const COLUMN: &str = "Stack+Variables|Watch+Breakpoints|Console";
+/// The splits of the tab with no terminal yet: two rows of parts over the
+/// breakpoints.
+const COLUMN: &str = "Stack+Variables|Watch+Console|Breakpoints";
 
 /// Tall rows saved before (or a tab that got shorter) never cover the
 /// console.
@@ -378,7 +380,7 @@ fn saved_rows_leave_the_console(cx: &mut TestAppContext) {
     });
     workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
     cx.run_until_parked();
-    two_by_two(cx);
+    rows_of_two(cx);
     console_shows(cx);
 }
 
@@ -424,9 +426,8 @@ fn a_part_dropped_on_another_swaps_with_it(cx: &mut TestAppContext) {
         Axis::Column,
         vec![
             split(Axis::Row, vec![leaf(Breakpoints), leaf(Variables)]),
-            split(Axis::Row, vec![leaf(Watch), leaf(Stack)]),
-            leaf(Terminal),
-            leaf(Console),
+            split(Axis::Row, vec![leaf(Watch), leaf(Console)]),
+            split(Axis::Row, vec![leaf(Terminal), leaf(Stack)]),
         ],
     );
     assert_eq!(tree, expected);
@@ -460,8 +461,7 @@ fn a_part_dropped_by_an_edge_goes_beside(cx: &mut TestAppContext) {
             Axis::Column,
             vec![
                 split(Axis::Row, vec![leaf(Console), leaf(Stack), split(Axis::Column, vec![leaf(Variables), leaf(Watch)])]),
-                leaf(Breakpoints),
-                leaf(Terminal),
+                split(Axis::Row, vec![leaf(Terminal), leaf(Breakpoints)]),
             ],
         )
     );
@@ -481,7 +481,7 @@ fn a_hidden_part_leaves_its_space(cx: &mut TestAppContext) {
     let stack = bounds(cx, "debug-cell-Stack");
     assert!(stack.size.width >= tab.size.width - px(2.), "the call stack takes the row: {stack:?} {tab:?}");
     grid(cx, |grid| grid.set_hidden(config::DebugPart::Variables, false));
-    two_by_two(cx);
+    rows_of_two(cx);
     use config::DebugPart::*;
     grid(cx, |grid| {
         for part in [Stack, Variables, Watch, Breakpoints, Terminal] {
