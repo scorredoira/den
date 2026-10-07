@@ -134,7 +134,7 @@ pub fn set_selection(group: String, selection: Option<IdeSelection>) {
         return;
     };
     let params = selection_params(&selection);
-    let message = notification("selection_changed", params.clone());
+    let message = selection_changed(&params);
     ide.selections.lock().unwrap().insert(group.clone(), params);
     for client in ide.clients.lock().unwrap().iter() {
         if client.terminal.as_ref().is_some_and(|(_, of)| *of == group) {
@@ -162,6 +162,19 @@ fn selection_params(selection: &IdeSelection) -> Value {
             "isEmpty": selection.start == selection.end,
         },
     })
+}
+
+/// The selection as told to Claude Code. With nothing selected, no file:
+/// otherwise it puts "In main.rs" in its prompt all the time. The file is
+/// still there for `getCurrentSelection`.
+fn selection_changed(params: &Value) -> String {
+    let mut params = params.clone();
+    if params["text"].as_str().is_none_or(str::is_empty) {
+        let fields = params.as_object_mut().expect("selection_params is an object");
+        fields.remove("filePath");
+        fields.remove("fileUrl");
+    }
+    notification("selection_changed", params)
 }
 
 fn file_url(path: &Path) -> String {
@@ -288,7 +301,7 @@ impl Ide {
         };
         entry.terminal = terminal;
         if let Some(selection) = selection {
-            let _ = entry.outbox.send(notification("selection_changed", selection));
+            let _ = entry.outbox.send(selection_changed(&selection));
         }
     }
 

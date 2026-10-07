@@ -145,10 +145,13 @@ fn claude_code_connects_as_to_an_ide() {
     let told = next(&mut socket);
     assert_eq!(told["params"]["selection"]["start"]["line"], 9, "{told}");
     assert_eq!(told["params"]["selection"]["isEmpty"], true);
+    // with nothing selected, no file: Claude Code would show it in the prompt
+    assert!(told["params"].get("filePath").is_none(), "{told}");
 
     // tools answered by the agent
     let current: Value = serde_json::from_str(&call(&mut socket, 4, "getCurrentSelection", json!({}))).unwrap();
     assert_eq!((current["success"].as_bool(), current["selection"]["start"]["line"].as_u64()), (Some(true), Some(9)));
+    assert_eq!(current["filePath"], file.to_string_lossy().as_ref());
     let folders: Value = serde_json::from_str(&call(&mut socket, 5, "getWorkspaceFolders", json!({}))).unwrap();
     assert_eq!(folders["folders"][0]["path"], group.as_str());
     assert_eq!(call(&mut socket, 6, "getDiagnostics", json!({})), "[]");
