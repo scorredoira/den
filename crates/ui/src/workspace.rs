@@ -3530,7 +3530,6 @@ impl Workspace {
                         })
                     })
                     .when(!active, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
-                    .when(tab.preview, |el| el.italic())
                     .on_drag(
                         TabDrag { editor: tab.editor.clone(), label: name.clone().into() },
                         {
@@ -3551,7 +3550,8 @@ impl Workspace {
                             this.drop_tab(drag, group, before, EditorDrop::Center, window, cx);
                         }
                     }))
-                    .child(name)
+                    // Only the name: the right-click menu is a child of the tab and would inherit it.
+                    .child(div().when(tab.preview, |el| el.italic()).child(name))
                     .child(
                         div()
                             .id(("tab-close", ix))
