@@ -265,23 +265,6 @@ $all | Where-Object {{ $_.ProcessId -in $ids -and ($_.Name -eq 'claude.exe' -or 
     out.map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
 }
 
-/// Link `link` pointing to `target` (replaces any previous one).
-#[cfg(unix)]
-pub fn symlink(target: &Path, link: &Path) -> Result<()> {
-    let _ = std::fs::remove_file(link);
-    std::os::unix::fs::symlink(target, link)?;
-    Ok(())
-}
-
-/// Hard links need no symlink privilege, and keep the exact agent binary.
-#[cfg(windows)]
-pub fn symlink(target: &Path, link: &Path) -> Result<()> {
-    let link = link.with_extension("exe");
-    let _ = std::fs::remove_file(&link);
-    std::fs::hard_link(target, &link).or_else(|_| std::fs::copy(target, &link).map(|_| ()))?;
-    Ok(())
-}
-
 /// Starts the daemon from this same binary, detached from its launcher.
 /// The terminals' `LANG` when the agent has none (the app opened from the
 /// Dock doesn't get one): the macOS language in UTF-8, as Terminal.app
