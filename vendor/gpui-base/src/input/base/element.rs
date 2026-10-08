@@ -870,6 +870,49 @@ impl<M: InputModeKind> TextElement<M> {
         (!corners.is_empty()).then_some(corners)
     }
 
+    /// (den) Paints the lines that are bands (see [`LineStyle::band`]) over
+    /// everything, the gutter included.
+    fn paint_bands(&self, prepaint: &PrepaintState, input_bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        let state = self.state.read(cx);
+        if state.line_styles.iter().all(|style| style.band.is_none()) {
+            return;
+        }
+        let line_height = window.line_height();
+        let layout = &prepaint.last_layout;
+        let (left, right) = (input_bounds.origin.x, input_bounds.right());
+        let text_left = prepaint.bounds.origin.x + layout.line_number_width;
+        let style = window.text_style();
+        let text_size = style.font_size.to_pixels(window.rem_size());
+        let (border, muted) = (state.editor_style.border, state.editor_style.muted_foreground);
+        let mut bands = Vec::new();
+        let mut y = prepaint.bounds.origin.y + layout.visible_top;
+        for (line, &buffer_line) in layout.lines.iter().zip(layout.visible_buffer_lines.iter()) {
+            let height = line.size(line_height).height;
+            if let Some(style) = state.line_styles.get(buffer_line)
+                && let Some(text) = &style.band
+            {
+                bands.push((y, height, style.background, text.clone()));
+            }
+            y += height;
+            if Some(buffer_line) == prepaint.current_row {
+                y += prepaint.ghost_lines_height;
+            }
+        }
+        let background = state.editor_style.background;
+        for (y, height, color, text) in bands {
+            let bounds = Bounds::new(point(left, y), size(right - left, height));
+            window.paint_quad(fill(bounds, background));
+            if let Some(color) = color {
+                window.paint_quad(fill(bounds, color));
+            }
+            window.paint_quad(fill(Bounds::new(point(left, y), size(right - left, px(1.))), border));
+            window.paint_quad(fill(Bounds::new(point(left, y + height - px(1.)), size(right - left, px(1.))), border));
+            let run = TextRun { len: text.len(), font: style.font(), color: muted, background_color: None, underline: None, strikethrough: None };
+            let shaped = window.text_system().shape_line(text, text_size, &[run], None);
+            _ = shaped.paint(point(text_left, y), line_height, TextAlign::Left, None, window, cx);
+        }
+    }
+
     /// (den) Paints the background of the line a debugger is stopped at,
     /// from the gutter's edge to the right.
     fn paint_execution_line(
@@ -3446,6 +3489,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 });
             }
         }
+
+        // (den)
+        self.paint_bands(prepaint, input_bounds, window, cx);
 
         // Paint fold icons (only visible on hover or for current line)
         self.paint_fold_icons(

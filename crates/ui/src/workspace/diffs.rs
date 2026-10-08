@@ -221,10 +221,47 @@ impl Workspace {
         .detach();
     }
 
+    /// Shows a diff with the whole file, or only its changes again, each
+    /// editor's cursor on the same line of the file.
+    pub(super) fn toggle_whole_file(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let new = self.tabs[ix].editor.clone();
+        let Some(old) = self.tabs[ix].old.as_mut() else {
+            return;
+        };
+        let shown = diff::collapse(&old.sides, if old.whole { usize::MAX } else { diff::CONTEXT });
+        let inline = diff::inline(&shown);
+        let line_of = |editor: &Entity<EditorState>, numbers: Vec<Option<u32>>| {
+            let row = editor.read(cx).cursor_position().line as usize;
+            // A row without a number (left out, or only on the other side): the next one's.
+            numbers.into_iter().skip(row).flatten().next()
+        };
+        let lines = [
+            line_of(&new, shown.new.lines.iter().map(|line| line.number).collect()),
+            line_of(&old.inline, inline.lines.iter().map(|line| line.new.or(line.old)).collect()),
+        ];
+        old.whole = !old.whole;
+        let (full, inline_editor) = (std::mem::take(&mut old.sides), old.inline.clone());
+        let shown = diff::collapse(&full, if old.whole { usize::MAX } else { diff::CONTEXT });
+        let inline = diff::inline(&shown);
+        self.show_side_by_side(ix, full, false, window, cx);
+        let rows = [
+            lines[0].and_then(|line| shown.new.lines.iter().position(|row| row.number >= Some(line))),
+            lines[1].and_then(|line| inline.lines.iter().position(|row| row.new.or(row.old) >= Some(line))),
+        ];
+        for (editor, row) in [(&new, rows[0]), (&inline_editor, rows[1])] {
+            if let Some(row) = row {
+                editor.update(cx, |state, cx| state.set_cursor_position(Position::new(row as u32, 0), window, cx));
+                reveal_centered(editor, row as u32, true, cx);
+            }
+        }
+        cx.notify();
+    }
+
     /// Shows a file's diff side by side: the old side in its own editor, the
     /// new one in the tab's, both highlighted as the file and scrolling
-    /// together. The first time it goes to the first change.
-    pub(super) fn show_side_by_side(&mut self, ix: usize, sides: diff::SideBySide, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// together; only the changes, unless chosen otherwise. The first time
+    /// it goes to the first change.
+    pub(super) fn show_side_by_side(&mut self, ix: usize, full: diff::SideBySide, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
         let language = language::for_path(&self.tabs[ix].path);
         let new = self.tabs[ix].editor.clone();
         let first = self.tabs[ix].old.is_none();
@@ -259,13 +296,18 @@ impl Workspace {
                 inline_marks: None,
                 width: Rc::new(Cell::new(self.group_width(self.tabs[ix].group))),
                 selected,
+                sides: diff::SideBySide::default(),
+                whole: false,
                 _subscriptions: subscriptions,
             });
         }
+        let whole = self.tabs[ix].old.as_ref().is_some_and(|old| old.whole);
+        let sides = diff::collapse(&full, if whole { usize::MAX } else { diff::CONTEXT });
         let theme = cx.theme();
         let removed = (theme.danger.opacity(0.14), theme.danger.opacity(0.3));
         let added = (theme.success.opacity(0.14), theme.success.opacity(0.3));
         let (removed_mark, added_mark) = (theme.danger.opacity(0.7), theme.success.opacity(0.7));
+        let skipped = theme.info.opacity(0.1);
         let focused = window.focused(cx);
         let tab = &mut self.tabs[ix];
         tab.saved = sides.new.text.clone();
@@ -286,7 +328,7 @@ impl Workspace {
                 }
                 state.set_soft_wrap(false, window, cx);
                 state.set_value(side.text.clone(), window, cx);
-                state.set_line_styles(line_styles(side, marker, line), cx);
+                state.set_line_styles(line_styles(side, marker, line, skipped), cx);
                 state.set_scrollbar_marks(
                     scrollbar_marks(side.lines.iter().map(|line| match line.kind {
                         diff::Kind::Changed => Some(own),
@@ -327,7 +369,7 @@ impl Workspace {
             }
             state.set_soft_wrap(false, window, cx);
             state.set_value(inline.text.clone(), window, cx);
-            state.set_line_styles(inline_line_styles(&inline, removed.0, added.0), cx);
+            state.set_line_styles(inline_line_styles(&inline, removed.0, added.0, skipped), cx);
             state.set_scrollbar_marks(
                 scrollbar_marks(inline.lines.iter().map(|line| match (line.old, line.new) {
                     (Some(_), None) => Some(removed_mark),
@@ -356,6 +398,7 @@ impl Workspace {
                 reveal_centered(&editor, row as u32, true, cx);
             }
         }
+        old.sides = full;
         if let Some(focused) = focused {
             focused.focus(window, cx);
         }

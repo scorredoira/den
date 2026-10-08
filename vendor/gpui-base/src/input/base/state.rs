@@ -346,12 +346,16 @@ struct PasteTarget {
 /// — write `InputState`, not `InputBaseState<InputMode>`.
 /// How one line looks, as the sides of a diff need: a background across
 /// the whole line, a hatched gap standing for lines only the other side has,
-/// and the label in the gutter (`None`: blank). (den)
+/// and the label in the gutter (`None`: blank). With `band`, the line is a
+/// band that stands apart, as where a diff leaves lines out: the background
+/// over the gutter too, edged above and below, and this text in it, muted,
+/// still as the text scrolls sideways. (den)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LineStyle {
     pub background: Option<Hsla>,
     pub hatched: bool,
     pub number: Option<SharedString>,
+    pub band: Option<SharedString>,
 }
 
 /// A mark in the vertical scrollbar's track, as a diff's changes show
