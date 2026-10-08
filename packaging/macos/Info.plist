@@ -28,6 +28,74 @@
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Text</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.plain-text</string>
+				<string>public.source-code</string>
+				<string>public.script</string>
+				<string>public.json</string>
+				<string>public.xml</string>
+				<string>net.daringfireball.markdown</string>
+			</array>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>txt</string>
+				<string>text</string>
+				<string>md</string>
+				<string>markdown</string>
+				<string>ts</string>
+				<string>tsx</string>
+				<string>mts</string>
+				<string>cts</string>
+				<string>js</string>
+				<string>jsx</string>
+				<string>mjs</string>
+				<string>cjs</string>
+				<string>css</string>
+				<string>scss</string>
+				<string>less</string>
+				<string>go</string>
+				<string>mod</string>
+				<string>sum</string>
+				<string>rs</string>
+				<string>toml</string>
+				<string>yaml</string>
+				<string>yml</string>
+				<string>json</string>
+				<string>jsonc</string>
+				<string>py</string>
+				<string>sh</string>
+				<string>bash</string>
+				<string>zsh</string>
+				<string>sql</string>
+				<string>c</string>
+				<string>h</string>
+				<string>cc</string>
+				<string>cpp</string>
+				<string>hpp</string>
+				<string>make</string>
+				<string>mk</string>
+				<string>diff</string>
+				<string>patch</string>
+				<string>log</string>
+				<string>ini</string>
+				<string>conf</string>
+				<string>env</string>
+				<string>lock</string>
+				<string>xml</string>
+				<string>svg</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Den brings to the front the Google Chrome tab already showing the program being debugged, instead of opening another one.</string>
 </dict>
