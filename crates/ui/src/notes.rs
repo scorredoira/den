@@ -11,7 +11,8 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use gpui_kit::component::{
     ActiveTheme as _,
-    input::{Editor, EditorState, InputEvent},
+    input::{self, Editor, EditorState, InputEvent},
+    native_menu::NativeMenu,
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -89,8 +90,21 @@ pub fn forget(key: &str, cx: &mut App) {
     set(key, String::new(), cx);
 }
 
+/// Where the notes are: what their right-click menu offers to do with them.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum Place {
+    /// Their tab at the end of the terminals' bar.
+    #[default]
+    Tab,
+    /// A pane split beside a terminal.
+    Split,
+    /// A tab of the code.
+    Editor,
+}
+
 pub struct NotesPanel {
     key: String,
+    place: Place,
     editor: Entity<EditorState>,
     /// Whether it has something, as last written.
     filled: bool,
@@ -116,7 +130,7 @@ impl NotesPanel {
                 this.schedule_save(cx);
             }
         });
-        Self { key, editor, filled, save: Task::ready(()), _subscription: subscription }
+        Self { key, place: Place::default(), editor, filled, save: Task::ready(()), _subscription: subscription }
     }
 
     /// Whether it has something: its tab and icon say so.
@@ -130,6 +144,18 @@ impl NotesPanel {
         self.filled = !text.trim().is_empty();
         self.editor.update(cx, |editor, cx| editor.set_value(text, window, cx));
         cx.notify();
+    }
+
+    pub fn place(&self) -> Place {
+        self.place
+    }
+
+    /// They moved: their menu follows.
+    pub fn set_place(&mut self, place: Place, cx: &mut Context<Self>) {
+        if place != self.place {
+            self.place = place;
+            cx.notify();
+        }
     }
 
     pub fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -160,12 +186,36 @@ impl NotesPanel {
 
 impl Render for NotesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let place = self.place;
         v_flex()
             .size_full()
             .when(cfg!(test), |el| el.debug_selector(|| "notes".into()))
             .pl_3()
             .pt_2()
             .bg(cx.theme().background)
-            .child(Editor::new(&self.editor).bordered(false).h_full())
+            .child(Editor::new(&self.editor).bordered(false).h_full().context_menu(move |menu, _, _| notes_menu(menu, place)))
+    }
+}
+
+/// The text's right-click menu: editing, and where they go from `place`.
+/// It's built while the editor is mid-update and can't read whether it
+/// has text selected: Cut and Copy are always enabled.
+fn notes_menu(menu: NativeMenu, place: Place) -> NativeMenu {
+    let menu = menu
+        .menu("Cut", Box::new(input::Cut))
+        .menu("Copy", Box::new(input::Copy))
+        .menu("Paste", Box::new(input::Paste))
+        .separator()
+        .menu("Select All", Box::new(input::SelectAll))
+        .separator();
+    match place {
+        Place::Tab => menu.menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab)),
+        Place::Split => menu
+            .menu("Split Right", Box::new(crate::SplitRight))
+            .menu("Split Down", Box::new(crate::SplitDown))
+            .separator()
+            .menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab))
+            .menu("Close Split", Box::new(crate::CloseTab)),
+        Place::Editor => menu.menu("Move to Terminals", Box::new(crate::NotesToTerminals)),
     }
 }

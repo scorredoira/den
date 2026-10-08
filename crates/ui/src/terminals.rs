@@ -1059,6 +1059,7 @@ impl TerminalArea {
                     .context_menu({
                         let area = self.weak.clone();
                         let alone = self.tabs.len() == 1;
+                        let notes = tab.contains(Pane::Notes);
                         move |menu, window, cx| {
                             menu.item(
                                 menu::item("New Terminal", &area, |this, window, cx| this.new_terminal(window, cx))
@@ -1093,7 +1094,16 @@ impl TerminalArea {
                                     .disabled(alone),
                                 )
                                 .separator()
-                                .item(notes_item(&area))
+                                .map(|menu| match notes {
+                                    true => menu
+                                        .item(menu::item("Open Notes in Editor Tab", &area, |_, _, cx| {
+                                            cx.emit(TerminalAreaEvent::ToEditorTab(Panel::Notes))
+                                        }))
+                                        .item(menu::item("Close Notes Split", &area, |this, window, cx| {
+                                            this.unsplit_notes(window, cx)
+                                        })),
+                                    false => menu.item(notes_item(&area)),
+                                })
                                 .panel_items(hide_item(&area), window, cx)
                         }
                     })
