@@ -129,6 +129,7 @@ actions!(
         DiffLayoutSideBySide,
         DiffLayoutOneColumn,
         OpenDiffFile,
+        ToggleWholeFile,
     ]
 );
 
@@ -190,6 +191,16 @@ fn main() {
     let application = gpui_kit::application().with_assets(assets::Assets);
     // The Dock icon clicked with the window closed: it opens again.
     application.on_reopen(app::reopen);
+    // Files opened from the Finder (a double click, Open With), also the one
+    // that started the app: as `den <file>`.
+    let (opened_tx, opened) = smol::channel::unbounded::<PathBuf>();
+    application.on_open_urls(move |urls| {
+        for url in urls {
+            if let Some(path) = url.strip_prefix("file://") {
+                let _ = opened_tx.try_send(PathBuf::from(workspace::percent_decode(path)));
+            }
+        }
+    });
     application.run(move |cx| {
         gpui_kit::init(cx);
         ui_term::init(cx);
@@ -215,6 +226,13 @@ fn main() {
             Some((name, path)) => app::open_server_window(name, path, cx),
             None => app::open_window(root.clone(), file.clone(), resume, cx),
         }
+        cx.spawn(async move |cx| {
+            while let Ok(path) = opened.recv().await {
+                let (root, file) = proto::open_target(&path);
+                cx.update(|cx| app::handle_open(root, file, cx));
+            }
+        })
+        .detach();
         // With unsaved files, Cmd-Q asks before quitting. The action arrives
         // while a window is busy dispatching it, and it can't be entered
         // from there: ask right afterwards.
