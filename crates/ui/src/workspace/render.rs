@@ -421,7 +421,7 @@ impl Workspace {
                         let diff = tab.diff.as_ref().filter(|of| !of.source);
                         let open_file = diff.filter(|of| !of.file.is_empty()).map(|_| tab.path.clone());
                         let open = open_file.is_some();
-                        let layouts = tab.old.is_some();
+                        let layouts = tab.old.as_ref().map(|old| old.whole);
                         let diff_selected = diff.map(|_| tab.old.as_ref().map(|old| old.selected.clone()));
                         let editor = Editor::new(&tab.editor)
                             .bordered(false)
@@ -501,7 +501,7 @@ impl Workspace {
                             );
                         let side_menu = |selected: &Rc<Cell<bool>>| {
                             let selected = selected.clone();
-                            move |menu, _: &mut Window, cx: &mut App| diff_menu(menu, true, open, Some(&selected), cx)
+                            move |menu, _: &mut Window, cx: &mut App| diff_menu(menu, layouts, open, Some(&selected), cx)
                         };
                         let body = match &tab.old {
                             // No room for two sides (or one column chosen): VS Code's inline diff.
@@ -539,6 +539,21 @@ impl Workspace {
                                 .child(div().flex_1().min_w_0().h_full().child(code))
                                 .into_any_element(),
                             None => code.into_any_element(),
+                        };
+                        let body = match &tab.old {
+                            Some(_) => {
+                                let editor = tab.editor.clone();
+                                div()
+                                    .size_full()
+                                    .on_action(cx.listener(move |this, _: &ToggleWholeFile, window, cx| {
+                                        if let Some(ix) = this.tab_index(&editor) {
+                                            this.toggle_whole_file(ix, window, cx);
+                                        }
+                                    }))
+                                    .child(body)
+                                    .into_any_element()
+                            }
+                            None => body,
                         };
                         match open_file {
                             // From any of the diff's editors, the menu's Open File.

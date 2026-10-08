@@ -1,6 +1,7 @@
 //! Side-by-side diffs: a unified diff with the whole file as context, split
 //! into its two sides and aligned line by line, with a gap on one side where
 //! only the other has lines. Too narrow for two sides, one: `inline`.
+//! What's far from the changes folds into one row: `collapse`.
 
 use std::ops::Range;
 
@@ -11,6 +12,9 @@ pub enum Kind {
     Changed,
     /// Only the other side has this line.
     Gap,
+    /// This many unchanged lines left out, on both sides, with no text of
+    /// its own: see `collapse`.
+    Skipped(u32),
 }
 
 #[derive(Debug, PartialEq)]
@@ -94,6 +98,61 @@ pub fn split(diff: &str) -> Option<SideBySide> {
     hunks.then_some(result)
 }
 
+/// Unchanged lines kept around each block of changes when the rest folds.
+pub const CONTEXT: usize = 3;
+
+/// `sides` with only the changes and `context` unchanged lines around each
+/// (all of them, the whole file, with `usize::MAX`): every other run of
+/// them is one `Skipped` row. A run of one line stays, as it takes the same
+/// room.
+pub fn collapse(sides: &SideBySide, context: usize) -> SideBySide {
+    let count = sides.old.lines.len();
+    let mut keep = vec![false; count];
+    for row in (0..count).filter(|&row| sides.old.lines[row].kind != Kind::Same) {
+        keep[row.saturating_sub(context)..row.saturating_add(context).saturating_add(1).min(count)].fill(true);
+    }
+    let (old_rows, new_rows) = (rows(&sides.old), rows(&sides.new));
+    let mut result = SideBySide::default();
+    let mut row = 0;
+    while row < count {
+        if !keep[row] {
+            let end = (row..count).find(|&end| keep[end]).unwrap_or(count);
+            if end - row > 1 {
+                let kind = Kind::Skipped((end - row) as u32);
+                result.old.push(None, kind, "");
+                result.new.push(None, kind, "");
+                row = end;
+                continue;
+            }
+        }
+        if sides.changes.contains(&row) {
+            result.changes.push(result.old.lines.len());
+        }
+        for (side, from, rows) in [(&mut result.old, &sides.old, &old_rows), (&mut result.new, &sides.new, &new_rows)] {
+            let line = &from.lines[row];
+            let (text, changed) = &rows[row];
+            let start = side.push(line.number, line.kind, text);
+            side.lines.last_mut().unwrap().changed = changed.clone().map(|range| start + range.start..start + range.end);
+        }
+        row += 1;
+    }
+    result
+}
+
+/// Each line's text, and what changed in it from its start.
+fn rows(side: &Side) -> Vec<(&str, Option<Range<usize>>)> {
+    let mut start = 0;
+    side.text
+        .split('\n')
+        .zip(&side.lines)
+        .map(|(text, line)| {
+            let changed = line.changed.clone().map(|range| range.start - start..range.end - start);
+            start += text.len() + 1;
+            (text, changed)
+        })
+        .collect()
+}
+
 /// A diff in one column, as when there's no room for two: each block of
 /// changes, its removed lines and then its added ones.
 #[derive(Debug, Default)]
@@ -107,9 +166,11 @@ pub struct Inline {
 #[derive(Debug, PartialEq)]
 pub struct InlineLine {
     /// Its number on each side: only the old for a removed line, only the
-    /// new for an added one.
+    /// new for an added one, neither for lines left out.
     pub old: Option<u32>,
     pub new: Option<u32>,
+    /// How many unchanged lines this row leaves out, if it's one that does.
+    pub skipped: Option<u32>,
     /// Bytes of `Inline::text` that changed within the line.
     pub changed: Option<Range<usize>>,
 }
@@ -122,47 +183,37 @@ impl Inline {
         let start = self.text.len();
         self.text.push_str(text);
         let changed = changed.map(|range| start + range.start..start + range.end);
-        self.lines.push(InlineLine { old, new, changed });
+        self.lines.push(InlineLine { old, new, skipped: None, changed });
     }
 }
 
 /// `sides` in one column.
 pub fn inline(sides: &SideBySide) -> Inline {
-    // Each line's text, and what changed in it from its start.
-    let rows = |side: &Side| -> Vec<(String, Option<Range<usize>>)> {
-        let mut start = 0;
-        side.text
-            .split('\n')
-            .zip(&side.lines)
-            .map(|(text, line)| {
-                let changed = line.changed.clone().map(|range| range.start - start..range.end - start);
-                start += text.len() + 1;
-                (text.to_string(), changed)
-            })
-            .collect()
-    };
     let (old_rows, new_rows) = (rows(&sides.old), rows(&sides.new));
     let mut result = Inline::default();
     let mut row = 0;
     while row < sides.old.lines.len() {
         let (old, new) = (&sides.old.lines[row], &sides.new.lines[row]);
-        if old.kind == Kind::Same {
-            result.push(old.number, new.number, &new_rows[row].0, None);
+        if matches!(old.kind, Kind::Same | Kind::Skipped(_)) {
+            result.push(old.number, new.number, new_rows[row].0, None);
+            if let Kind::Skipped(count) = old.kind {
+                result.lines.last_mut().unwrap().skipped = Some(count);
+            }
             row += 1;
             continue;
         }
-        let end = (row..sides.old.lines.len()).find(|&end| sides.old.lines[end].kind == Kind::Same).unwrap_or(sides.old.lines.len());
+        let end = (row..sides.old.lines.len()).find(|&end| matches!(sides.old.lines[end].kind, Kind::Same | Kind::Skipped(_))).unwrap_or(sides.old.lines.len());
         result.changes.push(result.lines.len());
         for ix in row..end {
             let line = &sides.old.lines[ix];
             if line.kind == Kind::Changed {
-                result.push(line.number, None, &old_rows[ix].0, old_rows[ix].1.clone());
+                result.push(line.number, None, old_rows[ix].0, old_rows[ix].1.clone());
             }
         }
         for ix in row..end {
             let line = &sides.new.lines[ix];
             if line.kind == Kind::Changed {
-                result.push(None, line.number, &new_rows[ix].0, new_rows[ix].1.clone());
+                result.push(None, line.number, new_rows[ix].0, new_rows[ix].1.clone());
             }
         }
         row = end;
@@ -273,6 +324,37 @@ mod tests {
         assert_eq!(inline.lines[1].changed, Some(2..3));
         assert_eq!(inline.lines[2].changed, Some(4..5));
         assert_eq!(inline.lines[3].changed, None);
+    }
+
+    #[test]
+    fn folds_what_is_far_from_the_changes() {
+        // Lines 1-20, the 10th changed: 3 around it, the rest folded.
+        let mut diff = "@@ -1,20 +1,20 @@\n".to_string();
+        for n in 1..=20 {
+            match n {
+                10 => diff.push_str("-ten\n+TEN\n"),
+                _ => diff.push_str(&format!(" {n}\n")),
+            }
+        }
+        let sides = collapse(&split(&diff).unwrap(), CONTEXT);
+        assert_eq!(sides.new.text, "\n7\n8\n9\nTEN\n11\n12\n13\n");
+        assert_eq!(sides.old.lines[0].kind, Kind::Skipped(6));
+        assert_eq!(sides.new.lines[8].kind, Kind::Skipped(7));
+        assert_eq!(sides.old.lines[0].number, None);
+        assert_eq!(sides.new.lines[1].number, Some(7));
+        assert_eq!(sides.changes, [4]);
+        let at = sides.new.text.find("TEN").unwrap();
+        assert_eq!(sides.new.lines[4].changed, Some(at..at + 3));
+        // Folded too in one column, numbered on neither side.
+        let inline = inline(&sides);
+        assert_eq!(inline.lines[0].old, None);
+        assert_eq!(inline.lines[0].new, None);
+        assert_eq!(inline.lines[0].skipped, Some(6));
+        assert_eq!(inline.changes, [4]);
+        // Nothing far enough: nothing folds, not a single line.
+        let short = collapse(&split(DIFF).unwrap(), CONTEXT);
+        assert_eq!(short.new.text, "a\nB\nc2\nd\nE");
+        assert_eq!(collapse(&split(&diff).unwrap(), 9).old.lines.len(), 20);
     }
 
     #[test]

@@ -29,7 +29,7 @@ use crate::{
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
-    DiffLayoutAutomatic, DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile,
+    DiffLayoutAutomatic, DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile, ToggleWholeFile,
     changes::{self, ChangesEvent, ChangesPanel},
     history::{HistoryEvent, HistoryView},
     commit_view::{self, CommitView, CommitViewEvent},
@@ -206,6 +206,10 @@ struct OldSide {
     /// Whether the old side, the new one and the column have text selected,
     /// for their menus' Copy (see `diff_menu`).
     selected: [Rc<Cell<bool>>; 3],
+    /// The diff with the whole file, and whether it shows so: by default
+    /// only the changes, with what's far from them folded.
+    sides: diff::SideBySide,
+    whole: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -226,16 +230,16 @@ fn diff_layouts(cx: &App) -> [(&'static str, bool, Box<dyn Action>); 3] {
 }
 
 /// The right-click menu of a diff's text: how diffs show (`layouts`, if
-/// it has two sides), Open File (`open`) and what reads it; nothing that
-/// edits. The menu is built while the editor is mid-update and can't read
+/// it has two sides, and `whole`, the file around the changes), Open File
+/// (`open`) and what reads it; nothing that edits. The menu is built while the editor is mid-update and can't read
 /// it: whether it has text selected comes in `selected`, or Copy is always
 /// enabled.
-fn diff_menu(mut menu: NativeMenu, layouts: bool, open: bool, selected: Option<&Cell<bool>>, cx: &App) -> NativeMenu {
-    if layouts {
+fn diff_menu(mut menu: NativeMenu, layouts: Option<bool>, open: bool, selected: Option<&Cell<bool>>, cx: &App) -> NativeMenu {
+    if let Some(whole) = layouts {
         for (label, checked, action) in diff_layouts(cx) {
             menu = menu.menu_with_check(label, checked, action);
         }
-        menu = menu.separator();
+        menu = menu.separator().menu_with_check("Show Whole File", whole, Box::new(ToggleWholeFile)).separator();
     }
     if open {
         menu = menu.menu("Open File", Box::new(OpenDiffFile)).separator();
@@ -1724,22 +1728,32 @@ pub(crate) fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
 }
 
 /// How a diff in one column shows each line: both numbers, removed lines in
-/// `removed` and with `−`, added ones in `added` and with `+`.
-fn inline_line_styles(inline: &diff::Inline, removed: Hsla, added: Hsla) -> Vec<LineStyle> {
+/// `removed` and with `−`, added ones in `added` and with `+`, the rows of
+/// lines left out as bands in `skipped`.
+fn inline_line_styles(inline: &diff::Inline, removed: Hsla, added: Hsla, skipped: Hsla) -> Vec<LineStyle> {
     let digits = inline.lines.iter().filter_map(|line| line.old.max(line.new)).max().unwrap_or(1).to_string().len();
     let number = |number: Option<u32>| number.map_or_else(|| " ".repeat(digits), |number| format!("{number:>digits$}"));
     inline
         .lines
         .iter()
         .map(|line| {
+            if let Some(count) = line.skipped {
+                return LineStyle { background: Some(skipped), band: Some(skipped_label(count)), ..Default::default() };
+            }
             let (background, marker) = match (line.old, line.new) {
                 (Some(_), None) => (Some(removed), '−'),
                 (None, Some(_)) => (Some(added), '+'),
                 _ => (None, ' '),
             };
-            LineStyle { background, hatched: false, number: Some(format!("{} {}{marker}", number(line.old), number(line.new)).into()) }
+            let number = Some(format!("{} {}{marker}", number(line.old), number(line.new)).into());
+            LineStyle { background, number, ..Default::default() }
         })
         .collect()
+}
+
+/// What the row of `count` lines a diff leaves out says.
+fn skipped_label(count: u32) -> SharedString {
+    format!("⋯  {count} unchanged lines").into()
 }
 
 /// The scrollbar marks of a diff: each run of lines of one color, by line.
@@ -1758,14 +1772,23 @@ fn scrollbar_marks(colors: impl Iterator<Item = Option<Hsla>>) -> Vec<ScrollbarM
 }
 
 /// How a side of a diff shows each line: changed ones in `color` and with
-/// `marker` after the number, gaps hatched.
-fn line_styles(side: &diff::Side, marker: char, color: Hsla) -> Vec<LineStyle> {
+/// `marker` after the number, gaps hatched, the rows of lines left out as
+/// bands in `skipped`.
+fn line_styles(side: &diff::Side, marker: char, color: Hsla, skipped: Hsla) -> Vec<LineStyle> {
     side.lines
         .iter()
         .map(|line| {
             let changed = line.kind == diff::Kind::Changed;
             LineStyle {
-                background: changed.then_some(color),
+                background: match line.kind {
+                    diff::Kind::Changed => Some(color),
+                    diff::Kind::Skipped(_) => Some(skipped),
+                    _ => None,
+                },
+                band: match line.kind {
+                    diff::Kind::Skipped(count) => Some(skipped_label(count)),
+                    _ => None,
+                },
                 hatched: line.kind == diff::Kind::Gap,
                 number: line.number.map(|number| format!("{number}{}", if changed { marker } else { ' ' }).into()),
             }
@@ -1795,7 +1818,7 @@ fn word_at(text: &str, line: u32, column: u32) -> String {
 }
 
 /// `%20` and friends back to their characters; invalid sequences stay as they are.
-fn percent_decode(text: &str) -> String {
+pub(crate) fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
