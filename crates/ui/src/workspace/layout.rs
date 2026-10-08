@@ -538,15 +538,14 @@ impl Workspace {
     }
 
     /// The columns: the side one, the code (with the terminals under it, if
-    /// that's their place) and the terminals.
+    /// that's their place) and the terminals. Maximized, the terminals take
+    /// the code's place and the side column stays.
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let terminals = self.panels.terminals;
-        if self.terminals_maximized && terminals {
-            return self.terminals.clone().cached(StyleRefinement::default().size_full()).into_any_element();
-        }
+        let maximized = self.terminals_maximized && terminals;
         let layout = Config::get(cx).layout.clone();
         let side = self.side_place(cx).is_some();
-        let right = terminals && layout.dock == Dock::Right;
+        let right = terminals && layout.dock == Dock::Right && !maximized;
         let state = self.split.state(self.width, [side, right], cx).clone();
         // With no saved width, the terminals take half of what the others leave.
         let fixed = if side { layout.side_width } else { 0. };
@@ -560,7 +559,12 @@ impl Workspace {
                     .child(self.render_side(window, cx)),
             );
         }
-        row = row.child(resizable_panel().child(self.render_center(&layout, window, cx)));
+        let center = if maximized {
+            self.terminals.clone().cached(StyleRefinement::default().size_full()).into_any_element()
+        } else {
+            self.render_center(&layout, window, cx)
+        };
+        row = row.child(resizable_panel().child(center));
         if right {
             row = row.child(
                 resizable_panel()
