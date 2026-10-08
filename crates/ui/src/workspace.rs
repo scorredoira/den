@@ -40,7 +40,7 @@ use crate::{
     debug::{self, DebugEvent, DebugView, Debugger, EditKind},
     notes::NotesPanel,
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
-    AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel, ToggleNotes,
+    AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel, ToggleNotes, NotesToEditorTab, NotesToTerminals,
     diff,
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},

@@ -849,7 +849,13 @@ impl Workspace {
                 dot,
             });
         }
-        if self.notes_tab().is_none() && self.terminals.read(cx).notes_split().is_none() {
+        let place = match (self.notes_tab(), self.terminals.read(cx).notes_split()) {
+            (Some(_), _) => crate::notes::Place::Editor,
+            (None, Some(_)) => crate::notes::Place::Split,
+            (None, None) => crate::notes::Place::Tab,
+        };
+        self.notes.update(cx, |notes, cx| notes.set_place(place, cx));
+        if place == crate::notes::Place::Tab {
             tabs.push(PanelTab {
                 panel: Panel::Notes,
                 view: self.notes.clone().into(),

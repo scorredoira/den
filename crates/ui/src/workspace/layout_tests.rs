@@ -569,6 +569,26 @@ fn the_notes_are_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     bounds(cx, "notes-tab");
 }
 
+/// The notes' right-click menu offers to move them from where they are:
+/// Open in Editor Tab from the terminals', Move to Terminals from the code.
+#[gpui_kit::test]
+fn the_notes_menu_follows_where_they_are(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let place = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| workspace.notes.read(cx).place())
+    };
+    assert!(place(&workspace, cx) == crate::notes::Place::Tab);
+    click(cx, "notes-tab");
+    cx.dispatch_action(crate::NotesToEditorTab);
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, _| assert!(workspace.notes_tab().is_some()));
+    assert!(place(&workspace, cx) == crate::notes::Place::Editor);
+    cx.dispatch_action(crate::NotesToTerminals);
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, _| assert!(workspace.notes_tab().is_none()));
+    assert!(place(&workspace, cx) == crate::notes::Place::Tab);
+}
+
 /// With the terminals closed, the notes' icon opens them with the notes in
 /// front, and closes them again on the next click.
 #[gpui_kit::test]

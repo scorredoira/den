@@ -821,6 +821,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::set_next_statement))
             .on_action(cx.listener(Self::toggle_debug_panel))
             .on_action(cx.listener(Self::toggle_notes))
+            .on_action(cx.listener(|this, _: &NotesToEditorTab, window, cx| this.notes_to_tab(window, cx)))
+            .on_action(cx.listener(|this, _: &NotesToTerminals, window, cx| this.notes_to_terminals(window, cx)))
             .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(|this, _: &DebugContinue, window, cx| {
                 this.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx))
