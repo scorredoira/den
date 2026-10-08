@@ -64,6 +64,7 @@ impl Workspace {
             return self.activate_with(ix, true, window, cx);
         }
         self.hide_panel(Panel::Notes, cx);
+        self.terminals.update(cx, |terminals, cx| terminals.unsplit_notes(window, cx));
         let tab = self.page_tab(Page::Notes, window, cx);
         let ix = self.place_tab(tab, true);
         self.activate_with(ix, true, window, cx);

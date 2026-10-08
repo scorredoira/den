@@ -1,7 +1,8 @@
 //! The Notes panel: what's next in a workspace, as plain Markdown that Den
 //! keeps (in `notes.json` in its config folder, by workspace), never in the
-//! repo. They're a tab at the far end of the terminals' bar, or a tab of the
-//! code (Open in Editor Tab), shown by the activity bar or Cmd-Alt-N; their
+//! repo. They're a tab at the far end of the terminals' bar, a pane split
+//! beside a terminal (their tab dragged onto it), or a tab of the code (Open
+//! in Editor Tab), shown by the activity bar or Cmd-Alt-N; their
 //! icon is a sticky note written on while they have something. Cmd-E's notice shows
 //! their first line, and removing the worktree forgets them. `den notes`
 //! reads and writes them from a terminal.
