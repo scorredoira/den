@@ -195,7 +195,13 @@ impl Workspace {
             Panel::Terminals => panels.terminals,
             Panel::Console => panels.terminals && panels.console && panels.front == Some(Panel::Console),
             // In a tab of the code it's not among the terminals.
-            Panel::Notes => panels.terminals && panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
+            Panel::Notes => {
+                panels.terminals
+                    && match self.terminals.read(cx).notes_split() {
+                        Some(_) => panels.front.is_none() && self.terminals.read(cx).notes_in_sight(),
+                        None => panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
+                    }
+            }
             _ => self.in_side(panel, cx) && !Config::get(cx).layout.collapsed.contains(&panel),
         }
     }
@@ -822,7 +828,8 @@ impl Workspace {
 
     /// The tabs after the terminals': the debugger once shown, with its
     /// state on it (yellow while stopped, green while running), and at the
-    /// far end the notes, always there unless in a tab of the code.
+    /// far end the notes, always there unless in a tab of the code or split
+    /// beside a terminal.
     pub(super) fn shape_terminals(&mut self, cx: &mut Context<Self>) {
         let mut tabs = Vec::new();
         if self.panels.console {
@@ -842,7 +849,7 @@ impl Workspace {
                 dot,
             });
         }
-        if self.notes_tab().is_none() {
+        if self.notes_tab().is_none() && self.terminals.read(cx).notes_split().is_none() {
             tabs.push(PanelTab {
                 panel: Panel::Notes,
                 view: self.notes.clone().into(),

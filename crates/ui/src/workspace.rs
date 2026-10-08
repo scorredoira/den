@@ -445,6 +445,7 @@ impl Workspace {
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
         let debug_view = layout::debug_view(&debugger, cx);
         let notes = cx.new(|cx| NotesPanel::new(session_key.clone(), window, cx));
+        terminals.update(cx, |terminals, cx| terminals.set_notes(notes.clone(), window, cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         let subscriptions = vec![
@@ -506,6 +507,7 @@ impl Workspace {
                         cx.notify();
                     }
                     TerminalAreaEvent::ShowPanel(Some(Panel::Notes)) => this.show_notes(window, cx),
+                    TerminalAreaEvent::NotesMoved => cx.notify(),
                     TerminalAreaEvent::ShowPanel(Some(panel)) => this.show_panel(*panel, cx),
                     TerminalAreaEvent::ToEditorTab(Panel::Notes) => this.notes_to_tab(window, cx),
                     TerminalAreaEvent::ToEditorTab(_) => {}
@@ -1385,11 +1387,15 @@ impl Workspace {
         self.notes.clone()
     }
 
-    /// The notes where they are (their tab of the code, or in front of the
-    /// terminals), with the focus to write in them.
+    /// The notes where they are (their tab of the code, their split of the
+    /// terminals, or in front of these), with the focus to write in them.
     pub(crate) fn show_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.notes_tab() {
             Some(ix) => self.activate_with(ix, false, window, cx),
+            None if self.terminals.read(cx).notes_split().is_some() => {
+                self.show_panel(Panel::Terminals, cx);
+                self.terminals.update(cx, |terminals, cx| terminals.reveal_notes(cx));
+            }
             None => self.show_panel(Panel::Notes, cx),
         }
         self.notes.update(cx, |notes, cx| notes.focus(window, cx));
