@@ -163,6 +163,8 @@ impl TerminalView {
         self.terminal
             .read(cx)
             .title()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| "terminal".into())
     }
