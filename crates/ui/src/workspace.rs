@@ -347,6 +347,10 @@ pub struct Workspace {
     file_tree: Entity<FileTree>,
     terminals: Entity<TerminalArea>,
     terminals_maximized: bool,
+    /// The window's Terminal Mode, shared with it and its other workspaces
+    /// (see `set_terminal_mode`): only the terminals, with the workspaces
+    /// and the agents beside them.
+    terminal_mode: Rc<Cell<bool>>,
     /// The columns.
     split: config::Split,
     /// The code and, while it's their place, the terminals under it.
@@ -580,6 +584,7 @@ impl Workspace {
             file_tree,
             terminals,
             terminals_maximized: false,
+            terminal_mode: Rc::new(Cell::new(false)),
             split: config::Split::new(cx),
             rows: config::Split::new(cx),
             width: px(0.),
@@ -1310,6 +1315,10 @@ impl Workspace {
     /// Shows the terminals and focuses them; if they already have focus, hides
     /// them and focus returns to the IDE.
     fn toggle_terminals(&mut self, _: &ToggleTerminals, window: &mut Window, cx: &mut Context<Self>) {
+        // In Terminal Mode, back to the code.
+        if self.leave_terminal_mode(cx) {
+            return self.focus_ide(window, cx);
+        }
         let focused = self.terminals.read(cx).contains_focus(window, cx);
         self.set_terminals_visible(!(self.is_shown(Panel::Terminals, cx) && focused), window, cx);
     }
@@ -1329,6 +1338,10 @@ impl Workspace {
     }
 
     fn maximize_terminals(&mut self, _: &MaximizeTerminals, window: &mut Window, cx: &mut Context<Self>) {
+        // In Terminal Mode, back to the code and the terminals.
+        if self.leave_terminal_mode(cx) {
+            return self.show_panel(Panel::Terminals, cx);
+        }
         self.terminals_maximized = !self.terminals_maximized;
         if self.terminals_maximized {
             self.show_panel(Panel::Terminals, cx);
@@ -1366,9 +1379,10 @@ impl Workspace {
             .collect()
     }
 
-    /// Focus on entering the task: the terminal if there is one, otherwise the IDE.
+    /// Focus on entering the task: the terminal if there is one, otherwise the
+    /// IDE. In Terminal Mode, always a terminal: a new one if there's none.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_shown(Panel::Terminals, cx) && !self.terminals.read(cx).is_empty() {
+        if self.is_shown(Panel::Terminals, cx) && (self.in_terminal_mode() || !self.terminals.read(cx).is_empty()) {
             self.terminals.update(cx, |terminals, cx| terminals.focus(window, cx));
         } else {
             self.focus_ide(window, cx);

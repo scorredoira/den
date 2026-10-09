@@ -6,6 +6,8 @@
 
 `den -n <path>` opens it in a window of its own also from Den's terminals.
 
+`den -t [<path>]` opens a new window in Terminal Mode on the workspace of that folder, or of the current one (see Layout), even if it's open in another window. Like `den -n`'s, what's open in it isn't added to Workspaces unless kept.
+
 `den -s <server> [<path>]` opens a window of its own on a server (a name from `~/.ssh/config` or `user@host`) with the path there, relative to its home folder, or the home folder without one. That window is for a quick look: its Workspaces panel starts hidden, and neither the server nor the folders opened in it are remembered once it closes, unless kept with Keep in Workspaces (in its title bar or the server's right-click menu). Running it again for the same server opens in that window.
 
 In Den's terminals, more commands act on the workspace of the terminal they run in, the same over SSH (`den --help` lists them all):
@@ -59,6 +61,8 @@ The activity bar has an icon for each group of the side column: the explorer (Wo
 Each workspace in the Workspaces panel has a dot for the coding agents (Claude Code, Codex, Gemini…) running in its terminals: red when one is waiting for an answer, a half yellow one while one works, green when they finished while you weren't looking, and an empty circle with none running or all idle; only the dot, no words. The Agents panel lists every agent of every workspace and server the same way, with what it's on (Claude Code's title) on hover. A click goes to that terminal. Rename, in its right-click, names the agent: the name goes before its workspace and is its terminal tab's, the same as Rename Tab there, also for a workspace not open.
 
 The side column, what it shows and where things go are the same in every workspace: going from one to another moves nothing. Each workspace keeps whether its terminals show; a new one shows the terminals. Reset Layout (View, or the activity bar's right-click) puts it all back as it starts.
+
+Terminal Mode (View > Terminal Mode, Cmd-Alt-Shift-J, or `den -t`) makes the window a terminal multiplexer: only the terminals, with the Workspaces and Agents panels beside them, and no activity bar or status bar. It's the window's: going to another workspace stays in it, and other windows stay as they are. Cmd-B shows or hides its column, sized apart from the other. Whatever needs the code takes the window back to its layout, as it was: a file opened (a `file:line` clicked in a terminal, Cmd-P, `den show`), any other side panel, Cmd-J or Cmd-Shift-J. Cmd-Alt-Shift-J goes back into it.
 
 Debugging has a layout of its own, as Visual Studio does. While the workspace in front has a debug session (from F5, a restart or a debugged test), Den uses the debugging layout and that workspace's debugging panels; Stop (Shift-F5) brings the editing ones back as they were. A session that ends on its own (the program ended or failed to start) keeps the debugger in sight, with what its console said, until Stop. What changes while debugging stays for the next session. The first time, the debugging layout closes the side column and puts the debugger's tab in front. `den where` says which is in use (`layout`).
 

@@ -5,6 +5,7 @@
 //! open, a welcome screen offers to open one.
 
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
@@ -30,7 +31,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleTasks,
+    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleTasks, ToggleTerminalMode,
     config::{self, Config, DiffLayout, HostConfig, Panel, Place, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -352,6 +353,23 @@ fn open_new_window_except(
     }
 }
 
+/// `den -t [<path>]` from a terminal of this machine (`destination` none)
+/// or of a server: a window of its own in Terminal Mode, on the workspace
+/// of `root`; a new one, even if it's open in another.
+pub fn open_terminal_window(destination: Option<String>, root: PathBuf, cx: &mut App) {
+    let in_terminal_mode = |den: Den| {
+        den.terminal_mode.set(true);
+        den
+    };
+    match destination {
+        Some(destination) => {
+            let name = server_name(&destination, cx);
+            open_host_window(name, cx, |window, cx| in_terminal_mode(Den::for_server(destination, Some(root), window, cx)));
+        }
+        None => open_host_window(LOCAL.into(), cx, |window, cx| in_terminal_mode(Den::for_local(root, window, cx))),
+    }
+}
+
 /// Opens a window of `den -s` or `den -n`, on the server called `name`.
 fn open_host_window(name: SharedString, cx: &mut App, build: impl FnOnce(&mut Window, &mut Context<Den>) -> Den) {
     let title = match name.as_ref() {
@@ -571,6 +589,10 @@ pub struct Den {
     workspaces_panel: Entity<WorkspacesPanel>,
     /// The agents panel, drawn by the workspace where it's placed.
     agents_panel: Entity<WorkspacesPanel>,
+    /// Terminal Mode: only the terminals, with the workspaces and the agents
+    /// beside them. Shared with the workspaces, which leave it when they
+    /// need the code (see `Workspace::leave_terminal_mode`).
+    terminal_mode: Rc<Cell<bool>>,
     /// Settings, if open.
     settings: Option<settings::Settings>,
     focus_handle: FocusHandle,
@@ -650,6 +672,7 @@ impl Den {
                     })
                 })
             },
+            terminal_mode: Rc::new(Cell::new(false)),
             settings: None,
             focus_handle: cx.focus_handle(),
             watches: HashMap::new(),
@@ -1171,7 +1194,11 @@ impl Den {
                 workspace
             }
         };
-        workspace.update(cx, |workspace, cx| workspace.focus(window, cx));
+        let terminal_mode = self.terminal_mode.clone();
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_terminal_mode(&terminal_mode);
+            workspace.focus(window, cx);
+        });
         window.set_window_title(&format!("{} — den", self.label(&key)));
         if self.remembers() {
             let last = SavedTask {
@@ -1314,6 +1341,21 @@ impl Den {
         }
     }
 
+    /// Into Terminal Mode, or out of it.
+    fn toggle_terminal_mode(&mut self, _: &ToggleTerminalMode, window: &mut Window, cx: &mut Context<Self>) {
+        let on = !self.terminal_mode.get();
+        match self.active_workspace() {
+            Some(workspace) => workspace.update(cx, |workspace, cx| match on {
+                true => workspace.enter_terminal_mode(window, cx),
+                false => {
+                    workspace.leave_terminal_mode(cx);
+                }
+            }),
+            None => self.terminal_mode.set(on),
+        }
+        cx.notify();
+    }
+
     fn toggle_tasks(&mut self, _: &ToggleTasks, _: &mut Window, cx: &mut Context<Self>) {
         let visible = !self.tasks_shown(cx);
         self.show_tasks_column(visible, cx);
@@ -1392,7 +1434,10 @@ fn urgency(dot: &str, color: Hsla, cx: &App) -> u8 {
 impl Render for Den {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(workspace) = self.active_workspace() {
-            let width = window.viewport_size().width - px(ACTIVITY_WIDTH);
+            // Terminal Mode has no activity bar.
+            let activity = if self.terminal_mode.get() { 0. } else { ACTIVITY_WIDTH };
+            let width = window.viewport_size().width - px(activity);
+            let terminal_mode = self.terminal_mode.clone();
             let branch = self.active.as_ref().and_then(|key| self.task(key)).and_then(|task| task.branch.clone());
             let panel = self.workspaces_panel.clone();
             let agents = self.agents_panel.clone();
@@ -1402,6 +1447,7 @@ impl Render for Den {
                 workspace.set_branch(branch, cx);
                 workspace.set_workspaces(&panel);
                 workspace.set_agents(&agents);
+                workspace.set_terminal_mode(&terminal_mode);
                 workspace.set_badges(badges, cx);
             });
         }
@@ -1417,6 +1463,7 @@ impl Render for Den {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
+            .on_action(cx.listener(Self::toggle_terminal_mode))
             .on_action(cx.listener(|this, _: &ResetLayout, _, cx| {
                 menu::reset_layout_now(cx);
                 if let Some(workspace) = this.active_workspace() {

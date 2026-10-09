@@ -100,6 +100,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Toggle Terminals", ToggleTerminals),
             MenuItem::action("Maximize Terminals", MaximizeTerminals),
             MenuItem::action("Terminals Under the Code", MoveTerminals).checked(bottom),
+            MenuItem::action("Terminal Mode", ToggleTerminalMode),
             MenuItem::action("Toggle Notes", ToggleNotes),
             MenuItem::separator(),
             MenuItem::action("Reset Layout", ResetLayout),

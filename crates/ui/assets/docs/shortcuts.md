@@ -142,11 +142,14 @@ The activity bar, on the left, has an icon for each group of the side column: th
 | {{ToggleTerminals}} | Show or hide the terminals |
 | {{MaximizeTerminals}} | Terminals over the whole window, or back |
 | {{MoveTerminals}} | Terminals under the code, or back on its right |
+| {{ToggleTerminalMode}} | Terminal Mode: only the terminals, with the workspaces and the agents beside them; again, back |
 | {{ToggleNotes}} | The workspace's notes, a tab at the far end of the terminals', to write what's next in it; again, back to the terminals |
 | {{NewTerminal}} | New terminal |
 | {{SplitRight}} / {{SplitDown}} | Split the terminal to the right or down |
 | {{FocusPaneLeft}} {{FocusPaneRight}} {{FocusPaneUp}} {{FocusPaneDown}} | Move to the terminal on that side |
 | {{TerminalFind}} | Find in the terminal, its history included: {{key:enter}} goes up, {{key:shift-enter}} down |
+
+In Terminal Mode, {{ToggleSidePanel}} shows or hides the workspaces and the agents; whatever needs the code (a file opened, a `file:line` clicked, a side panel, {{ToggleTerminals}}) takes the window back to the code. `den -t` opens a window in it.
 
 Drag a terminal's tab onto the edge of another to split them; drag a pane's title back to the tab bar to separate it. A `file:line` in a terminal opens with a click.
 

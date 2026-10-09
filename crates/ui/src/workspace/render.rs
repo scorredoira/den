@@ -741,6 +741,7 @@ impl Render for Workspace {
             self.editor_drop = None;
         }
         self.report_ide_selection(cx);
+        let terminal_mode = self.in_terminal_mode();
         v_flex()
             .id("workspace")
             .key_context("Workspace")
@@ -845,7 +846,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(self.render_activity_bar(cx))
+                    .when(!terminal_mode, |row| row.child(self.render_activity_bar(cx)))
                     .child(
                         div()
                             .flex_1()
@@ -861,8 +862,8 @@ impl Render for Workspace {
                             .child(self.render_layout(window, cx)),
                     ),
             )
-            // Across the whole window, as VS Code's.
-            .child(self.render_status_bar(cx))
+            // Across the whole window, as VS Code's; none in Terminal Mode.
+            .when(!terminal_mode, |workspace| workspace.child(self.render_status_bar(cx)))
             .children(
                 self.finder
                     .as_ref()

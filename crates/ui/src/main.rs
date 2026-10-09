@@ -104,6 +104,7 @@ actions!(
         NextActiveTask,
         NextTask,
         ToggleTasks,
+        ToggleTerminalMode,
         OpenFolder,
         OpenRemoteFolder,
         AddServer,
@@ -137,7 +138,8 @@ actions!(
 
 /// `den [folder | file]`: in a window of its own, not remembered unless kept;
 /// given a file, it opens in its repo (see `proto::open_target`). `den -s <server> [<path>]`: only a window on that
-/// server (see `app::open_server_window`).
+/// server (see `app::open_server_window`). `den -t <folder>`: only a window
+/// in Terminal Mode on it (see `app::open_terminal_window`).
 /// Opened from the Dock or the Finder with nothing to resume, there's no
 /// folder: the welcome screen offers to open one.
 fn main() {
@@ -158,10 +160,15 @@ fn main() {
         [flag, name, path @ ..] if flag == "-s" && path.len() <= 1 => Some((name.clone(), path.first().map(PathBuf::from))),
         _ => None,
     };
+    // `den -t <folder>`: only a window in Terminal Mode on it.
+    let terminals = match args.as_slice() {
+        [flag, path] if flag == "-t" => Some(PathBuf::from(path)),
+        _ => None,
+    };
     // Old versions of macOS pass `-psn_…` to apps opened from the Finder.
     let arg = std::env::args_os()
         .nth(1)
-        .filter(|arg| !arg.to_string_lossy().starts_with("-psn") && server.is_none())
+        .filter(|arg| !arg.to_string_lossy().starts_with("-psn") && server.is_none() && terminals.is_none())
         .map(PathBuf::from);
     let arg = arg.map(|path| cwd.join(&path).canonicalize().unwrap_or(path));
     // `den <path>`: in a window of its own (see `app::open_new_window`);
@@ -218,10 +225,11 @@ fn main() {
         if let Some(agent) = &agent {
             listen_for_open(agent, cx);
         }
-        match (server.clone(), target.clone()) {
-            (Some((name, path)), _) => app::open_server_window(name, path, cx),
-            (None, Some((root, file))) => app::open_new_window(app::LOCAL.into(), None, root, file, cx),
-            (None, None) => app::open_window(root.clone(), None, true, cx),
+        match (server.clone(), terminals.clone(), target.clone()) {
+            (Some((name, path)), _, _) => app::open_server_window(name, path, cx),
+            (None, Some(root), _) => app::open_terminal_window(None, root, cx),
+            (None, None, Some((root, file))) => app::open_new_window(app::LOCAL.into(), None, root, file, cx),
+            (None, None, None) => app::open_window(root.clone(), None, true, cx),
         }
         cx.spawn(async move |cx| {
             while let Ok(path) = opened.recv().await {
@@ -294,6 +302,11 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
                             [window, root, file @ ..] if window == "window" && file.len() <= 1 => {
                                 let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
                                 cx.update(|cx| app::open_new_window(app::LOCAL.into(), None, root, file, cx));
+                                Ok(String::new())
+                            }
+                            [flag, root] if flag == "-t" => {
+                                let root = PathBuf::from(root);
+                                cx.update(|cx| app::open_terminal_window(None, root, cx));
                                 Ok(String::new())
                             }
                             [server, name, path @ ..] if server == "-s" && path.len() <= 1 => {

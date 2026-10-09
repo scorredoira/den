@@ -190,13 +190,21 @@ pub(super) fn debug_view(debugger: &Entity<Debugger>, cx: &mut App) -> Entity<De
 impl Workspace {
     pub(crate) fn is_shown(&self, panel: Panel, cx: &App) -> bool {
         let panels = &self.panels;
+        let terminal_mode = self.in_terminal_mode();
+        // Terminal Mode shows the terminals, with what goes in them, and
+        // beside them the workspaces and the agents.
+        let terminals = panels.terminals || terminal_mode;
         match panel {
-            Panel::Code => true,
-            Panel::Terminals => panels.terminals,
-            Panel::Console => panels.terminals && panels.console && panels.front == Some(Panel::Console),
+            Panel::Code => !terminal_mode,
+            Panel::Terminals => terminals,
+            Panel::Console => terminals && panels.console && panels.front == Some(Panel::Console),
+            Panel::Workspaces | Panel::Agents if terminal_mode => {
+                Config::get(cx).terminal_mode.side && !Config::get(cx).layout.collapsed.contains(&panel)
+            }
+            _ if terminal_mode && panel != Panel::Notes => false,
             // In a tab of the code it's not among the terminals.
             Panel::Notes => {
-                panels.terminals
+                terminals
                     && match self.terminals.read(cx).notes_split() {
                         Some(_) => panels.front.is_none() && self.terminals.read(cx).notes_in_sight(),
                         None => panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
@@ -216,6 +224,43 @@ impl Workspace {
     pub(crate) fn side_place(&self, cx: &App) -> Option<Place> {
         let layout = &Config::get(cx).layout;
         layout.side.then(|| layout.current()).flatten()
+    }
+
+    /// The window's Terminal Mode, the same for all its workspaces.
+    pub fn set_terminal_mode(&mut self, mode: &Rc<Cell<bool>>) {
+        if !Rc::ptr_eq(&self.terminal_mode, mode) {
+            self.terminal_mode = mode.clone();
+        }
+    }
+
+    pub(crate) fn in_terminal_mode(&self) -> bool {
+        self.terminal_mode.get()
+    }
+
+    /// The window into Terminal Mode, with the keyboard in the terminals.
+    pub(crate) fn enter_terminal_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal_mode.set(true);
+        self.terminals.update(cx, |terminals, cx| terminals.focus(window, cx));
+        cx.notify();
+    }
+
+    /// The window out of Terminal Mode, for what needs the code or a side
+    /// panel other than the workspaces and the agents: the layout as it was.
+    /// Whether it was in it.
+    pub(crate) fn leave_terminal_mode(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.terminal_mode.get() {
+            return false;
+        }
+        self.terminal_mode.set(false);
+        self.terminals_maximized = false;
+        cx.notify();
+        true
+    }
+
+    /// Terminal Mode's side column shows, or not.
+    fn set_terminal_side(&mut self, side: bool, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.terminal_mode.side = side);
+        self.layout_changed(cx);
     }
 
     /// Everything where it starts, and only the files, the code and the
@@ -322,6 +367,10 @@ impl Workspace {
     /// Its panels read what they show when they come into sight: the side
     /// column changed, or this workspace came to the front with it.
     pub(super) fn place_shown(&mut self, cx: &mut Context<Self>) {
+        // Only the workspaces and the agents, which aren't the workspace's.
+        if self.in_terminal_mode() {
+            return;
+        }
         let layout = &Config::get(cx).layout;
         let open: Vec<Panel> = self
             .side_place(cx)
@@ -340,6 +389,20 @@ impl Workspace {
     /// Shows `panel`: where it is in the side column, unfolded and back if
     /// it was hidden; focus doesn't move.
     pub(crate) fn show_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        // Terminal Mode has the workspaces and the agents; anything else of
+        // the side column, or the code, takes the window out of it.
+        if self.in_terminal_mode() {
+            match panel {
+                Panel::Workspaces | Panel::Agents => {
+                    Config::update(cx, |config| config.layout.collapsed.retain(|other| *other != panel));
+                    return self.set_terminal_side(true, cx);
+                }
+                Panel::Terminals | Panel::Console | Panel::Notes => {}
+                _ => {
+                    self.leave_terminal_mode(cx);
+                }
+            }
+        }
         let panels = &mut self.panels;
         match panel {
             Panel::Code => {}
@@ -383,6 +446,16 @@ impl Workspace {
 
     /// Hides `panel`: a side panel's place closes the side column.
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        if self.in_terminal_mode() {
+            match panel {
+                Panel::Workspaces | Panel::Agents => return self.set_terminal_side(false, cx),
+                // Without the terminals, there's the code.
+                Panel::Terminals => {
+                    self.leave_terminal_mode(cx);
+                }
+                _ => {}
+            }
+        }
         let panels = &mut self.panels;
         match panel {
             Panel::Code => return,
@@ -532,6 +605,10 @@ impl Workspace {
     /// Cmd-B: the side column, with what it last showed (or the first
     /// place, if that's gone).
     pub(super) fn toggle_side_panel(&mut self, _: &ToggleSidePanel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.in_terminal_mode() {
+            let side = !Config::get(cx).terminal_mode.side;
+            return self.set_terminal_side(side, cx);
+        }
         if let Some(place) = Config::get(cx).layout.current() {
             self.click_place(place, cx);
         }
@@ -541,6 +618,9 @@ impl Workspace {
     /// that's their place) and the terminals. Maximized, the terminals take
     /// the code's place and the side column stays.
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.in_terminal_mode() {
+            return self.render_terminal_mode(window, cx);
+        }
         let terminals = self.panels.terminals;
         let maximized = self.terminals_maximized && terminals;
         let layout = Config::get(cx).layout.clone();
@@ -596,6 +676,63 @@ impl Workspace {
             workspace.update(cx, |_, cx| cx.notify()).ok();
         })
         .into_any_element()
+    }
+
+    /// Terminal Mode: the workspaces and the agents, one above the other,
+    /// and the terminals.
+    fn render_terminal_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mode = Config::get(cx).terminal_mode.clone();
+        let state = self.split.state(self.width, ("terminal-mode", mode.side), cx).clone();
+        let mut row = h_resizable("terminal-mode-columns").with_state(&state);
+        if mode.side {
+            row = row.child(
+                resizable_panel()
+                    .size(config::width(mode.side_width, 160., 800.))
+                    .size_range(px(160.)..px(800.))
+                    .child(self.render_terminal_side(window, cx)),
+            );
+        }
+        row = row.child(resizable_panel().child(self.terminals.clone().cached(StyleRefinement::default().size_full())));
+        let workspace = cx.entity().downgrade();
+        row.on_resize(move |state, _, cx| {
+            if mode.side
+                && let Some(size) = state.read(cx).sizes().first().copied()
+            {
+                Config::update_quietly(cx, |config| config.terminal_mode.side_width = f32::from(size));
+            }
+            workspace.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .into_any_element()
+    }
+
+    /// Terminal Mode's side column: the workspaces, which take what the
+    /// agents leave, and the agents under them, folded as in the other.
+    fn render_terminal_side(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let layout = Config::get(cx).layout.clone();
+        let panels = [Panel::Workspaces, Panel::Agents];
+        let open: Vec<Panel> = panels.into_iter().filter(|panel| !layout.collapsed.contains(panel)).collect();
+        let filler = open.first().copied();
+        let filler_at = filler.and_then(|filler| panels.iter().position(|panel| *panel == filler));
+        let sections: Vec<AnyElement> = panels
+            .iter()
+            .enumerate()
+            .map(|(ix, &panel)| {
+                let height = (open.contains(&panel) && Some(panel) != filler).then(|| layout.height(panel));
+                let below = filler_at.is_some_and(|at| ix > at);
+                self.render_section(panel, open.contains(&panel), height, below, ix > 0, window, cx)
+            })
+            .collect();
+        let theme = cx.theme();
+        v_flex()
+            .id("terminal-mode-side")
+            .when(cfg!(test), |el| el.debug_selector(|| "terminal-mode-side".into()))
+            .size_full()
+            .overflow_hidden()
+            .bg(theme.sidebar)
+            .text_color(theme.sidebar_foreground)
+            .children(sections)
+            .when(filler.is_none(), |el| el.child(div().flex_1()))
+            .into_any_element()
     }
 
     /// The code, with the terminals under it while that's their place.
@@ -675,6 +812,8 @@ impl Workspace {
     ) -> AnyElement {
         let theme = cx.theme().clone();
         let workspace = cx.entity().downgrade();
+        // Terminal Mode's column is its own: its panels only fold.
+        let terminal_mode = self.in_terminal_mode();
         let actions = match panel {
             Panel::Workspaces => {
                 let actions = self.workspaces.as_ref().and_then(|view| view.read(cx).actions.clone());
@@ -725,15 +864,20 @@ impl Workspace {
             .drag_over::<PanelDrag>(|style, _, _, cx| style.border_t_2().border_color(cx.theme().primary))
             .on_drop(cx.listener(move |this, drag: &PanelDrag, _, cx| {
                 cx.stop_propagation();
-                this.bring_panel(drag.0, Some(panel), cx);
+                if !this.in_terminal_mode() {
+                    this.bring_panel(drag.0, Some(panel), cx);
+                }
             }))
             .context_menu({
                 let workspace = workspace.clone();
                 move |menu, window, cx| {
+                    let fold = menu::item(if open { "Collapse" } else { "Expand" }, &workspace, move |this, _, cx| this.toggle_collapsed(panel, cx));
+                    if terminal_mode {
+                        return menu.item(fold);
+                    }
                     // Its own icon, if it has company where it is.
                     let layout = &Config::get(cx).layout;
                     let company = layout.place_of(panel).is_some_and(|place| layout.panels(place).len() > 1);
-                    let fold = menu::item(if open { "Collapse" } else { "Expand" }, &workspace, move |this, _, cx| this.toggle_collapsed(panel, cx));
                     let remove = menu::item("Hide Panel", &workspace, move |this, _, cx| this.remove_panel(panel, cx));
                     let side = menu::item("Hide Side Bar", &workspace, move |this, _, cx| this.hide_panel(panel, cx));
                     menu.item(fold)
@@ -775,7 +919,7 @@ impl Workspace {
             .pt_1()
             .children(content)
             .capture_any_mouse_down(move |event: &MouseDownEvent, _, cx| {
-                if event.button == MouseButton::Right {
+                if event.button == MouseButton::Right && !terminal_mode {
                     let workspace = hide.clone();
                     let hide: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
                         workspace.update(cx, |this, cx| this.remove_panel(panel, cx)).ok();

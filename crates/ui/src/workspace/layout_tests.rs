@@ -988,3 +988,77 @@ fn the_app_starts_editing() {
     assert!(loaded.layout.side && loaded.layout.side_width == 300. && loaded.layout.dock == Dock::Right);
     assert_eq!(loaded.debug_layout.as_ref().map(|layout| layout.dock), Some(Dock::Bottom));
 }
+
+/// The workspace in a window in Terminal Mode, drawn: the window's switch.
+fn in_terminal_mode(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Rc<Cell<bool>> {
+    let mode = Rc::new(Cell::new(true));
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_terminal_mode(&mode);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    mode
+}
+
+#[gpui_kit::test]
+fn terminal_mode_shows_the_terminals_the_workspaces_and_the_agents(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    in_terminal_mode(&workspace, cx);
+    // No activity bar, no code, no files: the agents too, hidden in the other.
+    assert!(cx.debug_bounds("side-column").is_none());
+    assert!(cx.debug_bounds("editor-body-0").is_none());
+    assert!(cx.debug_bounds("stack-Files").is_none());
+    assert!(cx.debug_bounds("activity-Place(Place(Files))").is_none());
+    let side = bounds(cx, "terminal-mode-side");
+    let workspaces = bounds(cx, "stack-Workspaces");
+    let agents = bounds(cx, "stack-Agents");
+    let terminals = bounds(cx, "terminals");
+    assert!(workspaces.bottom() <= agents.top(), "{workspaces:?} {agents:?}");
+    assert!(side.right() <= terminals.left(), "{side:?} {terminals:?}");
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(!workspace.is_shown(Panel::Code, cx));
+        assert!(workspace.is_shown(Panel::Terminals, cx));
+        assert!(workspace.is_shown(Panel::Agents, cx));
+        assert!(!workspace.is_shown(Panel::Files, cx));
+    });
+}
+
+#[gpui_kit::test]
+fn terminal_mode_hides_its_column_apart_from_the_other(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let mode = in_terminal_mode(&workspace, cx);
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_side_panel(&ToggleSidePanel, window, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("terminal-mode-side").is_none());
+    cx.update(|_, cx| {
+        assert!(!Config::get(cx).terminal_mode.side);
+        assert!(Config::get(cx).layout.side);
+    });
+    // The workspaces bring it back.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
+    cx.run_until_parked();
+    bounds(cx, "terminal-mode-side");
+    assert!(mode.get());
+}
+
+#[gpui_kit::test]
+fn what_needs_the_code_leaves_terminal_mode(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let mode = in_terminal_mode(&workspace, cx);
+    // A file opened: the layout as it was, with it.
+    workspace.update_in(cx, |workspace, window, cx| workspace.activate(0, window, cx));
+    cx.run_until_parked();
+    assert!(!mode.get());
+    bounds(cx, "editor-body-0");
+    bounds(cx, "side-column");
+    // A side panel other than the workspaces and the agents.
+    mode.set(true);
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Changes, cx));
+    assert!(!mode.get());
+    // Cmd-J: back to the code.
+    mode.set(true);
+    cx.dispatch_action(ToggleTerminals);
+    cx.run_until_parked();
+    assert!(!mode.get());
+    bounds(cx, "editor-body-0");
+}

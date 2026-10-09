@@ -183,6 +183,21 @@ impl Default for Layout {
     }
 }
 
+/// Terminal Mode's side column (the workspaces and the agents), apart from
+/// the layout's: hiding it or sizing it there leaves the other as it is.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalModeLayout {
+    pub side: bool,
+    pub side_width: f32,
+}
+
+impl Default for TerminalModeLayout {
+    fn default() -> Self {
+        Self { side: true, side_width: 260. }
+    }
+}
+
 /// A place of the side column: the one with this panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Place(pub Panel);
@@ -656,6 +671,9 @@ pub struct Config {
     /// debugging.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub edit_layout: Option<Layout>,
+    /// Terminal Mode's side column: shown or not, and its width.
+    #[serde(deserialize_with = "lenient")]
+    pub terminal_mode: TerminalModeLayout,
     /// Shortcuts changed in Settings: action → keys (`""` for no shortcut).
     pub keys: HashMap<String, String>,
     pub font_sizes: FontSizes,

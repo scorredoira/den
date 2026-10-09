@@ -52,6 +52,7 @@ fn main() -> Result<()> {
         Some("chrome") => chrome::run(&args[1..]),
         Some("-s" | "--server") if cli::invoked_as_den() => cli::server(&args[1..]),
         Some("-n" | "--new-window") if cli::invoked_as_den() => cli::open_new(&args[1..]),
+        Some("-t" | "--terminals") if cli::invoked_as_den() => cli::open_terminals(&args[1..]),
         Some(
             "show" | "diff" | "doc" | "selection" | "tabs" | "message" | "notes" | "workspaces" | "debug" | "where"
             | "workspace" | "close" | "panel" | "reveal",
