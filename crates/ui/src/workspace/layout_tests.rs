@@ -807,8 +807,8 @@ fn the_outline_gets_an_icon_of_its_own(cx: &mut TestAppContext) {
 }
 
 /// With targets in the launch file, the debugger's toolbar shows the one
-/// picked; picking another keeps it for the workspace and `den debug
-/// state` says it.
+/// picked, first in the bar, before the buttons it decides; picking another
+/// keeps it for the workspace and `den debug state` says it.
 #[gpui_kit::test]
 fn the_toolbar_picks_the_target(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
@@ -825,7 +825,9 @@ fn the_toolbar_picks_the_target(cx: &mut TestAppContext) {
         cx.notify();
     });
     cx.run_until_parked();
-    bounds(cx, "debug-target");
+    let picker = bounds(cx, "debug-target");
+    let bar = bounds(cx, "debugger");
+    assert!(picker.origin.x - bar.origin.x < px(16.), "the target leads the bar: {picker:?} in {bar:?}");
     let saved = cx.update(|_, cx| Config::get(cx).debug.get("layout-test").and_then(|saved| saved.target.clone()));
     assert_eq!(saved.as_deref(), Some("android"));
 }
