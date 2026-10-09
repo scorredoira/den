@@ -188,7 +188,7 @@ fn main() {
     // The Dock icon clicked with the window closed: it opens again.
     application.on_reopen(app::reopen);
     // Files opened from the Finder (a double click, Open With), also the one
-    // that started the app: as `den <file>`.
+    // that started the app: as `den <file>`, in a window of its own.
     let (opened_tx, opened) = smol::channel::unbounded::<PathBuf>();
     application.on_open_urls(move |urls| {
         for url in urls {
@@ -226,7 +226,7 @@ fn main() {
         cx.spawn(async move |cx| {
             while let Ok(path) = opened.recv().await {
                 let (root, file) = proto::open_target(&path);
-                cx.update(|cx| app::handle_open(root, file, cx));
+                cx.update(|cx| app::open_new_window(app::LOCAL.into(), None, root, file, cx));
             }
         })
         .detach();
