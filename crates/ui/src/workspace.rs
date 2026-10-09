@@ -239,7 +239,7 @@ fn diff_menu(mut menu: NativeMenu, layouts: Option<bool>, open: bool, selected: 
         for (label, checked, action) in diff_layouts(cx) {
             menu = menu.menu_with_check(label, checked, action);
         }
-        menu = menu.separator().menu_with_check("Show Whole File", whole, Box::new(ToggleWholeFile)).separator();
+        menu = menu.separator().menu(if whole { "Show Only Changes" } else { "Show Whole File" }, Box::new(ToggleWholeFile)).separator();
     }
     if open {
         menu = menu.menu("Open File", Box::new(OpenDiffFile)).separator();
