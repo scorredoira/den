@@ -96,3 +96,47 @@ pub fn reset_layout_now(cx: &mut App) {
     crate::app_menu::set(cx);
     cx.refresh_windows();
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::component::{GlobalState, menu::ContextMenuExt as _, tooltip::Tooltip};
+    use gpui_kit::*;
+    use core::prelude::v1::test;
+
+    struct Row;
+
+    impl Render for Row {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                div()
+                    .id("row")
+                    .w(px(200.))
+                    .h(px(24.))
+                    .tooltip(|window, cx| Tooltip::new("what it's on").build(window, cx))
+                    .context_menu(|menu, _, _| menu.item(gpui_kit::component::menu::PopupMenuItem::new("Rename"))),
+            )
+        }
+    }
+
+    /// A tooltip never shows over an open right-click menu (`Tooltip`
+    /// renders nothing while a menu or a popover is open): the row under
+    /// the mouse is still hovered, and its tooltip used to show through it.
+    #[gpui_kit::test]
+    fn an_open_menu_holds_tooltips_back(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|_, _| Row);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|_, cx| assert!(!GlobalState::is_in_deferred_context(cx)));
+
+        let press = point(px(10.), px(10.));
+        cx.simulate_mouse_down(press, MouseButton::Right, Default::default());
+        cx.simulate_mouse_up(press, MouseButton::Right, Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|_, cx| assert!(GlobalState::is_in_deferred_context(cx), "the open menu holds tooltips back"));
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|_, cx| assert!(!GlobalState::is_in_deferred_context(cx), "dismissed, tooltips come back"));
+    }
+}

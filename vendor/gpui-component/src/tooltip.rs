@@ -91,6 +91,12 @@ impl Styled for Tooltip {
 }
 impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // (den) Never over an open menu or popover: the element under the
+        // mouse is still hovered while it's open, and its tooltip showed
+        // through the menu.
+        if crate::GlobalState::is_in_deferred_context(cx) {
+            return div().into_any_element();
+        }
         let key_binding = if let Some(key_binding) = &self.key_binding {
             Some(key_binding.clone())
         } else {
@@ -140,6 +146,7 @@ impl Render for Tooltip {
                     )
                 }),
         )
+        .into_any_element()
     }
 }
 
