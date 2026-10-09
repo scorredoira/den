@@ -6,7 +6,7 @@ use std::{cell::Cell, collections::HashMap, path::Path, rc::Rc};
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex,
-    button::{Button, ButtonVariants as _},
+    button::Button,
     input::Input,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu},
     h_resizable, resizable_panel,
@@ -173,6 +173,7 @@ impl Debugger {
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let picker = self.render_target_picker(cx);
         let theme = cx.theme();
         let stopped = self.current().is_some_and(|stop| !stop.resumed);
         let active = self.status != Status::Idle;
@@ -209,6 +210,8 @@ impl Debugger {
             .flex_none()
             .border_b_1()
             .border_color(theme.border)
+            // first: it decides what F5 does, so it is where one looks before running
+            .children(picker)
             .child(if stopped {
                 tool("debug-continue", "icons/play.svg", "Continue (F5)", true, theme.success, cx)
                     .on_click(cx.listener(|this, _, _, cx| this.continue_(cx)))
@@ -259,7 +262,6 @@ impl Debugger {
                     .child(status)
                     .context_menu(self.panel_menu(cx)),
             )
-            .children(self.render_target_picker(cx))
             .into_any_element()
     }
 
@@ -269,13 +271,14 @@ impl Debugger {
         let current = self.target()?.to_string();
         let targets = self.targets.clone();
         let debugger = cx.entity().downgrade();
+        // outlined, a control and not a word of the status
         let button = Button::new("debug-target")
-            .ghost()
+            .outline()
             .xsmall()
             .label(current.clone())
             .dropdown_caret(true)
             .tooltip("Where the launch command runs the program (${target})")
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
                 for target in &targets {
                     let name = target.clone();
                     menu = menu.item(
@@ -295,6 +298,7 @@ impl Debugger {
                 .id("debug-target-picker")
                 .when(cfg!(test), |el| el.debug_selector(|| "debug-target".into()))
                 .flex_none()
+                .mr_1()
                 .child(button)
                 .into_any_element(),
         )
