@@ -541,6 +541,8 @@ pub struct Den {
     notice: Option<switcher::Notice>,
     /// Cmd-K: jump to a task by name.
     task_picker: Option<(Entity<Picker>, Subscription)>,
+    /// An agent's name being typed in its row (its terminal tab's).
+    agent_rename: Option<agents::AgentRename>,
     /// Cmd-Shift-P and F1: run any command, with its shortcut beside it.
     command_palette: Option<(Entity<Picker>, Subscription)>,
     /// Cmd-Shift-O: a folder opened before.
@@ -616,6 +618,7 @@ impl Den {
             notice: None,
             adding_host: None,
             task_picker: None,
+            agent_rename: None,
             command_palette: None,
             recent_picker: None,
             host_picker: None,
