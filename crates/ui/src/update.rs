@@ -265,9 +265,10 @@ fn install_of(exe: &Path) -> Option<Install> {
     }
     let app = exe.parent()?;
     let named = |path: Option<&Path>, name: &str| path.and_then(Path::file_name).is_some_and(|file| file == name);
-    // On Windows, anywhere but a build's `target\debug` or `target\release`.
+    // On Windows, anywhere but inside a build's `target` (its tests run
+    // from `target\debug\deps`).
     if cfg!(windows) {
-        return (!named(app.parent(), "target")).then_some(Install::Manual);
+        return (!exe.ancestors().any(|dir| named(Some(dir), "target"))).then_some(Install::Manual);
     }
     (cfg!(target_os = "linux") && named(Some(app), "app") && named(app.parent(), "den"))
         .then(|| Install::Linux(exe.to_path_buf()))
@@ -460,6 +461,7 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(install_of(Path::new(r"C:\Users\u\AppData\Local\Programs\Den\den.exe")), Some(Install::Manual));
             assert_eq!(install_of(Path::new(r"C:\Users\u\den\target\release\den.exe")), None);
+            assert_eq!(install_of(Path::new(r"C:\Users\u\den\target\debug\deps\den-0a1b.exe")), None);
         }
     }
 
