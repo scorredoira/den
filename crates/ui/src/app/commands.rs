@@ -122,6 +122,13 @@ impl Den {
                 cx.defer(move |cx| open_server_window(server, path, cx));
                 Ok(String::new())
             }
+            // `den -t [<path>]`: a new window in Terminal Mode.
+            ["-t", root] => {
+                let destination = self.host(&host).and_then(|host| host.destination.clone());
+                let root = PathBuf::from(root);
+                cx.defer(move |cx| open_terminal_window(destination, root, cx));
+                Ok(String::new())
+            }
             // `den -n <path>`: in a window of its own.
             ["window", root, file @ ..] if file.len() <= 1 => {
                 let destination = self.host(&host).and_then(|host| host.destination.clone());

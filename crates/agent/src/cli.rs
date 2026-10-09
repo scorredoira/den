@@ -19,6 +19,9 @@ Usage:
                       open in a window of its own isn't remembered unless
                       kept.
   den -n <path>       in a window of its own, also in den's terminals.
+  den -t [<path>]     a new window in Terminal Mode (only the terminals,
+                      with the workspaces and the agents beside them) on
+                      the folder's workspace, or the current folder's.
   den -s <server> [<path>]
                       opens a window on the server (a name from
                       ~/.ssh/config or user@host) with the path there,
@@ -184,6 +187,39 @@ pub fn open_new(args: &[String]) -> Result<()> {
     match asked {
         Ok(_) => Ok(()),
         Err(_) if std::env::var_os("SSH_CONNECTION").is_none() => platform::launch_app(&[path.as_os_str()]),
+        Err(err) => Err(err).with_context(|| format!("could not open {arg}")),
+    }
+}
+
+/// `den -t [<path>]`: asks the app for a new window in Terminal Mode on the
+/// workspace of `path` (or of the current folder). With no app connected,
+/// it starts one on this machine.
+pub fn open_terminals(args: &[String]) -> Result<()> {
+    let arg = match args {
+        [] => ".",
+        [arg] => arg.as_str(),
+        _ => {
+            eprint!("{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    let path = std::path::absolute(arg)?;
+    let path = path.canonicalize().with_context(|| format!("{arg}: no such file or folder"))?;
+    let (root, _) = proto::open_target(&path);
+    let command = vec!["-t".to_string(), root.to_string_lossy().into_owned()];
+    let asked = connect().and_then(|client| {
+        smol::block_on(client.request(Request::Command {
+            args: command.clone(),
+            cwd: std::env::current_dir()?,
+            term: own_term(),
+        }))
+    });
+    match asked {
+        Ok(_) => Ok(()),
+        Err(_) if std::env::var_os("SSH_CONNECTION").is_none() => {
+            let command: Vec<&std::ffi::OsStr> = command.iter().map(|arg| arg.as_ref()).collect();
+            platform::launch_app(&command)
+        }
         Err(err) => Err(err).with_context(|| format!("could not open {arg}")),
     }
 }

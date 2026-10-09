@@ -76,6 +76,7 @@ shortcuts![
     (ToggleTerminals, "Toggle Terminals", mac_or("cmd-j", "ctrl-`")),
     (MaximizeTerminals, "Maximize Terminals", "secondary-shift-j"),
     (MoveTerminals, "Move Terminals Right or Down", "secondary-alt-j"),
+    (ToggleTerminalMode, "Terminal Mode", "secondary-alt-shift-j"),
     (NewFile, "New File", "secondary-n"),
     (NewTask, "New Worktree", "secondary-shift-n"),
     (OpenTaskPicker, "Find Workspace", mac_or("cmd-k", "ctrl-shift-k")),
