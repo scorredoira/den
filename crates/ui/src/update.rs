@@ -7,7 +7,8 @@
 //! they're still there after restarting.
 //!
 //! Only an installed app updates: `Den.app` on macOS, or what the Linux
-//! package's `install.sh` installed. A build run from `target` doesn't.
+//! package's `install.sh` installed. On Windows it only checks: a newer
+//! release is downloaded by hand. A build run from `target` doesn't.
 
 use std::{
     path::{Path, PathBuf},
@@ -18,7 +19,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use gpui_kit::{App, Global};
 
-const RELEASES: &str = "https://github.com/scorredoira/den/releases";
+pub const RELEASES: &str = "https://github.com/scorredoira/den/releases";
 
 /// The first check, once the app has settled.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
@@ -31,6 +32,9 @@ enum Install {
     Bundle(PathBuf),
     /// `<data>/den/app/den`, by the Linux package's `install.sh`.
     Linux(PathBuf),
+    /// Windows' release, extracted or put in place by `install.ps1`: a
+    /// newer one is only announced, to download by hand.
+    Manual,
 }
 
 /// Where updating is at, for About.
@@ -47,6 +51,8 @@ pub enum Status {
     NotInstalled,
     /// Installed: restarting runs it.
     Ready(String),
+    /// A newer release, to download by hand (Windows).
+    Available(String),
 }
 
 #[derive(Default)]
@@ -64,6 +70,14 @@ impl Updates {
     pub fn ready(&self) -> Option<&str> {
         match &self.status {
             Status::Ready(version) => Some(version),
+            _ => None,
+        }
+    }
+
+    /// The newer release there is to download by hand.
+    pub fn available(&self) -> Option<&str> {
+        match &self.status {
+            Status::Available(version) => Some(version),
             _ => None,
         }
     }
@@ -85,11 +99,12 @@ pub fn init(cx: &mut App) {
         return;
     };
     // The previous build's, kept for it until it restarted into this one.
-    let previous = kept(&install);
-    cx.background_executor().spawn(async move {
-        let _ = std::fs::remove_dir_all(previous);
-    })
-    .detach();
+    if let Some(previous) = kept(&install) {
+        cx.background_executor().spawn(async move {
+            let _ = std::fs::remove_dir_all(previous);
+        })
+        .detach();
+    }
     cx.spawn(async move |cx| {
         cx.background_executor().timer(FIRST_CHECK).await;
         loop {
@@ -123,8 +138,9 @@ pub fn check_now(cx: &mut App) {
         cx.update(|cx| {
             let updates = cx.global_mut::<Updates>();
             match result {
-                Ok(Ok(latest)) => updates.status = Status::UpToDate(latest),
-                Ok(Err((version, relaunch))) => {
+                Ok(Checked::UpToDate(latest)) => updates.status = Status::UpToDate(latest),
+                Ok(Checked::Available(version)) => updates.status = Status::Available(version),
+                Ok(Checked::Installed(version, relaunch)) => {
                     updates.status = Status::Ready(version);
                     updates.relaunch = Some(relaunch);
                 }
@@ -231,13 +247,14 @@ fn install() -> Option<Install> {
 
 /// Where an update keeps the running build's files until it restarts: the
 /// agents it connects to and uploads to servers, which must be its own.
-fn kept(install: &Install) -> PathBuf {
+fn kept(install: &Install) -> Option<PathBuf> {
     match install {
         Install::Bundle(bundle) => {
             let name = bundle.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            bundle.with_file_name(format!(".{name}.old"))
+            Some(bundle.with_file_name(format!(".{name}.old")))
         }
-        Install::Linux(exe) => exe.with_file_name(".previous"),
+        Install::Linux(exe) => Some(exe.with_file_name(".previous")),
+        Install::Manual => None,
     }
 }
 
@@ -248,6 +265,10 @@ fn install_of(exe: &Path) -> Option<Install> {
     }
     let app = exe.parent()?;
     let named = |path: Option<&Path>, name: &str| path.and_then(Path::file_name).is_some_and(|file| file == name);
+    // On Windows, anywhere but a build's `target\debug` or `target\release`.
+    if cfg!(windows) {
+        return (!named(app.parent(), "target")).then_some(Install::Manual);
+    }
     (cfg!(target_os = "linux") && named(Some(app), "app") && named(app.parent(), "den"))
         .then(|| Install::Linux(exe.to_path_buf()))
 }
@@ -255,7 +276,7 @@ fn install_of(exe: &Path) -> Option<Install> {
 /// The tag of the latest release: where GitHub's "latest" link lands.
 fn latest() -> Result<String> {
     let output = Command::new("curl")
-        .args(["-fsSLI", "-o", "/dev/null", "-w", "%{url_effective}", &format!("{RELEASES}/latest")])
+        .args(["-fsSLI", "-o", if cfg!(windows) { "NUL" } else { "/dev/null" }, "-w", "%{url_effective}", &format!("{RELEASES}/latest")])
         .stderr(Stdio::piped())
         .output()
         .context("could not run curl")?;
@@ -266,19 +287,28 @@ fn latest() -> Result<String> {
     Ok(url.trim().rsplit('/').next().unwrap_or_default().to_string())
 }
 
-/// Installs the latest release if it's newer. `Ok` with the latest version
-/// if there's nothing to install; `Err` with the version installed and what
-/// starts it.
-#[allow(clippy::type_complexity)]
-fn check_and_install(install: &Install) -> Result<std::result::Result<String, (String, Vec<String>)>> {
+/// What a check found.
+enum Checked {
+    /// Nothing newer: the latest release.
+    UpToDate(String),
+    /// A newer one, to download by hand.
+    Available(String),
+    /// A newer one installed, and what starts it.
+    Installed(String, Vec<String>),
+}
+
+/// Installs the latest release if it's newer, or only says so where it
+/// can't be installed from here.
+fn check_and_install(install: &Install) -> Result<Checked> {
     let tag = latest()?;
-    if !is_newer(&tag, env!("CARGO_PKG_VERSION")) {
-        return Ok(Ok(tag.trim_start_matches('v').to_string()));
-    }
     let version = tag.trim_start_matches('v').to_string();
+    if !is_newer(&tag, env!("CARGO_PKG_VERSION")) {
+        return Ok(Checked::UpToDate(version));
+    }
     let (platform, extension) = match install {
         Install::Bundle(_) => ("macos", "zip"),
         Install::Linux(_) => ("linux", "tar.gz"),
+        Install::Manual => return Ok(Checked::Available(version)),
     };
     let label = format!("den-{version}-{platform}-{}", std::env::consts::ARCH);
     let archive_name = format!("{label}.{extension}");
@@ -301,22 +331,26 @@ fn check_and_install(install: &Install) -> Result<std::result::Result<String, (S
         match install {
             Install::Bundle(bundle) => {
                 let relaunch = replace_bundle(&archive, bundle, &work)?;
-                crate::agent::agents_moved(kept(install).join("Contents/MacOS"));
+                if let Some(old) = kept(install) {
+                    crate::agent::agents_moved(old.join("Contents/MacOS"));
+                }
                 Ok(relaunch)
             }
             Install::Linux(exe) => {
                 run(Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(&work))?;
                 let agents = crate::agent::agents_dir()?;
-                let previous = kept(install);
+                let previous = kept(install).context("nowhere to keep the agents")?;
                 keep_agents(&agents, &previous)?;
                 run(Command::new("sh").arg(work.join(&label).join("install.sh")))?;
                 crate::agent::agents_moved(previous);
                 Ok(vec![exe.to_string_lossy().into_owned()])
             }
+            // Announced above, never downloaded.
+            Install::Manual => bail!("this den is updated by hand"),
         }
     })();
     let _ = std::fs::remove_dir_all(&work);
-    Ok(Err((version, result?)))
+    Ok(Checked::Installed(version, result?))
 }
 
 /// Unpacks the release's `Den.app` beside `bundle` and swaps it in. The
@@ -423,13 +457,18 @@ mod tests {
             assert_eq!(install_of(exe), Some(Install::Linux(exe.to_path_buf())));
             assert_eq!(install_of(Path::new("/home/u/den/target/release/den")), None);
         }
+        if cfg!(windows) {
+            assert_eq!(install_of(Path::new(r"C:\Users\u\AppData\Local\Programs\Den\den.exe")), Some(Install::Manual));
+            assert_eq!(install_of(Path::new(r"C:\Users\u\den\target\release\den.exe")), None);
+        }
     }
 
     #[test]
     fn the_running_build_is_kept_beside_the_install() {
-        assert_eq!(kept(&Install::Bundle("/Applications/Den.app".into())), Path::new("/Applications/.Den.app.old"));
+        assert_eq!(kept(&Install::Bundle("/Applications/Den.app".into())).unwrap(), Path::new("/Applications/.Den.app.old"));
         let exe = PathBuf::from("/home/u/.local/share/den/app/den");
-        assert_eq!(kept(&Install::Linux(exe)), Path::new("/home/u/.local/share/den/app/.previous"));
+        assert_eq!(kept(&Install::Linux(exe)).unwrap(), Path::new("/home/u/.local/share/den/app/.previous"));
+        assert_eq!(kept(&Install::Manual), None);
     }
 }
 
