@@ -80,6 +80,8 @@ A workspace says how to start its program in `.den/debug.json`:
 
 An installed Den (`Den.app` on macOS, or installed with the Linux package's `install.sh`) checks for a new release every few hours and installs it in the background; Settings → Updates turns this off, and Check for Updates still works. It never restarts by itself: the title bar shows a discreet Restart to update button, which asks before restarting. Workspaces and open files reopen as they were, and terminals keep running in the agent across the restart.
 
+On Windows it only checks: when there's a newer release, the title bar and About say so, and a click opens its page to download it; close Den and replace the folder with it.
+
 ## How it's built
 
 Rust and [GPUI](https://www.gpui.rs) with [gpui-component](https://github.com/longbridge/gpui-component). The app only draws; every machine runs `den-agent`, which keeps the terminals and does search, git and LSP next to the files, over a local socket or `ssh`. [`plan.md`](../plan.md) has the design and what's left.

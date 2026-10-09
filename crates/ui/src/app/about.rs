@@ -52,6 +52,7 @@ impl Den {
             Status::Failed(err) => (format!("Couldn't check: {err}").into(), theme.danger),
             Status::NotInstalled => ("A development build: only an installed Den updates".into(), theme.muted_foreground),
             Status::Ready(latest) => (format!("Den {latest} is installed").into(), theme.primary),
+            Status::Available(latest) => (format!("Den {latest} is out: download it and replace this one").into(), theme.primary),
         };
         let updates = h_flex()
             .gap_3()
@@ -66,6 +67,9 @@ impl Den {
                         }))
                         .into_any_element()
                 }
+                Status::Available(_) => link("about-download".into(), "Download")
+                    .on_click(|_, _, cx| cx.open_url(&format!("{}/latest", update::RELEASES)))
+                    .into_any_element(),
                 Status::Checking | Status::NotInstalled => div().into_any_element(),
                 _ => link("about-check".into(), "Check for Updates")
                     .on_click(|_, _, cx| update::check_now(cx))

@@ -1500,6 +1500,23 @@ impl Render for Den {
                             })
                             .on_click(cx.listener(move |this, _, window, cx| this.ask_update(version.clone().into(), window, cx)))
                     }))
+                    .children(cx.try_global::<crate::update::Updates>().and_then(|updates| updates.available().map(str::to_string)).map(|version| {
+                        div()
+                            .id("update-available")
+                            .flex_none()
+                            .mr_2()
+                            .px_2()
+                            .rounded(cx.theme().radius)
+                            .text_ui_small(cx)
+                            .text_color(cx.theme().primary)
+                            .hover(|style| style.bg(cx.theme().secondary_hover))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(format!("Den {version} is out"))
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Opens its page to download it: close Den and replace this one with it.").build(window, cx)
+                            })
+                            .on_click(|_, _, cx| cx.open_url(&format!("{}/latest", crate::update::RELEASES)))
+                    }))
             )
             .child(
                 div()
