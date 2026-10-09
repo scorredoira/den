@@ -1264,10 +1264,10 @@ impl FileTree {
         .separator()
         .item(item("Refresh", Box::new(|tree, _, cx| tree.refresh(cx))))
         .item(item("Collapse All Folders", Box::new(|tree, _, cx| tree.collapse_all(cx))).action(Box::new(CollapseFileTree)))
-        .item(item("Show Ignored Files", Box::new(|tree, _, cx| {
+        .item(item(if self.ignored { "Hide Ignored Files" } else { "Show Ignored Files" }, Box::new(|tree, _, cx| {
             let show = !tree.ignored;
             Config::update(cx, |config| config.show_ignored = show);
-        })).checked(self.ignored))
+        })))
     }
 }
 

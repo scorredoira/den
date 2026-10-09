@@ -1730,10 +1730,10 @@ fn is_hidden_host(host: &SharedString, cx: &App) -> bool {
     Config::get(cx).hidden_hosts.iter().any(|other| other == host.as_ref())
 }
 
-/// Show Hidden Projects, checked while the Workspaces panel shows them.
+/// Show Hidden Projects, or Hide Hidden Projects while the Workspaces panel shows them.
 fn show_hidden_item(den: &WeakEntity<Den>, cx: &App) -> menu::PopupMenuItem {
-    menu::item("Show Hidden Projects", den, |this, _, cx| this.toggle_hidden_projects(cx))
-        .checked(Config::get(cx).show_hidden_projects)
+    let label = if Config::get(cx).show_hidden_projects { "Hide Hidden Projects" } else { "Show Hidden Projects" };
+    menu::item(label, den, |this, _, cx| this.toggle_hidden_projects(cx))
 }
 
 /// The project a workspace is of: its repo's checkout, or its folder.
