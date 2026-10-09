@@ -135,8 +135,8 @@ actions!(
     ]
 );
 
-/// `den [folder | file]`: given a file, opens it in its repo (see
-/// `proto::open_target`). `den -s <server> [<path>]`: only a window on that
+/// `den [folder | file]`: in a window of its own, not remembered unless kept;
+/// given a file, it opens in its repo (see `proto::open_target`). `den -s <server> [<path>]`: only a window on that
 /// server (see `app::open_server_window`).
 /// Opened from the Dock or the Finder with nothing to resume, there's no
 /// folder: the welcome screen offers to open one.
@@ -164,16 +164,10 @@ fn main() {
         .filter(|arg| !arg.to_string_lossy().starts_with("-psn") && server.is_none())
         .map(PathBuf::from);
     let arg = arg.map(|path| cwd.join(&path).canonicalize().unwrap_or(path));
-    // With nothing to open, go back to the last workspace.
-    let resume = arg.is_none();
-    let (root, file) = match arg {
-        Some(path) => {
-            let (root, file) = proto::open_target(&path);
-            (Some(root), file)
-        }
-        None if launched => (None, None),
-        None => (Some(cwd), None),
-    };
+    // `den <path>`: in a window of its own (see `app::open_new_window`);
+    // with nothing to open, the main one goes back to the last workspace.
+    let target = arg.map(|path| proto::open_target(&path));
+    let root = (target.is_none() && !launched).then_some(cwd);
 
     // For `den <path>` to start the app when it isn't running.
     if let (Ok(exe), Ok(file)) = (std::env::current_exe(), proto::app_file()) {
@@ -224,9 +218,10 @@ fn main() {
         if let Some(agent) = &agent {
             listen_for_open(agent, cx);
         }
-        match server.clone() {
-            Some((name, path)) => app::open_server_window(name, path, cx),
-            None => app::open_window(root.clone(), file.clone(), resume, cx),
+        match (server.clone(), target.clone()) {
+            (Some((name, path)), _) => app::open_server_window(name, path, cx),
+            (None, Some((root, file))) => app::open_new_window(app::LOCAL.into(), None, root, file, cx),
+            (None, None) => app::open_window(root.clone(), None, true, cx),
         }
         cx.spawn(async move |cx| {
             while let Ok(path) = opened.recv().await {
