@@ -3,10 +3,22 @@
 //! source of what each workspace is doing: a workspace's dot in the column
 //! is the most urgent of its agents'. The Agents panel lists them all, a row
 //! each with its workspace and state; a click on one goes to its terminal.
+//! An agent's name is its terminal tab's (Rename, also from its row).
 
 use proto::{AgentInfo, TermId};
 
 use super::*;
+use crate::terminals;
+
+/// An agent's name being typed in its row: Enter gives it, Escape or a
+/// click elsewhere leaves it as it was.
+pub(super) struct AgentRename {
+    host: SharedString,
+    group: String,
+    term: TermId,
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
 
 impl Den {
     /// The agents running on `host` now. One that stops working while its
@@ -88,6 +100,49 @@ impl Den {
         .detach();
     }
 
+    /// Types the agent's name in its row: its terminal tab's.
+    fn start_agent_rename(&mut self, host: SharedString, group: String, term: TermId, window: &mut Window, cx: &mut Context<Self>) {
+        let name = terminals::saved_term_name(&group, term).unwrap_or_default();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.commit_agent_rename(window, cx),
+            InputEvent::Blur => this.cancel_agent_rename(cx),
+            _ => {}
+        });
+        input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        self.agent_rename = Some(AgentRename { host, group, term, input, _subscription: subscription });
+        cx.notify();
+    }
+
+    /// The typed name is the agent's tab's, in its workspace if it's open
+    /// here, or saved for when it opens; none, and the tab goes back to its
+    /// terminal's title.
+    fn commit_agent_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(AgentRename { host, group, term, input, .. }) = self.agent_rename.take() else {
+            return;
+        };
+        let name = Some(input.read(cx).value().trim().to_string()).filter(|name| !name.is_empty());
+        let key = TaskKey { host, path: PathBuf::from(&group) };
+        let renamed = self
+            .workspaces
+            .get(&key)
+            .is_some_and(|workspace| workspace.update(cx, |workspace, cx| workspace.rename_terminal(term, name.clone(), cx)));
+        if !renamed {
+            terminals::rename_saved_term(&group, term, name);
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn cancel_agent_rename(&mut self, cx: &mut Context<Self>) {
+        if self.agent_rename.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// The most urgent of the agents, for the panel's icon.
     pub(super) fn agents_badge(&self, cx: &App) -> Option<Hsla> {
         self.agents
@@ -157,15 +212,25 @@ impl Den {
             .children(empty)
     }
 
-    /// An agent's row: its dot and its workspace; what it's on, on hover.
-    /// The dot is its state: no word for it ("working", "done"…), ever.
+    /// An agent's row: its dot, its name if it was given one, and its
+    /// workspace; what it's on, on hover. The dot is its state: no word for
+    /// it ("working", "done"…), ever.
     fn render_agent(&self, host: &SharedString, agent: &AgentInfo, cx: &mut Context<Self>) -> AnyElement {
         let (dot, color, _) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);
         let key = TaskKey { host: host.clone(), path: PathBuf::from(&agent.group) };
         let label = self.task(&key).map(row_label).unwrap_or_else(|| folder_name(&key.path).into());
+        let name = terminals::saved_term_name(&agent.group, agent.term);
+        let name_given = name.is_some();
         let (host, group, term) = (host.clone(), agent.group.clone(), agent.term);
+        let input = self
+            .agent_rename
+            .as_ref()
+            .filter(|rename| rename.host == host && rename.term == term)
+            .map(|rename| rename.input.clone());
+        let renaming = input.is_some();
+        let weak = cx.entity().downgrade();
         h_flex()
             .id(SharedString::from(format!("agent-{host}-{term}")))
             .h(px(24.))
@@ -174,9 +239,46 @@ impl Den {
             .text_ui(cx)
             .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
             .child(div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot))
-            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
-            .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
-            .on_click(cx.listener(move |this, _, window, cx| this.open_agent(host.clone(), group.clone(), term, window, cx)))
+            .map(|row| match input {
+                Some(input) => row.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                            if event.keystroke.key == "escape" {
+                                cx.stop_propagation();
+                                this.cancel_agent_rename(cx);
+                            }
+                        }))
+                        .child(Input::new(&input).xsmall()),
+                ),
+                None => row
+                    .children(name.map(|name| div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name)))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .when(name_given, |el| el.text_color(theme.muted_foreground))
+                            .child(label),
+                    ),
+            })
+            .when(!renaming, |row| row.tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx)))
+            .on_click(cx.listener({
+                let (host, group) = (host.clone(), group.clone());
+                move |this, _, window, cx| {
+                    if !renaming {
+                        this.open_agent(host.clone(), group.clone(), term, window, cx)
+                    }
+                }
+            }))
+            .context_menu(move |menu, _, _| {
+                let (host, group) = (host.clone(), group.clone());
+                menu.item(menu::item("Rename", &weak, move |this, window, cx| {
+                    this.start_agent_rename(host.clone(), group.clone(), term, window, cx)
+                }))
+            })
             .into_any_element()
     }
 }

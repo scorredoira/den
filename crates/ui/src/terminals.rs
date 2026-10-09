@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::Result;
@@ -215,7 +215,7 @@ impl TerminalArea {
             let result: Result<(Vec<(Tree<Pane>, Option<String>)>, Vec<(TermId, Entity<Terminal>)>)> = async {
                 let mut alive: HashSet<TermId> = agent::list(&client, group.clone()).await?.into_iter().collect();
                 let debug = debug_term.filter(|term| alive.remove(term));
-                let saved = SavedLayouts::load().groups.remove(&group).unwrap_or_default();
+                let saved = with_layouts(|layouts| layouts.groups.get(&group).cloned()).unwrap_or_default();
                 let mut tabs: Vec<(Tree<Pane>, Option<String>)> = saved
                     .tabs
                     .into_iter()
@@ -761,6 +761,18 @@ impl TerminalArea {
         cx.notify();
     }
 
+    /// Names the tab terminal `term` is in (the Agents panel's Rename);
+    /// false if it isn't here.
+    pub fn rename_term(&mut self, term: TermId, name: Option<String>, cx: &mut Context<Self>) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.contains(Pane::Term(term))) else {
+            return false;
+        };
+        tab.name = name;
+        self.save();
+        cx.notify();
+        true
+    }
+
     /// The typed name is the tab's; none, and it's its pane's title again.
     fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(renaming) = self.renaming.take() else {
@@ -947,16 +959,13 @@ impl TerminalArea {
         if cfg!(test) {
             return;
         }
-        let mut layouts = SavedLayouts::load();
-        layouts.groups.insert(
-            self.group.clone(),
-            SavedLayout {
-                tabs: self.tabs.iter().map(SavedTab::of).collect(),
-            },
-        );
-        if let Err(err) = layouts.store() {
-            eprintln!("couldn't save terminal layout: {err:#}");
-        }
+        let saved = SavedLayout {
+            tabs: self.tabs.iter().map(SavedTab::of).collect(),
+        };
+        with_layouts(|layouts| {
+            layouts.groups.insert(self.group.clone(), saved);
+            layouts.store_or_say();
+        });
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1403,12 +1412,54 @@ struct SavedLayouts {
     groups: HashMap<String, SavedLayout>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct SavedLayout {
     tabs: Vec<SavedTab>,
 }
 
-#[derive(Serialize, Deserialize)]
+/// The saved layouts, read once: the Agents panel asks for the tabs' names
+/// of every workspace while it draws, also of those not open.
+static LAYOUTS: Mutex<Option<SavedLayouts>> = Mutex::new(None);
+
+fn with_layouts<R>(act: impl FnOnce(&mut SavedLayouts) -> R) -> R {
+    let mut layouts = LAYOUTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    act(layouts.get_or_insert_with(SavedLayouts::load))
+}
+
+/// The name of the tab terminal `term` of `group` is in, as saved: that of
+/// a workspace not open in this window too.
+pub fn saved_term_name(group: &str, term: TermId) -> Option<String> {
+    with_layouts(|layouts| {
+        layouts.groups.get(group)?.tabs.iter().find_map(|tab| match tab {
+            SavedTab::Named { tree, name } if tree.leaves().contains(&Pane::Term(term)) => Some(name.clone()),
+            _ => None,
+        })
+    })
+}
+
+/// Names the tab terminal `term` of `group` is in, in a workspace not open
+/// (`TerminalArea::rename_term` in one that is): its tab once it opens. Not
+/// in a saved tab, it gets one of its own.
+pub fn rename_saved_term(group: &str, term: TermId, name: Option<String>) {
+    with_layouts(|layouts| {
+        let tabs = &mut layouts.groups.entry(group.to_string()).or_default().tabs;
+        let pane = Pane::Term(term);
+        let at = tabs.iter().position(|tab| tab.clone().into_tab().is_some_and(|(tree, _)| tree.leaves().contains(&pane)));
+        let tree = match at {
+            Some(at) => tabs.remove(at).into_tab().map(|(tree, _)| tree),
+            None => None,
+        }
+        .unwrap_or(Tree::Leaf(pane));
+        let tab = match name {
+            Some(name) => SavedTab::Named { tree, name },
+            None => SavedTab::Tree(tree),
+        };
+        tabs.insert(at.unwrap_or(tabs.len()), tab);
+        layouts.store_or_say();
+    });
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum SavedTab {
     /// One renamed.
@@ -1457,6 +1508,12 @@ impl SavedLayouts {
             .and_then(|path| std::fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
+    }
+
+    fn store_or_say(&self) {
+        if let Err(err) = self.store() {
+            eprintln!("couldn't save terminal layout: {err:#}");
+        }
     }
 
     fn store(&self) -> Result<()> {
