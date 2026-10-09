@@ -128,6 +128,9 @@ struct ContextMenuSharedState {
     /// the previously rendered frame, where the menu's own element is not yet.
     trigger_focus_handle: Option<FocusHandle>,
     _subscription: Option<Subscription>,
+    /// (den) Held while the menu is open, as an open popover's: tooltips
+    /// step aside for it (see `Tooltip`'s render).
+    _popover: Option<gpui_base::DeferredPopover>,
 }
 
 pub struct ContextMenuState {
@@ -154,6 +157,7 @@ impl Default for ContextMenuState {
                 position: Default::default(),
                 trigger_focus_handle: None,
                 _subscription: None,
+                _popover: None,
             })),
         }
     }
@@ -419,6 +423,8 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                             shared_state._subscription = None;
                             shared_state.position = event.position;
                             shared_state.open = true;
+                            shared_state._popover =
+                                Some(gpui_base::GlobalState::register_deferred_popover(cx));
                         }
 
                         // Use defer to build the menu in the next frame, avoiding race conditions
@@ -449,7 +455,9 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                     let shared_state = Rc::downgrade(&shared_state);
                                     move |_, _: &DismissEvent, window, _cx| {
                                         if let Some(shared_state) = shared_state.upgrade() {
-                                            shared_state.borrow_mut().open = false;
+                                            let mut shared_state = shared_state.borrow_mut();
+                                            shared_state.open = false;
+                                            shared_state._popover = None;
                                             window.refresh();
                                         }
                                     }

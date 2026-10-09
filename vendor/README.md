@@ -78,3 +78,7 @@ toggles for the app to save. Its icons not in the default set (`whole-word`,
 
 Updating: copy the new release over it, drop `benches/`, `tests/` and their
 `[[bench]]`/`[[test]]` entries, and reapply the `(den)` functions.
+
+And `(den)` so a tooltip never shows over an open menu: an open context menu
+holds a `DeferredPopover` in `src/menu/context_menu.rs`, as an open popover
+does, and `Tooltip` in `src/tooltip.rs` renders nothing while one is held.
