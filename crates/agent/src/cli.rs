@@ -12,11 +12,13 @@ use crate::platform;
 
 pub const USAGE: &str = "\
 Usage:
-  den <path>          opens a folder, or a file in its repo, in den. Over
-                      SSH, in the app connected to this server; in den's
-                      terminals, in the terminal's window.
-  den -n <path>       opens it in a window of its own, even in den's
-                      terminals; in the window it's open in, if it is.
+  den <path>          opens a folder, or a file in its repo, in a window
+                      of its own (in the window it's open in, if it is);
+                      over SSH, in the app connected to this server. In
+                      den's terminals, in the terminal's window. What's
+                      open in a window of its own isn't remembered unless
+                      kept.
+  den -n <path>       in a window of its own, also in den's terminals.
   den -s <server> [<path>]
                       opens a window on the server (a name from
                       ~/.ssh/config or user@host) with the path there,
@@ -146,30 +148,17 @@ pub fn invoked_as_den() -> bool {
         .unwrap_or(false)
 }
 
-/// `den <path>`: asks the app to open it. In den's terminals, the window
-/// showing the terminal does (if no app answers, as outside them). With no
-/// app connected, it starts one on this machine; over SSH, there's no app to
-/// start.
+/// `den <path>`: in den's terminals, the window showing the terminal opens
+/// it; outside them (or if that window doesn't answer), a window of its
+/// own, as `den -n`, so that it isn't remembered unless kept.
 pub fn open(arg: &str) -> Result<()> {
     let path = std::path::absolute(arg)?;
     let path = path.canonicalize().with_context(|| format!("{arg}: no such file or folder"))?;
     let (root, file) = proto::open_target(&path);
-    if own_term().is_some() && open_here(root.clone(), file.clone()).is_ok() {
+    if own_term().is_some() && open_here(root, file).is_ok() {
         return Ok(());
     }
-    let exe = std::env::current_exe()?;
-    let client = Client::connect_local(&exe).context("could not talk to the agent")?;
-    let response = smol::block_on(client.request(Request::Open { root, file }))?;
-    let Response::Count(count) = response else {
-        bail!("unexpected response from the agent: {response:?}");
-    };
-    if count > 0 {
-        return Ok(());
-    }
-    if std::env::var_os("SSH_CONNECTION").is_some() {
-        bail!("no den app is connected to this server: add it in den's Settings → Servers");
-    }
-    platform::launch_app(&[path.as_os_str()])
+    open_new(&[arg.to_string()])
 }
 
 /// `den -n <path>`: asks the app to open it in a window of its own. With

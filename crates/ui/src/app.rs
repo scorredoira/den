@@ -1474,7 +1474,7 @@ impl Render for Den {
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .child("Keep in Workspaces")
                                 .tooltip(|window, cx| {
-                                    Tooltip::new("Opened with den -s, this window is forgotten when it closes: keep its server and folders in Workspaces.")
+                                    Tooltip::new("Opened with den <path> or den -s, this window is forgotten when it closes: keep its server and folders in Workspaces.")
                                         .build(window, cx)
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| this.keep(None, window, cx))),
