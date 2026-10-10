@@ -25,7 +25,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use crate::{
     CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowHistory,
     OpenChanges, ShowFileHistory,
-    FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
+    FocusNext, FocusPrevious, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
@@ -1312,6 +1312,37 @@ impl Workspace {
         }
     }
 
+    /// Ctrl-Tab (Shift back): the focus to the next of what's in sight, in a
+    /// round: the code's groups, then the terminal panes. Nothing shows or hides.
+    fn cycle_focus(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let groups = if !self.is_shown(Panel::Code, cx) || (self.terminals_maximized && self.is_shown(Panel::Terminals, cx)) {
+            0
+        } else if self.editor_split.is_some() {
+            2
+        } else {
+            1
+        };
+        let panes = if self.is_shown(Panel::Terminals, cx) {
+            self.terminals.read(cx).panes_in_sight(cx)
+        } else {
+            Vec::new()
+        };
+        let current = match panes.iter().position(|pane| pane.contains_focused(window, cx)) {
+            Some(ix) => Some(groups + ix),
+            None => (groups > 0).then_some(self.group.min(groups - 1)),
+        };
+        let Some(next) = next_stop(groups + panes.len(), current, back) else {
+            return;
+        };
+        if next >= groups {
+            return panes[next - groups].focus(window, cx);
+        }
+        match self.shown_in(next) {
+            Some(ix) => self.activate_with(ix, true, window, cx),
+            None => self.focus_ide(window, cx),
+        }
+    }
+
     /// Shows the terminals and focuses them; if they already have focus, hides
     /// them and focus returns to the IDE.
     fn toggle_terminals(&mut self, _: &ToggleTerminals, window: &mut Window, cx: &mut Context<Self>) {
@@ -1818,6 +1849,18 @@ fn line_styles(side: &diff::Side, marker: char, color: Hsla, skipped: Hsla) -> V
 
 /// The name (letters, digits and `_`) at `column` of `line`, or just before
 /// it: a cursor at the end of a word counts too.
+/// The stop after `current` among `len`, going round (before it, `back`);
+/// from none of them, the first. `None` with nowhere else to go.
+fn next_stop(len: usize, current: Option<usize>, back: bool) -> Option<usize> {
+    match current {
+        _ if len == 0 => None,
+        None => Some(0),
+        Some(_) if len == 1 => None,
+        Some(ix) if back => Some((ix + len - 1) % len),
+        Some(ix) => Some((ix + 1) % len),
+    }
+}
+
 fn word_at(text: &str, line: u32, column: u32) -> String {
     let Some(line) = text.lines().nth(line as usize) else {
         return String::new();
@@ -1880,9 +1923,20 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{LspStatus, normalize, percent_decode, scrollbar_marks, word_at};
+    use super::{LspStatus, next_stop, normalize, percent_decode, scrollbar_marks, word_at};
     use gpui_kit::{blue, red};
     use proto::Response;
+
+    #[test]
+    fn focus_goes_round_what_is_in_sight() {
+        // The code, then two terminals.
+        assert_eq!(next_stop(3, Some(0), false), Some(1));
+        assert_eq!(next_stop(3, Some(2), false), Some(0));
+        assert_eq!(next_stop(3, Some(0), true), Some(2));
+        assert_eq!(next_stop(3, None, false), Some(0));
+        assert_eq!(next_stop(1, Some(0), false), None);
+        assert_eq!(next_stop(0, None, true), None);
+    }
 
     #[test]
     fn scrollbar_marks_join_runs_of_one_color() {

@@ -73,6 +73,8 @@ shortcuts![
     (FocusPaneRight, "Focus Terminal Right", "secondary-alt-right"),
     (FocusPaneUp, "Focus Terminal Above", "secondary-alt-up"),
     (FocusPaneDown, "Focus Terminal Below", "secondary-alt-down"),
+    (FocusNext, "Focus Next: Code or Terminal", mac_or("ctrl-tab", "f8")),
+    (FocusPrevious, "Focus Previous: Code or Terminal", mac_or("ctrl-shift-tab", "shift-f8")),
     (ToggleTerminals, "Toggle Terminals", mac_or("cmd-j", "ctrl-`")),
     (MaximizeTerminals, "Maximize Terminals", "secondary-shift-j"),
     (MoveTerminals, "Move Terminals Right or Down", "secondary-alt-j"),
