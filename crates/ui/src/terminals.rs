@@ -57,6 +57,9 @@ pub enum TerminalAreaEvent {
     /// The debugger's terminal, drawn in its console: a new one, or (`None`)
     /// it's gone.
     DebugTerminal(Option<Entity<TerminalView>>),
+    /// The pane with the keyboard closed and none is left to take it: the
+    /// keyboard must go somewhere, or the window's shortcuts stop working.
+    FocusLeft,
 }
 
 /// A panel in the terminals' place: a tab after theirs.
@@ -939,8 +942,8 @@ impl TerminalArea {
             }
             _ => self.active = self.active.min(self.tabs.len().saturating_sub(1)),
         }
-        if had_focus {
-            self.focus_active(window, cx);
+        if had_focus && !self.focus_active(window, cx) {
+            cx.emit(TerminalAreaEvent::FocusLeft);
         }
         if pane == Pane::Notes || tab.contains(Pane::Notes) {
             cx.emit(TerminalAreaEvent::NotesMoved);
@@ -956,10 +959,12 @@ impl TerminalArea {
     }
 
     /// The active tab's active pane gets the focus, if there's one.
-    fn focus_active(&self, window: &mut Window, cx: &mut App) {
-        if let Some(handle) = self.tabs.get(self.active).and_then(|tab| self.focus_handle(tab.active, cx)) {
+    fn focus_active(&self, window: &mut Window, cx: &mut App) -> bool {
+        let handle = self.tabs.get(self.active).and_then(|tab| self.focus_handle(tab.active, cx));
+        if let Some(handle) = &handle {
             handle.focus(window, cx);
         }
+        handle.is_some()
     }
 
     /// Saves which terminal goes where.
