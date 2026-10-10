@@ -41,7 +41,7 @@ use crate::drag_drop::DropPlacement;
 pub const LAUNCH_FILE: &str = ".den/debug.json";
 
 const LAUNCH_TEMPLATE: &str = r#"{
-    "command": "sim -d -dp 127.0.0.1:${port} ${file}"
+    "command": "sim -d --debugger-port ${port} ${file}"
 }
 "#;
 

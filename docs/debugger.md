@@ -9,7 +9,7 @@ the agent, so a program on a server is debugged like a local one.
 `.den/debug.json` in the workspace:
 
 ```json
-{ "command": "sim -d -dp 127.0.0.1:${port} ${file}" }
+{ "command": "sim -d --debugger-port ${port} ${file}" }
 ```
 
 - `command`: a shell line run in the debugger's own terminal, a part of
@@ -36,7 +36,7 @@ the agent, so a program on a server is debugged like a local one.
 
 ```json
 {
-    "command": "scl app ${target} --dev -dp 127.0.0.1:${port}",
+    "command": "scl -d --debugger-port ${port} --target=${target} ${file}",
     "targets": ["ios", "android", "chrome"]
 }
 ```
@@ -88,7 +88,7 @@ its own; without it, `port` (4444 when missing) is where `debug` listens.
 "tests": {
     "match": "^export function (test\\w*)\\(",
     "run": "sim test ${file} ${test} -x",
-    "debug": "sim -d -de ${test} -dp 127.0.0.1:${port} test ${file} ${test} -x -c 1"
+    "debug": "sim -d --debugger-entry ${test} --debugger-port ${port} test ${file} ${test} -x -c 1"
 }
 ```
 
@@ -130,7 +130,7 @@ page itself, so `--no-page` keeps Den from opening the server's too:
 
 ```json
 {
-    "command": "den debug join --port ${port} --no-page -- sim -d -dp 127.0.0.1:{port} ${file} -- den chrome --port {port} --url http://localhost:9092/"
+    "command": "den debug join --port ${port} --no-page -- sim -d --debugger-port {port} ${file} -- den chrome --port {port} --url http://localhost:9092/"
 }
 ```
 
