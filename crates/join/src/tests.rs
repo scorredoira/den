@@ -407,9 +407,9 @@ fn a_program_that_ends_ends_the_others() {
 #[test]
 fn arguments() {
     let args = |line: &str| -> Vec<String> { line.split(' ').map(str::to_string).collect() };
-    let (port, page, commands) = parse_args(&args("--port 9 --no-page -- sim -dp {port} x -- den chrome --port {port}")).unwrap();
+    let (port, page, commands) = parse_args(&args("--port 9 --no-page -- sim --debugger-port {port} x -- den chrome --port {port}")).unwrap();
     assert_eq!((port, page), (9, false));
-    assert_eq!(commands, [args("sim -dp {port} x"), args("den chrome --port {port}")]);
+    assert_eq!(commands, [args("sim --debugger-port {port} x"), args("den chrome --port {port}")]);
     assert!(parse_args(&args("-- sim {port}")).unwrap_err().to_string().contains("--port"));
     assert!(parse_args(&args("--port 9 -- sim")).unwrap_err().to_string().contains("no {port}"));
     assert!(parse_args(&args("--port 9 -- a {port} -- -- b {port}")).is_err());
