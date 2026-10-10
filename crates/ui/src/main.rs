@@ -89,6 +89,8 @@ actions!(
         FocusPaneRight,
         FocusPaneUp,
         FocusPaneDown,
+        FocusNext,
+        FocusPrevious,
         OpenFileFinder,
         NewFile,
         NextResult,

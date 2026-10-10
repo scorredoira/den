@@ -624,6 +624,15 @@ impl TerminalArea {
         self.tabs.is_empty()
     }
 
+    /// The panes in sight, in their splits' order (left to right, top to
+    /// bottom), for focus to go through; none while a panel's tab is in front.
+    pub fn panes_in_sight(&self, cx: &App) -> Vec<FocusHandle> {
+        let Some(tab) = self.tabs.get(self.active).filter(|_| self.panel_showing().is_none()) else {
+            return Vec::new();
+        };
+        tab.tree.leaves().into_iter().filter_map(|pane| self.focus_handle(pane, cx)).collect()
+    }
+
     /// Whether any terminal, or the notes in a split, has focus.
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.views.values().any(|view| view.read(cx).focus_handle(cx).is_focused(window))

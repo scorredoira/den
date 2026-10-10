@@ -798,6 +798,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusPaneRight, window, cx| this.focus_pane(Direction::Right, window, cx)))
             .on_action(cx.listener(|this, _: &FocusPaneUp, window, cx| this.focus_pane(Direction::Up, window, cx)))
             .on_action(cx.listener(|this, _: &FocusPaneDown, window, cx| this.focus_pane(Direction::Down, window, cx)))
+            .on_action(cx.listener(|this, _: &FocusNext, window, cx| this.cycle_focus(false, window, cx)))
+            .on_action(cx.listener(|this, _: &FocusPrevious, window, cx| this.cycle_focus(true, window, cx)))
             .on_action(cx.listener(Self::toggle_terminals))
             .on_action(cx.listener(Self::maximize_terminals))
             .on_action(cx.listener(|this, _: &MoveTerminals, _, cx| this.move_terminals(cx)))

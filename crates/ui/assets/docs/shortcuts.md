@@ -147,6 +147,7 @@ The activity bar, on the left, has an icon for each group of the side column: th
 | {{NewTerminal}} | New terminal |
 | {{SplitRight}} / {{SplitDown}} | Split the terminal to the right or down |
 | {{FocusPaneLeft}} {{FocusPaneRight}} {{FocusPaneUp}} {{FocusPaneDown}} | Move to the terminal on that side |
+| {{FocusNext}} / {{FocusPrevious}} | Go round what's in sight: the code (each half, if split), then each terminal pane |
 | {{TerminalFind}} | Find in the terminal, its history included: {{key:enter}} goes up, {{key:shift-enter}} down |
 
 In Terminal Mode, {{ToggleSidePanel}} shows or hides the workspaces and the agents; whatever needs the code (a file opened, a `file:line` clicked, a side panel, {{ToggleTerminals}}) takes the window back to the code. `den -t` opens a window in it.
