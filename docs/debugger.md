@@ -88,7 +88,7 @@ its own; without it, `port` (4444 when missing) is where `debug` listens.
 "tests": {
     "match": "^export function (test\\w*)\\(",
     "run": "sim test ${file} ${test} -x",
-    "debug": "sim -d --debugger-entry ${test} --debugger-port ${port} test ${file} ${test} -x -c 1"
+    "debug": "sim -d --debugger-port ${port} test ${file} ${test} -x -c 1"
 }
 ```
 
