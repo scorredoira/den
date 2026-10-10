@@ -518,6 +518,9 @@ impl Workspace {
                     TerminalAreaEvent::ShowPanel(None) => this.show_panel(Panel::Terminals, cx),
                     TerminalAreaEvent::ClosePanel(Panel::Notes) => this.toggle_notes(&ToggleNotes, window, cx),
                     TerminalAreaEvent::ClosePanel(panel) => this.hide_panel(*panel, cx),
+                    // In Terminal Mode, the code isn't there to take it.
+                    TerminalAreaEvent::FocusLeft if this.is_shown(Panel::Code, cx) => this.focus_ide(window, cx),
+                    TerminalAreaEvent::FocusLeft => this.focus_handle.focus(window, cx),
                     TerminalAreaEvent::DebugTerminal(view) => {
                         this.debugger.update(cx, |debugger, cx| debugger.set_terminal_view(view.clone(), cx));
                     }
