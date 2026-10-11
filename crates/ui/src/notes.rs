@@ -146,6 +146,7 @@ impl NotesPanel {
         cx.notify();
     }
 
+    #[cfg(test)]
     pub fn place(&self) -> Place {
         self.place
     }

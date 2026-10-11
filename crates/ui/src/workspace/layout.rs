@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::config::{Dock, Group, Layout, Panel, Place, SavedPanels};
-use super::activity::PlaceDrag;
+use super::activity::IconDrag;
 use crate::debug::DebugView;
 use crate::menu::PanelItems as _;
 
@@ -165,6 +165,14 @@ pub(crate) enum Mode {
     /// The History tab shows: without the terminals unless they were shown
     /// there (`Config::history_terminals`).
     History,
+}
+
+/// What shows around the code while editing, the same in every workspace.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SharedPanels {
+    shown: Shown,
+    notes_alone: bool,
+    maximized: bool,
 }
 
 /// A side panel dragged by its header: onto another's header it goes above
@@ -329,6 +337,33 @@ impl Workspace {
         true
     }
 
+    /// What shows while editing, to be the same in the workspace gone to
+    /// (`share_panels`): now, or as editing left it.
+    pub(crate) fn editing_panels(&self) -> SharedPanels {
+        if self.mode == Mode::Editing {
+            return SharedPanels { shown: self.panels.shown(), notes_alone: self.panels.notes_alone, maximized: self.terminals_maximized };
+        }
+        let shown = self.kept_shown.get(&Mode::Editing).copied().unwrap_or_else(|| self.panels.shown());
+        SharedPanels { shown, notes_alone: false, maximized: false }
+    }
+
+    /// What showed editing in the workspace left shows here too: going from
+    /// one to another doesn't change what's around the code. Debugging or
+    /// in the History tab, it's what editing comes back to.
+    pub(crate) fn share_panels(&mut self, shared: SharedPanels, cx: &mut Context<Self>) {
+        if self.mode != Mode::Editing {
+            self.kept_shown.insert(Mode::Editing, shared.shown);
+            return;
+        }
+        if self.editing_panels() == shared {
+            return;
+        }
+        self.panels.show(shared.shown);
+        self.panels.notes_alone = shared.notes_alone;
+        self.terminals_maximized = shared.maximized && shared.shown.terminals;
+        self.layout_changed(cx);
+    }
+
     /// What's saved with the workspace: editing's panels, as it opens
     /// editing.
     pub(super) fn saved_panels(&self) -> SavedPanels {
@@ -429,10 +464,12 @@ impl Workspace {
                     panels.results = panel;
                 }
                 let layout = &Config::get(cx).layout;
-                if layout.collapsed.contains(&panel) || layout.hidden.contains(&panel) {
+                let off = layout.place_of(panel).is_some_and(|place| layout.panels(place).is_empty());
+                if layout.collapsed.contains(&panel) || layout.hidden.contains(&panel) || off {
                     Config::update(cx, |config| {
                         config.layout.collapsed.retain(|other| *other != panel);
                         config.layout.hidden.retain(|other| *other != panel);
+                        config.layout.set_on_bar(crate::config::Icon::Place(panel), true);
                     });
                 }
                 let Some(place) = Config::get(cx).layout.place_of(panel) else {
@@ -787,8 +824,15 @@ impl Workspace {
             .overflow_hidden()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
-            .drag_over::<PlaceDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.1)))
-            .on_drop(cx.listener(|this, drag: &PlaceDrag, _, cx| this.merge_place(drag.0, cx)))
+            .drag_over::<IconDrag>(|style, drag, _, cx| match drag.0 {
+                crate::config::Icon::Place(_) => style.bg(cx.theme().primary.opacity(0.1)),
+                _ => style,
+            })
+            .on_drop(cx.listener(|this, drag: &IconDrag, _, cx| {
+                if let crate::config::Icon::Place(panel) = drag.0 {
+                    this.merge_place(Place(panel), cx);
+                }
+            }))
             .children(sections)
             // Every panel folded: the space below them.
             .when(filler.is_none(), |el| el.child(div().flex_1()))

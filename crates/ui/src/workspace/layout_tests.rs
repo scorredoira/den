@@ -241,6 +241,16 @@ fn the_history_icon_toggles_its_tab(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, _| assert!(workspace.history_tab().is_none()));
 }
 
+#[gpui_kit::test]
+fn the_debug_icon_toggles_its_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    assert!(bounds(cx, "activity-Debug").top() > bounds(cx, "activity-History").top());
+    click(cx, "activity-Debug");
+    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Console, cx)));
+    click(cx, "activity-Debug");
+    workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Console, cx)));
+}
+
 /// The History tab in front hides the terminals, for the width; shown
 /// there, they show there the next time. Another tab in front, or the tab
 /// closed, brings the terminals back as editing had them.
@@ -874,9 +884,14 @@ fn a_stop_near_the_edge_goes_to_the_middle(cx: &mut TestAppContext) {
     // the line before the last: it goes to the middle
     let low = (start.end - 2) as u32;
     stop(cx, low);
-    let now = visible(cx);
-    let (above, below) = (low as usize - now.start, now.end - low as usize);
-    assert!(above.abs_diff(below) <= 2, "{low} in {now:?}");
+    // in the view itself: the range drawn has rows past its bottom edge
+    let at = workspace.read_with(cx, |workspace, cx| {
+        let state = workspace.tabs[0].editor.read(cx);
+        let (caret, _) = state.cursor_layout().expect("the cursor is drawn");
+        let view = state.input_bounds();
+        (caret.origin.y - view.origin.y + state.scroll_offset().y + caret.size.height / 2.) / view.size.height
+    });
+    assert!((0.45..0.55).contains(&at), "{low} at {at}");
 }
 
 fn debug(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, on: bool) {
@@ -1061,4 +1076,94 @@ fn what_needs_the_code_leaves_terminal_mode(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!mode.get());
     bounds(cx, "editor-body-0");
+}
+
+/// Every icon drags along the bar, its right-click menu takes any off and
+/// puts it back where it was, and a panel's key brings back its place's.
+#[gpui_kit::test]
+fn the_icons_drag_and_come_off_the_bar(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let end = bounds(cx, "activity-Place(Place(Workspaces))").center();
+    drag_part(cx, "activity-Debug", end);
+    assert!(bounds(cx, "activity-Debug").top() < bounds(cx, "activity-Place(Place(Workspaces))").top());
+    let end = bounds(cx, "activity-Debug").center();
+    drag_part(cx, "activity-Notes", end);
+    assert!(bounds(cx, "activity-Notes").top() < bounds(cx, "activity-Debug").top());
+
+    use config::Icon;
+    let off = |cx: &mut VisualTestContext, icon: Icon, on: bool| {
+        cx.update(|_, cx| Config::update(cx, |config| config.layout.set_on_bar(icon, on)));
+        cx.run_until_parked();
+    };
+    off(cx, Icon::Debug, false);
+    assert!(cx.debug_bounds("activity-Debug").is_none());
+    off(cx, Icon::Debug, true);
+    assert!(bounds(cx, "activity-Debug").top() < bounds(cx, "activity-Place(Place(Workspaces))").top());
+
+    off(cx, Icon::Place(Panel::Changes), false);
+    assert!(cx.debug_bounds("activity-Place(Place(Changes))").is_none());
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Changes, cx));
+    cx.run_until_parked();
+    bounds(cx, "activity-Place(Place(Changes))");
+    bounds(cx, "stack-Changes");
+}
+
+/// A jump puts its line a third of the way down, counted in rows as drawn:
+/// long lines above it that wrap don't leave it at the bottom edge or out
+/// of sight. One well inside the view stays where it is.
+#[gpui_kit::test]
+fn a_jump_lands_a_third_of_the_way_down(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let long = "word ".repeat(200);
+    let text = (0..800).map(|row| if row % 5 == 0 { format!("{row} {long}") } else { format!("line {row}") }).collect::<Vec<_>>().join("\n");
+    let editor = workspace.update_in(cx, |workspace, window, cx| {
+        let editor = workspace.tabs[0].editor.clone();
+        editor.update(cx, |state, cx| {
+            state.set_soft_wrap(true, window, cx);
+            state.set_value(text, window, cx);
+        });
+        editor
+    });
+    cx.run_until_parked();
+    // Where the cursor's row is, as a share of the view's height.
+    let jump = |cx: &mut VisualTestContext, line: u32| {
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| state.set_cursor_position(Position::new(line, 0), window, cx));
+            super::reveal_centered(&editor, line, false, cx);
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |state, _| {
+            let (caret, _) = state.cursor_layout().expect("the cursor is drawn");
+            let view = state.input_bounds();
+            (caret.origin.y - view.origin.y + state.scroll_offset().y) / view.size.height
+        })
+    };
+    for line in [662, 300, 790] {
+        let at = jump(cx, line);
+        assert!((0.15..0.5).contains(&at) || line == 790 && (0.15..=1.).contains(&at), "{line} at {at}");
+    }
+    let at = jump(cx, 300);
+    let near = jump(cx, 303);
+    assert!(near > at, "{at} {near}: it stayed");
+}
+
+/// From the bar's menu: a panel checked is seen, in its place; unchecked
+/// it isn't, and a place left with none loses its icon.
+#[gpui_kit::test]
+fn the_bar_s_menu_shows_and_hides_panels(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    assert!(cx.debug_bounds("stack-Agents").is_none());
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Agents, cx));
+    cx.run_until_parked();
+    bounds(cx, "stack-Agents");
+    workspace.update(cx, |workspace, cx| workspace.remove_panel(Panel::Agents, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("stack-Agents").is_none());
+    workspace.update(cx, |workspace, cx| workspace.remove_panel(Panel::Changes, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("activity-Place(Place(Changes))").is_none());
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Changes, cx));
+    cx.run_until_parked();
+    bounds(cx, "activity-Place(Place(Changes))");
+    bounds(cx, "stack-Changes");
 }

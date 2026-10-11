@@ -41,12 +41,44 @@ impl Den {
             .into_any_element()
     }
 
-    /// The activity bar, with only the explorer's icon; the workspaces, as
-    /// wide as the side column; and the welcome.
+    /// The activity bar; the workspaces, as wide as the side column; and the
+    /// welcome. The bar has only the explorer's icon, or, with a workspace
+    /// left for the welcome (Help → Welcome), that one's icons, which go back
+    /// to it showing what they stand for.
     pub(super) fn render_without_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
-        let click: OnActivity = Rc::new(|_, _, _| {});
-        let bar = activity_bar(vec![(Item::Place(Place(Panel::Workspaces)), true, badge)], Vec::new(), click, cx);
+        let left = self.previous.clone().and_then(|key| Some((self.workspaces.get(&key)?.clone(), key)));
+        let bar = match left {
+            None => {
+                let click: OnActivity = Rc::new(|_, _, _| {});
+                activity_bar(vec![(Item::Place(Place(Panel::Workspaces)), true, badge)], click, cx)
+            }
+            Some((workspace, key)) => {
+                let here = Config::get(cx).layout.place_of(Panel::Workspaces);
+                let icons = workspace
+                    .read(cx)
+                    .activities(cx)
+                    .into_iter()
+                    .map(|(item, _, other)| match item {
+                        Item::Place(place) if Some(place) == here => (item, true, badge),
+                        _ => (item, false, other),
+                    })
+                    .collect();
+                let den = cx.entity().downgrade();
+                let click: OnActivity = Rc::new(move |item, window, cx| {
+                    if matches!(item, Item::Place(place) if Some(place) == here) {
+                        return;
+                    }
+                    den.update(cx, |den, cx| den.activate(key.clone(), window, cx)).ok();
+                    workspace.update(cx, |workspace, cx| {
+                        if !workspace.shows(item, cx) {
+                            workspace.click_activity(item, window, cx);
+                        }
+                    });
+                });
+                activity_bar(icons, click, cx)
+            }
+        };
         let width = Config::get(cx).layout.side_width;
         let state = self.split.state(window.viewport_size().width - px(ACTIVITY_WIDTH), [true, true], cx).clone();
         let split = h_resizable("den-split")

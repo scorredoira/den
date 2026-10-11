@@ -1194,8 +1194,19 @@ impl Den {
                 workspace
             }
         };
+        // What shows around the code, as in the workspace left.
+        let shared = self
+            .active
+            .as_ref()
+            .or(self.previous.as_ref())
+            .filter(|other| **other != key)
+            .and_then(|other| self.workspaces.get(other))
+            .map(|other| other.read(cx).editing_panels());
         let terminal_mode = self.terminal_mode.clone();
         workspace.update(cx, |workspace, cx| {
+            if let Some(shared) = shared {
+                workspace.share_panels(shared, cx);
+            }
             workspace.set_terminal_mode(&terminal_mode);
             workspace.focus(window, cx);
         });
@@ -2060,6 +2071,62 @@ mod palette_tests {
             assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
             assert!(den.is_hidden_project(&key("/den"), cx));
         });
+    }
+
+    /// Help → Welcome keeps the workspace's icons; one goes back to it,
+    /// showing what it stands for.
+    #[gpui_kit::test]
+    fn the_welcome_keeps_the_icons(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        let key = super::TaskKey { host: super::LOCAL.into(), path: "/welcome-test".into() };
+        cx.update(|window, cx| {
+            den.update(cx, |den, cx| {
+                den.activate(key.clone(), window, cx);
+                den.show_welcome(window, cx);
+            })
+        });
+        cx.run_until_parked();
+        let changes = cx.debug_bounds("activity-Place(Place(Changes))").expect("the workspace's icons");
+        cx.simulate_click(changes.center(), Modifiers::default());
+        cx.run_until_parked();
+        den.read_with(cx, |den, cx| {
+            assert_eq!(den.active, Some(key.clone()));
+            let workspace = den.active_workspace().unwrap();
+            assert!(workspace.read(cx).is_shown(crate::config::Panel::Changes, cx));
+        });
+    }
+
+    /// What shows around the code is the same in every workspace: going to
+    /// another keeps it.
+    #[gpui_kit::test]
+    fn the_panels_are_the_same_in_every_workspace(cx: &mut TestAppContext) {
+        use crate::config::Panel;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        let key = |path: &str| super::TaskKey { host: super::LOCAL.into(), path: path.into() };
+        let shown = |cx: &mut VisualTestContext, panel: Panel| {
+            den.read_with(cx, |den, cx| den.active_workspace().unwrap().read(cx).is_shown(panel, cx))
+        };
+        cx.update(|window, cx| den.update(cx, |den, cx| den.activate(key("/one"), window, cx)));
+        assert!(shown(cx, Panel::Terminals));
+        cx.update(|_, cx| {
+            den.update(cx, |den, cx| den.active_workspace().unwrap().update(cx, |workspace, cx| workspace.show_panel(Panel::Console, cx)))
+        });
+        assert!(shown(cx, Panel::Console));
+        cx.update(|window, cx| den.update(cx, |den, cx| den.activate(key("/two"), window, cx)));
+        assert!(shown(cx, Panel::Console), "a new one");
+        cx.update(|_, cx| {
+            den.update(cx, |den, cx| den.active_workspace().unwrap().update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx)))
+        });
+        cx.update(|window, cx| den.update(cx, |den, cx| den.activate(key("/one"), window, cx)));
+        assert!(!shown(cx, Panel::Terminals), "one open before");
     }
 
     /// Settings from the command palette: the action reaches `Den` itself,

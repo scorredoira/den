@@ -41,6 +41,13 @@ pub struct Layout {
     /// order: their panels, top to bottom. Every side panel is in one.
     #[serde(deserialize_with = "known_places")]
     pub places: Vec<Vec<Panel>>,
+    /// The activity bar's icons in order: a place's (the next of `places`)
+    /// or another's. Those missing go after the rest.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient")]
+    pub bar: Vec<Slot>,
+    /// The icons taken off the bar from its menu: a place by its panels.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient")]
+    pub off: Vec<Icon>,
     /// The side panels taken off the column (Hide Panel): they keep their
     /// spot for when they're shown again.
     #[serde(deserialize_with = "known_panels")]
@@ -171,6 +178,8 @@ impl Default for Layout {
             side: true,
             place: Place::default(),
             places: Group::ALL.into_iter().map(|group| group.panels().to_vec()).collect(),
+            bar: Vec::new(),
+            off: Vec::new(),
             hidden: vec![Panel::Agents],
             collapsed: vec![Panel::Outline, Panel::References],
             heights: HashMap::new(),
@@ -195,6 +204,37 @@ pub struct TerminalModeLayout {
 impl Default for TerminalModeLayout {
     fn default() -> Self {
         Self { side: true, side_width: 260. }
+    }
+}
+
+/// A spot on the activity bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Slot {
+    /// The next place's.
+    Place,
+    History,
+    Debug,
+    Notes,
+}
+
+/// An icon of the activity bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Icon {
+    /// A place's, by a panel of it.
+    Place(Panel),
+    History,
+    Debug,
+    Notes,
+}
+
+impl Icon {
+    fn slot(self) -> Slot {
+        match self {
+            Icon::Place(_) => Slot::Place,
+            Icon::History => Slot::History,
+            Icon::Debug => Slot::Debug,
+            Icon::Notes => Slot::Notes,
+        }
     }
 }
 
@@ -287,9 +327,96 @@ impl Layout {
         Place(panels.iter().copied().find(|panel| !self.hidden.contains(panel)).unwrap_or(panels[0]))
     }
 
-    /// What the side column shows in `place`, top to bottom.
+    /// What the side column shows in `place`, top to bottom: nothing if
+    /// its icon is off the bar.
     pub fn panels(&self, place: Place) -> Vec<Panel> {
-        self.index(place.0).map(|ix| self.places[ix].iter().copied().filter(|panel| !self.hidden.contains(panel)).collect()).unwrap_or_default()
+        let Some(ix) = self.index(place.0).filter(|ix| !self.is_off(*ix)) else {
+            return Vec::new();
+        };
+        self.places[ix].iter().copied().filter(|panel| !self.hidden.contains(panel)).collect()
+    }
+
+    /// Whether `places[ix]`'s icon is off the bar.
+    fn is_off(&self, ix: usize) -> bool {
+        self.places[ix].iter().any(|panel| self.off.contains(&Icon::Place(*panel)))
+    }
+
+    /// The bar's icons in order, and whether each is on it (its menu's
+    /// checks): every place with a panel not hidden, and the others.
+    pub fn icons(&self) -> Vec<(Icon, bool)> {
+        let mut places = (0..self.places.len())
+            .filter(|ix| self.places[*ix].iter().any(|panel| !self.hidden.contains(panel)))
+            .map(|ix| (Icon::Place(self.name(&self.places[ix]).0), !self.is_off(ix)));
+        let mut icons = Vec::new();
+        for slot in &self.bar {
+            let icon = match slot {
+                Slot::Place => match places.next() {
+                    Some(place) => place,
+                    None => continue,
+                },
+                Slot::History => (Icon::History, true),
+                Slot::Debug => (Icon::Debug, true),
+                Slot::Notes => (Icon::Notes, true),
+            };
+            if !icons.iter().any(|(other, _)| *other == icon.0) {
+                icons.push(icon);
+            }
+        }
+        icons.extend(places);
+        for other in [Icon::History, Icon::Debug, Icon::Notes] {
+            if !icons.iter().any(|(icon, _)| *icon == other) {
+                icons.push((other, true));
+            }
+        }
+        for (icon, on) in &mut icons {
+            if !matches!(icon, Icon::Place(_)) {
+                *on = !self.off.contains(icon);
+            }
+        }
+        icons
+    }
+
+    /// The icons on the bar, in order.
+    pub fn bar(&self) -> Vec<Icon> {
+        self.icons().into_iter().filter(|(_, on)| *on).map(|(icon, _)| icon).collect()
+    }
+
+    /// Puts `icon` on the bar or takes it off; a place's keeps its panels.
+    pub fn set_on_bar(&mut self, icon: Icon, on: bool) {
+        let icons: Vec<Icon> = match icon {
+            Icon::Place(panel) => self.index(panel).map(|ix| self.places[ix].iter().map(|panel| Icon::Place(*panel)).collect()).unwrap_or_default(),
+            _ => vec![icon],
+        };
+        self.off.retain(|other| !icons.contains(other));
+        if !on {
+            self.off.extend(icons);
+        }
+    }
+
+    /// Puts `icon` before `before`, or last.
+    pub fn move_icon(&mut self, icon: Icon, before: Option<Icon>) {
+        if before == Some(icon) {
+            return;
+        }
+        let mut icons: Vec<Icon> = self.icons().into_iter().map(|(icon, _)| icon).collect();
+        let Some(from) = icons.iter().position(|other| *other == icon) else {
+            return;
+        };
+        icons.remove(from);
+        let at = before.and_then(|before| icons.iter().position(|other| *other == before)).unwrap_or(icons.len());
+        icons.insert(at, icon);
+        // The places in the bar's order; any not on it (all its panels
+        // hidden) after them.
+        let mut places: Vec<Vec<Panel>> = icons
+            .iter()
+            .filter_map(|icon| match icon {
+                Icon::Place(panel) => self.index(*panel).map(|ix| self.places[ix].clone()),
+                _ => None,
+            })
+            .collect();
+        places.extend(self.places.iter().filter(|place| !places.contains(place)).cloned().collect::<Vec<_>>());
+        self.places = places;
+        self.bar = icons.into_iter().map(Icon::slot).collect();
     }
 
     /// The place the side column shows, or last showed; the first one, if
@@ -338,6 +465,7 @@ impl Layout {
         target.insert(at, panel);
         self.places.retain(|place| !place.is_empty());
         self.hidden.retain(|other| *other != panel);
+        self.set_on_bar(Icon::Place(panel), true);
     }
 
     /// Gives `panel` a place of its own, right after the one it's in.
@@ -1431,6 +1559,26 @@ mod layout_tests {
         layout.move_panel(Panel::Search, git, None);
         layout.move_panel(Panel::References, git, None);
         assert!(!layout.places().contains(&search));
+    }
+
+    /// The bar: the places, then History, Debug and Notes; any of them
+    /// moved anywhere, or off it and back.
+    #[test]
+    fn the_bar_s_icons() {
+        use super::{Icon, Place};
+        let mut layout = Layout::default();
+        let places = [Icon::Place(Panel::Workspaces), Icon::Place(Panel::Search), Icon::Place(Panel::Changes)];
+        assert_eq!(layout.bar(), [&places[..], &[Icon::History, Icon::Debug, Icon::Notes]].concat());
+        layout.move_icon(Icon::Notes, Some(places[1]));
+        layout.move_icon(places[0], None);
+        assert_eq!(layout.bar(), [Icon::Notes, places[1], places[2], Icon::History, Icon::Debug, places[0]]);
+        layout.set_on_bar(places[1], false);
+        assert!(layout.panels(Place(Panel::Search)).is_empty() && !layout.bar().contains(&places[1]));
+        assert!(layout.icons().contains(&(places[1], false)));
+        layout.set_on_bar(places[1], true);
+        assert_eq!(layout.bar()[1], places[1]);
+        layout.set_on_bar(Icon::History, false);
+        assert!(!layout.bar().contains(&Icon::History));
     }
 
     #[test]

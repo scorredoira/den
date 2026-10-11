@@ -1,11 +1,12 @@
 //! The activity bar, on the window's left edge: an icon for each group of
 //! the side column and each panel with an icon of its own, which shows it
-//! or, if it's the one showing, closes the column; after them the History
-//! tab's, which opens it or closes it; and at the bottom the
-//! notes, connecting to a server and Settings. Its right-click menu, as Show Panel, lists every panel.
+//! or, if it's the one showing, closes the column; the History tab's, the
+//! debugger's and the notes', which show them or hide them; each where it
+//! was dragged, and on it unless taken off from its right-click menu. At
+//! the bottom, connecting to a server and Settings.
 use super::*;
 use super::layout::{PanelDrag, group_icon, icon, notes_icon, title};
-use crate::config::{Group, Panel, Place};
+use crate::config::{Group, Icon, Panel, Place};
 
 pub(crate) const ACTIVITY_WIDTH: f32 = 48.;
 
@@ -30,11 +31,23 @@ pub(crate) enum Item {
     Place(Place),
     /// The History tab.
     History,
+    /// The debugger's tab, among the terminals'.
+    Debug,
     /// The notes, and whether they have something (a sticky note written on).
     Notes { filled: bool },
 }
 
 impl Item {
+    /// What it is on the bar, apart from what it shows now.
+    fn spot(self) -> Icon {
+        match self {
+            Item::Place(place) => Icon::Place(place.0),
+            Item::History => Icon::History,
+            Item::Debug => Icon::Debug,
+            Item::Notes { .. } => Icon::Notes,
+        }
+    }
+
     /// What a place goes by: the panel it has alone, or else the group its
     /// panels stand for (see `Layout::kind`), or else its first panel.
     fn stands_for(self, cx: &App) -> Result<Panel, Group> {
@@ -53,6 +66,7 @@ impl Item {
         match self {
             Item::Notes { filled } => return notes_icon(filled),
             Item::History => return "icons/history.svg",
+            Item::Debug => return icon(Panel::Console),
             Item::Place(_) => {}
         }
         match self.stands_for(cx) {
@@ -67,6 +81,7 @@ impl Item {
         match self {
             Item::Notes { .. } => return Some(Box::new(ToggleNotes)),
             Item::History => return Some(Box::new(ShowHistory)),
+            Item::Debug => return Some(Box::new(ToggleDebugPanel)),
             Item::Place(_) => {}
         }
         let action: Box<dyn Action> = match self.stands_for(cx) {
@@ -81,8 +96,10 @@ impl Item {
     }
 
     pub(crate) fn title(self, cx: &App) -> &'static str {
-        if self == Item::History {
-            return "History";
+        match self {
+            Item::History => return "History",
+            Item::Debug => return title(Panel::Console),
+            _ => {}
         }
         match self.stands_for(cx) {
             Ok(panel) => title(panel),
@@ -91,14 +108,61 @@ impl Item {
     }
 }
 
-/// An icon of a place being dragged to another spot on the bar.
+/// An icon being dragged to another spot on the bar.
 #[derive(Clone)]
-pub(crate) struct PlaceDrag(pub Place);
+pub(crate) struct IconDrag(pub Icon);
 
-/// Puts `place`'s icon before `before`'s (or last), in every window.
-fn move_place(place: Place, before: Option<Place>, cx: &mut App) {
-    Config::update(cx, |config| config.layout.move_place(place, before));
+/// Puts `icon` before `before` (or last), in every window.
+fn move_icon(icon: Icon, before: Option<Icon>, cx: &mut App) {
+    Config::update(cx, |config| config.layout.move_icon(icon, before));
     cx.refresh_windows();
+}
+
+/// The bar's right-click menu: every panel, checked while it can be seen.
+/// A side panel checked shows in its place, whose icon comes back if it
+/// had gone; unchecked it's hidden, and the place's icon goes with its last
+/// one. The terminals show or hide; History, Debug and Notes are their
+/// icons, on the bar or off it. And Reset Layout.
+fn icons_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let Some(workspace) = crate::app::window_workspace(window, cx) else {
+        return menu.item(menu::reset_layout());
+    };
+    let weak = workspace.downgrade();
+    let layout = &Config::get(cx).layout;
+    let side: Vec<(Panel, bool)> = Group::ALL
+        .into_iter()
+        .flat_map(|group| group.panels())
+        .map(|panel| (*panel, layout.place_of(*panel).is_some_and(|place| layout.panels(place).contains(panel))))
+        .collect();
+    let bar = layout.bar();
+    let menu = side.into_iter().fold(menu, |menu, (panel, on)| {
+        menu.item(
+            menu::item(title(panel), &weak, move |this, _, cx| {
+                if on {
+                    this.remove_panel(panel, cx);
+                } else {
+                    this.show_panel(panel, cx);
+                }
+            })
+            .checked(on),
+        )
+    });
+    let terminals = workspace.read(cx).is_shown(Panel::Terminals, cx);
+    let menu = menu.item(
+        menu::item(title(Panel::Terminals), &weak, |this, window, cx| this.toggle_from_menu(Panel::Terminals, window, cx)).checked(terminals),
+    );
+    [(Icon::Debug, Item::Debug), (Icon::Notes, Item::Notes { filled: false }), (Icon::History, Item::History)]
+        .into_iter()
+        .fold(menu, |menu, (icon, item)| {
+            let on = bar.contains(&icon);
+            menu.item(
+                menu::PopupMenuItem::new(item.title(cx))
+                    .checked(on)
+                    .on_click(move |_, _, cx| Config::update(cx, |config| config.layout.set_on_bar(icon, !on))),
+            )
+        })
+        .separator()
+        .item(menu::reset_layout())
 }
 
 /// An icon: what it shows, whether it shows and its badge.
@@ -106,9 +170,9 @@ pub(crate) type Activity = (Item, bool, Option<Badge>);
 
 pub(crate) type OnActivity = Rc<dyn Fn(Item, &mut Window, &mut App)>;
 
-/// The bar with `icons` at the top and `bottom` above the server's and
-/// Settings'.
-pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: OnActivity, cx: &App) -> AnyElement {
+/// The bar with `icons` at the top, the server's and Settings' at the
+/// bottom.
+pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) -> AnyElement {
     let theme = cx.theme();
     let button = |(item, shown, badge): Activity, cx: &App| {
         let click = click.clone();
@@ -130,19 +194,19 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: O
                         .build(window, cx)
                     })
                     .on_click(move |_, window, cx| click(item, window, cx))
-                    // A place's icon drags up or down the bar.
+                    // An icon drags up or down the bar.
+                    .on_drag(IconDrag(item.spot()), move |_, _, _, cx| {
+                        let title = item.title(cx);
+                        cx.new(|_| TabDragPreview(title.into()))
+                    })
+                    .drag_over::<IconDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
+                    .on_drop(move |drag: &IconDrag, _, cx| {
+                        cx.stop_propagation();
+                        move_icon(drag.0, Some(item.spot()), cx);
+                    })
                     .map(|el| match item {
+                        // A panel dropped on a place's goes into that place.
                         Item::Place(place) => el
-                            .on_drag(PlaceDrag(place), move |_, _, _, cx| {
-                                let title = item.title(cx);
-                                cx.new(|_| TabDragPreview(title.into()))
-                            })
-                            .drag_over::<PlaceDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
-                            .on_drop(move |drag: &PlaceDrag, _, cx| {
-                                cx.stop_propagation();
-                                move_place(drag.0, Some(place), cx);
-                            })
-                            // A panel dropped on it goes into that place.
                             .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
                             // The column stays on what it shows.
                             .on_drop(move |drag: &PanelDrag, _, cx| {
@@ -173,7 +237,7 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: O
             div()
                 .flex_1()
                 .w_full()
-                .on_drop(|drag: &PlaceDrag, _, cx| move_place(drag.0, None, cx))
+                .on_drop(|drag: &IconDrag, _, cx| move_icon(drag.0, None, cx))
                 .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
                 .on_drop(|drag: &PanelDrag, _, cx| {
                     let panel = drag.0;
@@ -188,11 +252,10 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, bottom: Vec<Activity>, click: O
                     cx.refresh_windows();
                 }),
         )
-        .children(bottom.into_iter().map(|icon| button(icon, cx)))
         // At the bottom, as in VS Code: connecting to a server, and Settings.
         .child(bottom_button("activity-remote", "icons/satellite-dish.svg", ADD_SERVER, Box::new(crate::AddServer), cx))
         .child(bottom_button("activity-settings", "icons/settings.svg", "Settings", Box::new(crate::OpenSettings), cx))
-        .context_menu(menu::panels_menu)
+        .context_menu(icons_menu)
         .into_any_element()
 }
 
@@ -258,22 +321,40 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 
 impl Workspace {
     pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let side = self.side_place(cx);
-        let icons: Vec<Activity> = Config::get(cx)
-            .layout
-            .places()
-            .into_iter()
-            .map(|place| (Item::Place(place), side == Some(place), self.badge(place, cx)))
-            .chain([(Item::History, self.history_visible(), None)])
-            .collect();
-        let notes = Item::Notes { filled: self.notes.read(cx).filled() };
-        let notes_shown = self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix));
-        let bottom = vec![(notes, notes_shown, None)];
+        let icons = self.activities(cx);
         let workspace = cx.entity().downgrade();
         let click: OnActivity = Rc::new(move |item, window, cx| {
             workspace.update(cx, |this, cx| this.click_activity(item, window, cx)).ok();
         });
-        activity_bar(icons, bottom, click, cx)
+        activity_bar(icons, click, cx)
+    }
+
+    /// The bar's icons.
+    pub(crate) fn activities(&self, cx: &App) -> Vec<Activity> {
+        Config::get(cx)
+            .layout
+            .bar()
+            .into_iter()
+            .map(|icon| {
+                let (item, badge) = match icon {
+                    Icon::Place(panel) => (Item::Place(Place(panel)), self.badge(Place(panel), cx)),
+                    Icon::History => (Item::History, None),
+                    Icon::Debug => (Item::Debug, None),
+                    Icon::Notes => (Item::Notes { filled: self.notes.read(cx).filled() }, None),
+                };
+                (item, self.shows(item, cx), badge)
+            })
+            .collect()
+    }
+
+    /// Whether what `item` stands for shows.
+    pub(crate) fn shows(&self, item: Item, cx: &App) -> bool {
+        match item {
+            Item::Place(place) => self.side_place(cx) == Some(place),
+            Item::History => self.history_visible(),
+            Item::Debug => self.is_shown(Panel::Console, cx),
+            Item::Notes { .. } => self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix)),
+        }
     }
 
     /// What Show Panel and the activity bar's menu list: every side panel,
@@ -318,7 +399,7 @@ impl Workspace {
     }
 
     /// A place shows, or closes the side column if it's the one showing;
-    /// the History tab and the notes show or hide. The search gets the focus,
+    /// the History tab, the debugger and the notes show or hide. The search gets the focus,
     /// as its key does.
     pub(crate) fn click_activity(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
         match item {
@@ -327,6 +408,7 @@ impl Workspace {
             }
             Item::Place(place) => self.click_place(place, cx),
             Item::History => self.toggle_history(window, cx),
+            Item::Debug => self.toggle_panel(Panel::Console, cx),
             Item::Notes { .. } => self.toggle_notes(&ToggleNotes, window, cx),
         }
     }
