@@ -460,8 +460,9 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
-    /// (den) A buffer row to center once laid out, see [`Self::center_row`].
-    pub(crate) center_row: Option<usize>,
+    /// (den) A buffer row to bring into view once laid out, see
+    /// [`Self::reveal_row`].
+    pub(crate) reveal: Option<Reveal>,
     /// (den) How each line looks, by buffer line; see [`LineStyle`].
     pub(crate) line_styles: Vec<LineStyle>,
     /// (den) Marks in the scrollbar's track; see [`ScrollbarMark`].
@@ -813,7 +814,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
-            center_row: None,
+            reveal: None,
             line_styles: Vec::new(),
             scrollbar_marks: Vec::new(),
             gutter_column: false,
@@ -3046,7 +3047,15 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// first one: a freshly opened editor is drawn there from its first frame
     /// instead of moving there on a later one.
     pub fn center_row(&mut self, row: usize, cx: &mut Context<Self>) {
-        self.center_row = Some(row);
+        self.reveal_row(row, 0.5, None, cx);
+    }
+
+    /// (den) Scrolls so that buffer `row` is `at` of the way down the
+    /// viewport (0 the top, 0.5 the middle), on the next layout, in rows
+    /// as drawn (wrapped lines take more than one); unless, with `margin`,
+    /// it's that many rows or more inside what shows.
+    pub fn reveal_row(&mut self, row: usize, at: f32, margin: Option<usize>, cx: &mut Context<Self>) {
+        self.reveal = Some(Reveal { row, at, margin });
         cx.notify();
     }
 
@@ -10472,4 +10481,13 @@ impl InputBaseState<crate::input::EditorMode> {
         self.mode.set_smart_indent(smart_indent);
         cx.notify();
     }
+}
+
+/// (den) A row to bring into view on the next layout, see
+/// [`InputState::reveal_row`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Reveal {
+    pub row: usize,
+    pub at: f32,
+    pub margin: Option<usize>,
 }

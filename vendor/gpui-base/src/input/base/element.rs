@@ -2717,21 +2717,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
         }
 
         let line_height = window.line_height();
-        // (den) A row to center, now that the size is known.
-        if self.state.read(cx).center_row.is_some() {
+        // (den) A row to bring into view, now that the size is known.
+        if self.state.read(cx).reveal.is_some() {
             let height = bounds.size.height;
             self.state.update(cx, |state, _| {
-                let Some(row) = state.center_row.take() else {
+                let Some(reveal) = state.reveal.take() else {
                     return;
                 };
                 let display_row = state
                     .display_map
-                    .buffer_pos_to_display_pos(crate::input::BufferPoint::new(row, 0))
+                    .buffer_pos_to_display_pos(crate::input::BufferPoint::new(reveal.row, 0))
                     .row as f32;
                 let rows = height / line_height;
+                let offset = state.scroll_handle.offset();
+                let x = state.deferred_scroll_offset.map_or(offset.x, |offset| offset.x);
+                if let Some(margin) = reveal.margin {
+                    // A short view keeps a third of it as margin at most;
+                    // the edge rows, maybe half shown, count as outside.
+                    let margin = (margin as f32).min(((rows - 1.) / 3.).floor().max(1.));
+                    let top = -offset.y / line_height;
+                    if rows > 2. && display_row >= top + margin && display_row + 1. + margin <= top + rows {
+                        state.deferred_scroll_offset = Some(point(x, offset.y));
+                        return;
+                    }
+                }
                 let last_top = (state.display_map.wrap_row_count() as f32 - rows + 1.).max(0.);
-                let top = (display_row - (rows - 1.) / 2.).clamp(0., last_top);
-                let x = state.deferred_scroll_offset.map_or(state.scroll_handle.offset().x, |offset| offset.x);
+                let top = (display_row - rows * reveal.at).round().clamp(0., last_top);
                 state.deferred_scroll_offset = Some(point(x, -(line_height * top)));
             });
         }

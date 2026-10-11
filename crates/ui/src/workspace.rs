@@ -1709,14 +1709,18 @@ fn symbols_of(response: anyhow::Result<Response>, no_server: &'static str) -> Re
     }
 }
 
-/// After a jump: if `line` wasn't visible, scrolls to center it, like VS Code
-/// (the editor alone only brings it in at the edge). With `always`, it centers
-/// even if it's visible: a freshly loaded file already scrolled the cursor in
-/// at the edge on its own, so being visible there doesn't mean it was. If not
-/// laid out yet, it's centered on its first layout.
+/// Where a jump leaves its line: a third of the way down, with what leads
+/// to it above and room for what follows.
+const JUMP_AT: f32 = 1. / 3.;
+
+/// After a jump: if `line` wasn't well inside the view, scrolls to put it
+/// at `JUMP_AT`. With `always`, it moves even if it's visible: a freshly
+/// loaded file already scrolled the cursor in at the edge on its own, so
+/// being visible there doesn't mean it was. Done on the editor's next
+/// layout, in rows as drawn: wrapped lines above it take more than one.
 fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, cx: &mut App) {
     // Lines at the edge may be half visible: they count as outside.
-    reveal_in_center(editor, line, (!always).then_some(1), cx);
+    editor.update(cx, |state, cx| state.reveal_row(line as usize, JUMP_AT, (!always).then_some(1), cx));
 }
 
 /// How far inside the view a line where the debugger stopped is left
@@ -1725,29 +1729,10 @@ fn reveal_centered(editor: &Entity<EditorState>, line: u32, always: bool, cx: &m
 /// revealLineInCenterIfOutsideViewport, with a margin).
 const STOP_MARGIN: usize = 5;
 
-/// Scrolls `line` to the middle of the view, unless it's `margin` lines or
+/// Scrolls `line` to the middle of the view, unless it's `margin` rows or
 /// more inside it (None: always).
 fn reveal_in_center(editor: &Entity<EditorState>, line: u32, margin: Option<usize>, cx: &mut App) {
-    let state = editor.read(cx);
-    let (Some(visible), Some(line_height)) = (state.visible_row_range(), state.line_height()) else {
-        // Not laid out yet (a freshly opened tab): it lays itself out
-        // there, with no frame anywhere else first.
-        editor.update(cx, |state, cx| state.center_row(line as usize, cx));
-        return;
-    };
-    let line = line as usize;
-    if let Some(margin) = margin {
-        // a short view keeps a third of it as margin at most, and the edge
-        // lines, which may be half visible, count as outside
-        let margin = margin.min((visible.len().saturating_sub(1) / 3).max(1));
-        if visible.len() > 2 && line >= visible.start + margin && line + margin < visible.end {
-            return;
-        }
-    }
-    let rows = visible.len().max(1) as f32;
-    let top = (line as f32 - (rows - 1.) / 2.).max(0.);
-    let x = state.scroll_offset().x;
-    editor.update(cx, |state, cx| state.set_scroll_offset(point(x, -(line_height * top)), cx));
+    editor.update(cx, |state, cx| state.reveal_row(line as usize, 0.5, margin, cx));
 }
 
 /// Whether `editor` has text selected.
