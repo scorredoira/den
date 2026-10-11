@@ -424,12 +424,25 @@ fn binary(name: &str) -> Option<PathBuf> {
     found
 }
 
-/// Share lookup directories with the environment inherited by servers.
+/// PATH as the user's shell sets it, asked once: an app opened from the
+/// Finder has a minimal one, and servers need what the terminal finds
+/// (gopls runs `go`, which is often only in the rc file's PATH).
+static SHELL_PATH: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
+    #[cfg(unix)]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        crate::platform::shell_path(&shell).map(|path| std::env::split_paths(&path).collect()).unwrap_or_default()
+    }
+    #[cfg(windows)]
+    Vec::new()
+});
+
+/// Share lookup directories with the environment inherited by servers:
+/// the user's shell's first, then the agent's own and the usual ones.
 fn binary_dirs() -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect())
-        .unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = SHELL_PATH.clone();
+    dirs.extend(std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect::<Vec<_>>()).unwrap_or_default());
     dirs.extend(
         [".cargo/bin", "go/bin", ".local/bin", ".bun/bin", ".npm-global/bin"]
             .into_iter()

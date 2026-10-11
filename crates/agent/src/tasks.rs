@@ -238,7 +238,7 @@ fn run_script(repo: &Path, script: &Path, args: &[&str]) -> Result<std::process:
         command
     } else {
         let mut command = std::process::Command::new(script);
-        if let Some(path) = shell_path(&shell) {
+        if let Some(path) = crate::platform::shell_path(&shell) {
             command.env("PATH", path);
         }
         command
@@ -254,24 +254,6 @@ fn run_script(repo: &Path, script: &Path, args: &[&str]) -> Result<std::process:
 fn is_posix(shell: &str) -> bool {
     let name = Path::new(shell).file_name().and_then(|name| name.to_str()).unwrap_or_default();
     ["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash"].contains(&name)
-}
-
-/// PATH as the user's interactive login `shell` sets it, asked of `env`
-/// (an external program, so any shell runs it the same way).
-#[cfg(unix)]
-fn shell_path(shell: &str) -> Option<String> {
-    let output = std::process::Command::new(shell)
-        .args(["-l", "-i", "-c", "/usr/bin/env"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    // The rc files may print things of their own first.
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .rev()
-        .find_map(|line| line.strip_prefix("PATH="))
-        .map(str::to_string)
 }
 
 fn output_log(output: &std::process::Output) -> String {
@@ -401,7 +383,7 @@ mod tests {
     fn tells_sh_shells_from_others() {
         assert!(is_posix("/bin/zsh") && is_posix("/usr/local/bin/bash") && is_posix("sh"));
         assert!(!is_posix("/opt/homebrew/bin/fish") && !is_posix("/usr/bin/nu"));
-        assert!(shell_path("/bin/sh").is_some_and(|path| !path.is_empty()));
+        assert!(crate::platform::shell_path("/bin/sh").is_some_and(|path| !path.is_empty()));
     }
 
     #[test]

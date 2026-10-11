@@ -427,6 +427,33 @@ pub fn is_executable_script(path: &Path) -> bool {
     path.is_file()
 }
 
+/// PATH as the user's interactive login `shell` sets it, asked of `env`
+/// (an external program, so any shell runs it the same way). `None` if the
+/// shell doesn't answer within a few seconds: an rc file may hang.
+#[cfg(unix)]
+pub fn shell_path(shell: &str) -> Option<String> {
+    use std::io::Read as _;
+    let mut child = std::process::Command::new(shell)
+        .args(["-l", "-i", "-c", "/usr/bin/env"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        let _ = tx.send(out);
+    });
+    let out = rx.recv_timeout(std::time::Duration::from_secs(10)).ok();
+    let _ = child.kill();
+    let _ = child.wait();
+    // The rc files may print things of their own first.
+    out?.lines().rev().find_map(|line| line.strip_prefix("PATH=")).map(str::to_string)
+}
+
 #[cfg(unix)]
 pub fn default_shell() -> portable_pty::CommandBuilder { portable_pty::CommandBuilder::new_default_prog() }
 
