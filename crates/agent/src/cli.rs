@@ -16,7 +16,8 @@ Usage:
                       window of its own, a plain editor: the code, and
                       the files and the search from its bar; over SSH,
                       in the app connected to this server. In den's
-                      terminals, in the terminal's window. What's open
+                      terminals, in the terminal's window if it's
+                      already one of its workspaces. What's open
                       in a window of its own isn't remembered unless
                       kept.
   den -n <path>       in a window of its own, also in den's terminals.
@@ -165,7 +166,8 @@ pub fn invoked_as_den() -> bool {
 }
 
 /// `den <path>`: in den's terminals, the window showing the terminal opens
-/// it; outside them (or if that window doesn't answer), a window of its
+/// it if it's already one of its workspaces (else the app opens a window
+/// of its own); outside them (or if that window doesn't answer), a window of its
 /// own, as `den -n`, so that it isn't remembered unless kept.
 pub fn open(arg: &str) -> Result<()> {
     let path = std::path::absolute(arg)?;

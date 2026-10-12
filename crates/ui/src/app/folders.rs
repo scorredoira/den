@@ -21,6 +21,12 @@ impl Den {
         cx: &mut Context<Self>,
     ) {
         let path = self.workspace_containing(&host, &root);
+        // Not a workspace yet: a window of its own, so none is added.
+        if self.server.is_none() && self.client(&host).is_some() && self.task(&TaskKey { host: host.clone(), path: path.clone() }).is_none() {
+            let destination = self.host(&host).and_then(|host| host.destination.clone());
+            cx.defer(move |cx| open_new_window(host, destination, root, file, cx));
+            return;
+        }
         self.open_file = file;
         if self.client(&host).is_none() {
             self.pending_last = Some(TaskKey { host, path });
