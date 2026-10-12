@@ -871,6 +871,10 @@ pub struct Config {
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,
+    /// The Outline lists the symbols in the order of the file, rather than
+    /// by their group.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub outline_file_order: bool,
     /// Diffs side by side, in one column, or side by side when there's
     /// room; chosen in a diff's menu or in Settings.
     #[serde(deserialize_with = "lenient")]

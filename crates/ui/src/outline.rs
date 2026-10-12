@@ -2,7 +2,9 @@
 //! and functions of the file in front, from its language server (in
 //! Markdown, its headings), each under what it's a member of. Never a field,
 //! nor anything inside a function or a variable: no locals or closures. The
-//! icons at the top show or hide each of the four groups. The
+//! icons at the top show or hide each of the four groups. They're listed by
+//! group, in the icons' order, and each group in the file's; or, chosen in
+//! its right-click, all in the file's order. The
 //! workspace keeps it on the file in front (see `Workspace::sync_outline`);
 //! the symbol the cursor is in is highlighted, and a click goes to one. Those
 //! with members (a class, an `impl`…) collapse with their chevron.
@@ -186,6 +188,12 @@ impl OutlinePanel {
         self.rebuild(cx);
     }
 
+    /// Lists the symbols in the file's order, or by group.
+    fn set_file_order(&mut self, file_order: bool, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.outline_file_order = file_order);
+        self.rebuild(cx);
+    }
+
     /// Shows the symbols of `group`, or hides them.
     fn toggle_group(&mut self, group: Group, cx: &mut Context<Self>) {
         Config::update(cx, |config| {
@@ -206,7 +214,10 @@ impl OutlinePanel {
         let State::Ready(symbols) = &self.state else {
             return;
         };
-        let keys = collapse.then(|| rows(symbols, &HashSet::new(), &Config::get(cx).outline_hidden).into_iter().filter(|row| row.parent).map(|row| row.key));
+        let config = Config::get(cx);
+        let keys = collapse.then(|| {
+            rows(symbols, &HashSet::new(), &config.outline_hidden, config.outline_file_order).into_iter().filter(|row| row.parent).map(|row| row.key)
+        });
         self.collapsed.insert(path, keys.into_iter().flatten().collect());
         self.rebuild(cx);
     }
@@ -215,7 +226,8 @@ impl OutlinePanel {
         self.rows = match &self.state {
             State::Ready(symbols) => {
                 let collapsed = self.path.as_ref().and_then(|path| self.collapsed.get(path)).cloned().unwrap_or_default();
-                rows(symbols, &collapsed, &Config::get(cx).outline_hidden).into()
+                let config = Config::get(cx);
+                rows(symbols, &collapsed, &config.outline_hidden, config.outline_file_order).into()
             }
             _ => Rc::new([]),
         };
@@ -226,11 +238,19 @@ impl OutlinePanel {
     /// The symbol the cursor is in, kept in sight.
     fn set_current(&mut self, cx: &mut Context<Self>) {
         let current = match (&self.state, self.cursor) {
-            (State::Ready(symbols), Some(line)) => symbols.iter().rposition(|symbol| symbol.line <= line),
+            (State::Ready(symbols), Some(line)) => symbols.iter().rposition(|symbol| symbol.line <= line).and_then(|mut symbol| {
+                // Not a row (a field, or inside a collapsed symbol): the one
+                // it's in.
+                loop {
+                    if let Some(row) = self.rows.iter().position(|row| row.symbol == symbol) {
+                        return Some(row);
+                    }
+                    let depth = symbols[symbol].depth;
+                    symbol = symbols[..symbol].iter().rposition(|outer| outer.depth < depth)?;
+                }
+            }),
             _ => None,
         };
-        // Inside a collapsed symbol, that one: the last row before it.
-        let current = current.and_then(|symbol| self.rows.iter().rposition(|row| row.symbol <= symbol));
         if current != self.current
             && let Some(ix) = current
         {
@@ -241,11 +261,41 @@ impl OutlinePanel {
     }
 }
 
-/// The rows of `symbols` (in the order of the file, each after the one it's
-/// in): no fields, nor those of a group in `hidden`, nor those inside the
-/// symbols whose key is in `collapsed`. A symbol inside one of a group is of
-/// that group: a class's methods come and go with it.
-fn rows(symbols: &[LspSymbol], collapsed: &HashSet<Rc<str>>, hidden: &[Group]) -> Vec<Row> {
+/// The order of `symbols` (in the file's, each after the one it's in) by
+/// group: at each level the constants, then the interfaces, the classes, the
+/// functions and the rest, each in the file's order and with what's in it.
+fn by_group(symbols: &[LspSymbol]) -> Vec<usize> {
+    fn level(symbols: &[LspSymbol], range: std::ops::Range<usize>, order: &mut Vec<usize>) {
+        let mut subtrees = Vec::new();
+        let mut start = range.start;
+        while start < range.end {
+            let depth = symbols[start].depth;
+            let end = (start + 1..range.end).find(|ix| symbols[*ix].depth <= depth).unwrap_or(range.end);
+            subtrees.push(start..end);
+            start = end;
+        }
+        let rank = |kind| Group::of(kind).map_or(Group::ALL.len(), |group| Group::ALL.iter().position(|other| *other == group).unwrap_or(0));
+        subtrees.sort_by_key(|subtree| rank(symbols[subtree.start].kind));
+        for subtree in subtrees {
+            order.push(subtree.start);
+            level(symbols, subtree.start + 1..subtree.end, order);
+        }
+    }
+    let mut order = Vec::with_capacity(symbols.len());
+    level(symbols, 0..symbols.len(), &mut order);
+    order
+}
+
+/// The rows of `symbols` (by group, or in the order of the file with
+/// `file_order`; each after the one it's in): no fields, nor those of a group
+/// in `hidden`, nor those inside the symbols whose key is in `collapsed`. A
+/// symbol inside one of a group is of that group: a class's methods come and
+/// go with it.
+fn rows(symbols: &[LspSymbol], collapsed: &HashSet<Rc<str>>, hidden: &[Group], file_order: bool) -> Vec<Row> {
+    let order = match file_order {
+        true => (0..symbols.len()).collect(),
+        false => by_group(symbols),
+    };
     // The symbols of the outline, with their keys.
     let mut shown: Vec<(usize, Rc<str>)> = Vec::new();
     // The names and groups of the symbols the next one may be in, outermost
@@ -253,7 +303,8 @@ fn rows(symbols: &[LspSymbol], collapsed: &HashSet<Rc<str>>, hidden: &[Group]) -
     let mut path: Vec<(&str, Option<Group>)> = Vec::new();
     // Inside a hidden symbol of this depth: hidden.
     let mut hidden_below: Option<u32> = None;
-    for (ix, symbol) in symbols.iter().enumerate() {
+    for ix in order {
+        let symbol = &symbols[ix];
         path.truncate(symbol.depth as usize);
         let group = path.iter().rev().find_map(|(_, group)| *group).or(Group::of(symbol.kind));
         path.push((&symbol.name, group));
@@ -387,7 +438,20 @@ impl Render for OutlinePanel {
                         outline.update(cx, |outline, cx| outline.collapse_all(collapse, cx)).ok();
                     })
                 };
-                menu.item(item("Collapse All", true)).item(item("Expand All", false)).separator().panel_items(crate::menu::hide_panel(), window, cx)
+                let file_order = Config::get(cx).outline_file_order;
+                let order = |label: &'static str, file: bool| {
+                    let outline = outline.clone();
+                    PopupMenuItem::new(label).checked(file_order == file).on_click(move |_, _, cx| {
+                        outline.update(cx, |outline, cx| outline.set_file_order(file, cx)).ok();
+                    })
+                };
+                menu.item(order("Sort by Kind", false))
+                    .item(order("Sort by Position", true))
+                    .separator()
+                    .item(item("Collapse All", true))
+                    .item(item("Expand All", false))
+                    .separator()
+                    .panel_items(crate::menu::hide_panel(), window, cx)
             }
         })
         .into_any_element()
@@ -407,7 +471,7 @@ mod tests {
     }
 
     fn keys(symbols: &[LspSymbol], hidden: &[Group]) -> Vec<String> {
-        rows(symbols, &HashSet::new(), hidden).into_iter().map(|row| row.key.replace('\u{1f}', "/")).collect()
+        rows(symbols, &HashSet::new(), hidden, true).into_iter().map(|row| row.key.replace('\u{1f}', "/")).collect()
     }
 
     #[test]
@@ -429,7 +493,7 @@ mod tests {
         // A method goes with its class, not with the functions.
         assert_eq!(keys(&symbols, &[Group::Functions]), ["LIMIT", "TimedWindow", "Sale", "Sale/cancel"]);
         // An interface with only fields has nothing to collapse.
-        let rows = rows(&symbols, &HashSet::new(), &[]);
+        let rows = rows(&symbols, &HashSet::new(), &[], true);
         assert!(!rows[1].parent);
     }
 
@@ -445,7 +509,7 @@ mod tests {
         ];
         let shown = |collapsed: &[&str]| {
             let collapsed: HashSet<Rc<str>> = collapsed.iter().map(|key| Rc::from(key.replace('/', "\u{1f}"))).collect();
-            rows(&symbols, &collapsed, &[])
+            rows(&symbols, &collapsed, &[], true)
                 .into_iter()
                 .map(|row| format!("{}{}", if row.collapsed { "+" } else { "" }, &*row.key).replace('\u{1f}', "/"))
                 .collect::<Vec<_>>()
@@ -455,5 +519,23 @@ mod tests {
         assert_eq!(shown(&["Sale"]), ["+Sale", "Sale", "main"]);
         // Without members, there's nothing to collapse.
         assert_eq!(shown(&["main"]), shown(&[]));
+    }
+
+    #[test]
+    fn by_kind_each_group_in_the_file_s_order() {
+        let symbols = [
+            symbol("scl", 13, 0),
+            symbol("DialogType", 11, 0),
+            symbol("open", 12, 0),
+            symbol("AUTO", 14, 0),
+            symbol("Sale", 5, 0),
+            symbol("total", 6, 1),
+            symbol("Line", 5, 1),
+            symbol("cancel", 6, 1),
+            symbol("Refs", 11, 0),
+        ];
+        let by_kind: Vec<String> = rows(&symbols, &HashSet::new(), &[], false).into_iter().map(|row| row.key.replace('\u{1f}', "/")).collect();
+        assert_eq!(by_kind, ["scl", "AUTO", "DialogType", "Refs", "Sale", "Sale/total", "Sale/Line", "Sale/cancel", "open"]);
+        assert_eq!(keys(&symbols, &[])[..3], ["scl", "DialogType", "open"]);
     }
 }
