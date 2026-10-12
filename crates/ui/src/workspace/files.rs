@@ -94,6 +94,7 @@ impl Workspace {
             shown: 0,
             view: false,
             doc: false,
+            external: None,
             text: None,
             stand_in: None,
             _subscriptions: subscriptions,
@@ -268,6 +269,7 @@ impl Workspace {
             return;
         }
         self.revision += 1;
+        self.touch_edit(ix);
         let path = self.tabs[ix].path.clone();
         let text = editor.read(cx).value();
         if editor.read(cx).focus_handle(cx).is_focused(window) {
@@ -448,6 +450,10 @@ impl Workspace {
 
     /// Writes the tab to disk; the result says whether it succeeded.
     pub(super) fn save_tab(&mut self, ix: usize, cx: &mut Context<Self>) -> Task<bool> {
+        if self.tabs[ix].external.is_some() {
+            self.save_edit(ix, cx);
+            return Task::ready(true);
+        }
         let tab = &self.tabs[ix];
         // Image tabs have an empty text editor; saving it would erase the image.
         if !matches!(tab.content, Content::Ready) || !tab.is_file() || tab.image.is_some() {

@@ -53,6 +53,18 @@ keyboard stays in the terminal unless --focus.
   den diff [<file>]   shows the uncommitted changes of the file, or the
                       list of changed files.
   den doc [<title>]   shows the Markdown read from stdin in a tab.
+  den edit [--idle <seconds>] [<title>]
+                      opens the text read from stdin in a tab with no
+                      file behind it, for a program to edit text it
+                      keeps (cripta: encrypted). It prints `opened`,
+                      then for each save `saved <bytes>` and the text;
+                      if stdin had a NUL byte after the text, the
+                      program then answers each save with a line on
+                      stdin, `ok` or why it couldn't. It ends when the
+                      tab closes: with --idle, after that long without
+                      edits and nothing unsaved, printing `idle`. The
+                      text isn't written to disk nor sent to a
+                      language server.
   den selection       prints the file and range selected in the editor
                       (path:line:col-line:col), then the selected text.
   den tabs            lists the files open in the editor, the active one
@@ -406,3 +418,107 @@ fn print_text(text: &str) {
         println!("{text}");
     }
 }
+
+/// `den edit`: see `USAGE`, and the app's `workspace/edits.rs`.
+pub fn edit(args: &[String]) -> Result<()> {
+    use std::io::{BufRead as _, Read as _, Write as _};
+
+    let (idle, title) = match args {
+        [flag, seconds, title @ ..] if flag == "--idle" => (seconds.clone(), title.join(" ")),
+        title => (String::new(), title.join(" ")),
+    };
+    let title = if title.is_empty() { "Untitled".to_string() } else { title };
+    let opened = std::sync::Arc::new(std::sync::OnceLock::new());
+    close_edit_on_signal(opened.clone());
+    let stdin = std::io::stdin();
+    if std::io::IsTerminal::is_terminal(&stdin) {
+        bail!("pipe the text into it: echo hello | den edit");
+    }
+    let mut input = stdin.lock();
+    let mut text = Vec::new();
+    let answers = input.read_until(0, &mut text)? > 0 && text.last() == Some(&0);
+    if answers {
+        text.pop();
+    } else {
+        input.read_to_end(&mut text)?;
+    }
+    let text = String::from_utf8(text).context("the text isn't UTF-8")?;
+
+    let ask = |args: Vec<String>| -> Result<String> {
+        let response = smol::block_on(connect()?.request(Request::Command {
+            args,
+            cwd: std::env::current_dir()?,
+            term: own_term(),
+        }))?;
+        match response {
+            Response::Text(text) => Ok(text),
+            other => bail!("unexpected response from the agent: {other:?}"),
+        }
+    };
+    let id = ask(vec!["edit".into(), title, idle, text])?;
+    opened.set(id.clone()).ok();
+
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "opened")?;
+    stdout.flush()?;
+    loop {
+        let event = ask(vec!["edit-next".into(), id.clone()])?;
+        let Some(saved) = event.strip_prefix("saved\n") else {
+            if event == "idle" {
+                writeln!(stdout, "idle")?;
+            }
+            return Ok(());
+        };
+        writeln!(stdout, "saved {}", saved.len())?;
+        stdout.write_all(saved.as_bytes())?;
+        stdout.flush()?;
+        let mut error = String::new();
+        if answers {
+            let mut line = String::new();
+            if input.read_line(&mut line)? == 0 {
+                ask(vec!["edit-close".into(), id])?;
+                return Ok(());
+            }
+            let line = line.trim_end();
+            if line != "ok" {
+                error = line.to_string();
+            }
+        }
+        ask(vec!["edit-saved".into(), id.clone(), error])?;
+    }
+}
+
+/// Interrupted, the tab (`opened`, once it is) closes: its saves would
+/// have nowhere to go. Called before any other thread starts.
+#[cfg(unix)]
+fn close_edit_on_signal(opened: std::sync::Arc<std::sync::OnceLock<String>>) {
+    let signals = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+    // SAFETY: a signal set built on the stack and masked for this thread,
+    // before any other starts, so they all inherit it and only `sigwait`
+    // below takes these signals.
+    let set = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for signal in signals {
+            libc::sigaddset(&mut set, signal);
+        }
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        set
+    };
+    std::thread::spawn(move || {
+        let mut signal = 0;
+        // SAFETY: `set` is a valid signal set, blocked in every thread.
+        unsafe { libc::sigwait(&set, &mut signal) };
+        if let Some(id) = opened.get()
+            && let Ok(client) = connect()
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            let args = vec!["edit-close".into(), id.clone()];
+            smol::block_on(client.request(Request::Command { args, cwd, term: own_term() })).ok();
+        }
+        std::process::exit(128 + signal);
+    });
+}
+
+#[cfg(not(unix))]
+fn close_edit_on_signal(_: std::sync::Arc<std::sync::OnceLock<String>>) {}

@@ -52,7 +52,7 @@ impl Workspace {
         self.mark_shown(ix);
         self.message = None;
         let tab = &self.tabs[ix];
-        let (path, doc) = (tab.path.clone(), tab.doc);
+        let (path, doc) = (tab.path.clone(), tab.doc || tab.is_edit());
         // The history rereads what changed while it was out of sight.
         if matches!(tab.page, Some(pages::Page::History)) {
             self.history.update(cx, |history, cx| history.shown(cx));
@@ -159,9 +159,10 @@ impl Workspace {
         if tab.is_file()
             && let Some(view) = other_view
         {
-            let (saved, dirty, blame) = (tab.saved.clone(), tab.dirty, tab.blame.clone());
+            let (saved, dirty, blame, external) = (tab.saved.clone(), tab.dirty, tab.blame.clone(), tab.external.take());
             let view = &mut self.tabs[view];
             view.view = false;
+            view.external = external;
             view.saved = saved;
             view.dirty = dirty;
             view.blame = blame;

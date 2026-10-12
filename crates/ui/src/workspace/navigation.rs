@@ -91,6 +91,9 @@ impl Workspace {
         let Some(ix) = self.active.filter(|_| self.symbols.is_none()) else {
             return;
         };
+        if self.tabs[ix].is_edit() {
+            return;
+        }
         let tab = &mut self.tabs[ix];
         if !matches!(tab.content, Content::Ready) || tab.diff.is_some() || tab.image.is_some() {
             return;
@@ -143,7 +146,8 @@ impl Workspace {
             self.outline.update(cx, |outline, cx| outline.clear(cx));
             return;
         };
-        let (path, editor, markdown, doc) = (tab.path.clone(), tab.editor.clone(), tab.markdown.is_some(), tab.doc);
+        let (path, editor, markdown) = (tab.path.clone(), tab.editor.clone(), tab.markdown.is_some());
+        let doc = tab.doc || tab.is_edit();
         let state = editor.read(cx);
         let (cursor, length) = (state.cursor_position().line, state.text().len());
         let key = (editor.entity_id(), self.revision, length);
@@ -291,7 +295,7 @@ impl Workspace {
     /// file, if it's a text tab (not a diff).
     pub fn completion_target(&self, editor: &Entity<EditorState>) -> Option<(Arc<Client>, PathBuf, PathBuf)> {
         let tab = self.tabs.iter().find(|tab| &tab.editor == editor)?;
-        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() {
+        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() || tab.is_edit() {
             return None;
         }
         Some((self.client.clone()?, self.root.clone(), tab.path.clone()))
@@ -368,7 +372,7 @@ impl Workspace {
             return;
         };
         let tab = &self.tabs[ix];
-        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() {
+        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() || tab.is_edit() {
             return;
         }
         let Some(client) = self.client.clone() else {

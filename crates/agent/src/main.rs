@@ -47,6 +47,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("term") => cli::term(&args[1..]),
+        Some("edit") => cli::edit(&args[1..]),
         // the agent isn't needed: join runs in the terminal, as its programs do
         Some("debug") if args.get(1).is_some_and(|arg| arg == "join") => join::run(&args[2..]),
         Some("chrome") => chrome::run(&args[1..]),

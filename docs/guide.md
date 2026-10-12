@@ -21,6 +21,7 @@ In Den's terminals, more commands act on the workspace of the terminal they run 
 | `den show <file>:<line>` | Opens the file at that line; `<file>:10-20` or `<file>:10:5-12:3` selects that range. The keyboard stays in the terminal unless `--focus`. |
 | `den diff [<file>]` | Shows the uncommitted changes. |
 | `den doc [<title>]` | Shows the Markdown read from stdin in a tab. |
+| `den edit [--idle <seconds>] [<title>]` | Edits the text read from stdin in a tab with no file behind it, for a program that keeps it (cripta keeps it encrypted): each save prints `saved <bytes>` and the text, and the program can answer each one. The text isn't written to disk nor sent to a language server. See `den --help`. |
 | `den selection`, `den tabs` | Print what's selected in the editor, and the open files. |
 | `den message <text>` | Shows a message in the status bar. |
 | `den notes [add \| set] [<text>]` | Prints the workspace's notes, adds a line to them or replaces them (the text, or stdin). |

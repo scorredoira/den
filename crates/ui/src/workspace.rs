@@ -61,12 +61,16 @@ mod commands;
 mod pages;
 mod debugging;
 mod diffs;
+mod edits;
+pub(crate) use edits::EditEvent;
 mod files;
 mod navigation;
 mod render;
 mod tabs;
 #[cfg(test)]
 pub(crate) mod autosave_tests;
+#[cfg(test)]
+mod edit_tests;
 #[cfg(test)]
 mod layout_tests;
 #[cfg(test)]
@@ -184,6 +188,8 @@ struct FileTab {
     /// A page of the app's own (the shortcuts guide), with no file behind
     /// it: read-only, never saved, not reopened with the session.
     doc: bool,
+    /// Text of a `den edit`, with no file behind it: saving hands it back.
+    external: Option<edits::External>,
     /// The text as of its last change, once read: what an edit changed
     /// moves the breakpoints.
     text: Option<SharedString>,
@@ -398,6 +404,8 @@ pub struct Workspace {
     /// The list was asked for once already: the first Cmd-P finds it ready.
     files_asked: bool,
     tabs: Vec<FileTab>,
+    /// What each `den edit` hears from its tab.
+    edits: HashMap<u64, smol::channel::Receiver<edits::EditEvent>>,
     /// The active tab of the focused group (the one keys and commands act on).
     active: Option<usize>,
     /// The code area split in two groups of tabs, and which one has the focus.
@@ -617,6 +625,7 @@ impl Workspace {
             files: Arc::default(),
             files_asked: false,
             tabs: Vec::new(),
+            edits: HashMap::new(),
             active: None,
             editor_split: None,
             editor_drop: None,
@@ -752,7 +761,7 @@ impl Workspace {
             ..Session::default()
         };
         // A page is a doc that opens again; the shortcuts guide isn't.
-        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && (!tab.doc || tab.page.is_some())) {
+        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.is_edit() && (!tab.doc || tab.page.is_some())) {
             if self.active == Some(ix) {
                 session.active = Some(session.tabs.len());
             }

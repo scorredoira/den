@@ -9,7 +9,11 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::*;
-use crate::{debug::WaitFor, splits::Axis, workspace::normalize};
+use crate::{
+    debug::WaitFor,
+    splits::Axis,
+    workspace::{EditEvent, normalize},
+};
 
 type Answer = Result<String, String>;
 
@@ -175,6 +179,42 @@ impl Den {
                 } else {
                     Err(format!("terminal {term} isn't in this workspace"))
                 }
+            }),
+            // `den edit`: see `workspace/edits.rs`.
+            ["edit", title, idle, text] => here(self, true, window, cx).and_then(|(_, workspace)| {
+                let idle = match *idle {
+                    "" => None,
+                    idle => Some(Duration::from_secs(idle.parse().map_err(|_| format!("{idle}: not a number of seconds"))?)),
+                };
+                let id = workspace.update(cx, |workspace, cx| workspace.open_edit(title, idle, text.to_string(), window, cx));
+                Ok(id.to_string())
+            }),
+            ["edit-next", id] => match here(self, false, window, cx).and_then(|(_, workspace)| {
+                let id = parse_edit(id)?;
+                workspace.update(cx, |workspace, _| workspace.edit_events(id)).map(|events| (workspace, id, events))
+            }) {
+                Ok((workspace, id, events)) => {
+                    let workspace = workspace.downgrade();
+                    return cx.spawn(async move |_, cx| match events.recv().await {
+                        Ok(EditEvent::Saved(text)) => Ok(format!("saved\n{text}")),
+                        Ok(EditEvent::Idle) => Ok("idle".into()),
+                        Err(_) => {
+                            workspace.update(cx, |workspace, _| workspace.forget_edit(id)).ok();
+                            Ok("closed".into())
+                        }
+                    });
+                }
+                Err(err) => Err(err),
+            },
+            ["edit-saved", id, error] => here(self, false, window, cx).and_then(|(_, workspace)| {
+                let id = parse_edit(id)?;
+                let error = (!error.is_empty()).then(|| error.to_string());
+                workspace.update(cx, |workspace, cx| workspace.edit_saved(id, error, cx)).map(|()| String::new())
+            }),
+            ["edit-close", id] => here(self, false, window, cx).and_then(|(_, workspace)| {
+                let id = parse_edit(id)?;
+                workspace.update(cx, |workspace, cx| workspace.close_edit(id, window, cx));
+                Ok(String::new())
             }),
             // Claude Code's tools, from the agent's IDE side.
             ["ide", tool, params] => match here(self, *tool == "openFile", window, cx) {
@@ -367,6 +407,10 @@ const DEBUG_WAIT: Duration = Duration::from_secs(30);
 
 /// `den debug …`: drives the workspace's debugger like the keys and the panel
 /// do, and answers with its state as JSON (`Debugger::state`).
+fn parse_edit(id: &str) -> Result<u64, String> {
+    id.parse().map_err(|_| format!("{id}: not an edit id"))
+}
+
 fn debug_command(
     args: &[&str],
     cwd: &Path,
