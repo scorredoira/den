@@ -273,7 +273,7 @@ mod tests {
                 assert!(this.move_to_pane(&source, Pane::Term(3), DropPlacement::Bottom));
                 assert_eq!(this.tabs.len(), 1);
                 assert_eq!(this.tabs[0].tree, Tree::Split { axis: Axis::Column, children: vec![Tree::Leaf(Pane::Term(3)), nested] });
-                let encoded = serde_json::to_vec(&SavedLayout { tabs: vec![SavedTab::Tree(this.tabs[0].tree.clone())] }).unwrap();
+                let encoded = serde_json::to_vec(&SavedLayout { tabs: vec![SavedTab::Tree(this.tabs[0].tree.clone())], ..Default::default() }).unwrap();
                 let restored: SavedLayout = serde_json::from_slice(&encoded).unwrap();
                 assert_eq!(restored.tabs.into_iter().next().unwrap().into_tab(), Some((this.tabs[0].tree.clone(), None)));
                 // Rearranging a pane in the same tab removes its old empty branch.
@@ -302,7 +302,7 @@ mod tests {
                 assert_eq!(this.notes_split(), Some(1));
                 assert_eq!(this.tabs[1].tree, Tree::Split { axis: Axis::Column, children: vec![Tree::Leaf(Pane::Term(2)), Tree::Leaf(Pane::Notes)] });
                 assert_eq!(this.tabs[1].active, Pane::Notes);
-                let encoded = serde_json::to_string(&SavedLayout { tabs: vec![SavedTab::Tree(this.tabs[1].tree.clone())] }).unwrap();
+                let encoded = serde_json::to_string(&SavedLayout { tabs: vec![SavedTab::Tree(this.tabs[1].tree.clone())], ..Default::default() }).unwrap();
                 let restored: SavedLayout = serde_json::from_str(&encoded).unwrap();
                 assert_eq!(restored.tabs.into_iter().next().unwrap().into_tab(), Some((this.tabs[1].tree.clone(), None)));
                 // In a split, onto the bar: their tab again.
@@ -367,17 +367,23 @@ mod tests {
         init(cx);
         let (area, cx) = cx.add_window_view(area);
         let tab = cx.debug_bounds("terminal-tab-1").unwrap().center();
-        let name = |cx: &mut VisualTestContext| cx.update(|_, cx| area.read(cx).tabs[0].name.clone());
+        // A terminal alone in its tab: the name is the terminal's.
+        let name = |cx: &mut VisualTestContext| cx.update(|_, cx| area.read(cx).names.get(&1).cloned());
         cx.simulate_event(MouseDownEvent { position: tab, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 2, first_mouse: false });
         cx.simulate_event(MouseUpEvent { position: tab, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 2 });
         cx.update(|_, cx| assert!(area.read(cx).renaming.is_some()));
         cx.simulate_input("server");
         cx.simulate_keystrokes("enter");
         assert_eq!(name(cx), Some("server".into()));
-        cx.update(|_, cx| assert!(area.read(cx).renaming.is_none()));
-        let encoded = cx.update(|_, cx| serde_json::to_string(&SavedTab::of(&area.read(cx).tabs[0])).unwrap());
-        let restored: SavedTab = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(restored.into_tab().unwrap().1, Some("server".into()));
+        cx.update(|_, cx| {
+            let area = area.read(cx);
+            assert!(area.renaming.is_none());
+            assert_eq!(area.tabs[0].name, None);
+            assert_eq!(area.tab_title(&area.tabs[0], cx), "server");
+        });
+        let encoded = cx.update(|_, cx| serde_json::to_string(&SavedLayout { names: area.read(cx).names.clone(), ..Default::default() }).unwrap());
+        let restored: SavedLayout = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.names.get(&1), Some(&"server".to_string()));
 
         area.update_in(cx, |area, window, cx| area.start_rename(1, window, cx));
         cx.simulate_input("other");
@@ -388,6 +394,42 @@ mod tests {
         area.update_in(cx, |area, window, cx| area.start_rename(1, window, cx));
         cx.simulate_keystrokes("backspace enter");
         assert_eq!(name(cx), None);
+    }
+
+    /// In a split each terminal is named in its title, and the tab says the
+    /// folder, or a name of its own.
+    #[gpui_kit::test]
+    fn a_split_s_terminals_are_named_each(cx: &mut TestAppContext) {
+        init(cx);
+        let (area, cx) = cx.add_window_view(area);
+        area.update(cx, |area, cx| {
+            let source = drag(area, Source::Tab(2));
+            assert!(area.move_to_pane(&source, Pane::Term(1), DropPlacement::Right));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let title = cx.debug_bounds("terminal-pane-handle-2").unwrap().center();
+        cx.simulate_event(MouseDownEvent { position: title, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 2, first_mouse: false });
+        cx.simulate_event(MouseUpEvent { position: title, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 2 });
+        cx.simulate_input("server");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            let area = area.read(cx);
+            assert_eq!(area.names.get(&2), Some(&"server".to_string()));
+            assert_eq!(area.title(Pane::Term(2), cx), "server");
+            assert_eq!(area.tab_title(&area.tabs[0], cx), "terminal-drag-test");
+        });
+
+        let id = cx.update(|_, cx| area.read(cx).tabs[0].id);
+        area.update_in(cx, |area, window, cx| area.start_rename(id, window, cx));
+        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_input("both");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            let area = area.read(cx);
+            assert_eq!(area.tab_title(&area.tabs[0], cx), "both");
+            assert_eq!(area.title(Pane::Term(2), cx), "server");
+        });
     }
 
     /// Layouts saved before the notes could split still read.

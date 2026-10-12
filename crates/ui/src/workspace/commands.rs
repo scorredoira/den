@@ -195,8 +195,8 @@ impl Workspace {
             .update(cx, |terminals, cx| terminals.open_for_command(beside, split, line, focus, window, cx))
     }
 
-    /// The Agents panel's Rename: names the tab `term` is in; false if it
-    /// isn't one of this workspace's.
+    /// The Agents panel's Rename: names terminal `term`; false if it isn't
+    /// one of this workspace's.
     pub fn rename_terminal(&mut self, term: proto::TermId, name: Option<String>, cx: &mut Context<Self>) -> bool {
         self.terminals.update(cx, |terminals, cx| terminals.rename_term(term, name, cx))
     }

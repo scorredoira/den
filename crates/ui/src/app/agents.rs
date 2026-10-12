@@ -100,7 +100,7 @@ impl Den {
         .detach();
     }
 
-    /// Types the agent's name in its row: its terminal tab's.
+    /// Types the agent's name in its row: its terminal's.
     fn start_agent_rename(&mut self, host: SharedString, group: String, term: TermId, window: &mut Window, cx: &mut Context<Self>) {
         let name = terminals::saved_term_name(&group, term).unwrap_or_default();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
@@ -117,9 +117,9 @@ impl Den {
         cx.notify();
     }
 
-    /// The typed name is the agent's tab's, in its workspace if it's open
-    /// here, or saved for when it opens; none, and the tab goes back to its
-    /// terminal's title.
+    /// The typed name is the agent's terminal's, in its workspace if it's
+    /// open here, or saved for when it opens; none, and it goes back to its
+    /// program's title.
     fn commit_agent_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(AgentRename { host, group, term, input, .. }) = self.agent_rename.take() else {
             return;
