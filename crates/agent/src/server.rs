@@ -97,7 +97,7 @@ impl Outbox {
             ServerMessage::Event(Event::TermOutput { data, .. }) => data.len(),
             _ => 0,
         };
-        if self.output_bytes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+        if self.output_bytes.try_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
             pending.checked_add(bytes).filter(|bytes| *bytes <= MAX_PENDING_OUTPUT)
         }).is_err() {
             self.disconnect();

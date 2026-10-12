@@ -8,7 +8,10 @@ dir="$(cd "$(dirname "$0")" && pwd)"
 cargo build --release --quiet --manifest-path "$dir/Cargo.toml" -p ui -p agent
 linux="$dir/target/x86_64-unknown-linux-musl/release/den-agent"
 if command -v cargo-zigbuild >/dev/null; then
-  cargo zigbuild --quiet --release -p agent --target x86_64-unknown-linux-musl \
+  # The musl target lives in rustup's toolchain; a Rust from Homebrew earlier
+  # in PATH doesn't have it.
+  rustc="$(rustup which rustc 2>/dev/null || true)"
+  PATH="${rustc:+${rustc%/*}:}$PATH" cargo zigbuild --quiet --release -p agent --target x86_64-unknown-linux-musl \
     --manifest-path "$dir/Cargo.toml" 2>/dev/null || echo "warning: could not build the agent for Linux" >&2
 fi
 
