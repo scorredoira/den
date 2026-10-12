@@ -135,7 +135,7 @@ impl Den {
     /// another, changes nothing and asks.
     fn set_shortcut(&mut self, id: &'static str, keys: Option<String>, cx: &mut Context<Self>) {
         if let Some(keys) = &keys
-            && let Ok(keystroke) = Keystroke::parse(keys)
+            && let Some(keystroke) = shortcuts::parse(keys)
             && let Some(other) = shortcuts::owner(&keystroke, cx).filter(|other| other.id != id)
         {
             if let Some(settings) = &mut self.settings {
@@ -145,8 +145,7 @@ impl Den {
         }
         let default = shortcut(id).default;
         Config::update(cx, |config| {
-            let same_as_default = keys.as_deref().and_then(|keys| Keystroke::parse(keys).ok())
-                == Keystroke::parse(default).ok();
+            let same_as_default = keys.as_deref().and_then(shortcuts::parse) == shortcuts::parse(default);
             if same_as_default {
                 config.keys.remove(id);
             } else {

@@ -176,8 +176,13 @@ impl Shortcut {
 /// A shortcut's key combination, already in the platform's form (`cmd-s`);
 /// `None` if it was removed.
 pub fn keys(shortcut: &Shortcut, cx: &App) -> Option<Keystroke> {
-    let keys = Config::get(cx).keys.get(shortcut.id).map(String::as_str).unwrap_or(shortcut.default);
-    Keystroke::parse(keys).ok()
+    parse(Config::get(cx).keys.get(shortcut.id).map(String::as_str).unwrap_or(shortcut.default))
+}
+
+/// `""` is no shortcut: gpui parses it as a keystroke with no key, which
+/// every removed shortcut would share.
+pub fn parse(keys: &str) -> Option<Keystroke> {
+    Keystroke::parse(keys).ok().filter(|keystroke| !keystroke.key.is_empty())
 }
 
 /// Whether the shortcut differs from the default.
@@ -255,6 +260,12 @@ mod tests {
         }
         let ids: HashSet<&str> = SHORTCUTS.iter().map(|shortcut| shortcut.id).collect();
         assert_eq!(ids.len(), SHORTCUTS.len());
+    }
+
+    #[test]
+    fn empty_is_no_shortcut() {
+        assert!(super::parse("").is_none());
+        assert!(super::parse("cmd-alt-w").is_some());
     }
 
     #[test]
