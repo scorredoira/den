@@ -262,9 +262,13 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
 /// An icon in the foreground's color while what it shows shows, with a
 /// bar on its left.
 fn activity_button(item: Item, shown: bool, cx: &App) -> Stateful<Div> {
+    icon_button(format!("activity-{item:?}").into(), item.icon(cx), shown, cx)
+}
+
+fn icon_button(id: SharedString, icon: &str, shown: bool, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
     div()
-        .id(SharedString::from(format!("activity-{item:?}")))
+        .id(id)
         .size(px(40.))
         .flex()
         .items_center()
@@ -274,7 +278,7 @@ fn activity_button(item: Item, shown: bool, cx: &App) -> Stateful<Div> {
         .when(shown, |el| {
             el.child(div().absolute().left(px(-4.)).top(px(8.)).bottom(px(8.)).w(px(2.)).rounded_full().bg(theme.primary))
         })
-        .child(svg().path(thin(item.icon(cx))).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
+        .child(svg().path(thin(icon)).size(px(ICON)).text_color(if shown { theme.sidebar_foreground } else { theme.muted_foreground }))
 }
 
 const ADD_SERVER: &str = if cfg!(windows) { "Add Server or WSL Distro…" } else { "Add Server…" };
@@ -320,6 +324,35 @@ fn render_badge(badge: Badge, cx: &App) -> AnyElement {
 }
 
 impl Workspace {
+    /// A plain editor's bar: the files and the search, each showing or
+    /// hiding its panel.
+    pub(super) fn render_plain_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let button = |panel: Panel, action: Box<dyn Action>, cx: &mut Context<Self>| {
+            icon_button(format!("plain-{panel:?}").into(), icon(panel), self.is_shown(panel, cx), cx)
+                .when(cfg!(test), |el| el.debug_selector(move || format!("plain-{panel:?}")))
+                .tooltip(move |window, cx| Tooltip::new(title(panel)).action(action.as_ref(), None).build(window, cx))
+                .on_click(cx.listener(move |this, _, window, cx| match panel {
+                    Panel::Search if !this.is_shown(panel, cx) => this.show_search(&ShowSearch, window, cx),
+                    _ => this.toggle_panel(panel, cx),
+                }))
+        };
+        v_flex()
+            .id("plain-bar")
+            .flex_none()
+            .w(px(ACTIVITY_WIDTH))
+            .h_full()
+            .py_1()
+            .gap_1()
+            .items_center()
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.sidebar_border)
+            .child(button(Panel::Files, Box::new(ShowFiles), cx))
+            .child(button(Panel::Search, Box::new(ShowSearch), cx))
+            .into_any_element()
+    }
+
     pub(super) fn render_activity_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let icons = self.activities(cx);
         let workspace = cx.entity().downgrade();

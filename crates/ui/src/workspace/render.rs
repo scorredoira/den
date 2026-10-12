@@ -156,7 +156,8 @@ impl Workspace {
         let in_preview = tab.preview;
         let notes = matches!(tab.page, Some(pages::Page::Notes));
         // The file's own changes, from its tab or a view of it.
-        let changeable = !diff && !tab.doc;
+        let changeable = !diff && !tab.doc && !self.plain;
+        let plain = self.plain;
         let changed = self.has_changes(&tab.path);
         let local = self.local;
         let relative = tab
@@ -258,7 +259,7 @@ impl Workspace {
                         .disabled(!changed(cx)),
                 )
             })
-            .when(!whole_commit, |menu| {
+            .when(!whole_commit && !plain, |menu| {
                 let path = path.clone();
                 menu.item(menu::item("Show File History", &workspace, move |this, window, cx| {
                     this.show_history(&path, false, window, cx)
@@ -328,7 +329,7 @@ impl Workspace {
                                 .flex_none()
                                 .text_color(theme.muted_foreground.opacity(EMPTY_LOGO_OPACITY)),
                         )
-                        .child(empty_hints(cx)),
+                        .child(empty_hints(self.plain, cx)),
                 )
                 .into_any_element(),
             Some(tab) => match &tab.content {
@@ -423,6 +424,7 @@ impl Workspace {
                         let open = open_file.is_some();
                         let layouts = tab.old.as_ref().map(|old| old.whole);
                         let diff_selected = diff.map(|_| tab.old.as_ref().map(|old| old.selected.clone()));
+                        let plain = self.plain;
                         let editor = Editor::new(&tab.editor)
                             .bordered(false)
                             .readonly(readonly)
@@ -449,14 +451,18 @@ impl Workspace {
                                 } else {
                                     menu
                                 };
+                                let menu = menu.menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition));
+                                let menu = if plain {
+                                    menu
+                                } else {
+                                    menu.menu_with_disabled("Find References", readonly, Box::new(FindReferences))
+                                };
                                 let menu = menu
-                                    .menu_with_disabled("Go to Definition", readonly, Box::new(GoToDefinition))
-                                    .menu_with_disabled("Find References", readonly, Box::new(FindReferences))
                                     .menu_with_disabled("Go to Symbol…", readonly, Box::new(GoToSymbol))
                                     .menu_with_disabled("Format Document", readonly, Box::new(FormatDocument));
                                 // The file's changes and history, and its breakpoints:
                                 // they go in before a session too, as with F9.
-                                let menu = if readonly {
+                                let menu = if readonly || plain {
                                     menu
                                 } else {
                                     menu.separator()
@@ -848,7 +854,9 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .when(!terminal_mode, |row| row.child(self.render_activity_bar(cx)))
+                    .when(!terminal_mode, |row| {
+                        row.child(if self.is_plain() { self.render_plain_bar(cx) } else { self.render_activity_bar(cx) })
+                    })
                     .child(
                         div()
                             .flex_1()

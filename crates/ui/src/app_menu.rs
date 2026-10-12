@@ -16,8 +16,23 @@ use crate::{
     *,
 };
 
+/// The menus are a plain editor's: its window is in front.
+#[derive(Default)]
+struct Plain(bool);
+
+impl Global for Plain {}
+
+/// A window came to the front: the menus are a plain editor's or not.
+pub fn set_plain(plain: bool, cx: &mut App) {
+    if cx.default_global::<Plain>().0 != plain {
+        cx.set_global(Plain(plain));
+        set(cx);
+    }
+}
+
 /// Sets the menus; again after something they show changes (Word Wrap's check).
 pub fn set(cx: &mut App) {
+    let plain = cx.default_global::<Plain>().0;
     let config = Config::get(cx);
     let wrap = config.word_wrap;
     let bottom = config.layout.dock == crate::config::Dock::Bottom;
@@ -164,11 +179,11 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PrevTab),
         ]),
-        Menu::new("Help").items([
-            MenuItem::action("Welcome", ShowWelcome),
-            MenuItem::action("Keyboard Shortcuts", OpenShortcutsGuide),
-        ]),
+        Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", OpenShortcutsGuide)]),
     ]);
+    if plain {
+        menus = menus.into_iter().filter_map(plain_menu).collect();
+    }
     if !mac {
         for menu in &mut menus {
             match menu.name.as_ref() {
@@ -202,6 +217,25 @@ pub fn set(cx: &mut App) {
     }
 }
 
+/// A plain editor's `menu`: without what it doesn't have (see
+/// `shortcuts::in_plain_editor`), nor the separators that leaves next to
+/// each other or at an end; none if nothing is left.
+fn plain_menu(mut menu: Menu) -> Option<Menu> {
+    let mut items: Vec<MenuItem> = Vec::new();
+    for item in menu.items {
+        match &item {
+            MenuItem::Action { action, .. } if !crate::shortcuts::in_plain_editor(action.name()) => continue,
+            MenuItem::Separator if items.is_empty() || matches!(items.last(), Some(MenuItem::Separator)) => continue,
+            _ => items.push(item),
+        }
+    }
+    if matches!(items.last(), Some(MenuItem::Separator)) {
+        items.pop();
+    }
+    menu.items = items;
+    (!menu.items.is_empty()).then_some(menu)
+}
+
 /// The menu bar the window draws, on Windows and Linux.
 struct Bar(Entity<AppMenuBar>);
 
@@ -227,4 +261,36 @@ pub fn init(cx: &mut App) {
             window.update(cx, |_, window, _| window.zoom_window()).ok();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn a_plain_editors_menus_have_only_what_it_has() {
+        let view = Menu::new("View").items([
+            MenuItem::action("Files", ShowFiles),
+            MenuItem::action("Changes", ShowChanges),
+            MenuItem::separator(),
+            MenuItem::action("Toggle Terminals", ToggleTerminals),
+            MenuItem::separator(),
+            MenuItem::action("Word Wrap", ToggleWordWrap),
+            MenuItem::separator(),
+            MenuItem::action("Toggle Notes", ToggleNotes),
+        ]);
+        let names: Vec<String> = plain_menu(view)
+            .unwrap()
+            .items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Action { name, .. } => name.to_string(),
+                _ => "-".to_string(),
+            })
+            .collect();
+        assert_eq!(names, ["Files", "-", "Word Wrap"]);
+        let debug = Menu::new("Debug").items([MenuItem::action("Stop", DebugStop)]);
+        assert!(plain_menu(debug).is_none());
+    }
 }

@@ -1,8 +1,7 @@
 //! The den window: the open folder's workspace and, optionally, the tasks
 //! column, grouped by server. Any folder can be opened; a task is a folder
 //! that is a worktree of a known repo. Each open folder has its own
-//! workspace, which is kept when switching from one to another. With none
-//! open, a welcome screen offers to open one.
+//! workspace, which is kept when switching from one to another.
 
 use std::{
     cell::Cell,
@@ -31,7 +30,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ShowWelcome, ToggleTasks, ToggleTerminalMode,
+    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ToggleTasks, ToggleTerminalMode,
     config::{self, Config, DiffLayout, HostConfig, Panel, Place, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -52,7 +51,6 @@ mod settings;
 mod switcher;
 mod theme;
 pub(crate) use theme::selected_row;
-mod welcome;
 
 /// How often the task list is re-read (worktrees created elsewhere).
 const REFRESH: Duration = Duration::from_secs(5);
@@ -252,7 +250,7 @@ fn opens_from_host(host: &str, den: &WeakEntity<Den>, cx: &App) -> bool {
 }
 
 /// Opens the window with `root` and `file` in it; with no `root`, the last
-/// workspace if `resume`, or the welcome screen.
+/// workspace if `resume`, or none.
 pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, cx: &mut App) {
     let agent = cx.default_global::<Main>().agent.clone();
     let title = match &root {
@@ -309,24 +307,25 @@ pub fn open_server_window(destination: String, path: Option<PathBuf>, cx: &mut A
     open_host_window(name, cx, |window, cx| Den::for_server(destination, path, window, cx));
 }
 
-/// `den -n <path>` from a terminal of `host`: `root`, with `file` open in
-/// it, in a window of its own; in the window it's open in, if it is.
-pub fn open_new_window(host: SharedString, destination: Option<String>, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
-    open_new_window_except(host, destination, root, file, None, cx)
+/// `den -n <path>` from a terminal of `host`, or `den <path>` from one
+/// outside den: `root`, with `file` open in it, in a new window of its own
+/// as a plain editor (see `Den::plain`).
+pub fn open_new_window(_host: SharedString, destination: Option<String>, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
+    open_window_on(destination, file.unwrap_or(root), true, cx)
 }
 
-/// `open_new_window`, but never in the window of `except`: a workspace's
-/// Open in New Window, asked from the window it's open in.
+/// A workspace's Open in New Window, asked from the window `except` it's
+/// open in: in another window it's open in, if there's one, or a new one.
 fn open_new_window_except(
     host: SharedString,
     destination: Option<String>,
     root: PathBuf,
     file: Option<PathBuf>,
-    except: Option<EntityId>,
+    except: EntityId,
     cx: &mut App,
 ) {
     let open = windows(cx).into_iter().find(|(_, den)| {
-        if Some(den.entity_id()) == except {
+        if den.entity_id() == except {
             return false;
         }
         let den = den.read(cx);
@@ -343,13 +342,22 @@ fn open_new_window_except(
         cx.activate(true);
         return;
     }
-    let path = file.unwrap_or(root);
+    open_window_on(destination, file.unwrap_or(root), false, cx)
+}
+
+/// A window of its own on `path`, on this machine (`destination` none) or
+/// a server; `plain`, only the files and the code.
+fn open_window_on(destination: Option<String>, path: PathBuf, plain: bool, cx: &mut App) {
+    let plain_editor = move |mut den: Den| {
+        den.plain = plain;
+        den
+    };
     match destination {
         Some(destination) => {
             let name = server_name(&destination, cx);
-            open_host_window(name, cx, |window, cx| Den::for_server(destination, Some(path), window, cx));
+            open_host_window(name, cx, |window, cx| plain_editor(Den::for_server(destination, Some(path), window, cx)));
         }
-        None => open_host_window(LOCAL.into(), cx, |window, cx| Den::for_local(path, window, cx)),
+        None => open_host_window(LOCAL.into(), cx, |window, cx| plain_editor(Den::for_local(path, window, cx))),
     }
 }
 
@@ -580,10 +588,10 @@ pub struct Den {
     quit_saving: bool,
     /// About, if open (its focus, for Esc).
     about: Option<FocusHandle>,
-    /// The shortcuts guide, shown in place of the welcome screen while no
-    /// workspace is open (with one, it's a tab of its own).
+    /// The shortcuts guide, shown in place of the code while no workspace
+    /// is open (with one, it's a tab of its own).
     guide: Option<Entity<gpui_kit::component::text::TextViewState>>,
-    /// Tasks column and welcome, while no workspace is open.
+    /// Tasks column and what's beside it, while no workspace is open.
     split: config::Split,
     /// The tasks column, drawn by the workspace where its panel is placed.
     workspaces_panel: Entity<WorkspacesPanel>,
@@ -593,6 +601,9 @@ pub struct Den {
     /// beside them. Shared with the workspaces, which leave it when they
     /// need the code (see `Workspace::leave_terminal_mode`).
     terminal_mode: Rc<Cell<bool>>,
+    /// A plain editor (`den <file>` from a terminal outside den): the code,
+    /// and the files and the search if asked for (see `Workspace::plain`).
+    plain: bool,
     /// Settings, if open.
     settings: Option<settings::Settings>,
     focus_handle: FocusHandle,
@@ -673,6 +684,7 @@ impl Den {
                 })
             },
             terminal_mode: Rc::new(Cell::new(false)),
+            plain: false,
             settings: None,
             focus_handle: cx.focus_handle(),
             watches: HashMap::new(),
@@ -686,7 +698,12 @@ impl Den {
                         cx.stop_propagation();
                     }
                 })
-            }],
+            }, cx.observe_window_activation(window, |this, window, cx| {
+                // The menus are those of the window in front.
+                if window.is_window_active() {
+                    crate::app_menu::set_plain(this.plain, cx);
+                }
+            })],
         };
         Self::install_theme(cx);
         this.apply_theme(window, cx);
@@ -847,7 +864,7 @@ impl Den {
             }
             (None, _) => match root {
                 Some(root) => TaskKey { host: LOCAL.into(), path: root },
-                // Nothing to open: the welcome screen.
+                // Nothing to open: the workspaces, to open one.
                 None => {
                     self.focus_handle.focus(window, cx);
                     return;
@@ -1186,7 +1203,11 @@ impl Den {
                 let root = key.path.clone();
                 let local = key.host == LOCAL;
                 let workspace = cx.new(|cx| Workspace::new(root, client, local, key.config(), window, cx));
-                workspace.update(cx, |workspace, cx| workspace.restore(window, cx));
+                let plain = self.plain;
+                workspace.update(cx, |workspace, cx| {
+                    workspace.set_plain(plain, cx);
+                    workspace.restore(window, cx);
+                });
                 if let Some(file) = self.open_file.take() {
                     workspace.update(cx, |workspace, cx| workspace.open(file, true, window, cx));
                 }
@@ -1291,6 +1312,7 @@ impl Den {
         let mut commands: Vec<_> = SHORTCUTS
             .iter()
             .filter(|shortcut| !matches!(shortcut.id, "OpenCommandPalette" | "ShowShortcuts"))
+            .filter(|shortcut| !self.plain || shortcuts::in_plain_editor(shortcut.id))
             .collect();
         let recent_ids = &Config::get(cx).recent_commands;
         let rank = |id: &str| recent_ids.iter().position(|recent| recent == id);
@@ -1354,6 +1376,9 @@ impl Den {
 
     /// Into Terminal Mode, or out of it.
     fn toggle_terminal_mode(&mut self, _: &ToggleTerminalMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plain {
+            return;
+        }
         let on = !self.terminal_mode.get();
         match self.active_workspace() {
             Some(workspace) => workspace.update(cx, |workspace, cx| match on {
@@ -1497,7 +1522,6 @@ impl Render for Den {
             }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| this.switcher_key_up(event)))
 
-            .on_action(cx.listener(|this, _: &ShowWelcome, window, cx| this.show_welcome(window, cx)))
             .relative()
             // Our own bar, in the theme's color (macOS's is gray): the traffic
             // lights on the left, the active task in the middle, and it drags
@@ -1584,6 +1608,8 @@ impl Render for Den {
                     .w_full()
                     .child(match self.active_workspace() {
                         Some(workspace) => workspace.into_any_element(),
+                        // A plain editor, connecting: nothing until it opens.
+                        None if self.plain => div().into_any_element(),
                         None => self.render_without_workspace(window, cx),
                     })
                     .children(self.render_notice(window, cx)),
@@ -2070,33 +2096,6 @@ mod palette_tests {
         den.read_with(cx, |den, cx| {
             assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
             assert!(den.is_hidden_project(&key("/den"), cx));
-        });
-    }
-
-    /// Help → Welcome keeps the workspace's icons; one goes back to it,
-    /// showing what it stands for.
-    #[gpui_kit::test]
-    fn the_welcome_keeps_the_icons(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            cx.set_global(Config::default());
-        });
-        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
-        let key = super::TaskKey { host: super::LOCAL.into(), path: "/welcome-test".into() };
-        cx.update(|window, cx| {
-            den.update(cx, |den, cx| {
-                den.activate(key.clone(), window, cx);
-                den.show_welcome(window, cx);
-            })
-        });
-        cx.run_until_parked();
-        let changes = cx.debug_bounds("activity-Place(Place(Changes))").expect("the workspace's icons");
-        cx.simulate_click(changes.center(), Modifiers::default());
-        cx.run_until_parked();
-        den.read_with(cx, |den, cx| {
-            assert_eq!(den.active, Some(key.clone()));
-            let workspace = den.active_workspace().unwrap();
-            assert!(workspace.read(cx).is_shown(crate::config::Panel::Changes, cx));
         });
     }
 

@@ -206,7 +206,7 @@ impl Den {
                             .id("guide-back")
                             .text_color(theme.link)
                             .hover(|style| style.underline())
-                            .child("← Welcome")
+                            .child("← Back")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.guide = None;
                                 cx.notify();
@@ -228,17 +228,5 @@ impl Den {
                     ),
             )
             .into_any_element()
-    }
-
-    /// Help → Welcome: the welcome screen, with the open workspace kept;
-    /// entering any brings it back.
-    pub(super) fn show_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.guide = None;
-        if let Some(active) = self.active.take() {
-            self.previous = Some(active);
-        }
-        window.set_window_title("den");
-        self.focus_handle.focus(window, cx);
-        cx.notify();
     }
 }

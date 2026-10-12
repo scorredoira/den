@@ -274,12 +274,12 @@ struct SymbolSearch {
 /// Places remembered for going back.
 const MAX_PLACES: usize = 100;
 
-/// How faint the logo of an empty editor (and of the welcome) is.
+/// How faint the logo of an empty editor (and of a window with none) is.
 pub(crate) const EMPTY_LOGO_OPACITY: f32 = 0.3;
 
 /// What an empty editor offers below the logo, as VS Code does: a few
-/// shortcuts, with the keys they have now.
-fn empty_hints(cx: &App) -> impl IntoElement {
+/// shortcuts, with the keys they have now (those a plain editor has, in one).
+fn empty_hints(plain: bool, cx: &App) -> impl IntoElement {
     const HINTS: &[(&str, &str)] = &[
         ("OpenCommandPalette", "Show All Commands"),
         ("OpenFileFinder", "Go to File"),
@@ -289,7 +289,7 @@ fn empty_hints(cx: &App) -> impl IntoElement {
     ];
     let theme = cx.theme();
     v_flex().w(px(320.)).max_w_full().gap_2().text_ui(cx).text_color(theme.muted_foreground).children(
-        HINTS.iter().filter_map(|(id, label)| {
+        HINTS.iter().filter(|(id, _)| !plain || crate::shortcuts::in_plain_editor(id)).filter_map(|(id, label)| {
             let shortcut = crate::shortcuts::SHORTCUTS.iter().find(|shortcut| shortcut.id == *id)?;
             let keys = crate::shortcuts::keys(shortcut, cx)?;
             Some(h_flex().justify_between().gap_4().child(*label).child(component::kbd::Kbd::new(keys)))
@@ -351,6 +351,10 @@ pub struct Workspace {
     /// (see `set_terminal_mode`): only the terminals, with the workspaces
     /// and the agents beside them.
     terminal_mode: Rc<Cell<bool>>,
+    /// A plain editor (see `set_plain`), and the side panel it shows: the
+    /// files, the search or none.
+    plain: bool,
+    plain_side: Option<Panel>,
     /// The columns.
     split: config::Split,
     /// The code and, while it's their place, the terminals under it.
@@ -588,6 +592,8 @@ impl Workspace {
             terminals,
             terminals_maximized: false,
             terminal_mode: Rc::new(Cell::new(false)),
+            plain: false,
+            plain_side: None,
             split: config::Split::new(cx),
             rows: config::Split::new(cx),
             width: px(0.),
@@ -682,8 +688,12 @@ impl Workspace {
         .detach();
     }
 
-    /// Reopens what was open last time, without stealing focus.
+    /// Reopens what was open last time, without stealing focus. A plain
+    /// editor neither reopens nor saves anything.
     pub fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plain {
+            return;
+        }
         let session = Config::get(cx)
             .sessions
             .get(&self.session_key)
@@ -1294,6 +1304,9 @@ impl Workspace {
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plain {
+            return;
+        }
         self.show_panel(Panel::Terminals, cx);
         self.terminals
             .update(cx, |terminals, cx| terminals.new_terminal(window, cx));
@@ -1301,6 +1314,9 @@ impl Workspace {
     }
 
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plain {
+            return;
+        }
         self.show_panel(Panel::Terminals, cx);
         self.terminals
             .update(cx, |terminals, cx| terminals.split(axis, window, cx));
@@ -1349,6 +1365,9 @@ impl Workspace {
     /// Shows the terminals and focuses them; if they already have focus, hides
     /// them and focus returns to the IDE.
     fn toggle_terminals(&mut self, _: &ToggleTerminals, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plain {
+            return;
+        }
         // In Terminal Mode, back to the code.
         if self.leave_terminal_mode(cx) {
             return self.focus_ide(window, cx);
@@ -1372,6 +1391,9 @@ impl Workspace {
     }
 
     fn maximize_terminals(&mut self, _: &MaximizeTerminals, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plain {
+            return;
+        }
         // In Terminal Mode, back to the code and the terminals.
         if self.leave_terminal_mode(cx) {
             return self.show_panel(Panel::Terminals, cx);

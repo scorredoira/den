@@ -71,7 +71,6 @@ actions!(
         OpenPreviewToSide,
         About,
         CheckForUpdates,
-        ShowWelcome,
         OpenShortcutsGuide,
         Hide,
         HideOthers,
@@ -143,7 +142,7 @@ actions!(
 /// server (see `app::open_server_window`). `den -t <folder>`: only a window
 /// in Terminal Mode on it (see `app::open_terminal_window`).
 /// Opened from the Dock or the Finder with nothing to resume, there's no
-/// folder: the welcome screen offers to open one.
+/// folder: the window shows the workspaces, to open one.
 fn main() {
     crash::install();
     let cwd = std::env::current_dir().expect("could not read the current folder");

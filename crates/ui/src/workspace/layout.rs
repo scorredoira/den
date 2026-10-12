@@ -197,6 +197,9 @@ pub(super) fn debug_view(debugger: &Entity<Debugger>, cx: &mut App) -> Entity<De
 
 impl Workspace {
     pub(crate) fn is_shown(&self, panel: Panel, cx: &App) -> bool {
+        if self.plain {
+            return panel == Panel::Code || self.plain_side == Some(panel);
+        }
         let panels = &self.panels;
         let terminal_mode = self.in_terminal_mode();
         // Terminal Mode shows the terminals, with what goes in them, and
@@ -224,6 +227,9 @@ impl Workspace {
 
     /// Whether the side column shows `panel`, folded or not.
     pub(super) fn in_side(&self, panel: Panel, cx: &App) -> bool {
+        if self.plain {
+            return self.plain_side == Some(panel);
+        }
         let layout = &Config::get(cx).layout;
         layout.side && layout.place_of(panel).is_some() && layout.place_of(panel) == layout.current() && !layout.hidden.contains(&panel)
     }
@@ -232,6 +238,18 @@ impl Workspace {
     pub(crate) fn side_place(&self, cx: &App) -> Option<Place> {
         let layout = &Config::get(cx).layout;
         layout.side.then(|| layout.current()).flatten()
+    }
+
+    /// A plain editor (`den <file>` from a terminal outside den): the code,
+    /// and beside it the files or the search, from its own activity bar.
+    /// Nothing else shows, and nothing is reopened or saved.
+    pub fn set_plain(&mut self, plain: bool, cx: &mut Context<Self>) {
+        self.plain = plain;
+        self.file_tree.update(cx, |tree, _| tree.set_plain(plain));
+    }
+
+    pub(crate) fn is_plain(&self) -> bool {
+        self.plain
     }
 
     /// The window's Terminal Mode, the same for all its workspaces.
@@ -317,6 +335,9 @@ impl Workspace {
     /// starts (the History's terminals as they last were there). Whether it
     /// changed.
     fn change_mode(&mut self, cx: &App) -> bool {
+        if self.plain {
+            return false;
+        }
         let mode = self.current_mode();
         if mode == self.mode {
             return false;
@@ -391,6 +412,9 @@ impl Workspace {
 
     /// What shows changed: saved with what's open, and drawn.
     pub(crate) fn layout_changed(&mut self, cx: &mut Context<Self>) {
+        if self.plain {
+            return cx.notify();
+        }
         let terminals = self.panels.terminals;
         if self.mode == Mode::History && Config::get(cx).history_terminals != terminals {
             Config::update(cx, |config| config.history_terminals = terminals);
@@ -403,7 +427,7 @@ impl Workspace {
     /// column changed, or this workspace came to the front with it.
     pub(super) fn place_shown(&mut self, cx: &mut Context<Self>) {
         // Only the workspaces and the agents, which aren't the workspace's.
-        if self.in_terminal_mode() {
+        if self.in_terminal_mode() || self.plain {
             return;
         }
         let layout = &Config::get(cx).layout;
@@ -424,6 +448,13 @@ impl Workspace {
     /// Shows `panel`: where it is in the side column, unfolded and back if
     /// it was hidden; focus doesn't move.
     pub(crate) fn show_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        if self.plain {
+            if matches!(panel, Panel::Files | Panel::Search) {
+                self.plain_side = Some(panel);
+                cx.notify();
+            }
+            return;
+        }
         // Terminal Mode has the workspaces and the agents; anything else of
         // the side column, or the code, takes the window out of it.
         if self.in_terminal_mode() {
@@ -483,6 +514,13 @@ impl Workspace {
 
     /// Hides `panel`: a side panel's place closes the side column.
     pub(crate) fn hide_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        if self.plain {
+            if self.plain_side == Some(panel) {
+                self.plain_side = None;
+                cx.notify();
+            }
+            return;
+        }
         if self.in_terminal_mode() {
             match panel {
                 Panel::Workspaces | Panel::Agents => return self.set_terminal_side(false, cx),
@@ -642,6 +680,10 @@ impl Workspace {
     /// Cmd-B: the side column, with what it last showed (or the first
     /// place, if that's gone).
     pub(super) fn toggle_side_panel(&mut self, _: &ToggleSidePanel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.plain {
+            self.plain_side = if self.plain_side.is_some() { None } else { Some(Panel::Files) };
+            return cx.notify();
+        }
         if self.in_terminal_mode() {
             let side = !Config::get(cx).terminal_mode.side;
             return self.set_terminal_side(side, cx);
@@ -657,6 +699,9 @@ impl Workspace {
     pub(super) fn render_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.in_terminal_mode() {
             return self.render_terminal_mode(window, cx);
+        }
+        if self.plain {
+            return self.render_plain(cx);
         }
         let terminals = self.panels.terminals;
         let maximized = self.terminals_maximized && terminals;
@@ -769,6 +814,60 @@ impl Workspace {
             .text_color(theme.sidebar_foreground)
             .children(sections)
             .when(filler.is_none(), |el| el.child(div().flex_1()))
+            .into_any_element()
+    }
+
+    /// A plain editor: the files or the search, if one shows, and the code.
+    fn render_plain(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let layout = Config::get(cx).layout.clone();
+        let code = self.render_editor_area(cx).into_any_element();
+        let Some(panel) = self.plain_side else {
+            return code;
+        };
+        let state = self.split.state(self.width, ("plain", true), cx).clone();
+        let content = match panel {
+            Panel::Search => self.search.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            _ => self.file_tree.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+        };
+        let header = match panel {
+            Panel::Files => folder_label(&self.root),
+            _ => title(panel).to_uppercase(),
+        };
+        let theme = cx.theme();
+        let side = v_flex()
+            .id("plain-side")
+            .when(cfg!(test), |el| el.debug_selector(|| "plain-side".into()))
+            .size_full()
+            .overflow_hidden()
+            .bg(theme.sidebar)
+            .text_color(theme.sidebar_foreground)
+            .child(
+                div()
+                    .h(px(HEADER_HEIGHT))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .text_ui_small(cx)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(header),
+            )
+            .child(div().flex_1().min_h_0().pt_1().child(content));
+        h_resizable("plain-columns")
+            .with_state(&state)
+            .child(
+                resizable_panel()
+                    .size(config::width(layout.side_width, 160., 800.))
+                    .size_range(px(160.)..px(800.))
+                    .child(side),
+            )
+            .child(resizable_panel().child(code))
+            .on_resize(|state, _, cx| {
+                if let Some(size) = state.read(cx).sizes().first().copied() {
+                    Config::update_quietly(cx, |config| config.layout.side_width = f32::from(size));
+                }
+            })
             .into_any_element()
     }
 

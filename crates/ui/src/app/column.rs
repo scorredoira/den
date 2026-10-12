@@ -42,9 +42,9 @@ impl Den {
     }
 
     /// The activity bar; the workspaces, as wide as the side column; and the
-    /// welcome. The bar has only the explorer's icon, or, with a workspace
-    /// left for the welcome (Help → Welcome), that one's icons, which go back
-    /// to it showing what they stand for.
+    /// logo, or the shortcuts guide. The bar has only the explorer's icon,
+    /// or, with a workspace left, that one's icons, which go back to it
+    /// showing what they stand for.
     pub(super) fn render_without_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let badge = self.task_badges(cx).workspaces.map(Badge::Dot);
         let left = self.previous.clone().and_then(|key| Some((self.workspaces.get(&key)?.clone(), key)));
@@ -91,7 +91,20 @@ impl Den {
             )
             .child(resizable_panel().child(match &self.guide {
                 Some(guide) => self.render_guide(guide, cx),
-                None => self.render_welcome(cx),
+                None => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        svg()
+                            .path("icons/den-empty.svg")
+                            .size(px(280.))
+                            .max_w_full()
+                            .flex_none()
+                            .text_color(cx.theme().muted_foreground.opacity(crate::workspace::EMPTY_LOGO_OPACITY)),
+                    )
+                    .into_any_element(),
             }))
 ;
         h_flex().size_full().child(bar).child(div().flex_1().min_w_0().h_full().child(split)).into_any_element()
@@ -418,7 +431,7 @@ impl Den {
                         let key = window_key.clone();
                         let destination = this.host(&key.host).and_then(|host| host.destination.clone());
                         let except = cx.entity_id();
-                        cx.defer(move |cx| open_new_window_except(key.host, destination, key.path, None, Some(except), cx));
+                        cx.defer(move |cx| open_new_window_except(key.host, destination, key.path, None, except, cx));
                     }))
                     .separator()
                     .item(menu::item("Copy Path", &weak, move |_, _, cx| {
@@ -579,7 +592,7 @@ impl Den {
                         let key = window_key.clone();
                         let destination = this.host(&key.host).and_then(|host| host.destination.clone());
                         let except = cx.entity_id();
-                        cx.defer(move |cx| open_new_window_except(key.host, destination, key.path, None, Some(except), cx));
+                        cx.defer(move |cx| open_new_window_except(key.host, destination, key.path, None, except, cx));
                     }))
                     .separator()
                     .item(menu::item("Copy Path", &weak, move |_, _, cx| {

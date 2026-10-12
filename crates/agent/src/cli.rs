@@ -12,11 +12,12 @@ use crate::platform;
 
 pub const USAGE: &str = "\
 Usage:
-  den <path>          opens a folder, or a file in its repo, in a window
-                      of its own (in the window it's open in, if it is);
-                      over SSH, in the app connected to this server. In
-                      den's terminals, in the terminal's window. What's
-                      open in a window of its own isn't remembered unless
+  den <path>          opens a folder, or a file in its repo, in a new
+                      window of its own, a plain editor: the code, and
+                      the files and the search from its bar; over SSH,
+                      in the app connected to this server. In den's
+                      terminals, in the terminal's window. What's open
+                      in a window of its own isn't remembered unless
                       kept.
   den -n <path>       in a window of its own, also in den's terminals.
   den -t [<path>]     a new window in Terminal Mode (only the terminals,
@@ -164,9 +165,9 @@ pub fn open(arg: &str) -> Result<()> {
     open_new(&[arg.to_string()])
 }
 
-/// `den -n <path>`: asks the app to open it in a window of its own. With
-/// no app connected, it starts one on this machine (its first window is
-/// one of its own); over SSH, there's no app to start.
+/// `den -n <path>`: asks the app to open it in a new window of its own, a
+/// plain editor. With no app connected, it starts one on this machine (its
+/// first window is one of its own); over SSH, there's no app to start.
 pub fn open_new(args: &[String]) -> Result<()> {
     let [arg] = args else {
         eprint!("{USAGE}");

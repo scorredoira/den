@@ -188,6 +188,8 @@ pub struct FileTree {
     client: Option<Arc<Client>>,
     /// On this machine (not on a server): Finder is available.
     local: bool,
+    /// In a plain editor: no terminals nor history to send things to.
+    plain: bool,
     /// Folders requested from the agent that haven't arrived yet.
     loading: HashSet<PathBuf>,
     children: HashMap<PathBuf, Vec<DirEntry>>,
@@ -232,12 +234,17 @@ impl Focusable for FileTree {
 }
 
 impl FileTree {
+    pub fn set_plain(&mut self, plain: bool) {
+        self.plain = plain;
+    }
+
     pub fn new(root: PathBuf, client: Option<Arc<Client>>, local: bool, cx: &mut Context<Self>) -> Self {
         let mut tree = Self {
             expanded: HashSet::from([root.clone()]),
             root,
             client,
             local,
+            plain: false,
             loading: HashSet::new(),
             children: HashMap::new(),
             rows: Vec::new(),
@@ -1245,17 +1252,19 @@ impl FileTree {
                 Box::new(move |_, _, cx| cx.reveal_path(&path))
             }))
         })
-        .item(item("Open in Terminal", {
-            let dir = dir.clone();
-            Box::new(move |_, _, cx| cx.emit(FileTreeEvent::OpenTerminal { dir: dir.clone() }))
-        }))
+        .when(!self.plain, |menu| {
+            menu.item(item("Open in Terminal", {
+                let dir = dir.clone();
+                Box::new(move |_, _, cx| cx.emit(FileTreeEvent::OpenTerminal { dir: dir.clone() }))
+            }))
+        })
         .when(is_dir, |menu| {
             menu.item(item("Find in Folder…", {
                 let dir = dir.clone();
                 Box::new(move |_, _, cx| cx.emit(FileTreeEvent::FindInFolder { dir: dir.clone() }))
             }))
         })
-        .when(path != self.root, |menu| {
+        .when(path != self.root && !self.plain, |menu| {
             menu.separator().item(item(if is_dir { "Show Folder History" } else { "Show File History" }, {
                 let path = path.clone();
                 Box::new(move |_, _, cx| cx.emit(FileTreeEvent::ShowHistory { path: path.clone(), dir: is_dir }))

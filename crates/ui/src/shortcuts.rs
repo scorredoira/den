@@ -103,6 +103,64 @@ shortcuts![
     (ToggleNotes, "Toggle Notes", "secondary-alt-n"),
 ];
 
+/// Whether a plain editor has the action called `name` (`app::ShowFiles` or
+/// `ShowFiles`): what needs a panel it doesn't have, the terminals, the
+/// debugger, git or other workspaces isn't offered there.
+pub fn in_plain_editor(name: &str) -> bool {
+    let id = name.strip_prefix("app::").unwrap_or(name);
+    !matches!(
+        id,
+        "ShowChanges"
+            | "ShowHistory"
+            | "OpenChanges"
+            | "ShowFileHistory"
+            | "ShowReferences"
+            | "ShowOutline"
+            | "FindReferences"
+            | "NewTerminal"
+            | "SplitRight"
+            | "SplitDown"
+            | "FocusPaneLeft"
+            | "FocusPaneRight"
+            | "FocusPaneUp"
+            | "FocusPaneDown"
+            | "ToggleTerminals"
+            | "MaximizeTerminals"
+            | "MoveTerminals"
+            | "ToggleTerminalMode"
+            | "terminal::Find"
+            | "NewTask"
+            | "OpenTaskPicker"
+            | "PreviousTask"
+            | "NextActiveTask"
+            | "NextTask"
+            | "ToggleTasks"
+            | "OpenFolder"
+            | "OpenRemoteFolder"
+            | "OpenRecent"
+            | "AddServer"
+            | "ResetLayout"
+            | "ToggleNotes"
+            | "NotesToEditorTab"
+            | "NotesToTerminals"
+            | "DebugContinue"
+            | "DebugStop"
+            | "DebugRestart"
+            | "DebugPause"
+            | "StepOver"
+            | "StepInto"
+            | "StepOut"
+            | "ToggleBreakpoint"
+            | "RunToCursor"
+            | "SetNextStatement"
+            | "ToggleDebugPanel"
+            | "AddConditionalBreakpoint"
+            | "AddLogpoint"
+            | "AddToWatch"
+            | "EvaluateInConsole"
+    )
+}
+
 /// `mac` on the Mac; `other` on Linux and Windows, for the shortcuts used from
 /// the terminal, where Ctrl plus a letter is the shell's (see `for_the_shell`).
 const fn mac_or(mac: &'static str, other: &'static str) -> &'static str {

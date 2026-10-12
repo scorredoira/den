@@ -1167,3 +1167,43 @@ fn the_bar_s_menu_shows_and_hides_panels(cx: &mut TestAppContext) {
     bounds(cx, "activity-Place(Place(Changes))");
     bounds(cx, "stack-Changes");
 }
+
+#[gpui_kit::test]
+fn a_plain_editor_shows_the_code_and_only_the_files_or_the_search(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_plain(true, cx);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    bounds(cx, "editor-body-0");
+    assert!(cx.debug_bounds("side-column").is_none());
+    assert!(cx.debug_bounds("plain-side").is_none());
+    assert!(cx.debug_bounds("terminals").is_none());
+    assert!(cx.debug_bounds("activity-bar").is_none());
+    // Its bar shows the files, and hides them again.
+    click(cx, "plain-Files");
+    let side = bounds(cx, "plain-side");
+    assert!(side.right() <= bounds(cx, "editor-body-0").left());
+    assert!(workspace.read_with(cx, |workspace, cx| workspace.is_shown(Panel::Files, cx)));
+    click(cx, "plain-Files");
+    assert!(cx.debug_bounds("plain-side").is_none());
+    // The search takes the files' place.
+    click(cx, "plain-Search");
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::Search, cx));
+        assert!(!workspace.is_shown(Panel::Files, cx));
+    });
+    // Nothing else shows.
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_panel(Panel::Changes, cx);
+        workspace.show_panel(Panel::Terminals, cx);
+        workspace.show_panel(Panel::Workspaces, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("terminals").is_none());
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::Search, cx));
+        assert!(!workspace.is_shown(Panel::Changes, cx) && !workspace.is_shown(Panel::Terminals, cx));
+    });
+}
