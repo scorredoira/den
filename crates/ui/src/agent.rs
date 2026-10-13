@@ -3,10 +3,13 @@
 use std::{
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use client::{Client, TermUpdate};
 use gpui_kit::{AppContext as _, AsyncApp, Entity};
 use proto::{Event, Request, Response, TermId};
@@ -138,7 +141,9 @@ pub async fn create(
     Ok((term, attach(client, term, cx).await?))
 }
 
-type Joined = (Rc<AgentBackend>, smol::channel::Receiver<PtyEvent>, u16, u16, Vec<u8>);
+/// A terminal joined: its backend, its output, its size and snapshot, and
+/// the signal that its output overflowed (see `resync`).
+type Joined = (Rc<AgentBackend>, smol::channel::Receiver<PtyEvent>, u16, u16, Vec<u8>, smol::channel::Receiver<()>);
 
 /// Subscribes to an agent terminal's output and requests its snapshot, right
 /// away (several are asked for at once): the snapshot comes in the future.
@@ -147,20 +152,26 @@ fn join(client: Arc<Client>, term: TermId) -> impl std::future::Future<Output = 
     // UI busy for a moment doesn't lose the terminal. Never block the
     // connection's reader, which also delivers the snapshot awaited below.
     let (tx, rx) = smol::channel::bounded(1024);
+    let (overflow_tx, overflow) = smol::channel::bounded(1);
     let overflow_rx = rx.downgrade();
-    let weak = Arc::downgrade(&client);
-    let subscription = client.subscribe(term, move |update| {
-        let Some(overflow_rx) = overflow_rx.upgrade() else { return };
-        let event = match update {
-            TermUpdate::Event(Event::TermOutput { data, .. }) => PtyEvent::Output(data),
-            TermUpdate::Event(Event::TermExit { .. }) => PtyEvent::Exit,
-            TermUpdate::Disconnected => PtyEvent::Disconnected,
-            TermUpdate::Event(_) => return,
-        };
-        if !queue_output(&tx, &overflow_rx, event)
-            && let Some(client) = weak.upgrade()
-        {
-            client.disconnect();
+    // Output that comes before the snapshot is in it already: another view
+    // of the terminal on this connection (or this one, joining again) has
+    // it sent here before then. The reader delivers both in order.
+    let attached = Arc::new(AtomicBool::new(false));
+    let subscription = client.subscribe(term, {
+        let attached = attached.clone();
+        move |update| {
+            let Some(overflow_rx) = overflow_rx.upgrade() else { return };
+            let event = match update {
+                TermUpdate::Event(Event::TermOutput { .. }) if !attached.load(Ordering::Relaxed) => return,
+                TermUpdate::Event(Event::TermOutput { data, .. }) => PtyEvent::Output(data),
+                TermUpdate::Event(Event::TermExit { .. }) => PtyEvent::Exit,
+                TermUpdate::Disconnected => PtyEvent::Disconnected,
+                TermUpdate::Event(_) => return,
+            };
+            if !queue_output(&tx, &overflow_rx, event) {
+                let _ = overflow_tx.try_send(());
+            }
         }
     });
     // Made first: if attaching fails, dropping it ends the subscription.
@@ -170,18 +181,42 @@ fn join(client: Arc<Client>, term: TermId) -> impl std::future::Future<Output = 
         subscription,
         cwd: Arc::default(),
     });
-    let response = client.request(Request::TermAttach { term });
+    let (response_tx, response) = smol::channel::bounded(1);
+    client.request_with(Request::TermAttach { term }, move |response| {
+        attached.store(true, Ordering::Relaxed);
+        let _ = response_tx.try_send(response);
+    });
     async move {
-        let response = response.await?;
+        let response = response.recv().await.map_err(|_| anyhow!("no response from the agent"))??;
         let Response::TermSnapshot { cols, rows, data } = response else {
             bail!("unexpected response from the agent: {response:?}");
         };
-        Ok((backend, rx, cols, rows, data))
+        Ok((backend, rx, cols, rows, data, overflow))
     }
 }
 
+/// A terminal whose output overflowed joins again on the same connection,
+/// with a fresh snapshot: the other terminals, and the rest that goes over
+/// it, are left alone. It stops with the terminal, or once it's joined over
+/// another connection (its subscription ends: `overflow` closes).
+fn resync(client: &Arc<Client>, term: TermId, terminal: &Entity<Terminal>, overflow: smol::channel::Receiver<()>, cx: &mut AsyncApp) {
+    let (client, terminal) = (Arc::downgrade(client), terminal.downgrade());
+    cx.spawn(async move |cx| {
+        let mut overflow = overflow;
+        while overflow.recv().await.is_ok() {
+            let Some(client) = client.upgrade() else { return };
+            let Ok((backend, rx, cols, rows, data, next)) = join(client, term).await else { return };
+            if terminal.update(cx, |terminal, cx| terminal.reconnect(backend, rx, cols, rows, &data, cx)).is_err() {
+                return;
+            }
+            overflow = next;
+        }
+    })
+    .detach();
+}
+
 /// On overflow the partial screen is no longer trustworthy. Tell the
-/// terminal it's disconnected and request a fresh snapshot on reconnect.
+/// terminal it's disconnected; it joins again for a fresh snapshot.
 fn queue_output(tx: &smol::channel::Sender<PtyEvent>, rx: &smol::channel::Receiver<PtyEvent>, event: PtyEvent) -> bool {
     match tx.try_send(event) {
         Ok(()) | Err(smol::channel::TrySendError::Closed(_)) => true,
@@ -196,8 +231,10 @@ fn queue_output(tx: &smol::channel::Sender<PtyEvent>, rx: &smol::channel::Receiv
 
 /// Attaches to an agent terminal: receives its snapshot and then its output.
 pub async fn attach(client: Arc<Client>, term: TermId, cx: &mut AsyncApp) -> Result<Entity<Terminal>> {
-    let (backend, rx, cols, rows, data) = join(client, term).await?;
-    Ok(cx.new(|cx| Terminal::new(backend, rx, cols, rows, &data, cx)))
+    let (backend, rx, cols, rows, data, overflow) = join(client.clone(), term).await?;
+    let terminal = cx.new(|cx| Terminal::new(backend, rx, cols, rows, &data, cx));
+    resync(&client, term, &terminal, overflow, cx);
+    Ok(terminal)
 }
 
 /// Attaches to several terminals at once: all are asked for together, so
@@ -207,7 +244,11 @@ pub async fn attach_all(client: &Arc<Client>, terms: &[TermId], cx: &mut AsyncAp
     let mut attached = Vec::new();
     for (term, joined) in pending {
         let terminal = match joined.await {
-            Ok((backend, rx, cols, rows, data)) => Ok(cx.new(|cx| Terminal::new(backend, rx, cols, rows, &data, cx))),
+            Ok((backend, rx, cols, rows, data, overflow)) => {
+                let terminal = cx.new(|cx| Terminal::new(backend, rx, cols, rows, &data, cx));
+                resync(client, term, &terminal, overflow, cx);
+                Ok(terminal)
+            }
             Err(err) => Err(err),
         };
         attached.push((term, terminal));
@@ -215,7 +256,6 @@ pub async fn attach_all(client: &Arc<Client>, terms: &[TermId], cx: &mut AsyncAp
     attached
 }
 
-/// Reattaches a terminal to its process over a new connection.
 /// Reattaches terminals to their processes after reconnecting, all asked
 /// for at once. Returns those that couldn't be.
 pub async fn reattach_all(client: &Arc<Client>, terminals: Vec<(TermId, Entity<Terminal>)>, cx: &mut AsyncApp) -> Vec<TermId> {
@@ -223,8 +263,9 @@ pub async fn reattach_all(client: &Arc<Client>, terminals: Vec<(TermId, Entity<T
     let mut gone = Vec::new();
     for (term, terminal, joined) in pending {
         match joined.await {
-            Ok((backend, rx, cols, rows, data)) => {
+            Ok((backend, rx, cols, rows, data, overflow)) => {
                 terminal.update(cx, |terminal, cx| terminal.reconnect(backend, rx, cols, rows, &data, cx));
+                resync(client, term, &terminal, overflow, cx);
             }
             Err(_) => gone.push(term),
         }
