@@ -70,15 +70,12 @@ pub fn replace(exe: &Path, handover: &Handover) -> anyhow::Error {
         Ok(file) => file,
         Err(err) => return err,
     };
-    let kept: Vec<RawFd> = handover
-        .terms
-        .iter()
-        .map(|term| term.fd)
-        .chain([handover.listener])
-        .chain(handover.ide.as_ref().map(|ide| ide.fd))
-        .collect();
+    let kept = handover.fds();
     // Only what's handed over reaches the new agent: anything else open
-    // (connections, watchers, language servers' pipes) closes.
+    // (connections, watchers, language servers' pipes) closes. A program
+    // another thread starts between this and the `exec` (git for a slow
+    // request, say) inherits them too: the window is short, and closing it
+    // would take stopping every thread that may start one.
     for fd in open_fds() {
         set_cloexec(fd, !kept.contains(&fd));
     }
@@ -103,11 +100,39 @@ pub fn take() -> Option<Handover> {
     let read = read(Path::new(&path));
     let _ = std::fs::remove_file(&path);
     match read {
-        Ok(handover) => Some(handover),
+        Ok(handover) => {
+            reclaim(&handover);
+            Some(handover)
+        }
         Err(err) => {
             eprintln!("could not read the terminals handed over: {err:#}");
             None
         }
+    }
+}
+
+/// Handed over, the descriptors are this agent's again: no program it starts
+/// (git, a language server, another terminal) inherits them, or one that
+/// outlives it keeps the socket listening and the other terminals' ptys open.
+fn reclaim(handover: &Handover) {
+    #[cfg(unix)]
+    for fd in handover.fds() {
+        set_cloexec(fd, true);
+    }
+    #[cfg(windows)]
+    let _ = handover;
+}
+
+impl Handover {
+    /// The descriptors it hands over.
+    #[cfg_attr(windows, allow(dead_code))]
+    fn fds(&self) -> Vec<RawFd> {
+        self.terms
+            .iter()
+            .map(|term| term.fd)
+            .chain([self.listener])
+            .chain(self.ide.as_ref().map(|ide| ide.fd))
+            .collect()
     }
 }
 
@@ -164,5 +189,28 @@ fn set_cloexec(fd: RawFd, on: bool) {
             let flags = if on { flags | libc::FD_CLOEXEC } else { flags & !libc::FD_CLOEXEC };
             libc::fcntl(fd, libc::F_SETFD, flags);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn cloexec(fd: RawFd) -> bool {
+        unsafe { libc::fcntl(fd, libc::F_GETFD) & libc::FD_CLOEXEC != 0 }
+    }
+
+    #[test]
+    fn what_is_handed_over_closes_on_exec_again() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let [read, write] = fds;
+        let ide = Ide { fd: write, token: String::new() };
+        let handover = Handover { listener: read, next_term: 1, terms: Vec::new(), ide: Some(ide) };
+        set_cloexec(read, false);
+        set_cloexec(write, false);
+        reclaim(&handover);
+        assert!(cloexec(read) && cloexec(write));
+        drop((own(read), own(write)));
     }
 }

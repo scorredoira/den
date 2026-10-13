@@ -1367,9 +1367,7 @@ fn handed_ide(handover: &mut Handover) -> Option<(std::net::TcpListener, String)
     let ide = handover.ide.take()?;
     #[cfg(unix)]
     {
-        use std::os::fd::FromRawFd as _;
-        // SAFETY: the agent before left it open for this one, which takes it once.
-        Some((unsafe { std::net::TcpListener::from_raw_fd(ide.fd) }, ide.token))
+        Some((std::net::TcpListener::from(crate::handover::own(ide.fd)), ide.token))
     }
     #[cfg(windows)]
     {
