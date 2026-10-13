@@ -1,6 +1,8 @@
 # The Rust that builds Den, here and in CI (RUST_TOOLCHAIN in
-# .github/workflows/build.yml, which adds each package's target).
+# .github/workflows/build.yml, which adds each package's target). musl is
+# for the Linux servers' agent, which ./install builds too.
 [toolchain]
 channel = "1.99.0"
 components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-musl"]
 profile = "minimal"
