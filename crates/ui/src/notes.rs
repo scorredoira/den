@@ -92,8 +92,9 @@ pub struct NotesPanel {
     editor: Entity<EditorState>,
     /// Whether it has something, as last written.
     filled: bool,
-    save: Task<()>,
-    _subscription: Subscription,
+    /// The save waiting for the typing to pause, if there's one.
+    save: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl NotesPanel {
@@ -109,12 +110,20 @@ impl NotesPanel {
                 .placeholder("What's next here…")
                 .default_value(text)
         });
-        let subscription = cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
-            if let InputEvent::Change = event {
-                this.schedule_save(cx);
-            }
-        });
-        Self { key, place: Place::default(), editor, filled, save: Task::ready(()), _subscription: subscription }
+        let subscriptions = vec![
+            cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    this.schedule_save(cx);
+                }
+            }),
+            // What was typed last isn't lost with the panel, or the app.
+            cx.on_release(|this, cx| this.save_pending(cx)),
+            cx.on_app_quit(|this, cx| {
+                this.save_pending(cx);
+                async {}
+            }),
+        ];
+        Self { key, place: Place::default(), editor, filled, save: None, _subscriptions: subscriptions }
     }
 
     /// Whether it has something: its tab and icon say so.
@@ -124,7 +133,7 @@ impl NotesPanel {
 
     /// Replaces what it shows: `den notes` wrote them.
     pub fn set_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.save = Task::ready(());
+        self.save = None;
         self.filled = !text.trim().is_empty();
         self.editor.update(cx, |editor, cx| editor.set_value(text, window, cx));
         cx.notify();
@@ -157,15 +166,19 @@ impl NotesPanel {
             self.filled = filled;
             cx.notify();
         }
-        self.save = cx.spawn(async move |this, cx| {
+        self.save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_AFTER).await;
-            this.update(cx, |this, cx| this.save_now(cx)).ok();
-        });
+            this.update(cx, |this, cx| this.save_pending(cx)).ok();
+        }));
     }
 
-    fn save_now(&mut self, cx: &mut Context<Self>) {
-        let text = self.editor.read(cx).value().to_string();
-        set(&self.key, text, cx);
+    /// Writes what was typed, if it's still to be: only then, as another
+    /// window's notes may have been written since.
+    fn save_pending(&mut self, cx: &mut App) {
+        if self.save.take().is_some() {
+            let text = self.editor.read(cx).value().to_string();
+            set(&self.key, text, cx);
+        }
     }
 }
 
@@ -179,6 +192,30 @@ impl Render for NotesPanel {
             .pt_2()
             .bg(cx.theme().background)
             .child(Editor::new(&self.editor).bordered(false).h_full().context_menu(move |menu, _, _| notes_menu(menu, place)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// Closed before the typing paused long enough to be written, the notes
+    /// are written as they close.
+    #[gpui_kit::test]
+    fn what_was_just_typed_is_kept_when_the_notes_close(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::config::Config::default());
+        });
+        let (notes, cx) = cx.add_window_view(|window, cx| NotesPanel::new("closing-test".into(), window, cx));
+        notes.update_in(cx, |notes, window, cx| notes.focus(window, cx));
+        cx.simulate_input("ship it");
+        cx.update(|_, cx| assert_eq!(get("closing-test", cx), ""));
+        drop(notes);
+        cx.update(|window, _| window.remove_window());
+        cx.run_until_parked();
+        cx.cx.update(|cx| assert_eq!(get("closing-test", cx), "ship it"));
     }
 }
 
