@@ -123,34 +123,61 @@ pub struct Client {
 /// Copy of the agent binary to start the daemon from. On macOS, rebuilding a
 /// running binary can kill the process (the system detects that its code
 /// changed): the daemon, which holds the terminals, can't run from
-/// `target/`. The copy's name includes the binary's timestamp, so a new build
-/// gets a new copy, which `den` links to; older ones are deleted (an old agent
-/// still running doesn't notice: its file keeps existing for it until it exits).
+/// `target/`. The copy's name includes the binary's fingerprint, so a new
+/// build gets a new copy, which `den` links to; older ones are deleted (an
+/// old agent still running doesn't notice: its file keeps existing for it
+/// until it exits).
 fn stable_copy(agent_bin: &Path, state_dir: &Path) -> Result<std::path::PathBuf> {
     let dir = state_dir.join("agents");
     std::fs::create_dir_all(&dir)?;
-    let modified = std::fs::metadata(agent_bin)?
-        .modified()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let name = format!("den-agent-{PROTOCOL}-{modified}{}", std::env::consts::EXE_SUFFIX);
-    let copy = dir.join(&name);
-    if !copy.exists() {
-        let partial = dir.join(format!("{name}.part"));
-        std::fs::copy(agent_bin, &partial)?;
-        std::fs::rename(&partial, &copy)?;
-    }
+    let copy = copy_agent(agent_bin, &dir)?;
     // The `den` links would point to a deleted copy until the agent restarts.
     if let Err(err) = proto::link_den(&copy) {
         eprintln!("could not link `den` to {}: {err:#}", copy.display());
     }
-    for entry in std::fs::read_dir(&dir)?.flatten() {
-        if entry.file_name() != name.as_str() {
-            let _ = std::fs::remove_file(entry.path());
+    remove_other_copies(&dir, &copy)?;
+    Ok(copy)
+}
+
+/// What a copy is called while it's being made.
+const PARTIAL: &str = ".part";
+
+/// The copy of `agent_bin` in `dir`, made if it isn't there.
+fn copy_agent(agent_bin: &Path, dir: &Path) -> Result<PathBuf> {
+    let id = proto::build_id(&std::fs::read(agent_bin)?);
+    let name = format!("den-agent-{PROTOCOL}-{id}{}", std::env::consts::EXE_SUFFIX);
+    let copy = dir.join(&name);
+    if !copy.exists() {
+        // Each instance of the app copies to a file of its own: two may
+        // start at once.
+        let partial = dir.join(format!("{name}.{}{PARTIAL}", std::process::id()));
+        std::fs::copy(agent_bin, &partial)?;
+        // The other one's may be there already, and running (Windows can't
+        // replace it then): it's the same.
+        if let Err(err) = std::fs::rename(&partial, &copy) {
+            let _ = std::fs::remove_file(&partial);
+            if !copy.exists() {
+                return Err(err.into());
+            }
         }
     }
     Ok(copy)
+}
+
+/// Deletes the copies of other builds, but not one another instance of the
+/// app is making: a recent `.part` (an old one was left by one that died).
+fn remove_other_copies(dir: &Path, copy: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let copying = entry.file_name().to_string_lossy().ends_with(PARTIAL)
+            && entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified.elapsed().unwrap_or_default() < Duration::from_secs(600));
+        if entry.path() != copy && !copying {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 impl Drop for Client {
@@ -888,6 +915,28 @@ mod tests {
         let mut got: Vec<_> = (0..2).map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap()).collect();
         got.sort();
         assert_eq!(got, vec!["disconnect", "late"]);
+    }
+
+    #[test]
+    fn a_build_gets_a_copy_of_its_own() {
+        let dir = std::env::temp_dir().join(format!("den-stable-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let agents = dir.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let bin = dir.join("den-agent");
+        std::fs::write(&bin, "first").unwrap();
+        let in_flight = agents.join("den-agent-x.1.part");
+        std::fs::write(&in_flight, "another instance's").unwrap();
+        let first = copy_agent(&bin, &agents).unwrap();
+        // Rebuilt within the same second: still a new copy.
+        std::fs::write(&bin, "second").unwrap();
+        let second = copy_agent(&bin, &agents).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&second).unwrap(), b"second");
+        remove_other_copies(&agents, &second).unwrap();
+        assert!(!first.exists(), "the old copy is deleted");
+        assert!(in_flight.exists(), "another instance's copy in progress is left alone");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
