@@ -115,7 +115,8 @@ pub enum Request {
     /// To the Trash, not deleted. Responds `Path`: what `Untrash` puts back
     /// (`None` where the system doesn't say; `Ok` from older agents).
     Trash { path: PathBuf },
-    /// Reports changes inside `path` to this connection with `FsChanged`.
+    /// Reports changes inside `path` to this connection with `FsChanged`;
+    /// a file's (an open one), whatever git ignores.
     Watch { path: PathBuf },
     Unwatch { path: PathBuf },
     /// Fingerprint of the agent binary (`build_id`), to know whether there's a new one.

@@ -132,6 +132,7 @@ impl Workspace {
             .map(|client| client.request(Request::ReadFile { path: path.clone() }));
         let image_format = image_format(&path);
         let generation = self.begin_read(&path);
+        self.watch_file(&path, window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let read = match read {
                 Some(read) => match read.await {
@@ -191,10 +192,15 @@ impl Workspace {
                     self.message = None;
                 }
             }
-            // Saving would overwrite what changed there: it asks first.
+            // Already asked about this version.
+            Ok(text) if reload && tab.dirty && tab.on_disk.as_ref() == Some(&text) => {}
+            // It asks what to do; until answered, saving won't overwrite it.
             Ok(text) if reload && tab.dirty => {
                 tab.on_disk = Some(text);
                 self.message = Some(format!("{name} changed on disk; your unsaved changes are kept").into());
+                if let Some(ix) = self.tabs.iter().position(|tab| tab.path == *path && tab.is_file()) {
+                    self.ask_overwrite(ix, "Keep My Changes", window, cx);
+                }
             }
             Ok(text) => {
                 if let Some(markdown) = &tab.markdown {
@@ -271,6 +277,33 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Rereads every open file: what changed on disk shows, and what didn't
+    /// is left as it is.
+    pub(crate) fn reread_open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.is_file() && matches!(tab.content, Content::Ready))
+            .map(|tab| tab.path.clone())
+            .collect();
+        for path in paths {
+            self.load(path, true, window, cx);
+        }
+    }
+
+    /// Rereads the open files among `paths`.
+    pub(super) fn reload_changed(&mut self, paths: HashSet<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let reload: Vec<PathBuf> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.is_file() && matches!(tab.content, Content::Ready) && paths.contains(&tab.path))
+            .map(|tab| tab.path.clone())
+            .collect();
+        for path in reload {
+            self.load(path, true, window, cx);
+        }
+    }
+
     pub(super) fn on_fs_changed(
         &mut self,
         paths: HashSet<PathBuf>,
@@ -293,15 +326,7 @@ impl Workspace {
         self.changes.update(cx, |changes, cx| changes.mark_stale(cx));
         let visible = self.history_visible();
         self.history.update(cx, |history, cx| history.mark_stale(visible, cx));
-        let reload: Vec<PathBuf> = self
-            .tabs
-            .iter()
-            .filter(|tab| tab.is_file() && matches!(tab.content, Content::Ready) && paths.contains(&tab.path))
-            .map(|tab| tab.path.clone())
-            .collect();
-        for path in reload {
-            self.load(path, true, window, cx);
-        }
+        self.reload_changed(paths.clone(), window, cx);
         let diffs: Vec<usize> = (0..self.tabs.len())
             .filter(|ix| self.tabs[*ix].diff.is_some() && paths.contains(&self.tabs[*ix].path))
             .collect();
@@ -394,21 +419,21 @@ impl Workspace {
             return;
         };
         if self.tabs[ix].on_disk.is_some() {
-            return self.ask_overwrite(ix, window, cx);
+            return self.ask_overwrite(ix, "Cancel", window, cx);
         }
         self.save_file(ix, window, cx);
     }
 
     /// The file changed on disk while its tab had unsaved changes: saving
     /// overwrites that only if told to; or the tab reads it, dropping its
-    /// changes.
-    fn ask_overwrite(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// changes. `keep` names the answer that does neither.
+    fn ask_overwrite(&mut self, ix: usize, keep: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (path, editor) = (self.tabs[ix].path.clone(), self.tabs[ix].editor.clone());
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("{} changed on disk", file_name(&path)),
             Some("Another program changed it while you had unsaved changes here."),
-            &[PromptButton::new("Cancel"), PromptButton::new("Reload, Losing My Changes"), PromptButton::new("Overwrite")],
+            &[PromptButton::new(keep), PromptButton::new("Reload, Losing My Changes"), PromptButton::new("Overwrite")],
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {

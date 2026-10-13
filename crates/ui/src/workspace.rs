@@ -439,6 +439,9 @@ pub struct Workspace {
     ide_report: Option<Task<()>>,
     /// The agent reports the root's changes while this lives.
     fs_watch: Option<client::Watch>,
+    /// And those of each open file, which the root's may not report: git
+    /// ignores it, or it's elsewhere.
+    file_watches: HashMap<PathBuf, client::Watch>,
     /// On this machine (not on a server).
     local: bool,
     changes: Entity<ChangesPanel>,
@@ -668,6 +671,7 @@ impl Workspace {
             branch: None,
             client: agent,
             fs_watch,
+            file_watches: HashMap::new(),
             local,
             changes,
             history,
@@ -883,6 +887,7 @@ impl Workspace {
         let group = self.tabs[ix].group;
         let active = self.active;
         self.tabs.remove(ix);
+        self.unwatch_closed();
         let groups_before = self.editor_split.is_some();
         self.normalize_groups();
         let collapsed = groups_before && self.editor_split.is_none();
@@ -929,6 +934,36 @@ impl Workspace {
     /// Asks the agent to report changes inside `root`, until the returned
     /// `Watch` is dropped (with the workspace, or for another connection's).
     fn watch_fs(root: &Path, client: &Arc<Client>, window: &mut Window, cx: &mut Context<Self>) -> client::Watch {
+        Self::watch_path(root, client, window, cx, Self::on_fs_changed)
+    }
+
+    /// Asks the agent to report changes to the open file at `path` (see
+    /// `file_watches`), unless it does already.
+    fn watch_file(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.unwatch_closed();
+        if !self.file_watches.contains_key(path) {
+            let watch = Self::watch_path(path, &client, window, cx, Self::reload_changed);
+            self.file_watches.insert(path.to_path_buf(), watch);
+        }
+    }
+
+    /// Stops watching the files no tab has open anymore.
+    fn unwatch_closed(&mut self) {
+        let tabs = &self.tabs;
+        self.file_watches.retain(|path, _| tabs.iter().any(|tab| tab.path == *path && tab.is_file()));
+    }
+
+    /// Calls `changed` with what the agent reports changed at `path`.
+    fn watch_path(
+        root: &Path,
+        client: &Arc<Client>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        changed: fn(&mut Self, HashSet<PathBuf>, &mut Window, &mut Context<Self>),
+    ) -> client::Watch {
         let (tx, rx) = smol::channel::unbounded::<Vec<PathBuf>>();
         let watched = root.to_path_buf();
         let watch = client.watch_fs(root, move |event| {
@@ -942,7 +977,7 @@ impl Workspace {
             while let Ok(paths) = rx.recv().await {
                 let paths: HashSet<PathBuf> = paths.into_iter().collect();
                 if this
-                    .update_in(cx, |this, window, cx| this.on_fs_changed(paths, window, cx))
+                    .update_in(cx, |this, window, cx| changed(this, paths, window, cx))
                     .is_err()
                 {
                     break;
@@ -961,6 +996,7 @@ impl Workspace {
         // is retried with this one.
         self.message = None;
         self.fs_watch = Some(Self::watch_fs(&self.root, &client, window, cx));
+        self.file_watches.clear();
         self.file_tree
             .update(cx, |tree, cx| tree.set_client(client.clone(), cx));
         self.changes.update(cx, |changes, cx| changes.set_client(client.clone(), cx));
@@ -1106,6 +1142,10 @@ impl Workspace {
         if let Some(ix) = found {
             if pin {
                 self.tabs[ix].preview = false;
+            }
+            // Opened again: what's on disk, in case a change went unseen.
+            if self.tabs.iter().any(|tab| tab.path == path && tab.is_file() && matches!(tab.content, Content::Ready)) {
+                self.load(path.clone(), true, window, cx);
             }
             self.tabs[ix].grab_focus = focus;
             self.activate_with(ix, focus, window, cx);

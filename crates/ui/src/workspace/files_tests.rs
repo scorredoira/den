@@ -130,8 +130,10 @@ fn changes_on_disk_are_not_overwritten_silently(cx: &mut TestAppContext) {
     }));
 }
 
-/// Save asks: Overwrite saves (here, with no agent, tries to), Reload shows
-/// what is on disk and drops what wasn't saved, Cancel does nothing.
+/// A change on disk to a tab with unsaved changes asks at once, and only
+/// once for each version. Save asks again: Overwrite saves (here, with no
+/// agent, tries to), Reload shows what is on disk and drops what wasn't
+/// saved, Cancel does nothing.
 #[gpui_kit::test]
 fn save_asks_whether_to_overwrite_or_reload(cx: &mut TestAppContext) {
     let (workspace, cx) = workspace(cx);
@@ -142,6 +144,14 @@ fn save_asks_whether_to_overwrite_or_reload(cx: &mut TestAppContext) {
         read(this, "/files-test/a.txt", true, "theirs", window, cx);
         editor
     }));
+    cx.run_until_parked();
+    cx.simulate_prompt_answer("Keep My Changes");
+    cx.run_until_parked();
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        read(this, "/files-test/a.txt", true, "theirs", window, cx);
+    }));
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt(), "the same version isn't asked about twice");
     let save = |cx: &mut VisualTestContext| {
         cx.update(|window, cx| workspace.update(cx, |this, cx| this.save(&Save, window, cx)));
         cx.run_until_parked();
@@ -165,6 +175,8 @@ fn save_asks_whether_to_overwrite_or_reload(cx: &mut TestAppContext) {
     cx.update(|window, cx| workspace.update(cx, |this, cx| {
         read(this, "/files-test/a.txt", true, "theirs again", window, cx);
     }));
+    cx.run_until_parked();
+    cx.simulate_prompt_answer("Keep My Changes");
     save(cx);
     cx.simulate_prompt_answer("Reload, Losing My Changes");
     cx.run_until_parked();

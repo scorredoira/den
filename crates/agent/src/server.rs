@@ -556,12 +556,14 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Reply> {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("connection closed"))?;
             let root = path.clone();
-            let watcher = fs::watch(&path, true, move |paths| {
+            let report = move |paths| {
                 let _ = sender.send(ServerMessage::Event(Event::FsChanged {
                     root: root.clone(),
                     paths,
                 }));
-            })?;
+            };
+            // An open file: watched whatever git ignores, wherever it is.
+            let watcher = if path.is_file() { fs::watch_file(&path, report)? } else { fs::watch(&path, true, report)? };
             // The connection may have closed meanwhile.
             let mut state = state.locked();
             if state.clients.contains_key(&conn) {

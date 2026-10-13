@@ -322,6 +322,34 @@ pub fn watch(root: &Path, git: bool, changed: impl Fn(Vec<PathBuf>) + Send + 'st
     Ok(watcher)
 }
 
+/// Watches one file, ignored by git or not, and calls `changed` with it
+/// when it changes, until the returned value is dropped. Its folder is
+/// what's watched: a program that saves by replacing the file leaves a
+/// watch on the file itself watching nothing.
+pub fn watch_file(path: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> Result<notify::RecommendedWatcher> {
+    let dir = path.parent().context("a file has a folder")?;
+    let real = path.canonicalize()?;
+    let (tx, rx) = mpsc::channel::<()>();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if let Ok(event) = event
+            && !event.kind.is_access()
+            && event.paths.contains(&real)
+        {
+            let _ = tx.send(());
+        }
+    })?;
+    watcher.watch(dir, RecursiveMode::NonRecursive)?;
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        while rx.recv().is_ok() {
+            std::thread::sleep(DEBOUNCE);
+            rx.try_iter().for_each(drop);
+            changed(vec![path.clone()]);
+        }
+    });
+    Ok(watcher)
+}
+
 /// The repo's own git folder: `root/.git`, or in a worktree the one git
 /// keeps for it inside the main repo.
 fn git_dir(root: &Path) -> Option<PathBuf> {
@@ -559,6 +587,32 @@ mod tests {
         }
         assert!(!seen.lock().unwrap().iter().any(|path| path.starts_with(dir.join("logs"))));
         assert!(!seen.lock().unwrap().iter().any(|path| path.ends_with("noise.tmp")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watches_an_ignored_file() {
+        let dir = dir("watch-file");
+        std::fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
+        let path = dir.join("app.log");
+        std::fs::write(&path, "one").unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let _watcher = watch_file(&path, {
+            let seen = seen.clone();
+            move |paths| seen.lock().unwrap().extend(paths)
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(dir.join("other.txt"), "x").unwrap();
+        // Saved by replacing it, as editors do.
+        std::fs::write(dir.join("app.log.tmp"), "two").unwrap();
+        std::fs::rename(dir.join("app.log.tmp"), &path).unwrap();
+        let start = std::time::Instant::now();
+        while !seen.lock().unwrap().contains(&path) {
+            assert!(start.elapsed() < Duration::from_secs(5), "the change never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(seen.lock().unwrap().iter().all(|seen| *seen == path), "only the file is reported");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -746,6 +746,11 @@ impl Den {
                 // The menus are those of the window in front.
                 if window.is_window_active() {
                     crate::app_menu::set_plain(this.plain, cx);
+                    // What changed while away, also where nothing watches
+                    // (ignored by git, outside the folder).
+                    if let Some(workspace) = this.active_workspace() {
+                        workspace.update(cx, |workspace, cx| workspace.reread_open_files(window, cx));
+                    }
                 }
             })],
         };
