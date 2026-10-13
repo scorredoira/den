@@ -286,10 +286,13 @@ impl crate::ide::Host for IdeHost {
 
     fn ask_app(&self, term: TermId, group: &str, args: Vec<String>) -> Result<String, String> {
         let (sender, answer) = std::sync::mpsc::channel();
-        send_command(&self.0, Asker::Ide(sender), args, PathBuf::from(group), Some(term)).map_err(|err| format!("{err:#}"))?;
-        answer
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|_| "den didn't answer".to_string())?
+        let command = send_command(&self.0, Asker::Ide(sender), args, PathBuf::from(group), Some(term)).map_err(|err| format!("{err:#}"))?;
+        let answer = answer.recv_timeout(Duration::from_secs(10));
+        // Not waited for any more: the app's answer, if it comes, has no one to go to.
+        if answer.is_err() {
+            self.0.locked().commands.remove(&command);
+        }
+        answer.map_err(|_| "den didn't answer".to_string())?
     }
 }
 
@@ -623,13 +626,14 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
 /// Sends a `den` command, with the workspace of the terminal it ran in, to
 /// the app showing that terminal (an app can have several windows, each
 /// with its own connection) or else to the one that last said it runs them.
+/// The command's number, which `CommandDone` answers.
 fn send_command(
     state: &Shared,
     asker: Asker,
     args: Vec<String>,
     cwd: PathBuf,
     term: Option<TermId>,
-) -> Result<()> {
+) -> Result<u64> {
     let mut state = state.locked();
     let entry = term.and_then(|term| state.terms.get(&term)).map(|entry| entry.locked());
     let app = *state
@@ -645,7 +649,7 @@ fn send_command(
     let command = state.next_command;
     state.commands.insert(command, (app, asker));
     state.send(app, ServerMessage::Event(Event::Command { command, args, cwd, term, group }));
-    Ok(())
+    Ok(command)
 }
 
 /// The last `count` lines of a terminal's history and screen as text, with
