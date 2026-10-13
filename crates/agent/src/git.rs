@@ -183,14 +183,14 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
             Ok(Response::Ok)
         }
         GitOp::Switch { branch } => {
-            git(dir, &["switch", &branch])?;
+            git(dir, &["switch", revision(&branch)?])?;
             Ok(Response::Ok)
         }
         GitOp::Log { skip, limit } => Ok(Response::Commits(log(dir, skip, limit, None)?)),
         GitOp::FileLog { file, skip, limit } => Ok(Response::Commits(log(dir, skip, limit, Some(&file))?)),
         GitOp::Unmerged { limit } => Ok(Response::Commits(unmerged(dir, limit)?)),
         GitOp::CommitFiles { commit } => {
-            let files = changed(dir, &["diff-tree", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames", &commit])?;
+            let files = changed(dir, &["diff-tree", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames", revision(&commit)?])?;
             Ok(Response::Changes { base: None, files })
         }
         GitOp::CommitDiff { commit, file } => Ok(Response::Text(commit_diff(dir, &commit, &file, None)?)),
@@ -202,10 +202,10 @@ pub fn run(dir: &Path, op: GitOp) -> Result<Response> {
         }
         GitOp::Show { commit } => Ok(Response::Text(git(
             dir,
-            &["show", "--no-color", "--format=fuller", "--stat", "--patch", "-m", "--first-parent", "--no-renames", &commit],
+            &["show", "--no-color", "--format=fuller", "--stat", "--patch", "-m", "--first-parent", "--no-renames", revision(&commit)?],
         )?)),
         GitOp::FileAt { commit, file } => Ok(Response::Text(
-            git(dir, &["show", &format!("{commit}:{file}")]).or_else(|_| git(dir, &["show", &format!("{commit}^:{file}")]))?,
+            git(dir, &["show", &format!("{}:{file}", revision(&commit)?)]).or_else(|_| git(dir, &["show", &format!("{commit}^:{file}")]))?,
         )),
         GitOp::Search { query, skip, limit } => Ok(Response::Commits(search(dir, &query, skip, limit)?)),
         GitOp::Blame { file } => blame(dir, &file),
@@ -225,8 +225,17 @@ const WHOLE_FILE: &str = "--unified=100000000";
 fn commit_diff(dir: &Path, commit: &str, file: &str, context: Option<&str>) -> Result<String> {
     let mut args = vec!["diff-tree", "-p", "-r", "--root", "-m", "--first-parent", "--no-commit-id", "--no-renames"];
     args.extend(context);
-    args.extend([commit, "--", file]);
+    args.extend([revision(commit)?, "--", file]);
     git(dir, &args)
+}
+
+/// A commit or branch the UI names, which goes where git also takes
+/// options: one that starts with `-` would be taken as one.
+fn revision(name: &str) -> Result<&str> {
+    if name.starts_with('-') {
+        bail!("{name}: not a commit or branch");
+    }
+    Ok(name)
 }
 
 fn strs(files: &[String]) -> Vec<&str> {
@@ -552,6 +561,21 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn a_commit_or_branch_is_never_an_option() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        run(dir, &["init", "-q"]);
+        let written = dir.join("written");
+        let option = format!("--output={}", written.display());
+        assert!(super::run(dir, GitOp::Show { commit: option.clone() }).is_err());
+        assert!(super::run(dir, GitOp::CommitFiles { commit: option.clone() }).is_err());
+        assert!(super::run(dir, GitOp::CommitDiff { commit: option.clone(), file: "a".into() }).is_err());
+        assert!(super::run(dir, GitOp::Switch { branch: "--orphan=x".into() }).is_err());
+        assert!(!written.exists());
+        assert!(git(dir, &["branch", "--show-current"]).unwrap().trim() != "x");
+    }
 
     #[test]
     fn diffs_staged_files_before_the_first_commit() {
