@@ -1,7 +1,7 @@
 //! Minimal language server (LSP) client, for F12, Shift-F12 and completions.
 //!
 //! There's one server per project and language, started the first time it's
-//! asked and kept alive as long as the agent lives. Only `initialize`,
+//! asked and stopped with its task or after an hour unused. Only `initialize`,
 //! `didOpen`, `didChange`, `didClose`, `didChangeWatchedFiles`, `definition`,
 //! `references`, `completion` and `documentSymbol` are used. For the file we send the editor's
 //! text (saved or not) and close it when asking about another one, so the
@@ -32,6 +32,9 @@ const INIT_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// After a server fails to start, how long before trying again.
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+/// A server not asked anything for this long is stopped: it may hold
+/// gigabytes (rust-analyzer), and is started again when next needed.
+const IDLE_STOP: Duration = Duration::from_secs(60 * 60);
 /// Messages beyond this size are taken as garbage.
 const MAX_MESSAGE: usize = 64 << 20;
 /// LSP "content modified" error: retried.
@@ -133,6 +136,8 @@ struct Slot {
     server: Option<Arc<Server>>,
     /// When and why it last failed to start.
     failed: Option<(Instant, String)>,
+    /// When it was last asked for.
+    used: Option<Instant>,
 }
 /// Binaries already looked up (including missing ones).
 static BINARIES: LazyLock<Mutex<HashMap<String, Option<PathBuf>>>> = LazyLock::new(Default::default);
@@ -331,6 +336,7 @@ fn server(language: &'static Language, root: &Path) -> Result<Option<Arc<Server>
     let key = (root.to_path_buf(), language.name);
     let slot = SERVERS.lock().unwrap().entry(key).or_default().clone();
     let mut slot = slot.lock().unwrap();
+    slot.used = Some(Instant::now());
     if let Some(server) = &slot.server {
         if server.alive.load(Ordering::Relaxed) {
             return Ok(Some(server.clone()));
@@ -381,6 +387,23 @@ fn server(language: &'static Language, root: &Path) -> Result<Option<Arc<Server>
             bail!("{why}")
         }
     }
+}
+
+/// Stops the servers of the task at `task`, which is gone. Each process
+/// goes as soon as no request is waiting for it.
+pub fn stop(task: &Path) {
+    SERVERS.lock().unwrap().retain(|(root, _), _| !root.starts_with(task));
+}
+
+/// Stops the servers not asked anything for `IDLE_STOP`. One that's busy
+/// starting or answering isn't idle.
+pub fn stop_idle() {
+    SERVERS.lock().unwrap().retain(|_, slot| {
+        let Ok(slot) = slot.try_lock() else {
+            return true;
+        };
+        slot.server.is_none() || slot.used.is_none_or(|used| used.elapsed() < IDLE_STOP)
+    });
 }
 
 /// TypeScript server, as in VS Code: the project's `typescript` or, if it has
@@ -1203,6 +1226,19 @@ mod tests {
         assert_eq!(strip_snippet("fn ${1}() {\\}"), "fn () {}");
         assert_eq!(word_start("    let ñame", 12), 8);
         assert_eq!(word_start("foo.", 4), 4);
+    }
+
+    #[test]
+    fn a_removed_task_takes_its_servers() {
+        let task = Path::new("/den-test/tasks/removed");
+        let kept = (PathBuf::from("/den-test/tasks/kept"), RUST.name);
+        for key in [(task.join("crate"), RUST.name), (task.to_path_buf(), GO.name), kept.clone()] {
+            SERVERS.lock().unwrap().insert(key, Arc::default());
+        }
+        stop(task);
+        let servers = SERVERS.lock().unwrap();
+        let left: Vec<_> = servers.keys().filter(|(root, _)| root.starts_with("/den-test")).collect();
+        assert_eq!(left, [&kept]);
     }
 
     #[test]

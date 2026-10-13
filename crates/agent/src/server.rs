@@ -452,6 +452,9 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
         let mut saved = Vec::new();
         move || for tick in 0u64.. {
             std::thread::sleep(Duration::from_millis(500));
+            if tick % SAVE_TICKS == 0 {
+                lsp::stop_idle();
+            }
             let changed = state.locked().foregrounds_changed();
             // Reading a command line runs `ps`: not while holding the lock.
             let agents: Vec<(TermId, Option<String>)> = changed
@@ -867,6 +870,8 @@ fn own_separators(request: &mut Request) {
 /// changes); its terminals close with it.
 fn remove_task(state: &Shared, path: &Path, force: bool) -> Result<Response> {
     tasks::remove(path, force)?;
+    // Its language servers too, which would go on indexing a folder that's gone.
+    lsp::stop(path);
     let group = path.to_string_lossy().into_owned();
     let mut state = state.locked();
     let terms: Vec<TermId> = state
