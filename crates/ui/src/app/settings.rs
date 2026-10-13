@@ -38,10 +38,6 @@ struct Conflict {
     other: &'static Shortcut,
 }
 
-fn shortcut(id: &str) -> &'static Shortcut {
-    SHORTCUTS.iter().find(|shortcut| shortcut.id == id).expect("shortcut")
-}
-
 impl Den {
     /// Opens settings (or focuses them if already open).
     pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -134,27 +130,10 @@ impl Den {
     /// Changes a shortcut's combination (`None`: no shortcut). If it belongs to
     /// another, changes nothing and asks.
     fn set_shortcut(&mut self, id: &'static str, keys: Option<String>, cx: &mut Context<Self>) {
-        if let Some(keys) = &keys
-            && let Some(keystroke) = shortcuts::parse(keys)
-            && let Some(other) = shortcuts::owner(&keystroke, cx).filter(|other| other.id != id)
-        {
-            if let Some(settings) = &mut self.settings {
-                settings.conflict = Some(Conflict { id, keys: keys.clone(), other });
-            }
-            return cx.notify();
-        }
-        let default = shortcut(id).default;
-        Config::update(cx, |config| {
-            let same_as_default = keys.as_deref().and_then(shortcuts::parse) == shortcuts::parse(default);
-            if same_as_default {
-                config.keys.remove(id);
-            } else {
-                config.keys.insert(id.to_string(), keys.unwrap_or_default());
-            }
-        });
-        shortcuts::apply(cx);
+        let keys = keys.unwrap_or_default();
+        let conflict = shortcuts::set(id, &keys, cx).err().map(|other| Conflict { id, keys, other });
         if let Some(settings) = &mut self.settings {
-            settings.conflict = None;
+            settings.conflict = conflict;
         }
         cx.notify();
     }

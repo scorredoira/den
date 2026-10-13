@@ -33,6 +33,11 @@ full list; the main ones:
   range and the text: what they mean by "this"); `den tabs` lists the open
   files.
 - `den message <text>` shows a short message in the status bar.
+- `den shortcuts` lists the app's shortcuts (name, keys, what they do);
+  `den shortcuts set <name> <keys>` changes one (`''` for none),
+  `den shortcuts reset <name>` puts its default back. When the user says a
+  shortcut does nothing, ask them to press it and run `den keys`: the last
+  keystrokes the app got, the action each ran (or nothing) and the focus.
 - `den notes` prints the workspace's notes: what's next there, kept by Den
   outside the repo. `den notes add <text>` adds a line (e.g. what's left
   when you stop), `echo ... | den notes set` replaces them.

@@ -378,4 +378,5 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-m", Minimize, None),
     ]);
     shortcuts::apply(cx);
+    shortcuts::keep_recent_keys(cx);
 }

@@ -88,6 +88,13 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
+            ["keys"] => Ok(shortcuts::recent_keys(cx)),
+            ["shortcuts"] => Ok(shortcuts::list(cx)),
+            ["shortcuts", "set", id, keys] => set_shortcut(id, keys, cx),
+            ["shortcuts", "reset", id] => match shortcuts::SHORTCUTS.iter().find(|shortcut| shortcut.id == *id) {
+                Some(shortcut) => set_shortcut(id, shortcut.default, cx),
+                None => Err(format!("{id}: no such shortcut (see den shortcuts)")),
+            },
             ["where"] => {
                 let terminal = here(self, false, window, cx).ok().map(|(root, _)| root);
                 self.whereabouts(terminal, cx)
@@ -385,6 +392,18 @@ impl Den {
         out
     }
 }
+
+/// `den shortcuts set <name> <keys>`: `""` leaves it without keys.
+fn set_shortcut(id: &str, keys: &str, cx: &mut App) -> Result<String, String> {
+    if !shortcuts::SHORTCUTS.iter().any(|shortcut| shortcut.id == id) {
+        return Err(format!("{id}: no such shortcut (see den shortcuts)"));
+    }
+    if !keys.is_empty() && shortcuts::parse(keys).is_none() {
+        return Err(format!("{keys}: not keys (as in cmd-alt-w or f16)"));
+    }
+    shortcuts::set(id, keys, cx).map(|()| String::new()).map_err(|other| format!("{keys} is already {} ({})", other.id, other.label))
+}
+
 
 /// A panel by the name `den panel` takes: as the layout saves it
 /// (files, terminals, debugger, changes, notes…).

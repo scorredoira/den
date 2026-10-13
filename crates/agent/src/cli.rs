@@ -80,6 +80,16 @@ keyboard stays in the terminal unless --focus.
                       or notes.
   den reveal <file>   selects the file in the files panel.
   den message <text>  shows a message in the status bar.
+  den shortcuts       lists the app's shortcuts: name, keys (- for none),
+                      what they do, and the default if changed.
+  den shortcuts set <name> <keys>
+                      gives one these keys (cmd-alt-w, f16; '' for none),
+                      unless another has them.
+  den shortcuts reset <name>
+                      gives one its default keys back.
+  den keys            the last keystrokes the app got: the keys, the
+                      action they ran (or nothing) and where the focus
+                      was.
   den notes           prints the workspace's notes (its Notes panel).
   den notes add [<text>]
                       adds a line to them: the text, or stdin.

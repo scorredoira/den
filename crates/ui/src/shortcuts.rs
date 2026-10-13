@@ -3,7 +3,9 @@
 //! applied immediately, without touching the components' own (the editor, the
 //! terminal).
 
-use gpui_kit::{Action, App, KeyBinding, Keystroke, Modifiers, NoAction, is_no_action};
+use std::collections::VecDeque;
+
+use gpui_kit::{Action, App, Global, KeyBinding, Keystroke, Modifiers, NoAction, is_no_action};
 
 use crate::{config::Config, *};
 
@@ -185,6 +187,69 @@ pub fn parse(keys: &str) -> Option<Keystroke> {
     Keystroke::parse(keys).ok().filter(|keystroke| !keystroke.key.is_empty())
 }
 
+/// Gives the shortcut `id` these keys (`""`, none; the default's, back to
+/// it). Keys another shortcut has are refused: the other's name.
+pub fn set(id: &str, keys: &str, cx: &mut App) -> Result<(), &'static Shortcut> {
+    let shortcut = SHORTCUTS.iter().find(|shortcut| shortcut.id == id).expect("a shortcut");
+    if let Some(other) = parse(keys).and_then(|keystroke| owner(&keystroke, cx)).filter(|other| other.id != id) {
+        return Err(other);
+    }
+    Config::update(cx, |config| {
+        if parse(keys) == parse(shortcut.default) {
+            config.keys.remove(id);
+        } else {
+            config.keys.insert(id.to_string(), keys.to_string());
+        }
+    });
+    apply(cx);
+    Ok(())
+}
+
+/// The last keystrokes the app got, with what each ran, oldest first: for
+/// `den keys`, to see why a shortcut does nothing.
+#[derive(Default)]
+struct RecentKeys(VecDeque<String>);
+
+impl Global for RecentKeys {}
+
+const RECENT_KEYS: usize = 20;
+
+/// Starts keeping the last keystrokes (`recent_keys`).
+pub fn keep_recent_keys(cx: &mut App) {
+    cx.set_global(RecentKeys::default());
+    cx.observe_keystrokes(|event, _, cx| {
+        let action = event.action.as_ref().map_or("nothing", |action| action.name());
+        let context: Vec<&str> =
+            event.context_stack.iter().filter_map(|context| context.primary()).map(|entry| entry.key.as_ref()).collect();
+        let line = format!("{}\t{action}\t{}", event.keystroke.unparse(), context.join(" > "));
+        let recent = &mut cx.global_mut::<RecentKeys>().0;
+        if recent.len() == RECENT_KEYS {
+            recent.pop_front();
+        }
+        recent.push_back(line);
+    })
+    .detach();
+}
+
+/// The last keystrokes, one a line: the keys, the action they ran (or
+/// `nothing`) and where the focus was.
+pub fn recent_keys(cx: &App) -> String {
+    cx.try_global::<RecentKeys>().map(|recent| recent.0.iter().map(|line| format!("{line}\n")).collect()).unwrap_or_default()
+}
+
+/// Every shortcut, one a line: its name, its keys (`-`, none) and its label,
+/// and the default when it was changed.
+pub fn list(cx: &App) -> String {
+    SHORTCUTS
+        .iter()
+        .map(|shortcut| {
+            let keys = keys(shortcut, cx).map_or("-".to_string(), |keys| keys.unparse());
+            let default = if changed(shortcut, cx) { format!(" (default {})", if shortcut.default.is_empty() { "-" } else { shortcut.default }) } else { String::new() };
+            format!("{}\t{keys}\t{}{default}\n", shortcut.id, shortcut.label)
+        })
+        .collect()
+}
+
 /// Whether the shortcut differs from the default.
 pub fn changed(shortcut: &Shortcut, cx: &App) -> bool {
     Config::get(cx).keys.contains_key(shortcut.id)
@@ -249,6 +314,20 @@ mod tests {
     use gpui_kit::Keystroke;
 
     use super::SHORTCUTS;
+
+    /// What `den shortcuts set` and Settings do: keys another has are
+    /// refused, and the default's go back to it.
+    #[gpui_kit::test]
+    fn a_shortcut_takes_keys_no_other_has(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::config::Config::default());
+            assert!(super::set("CloseAllTabs", "f16", cx).is_ok());
+            assert_eq!(super::list(cx).lines().find(|line| line.starts_with("CloseAllTabs\t")), Some("CloseAllTabs\tf16\tClose All Tabs (default secondary-alt-w)"));
+            assert_eq!(super::set("CollapseFileTree", "f16", cx).map_err(|other| other.id), Err("CloseAllTabs"));
+            assert!(super::set("CloseAllTabs", "secondary-alt-w", cx).is_ok());
+            assert!(crate::config::Config::get(cx).keys.is_empty(), "back to the default");
+        });
+    }
 
     #[test]
     fn defaults_parse_and_do_not_clash() {
