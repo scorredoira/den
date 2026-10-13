@@ -53,6 +53,12 @@ impl Core {
                 if let Some(page) = self.pages.get_mut(&vm) {
                     page.contexts.insert(id, debugged);
                 }
+                // A document that started before Chrome had the script for new
+                // ones (a navigation right after the page was found) gets it now.
+                if context["auxData"]["isDefault"] == true {
+                    let expression = json!({ "expression": ALT_CLICK_SCRIPT, "silent": true, "contextId": id });
+                    self.call_in_background(event.session.clone(), "Runtime.evaluate", expression);
+                }
             }
             "Runtime.executionContextDestroyed" => {
                 let id = params["executionContextId"].as_i64().context("a context without id")?;
