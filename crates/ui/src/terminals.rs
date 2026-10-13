@@ -1643,6 +1643,15 @@ pub fn rename_saved_term(group: &str, term: TermId, name: Option<String>) {
     });
 }
 
+/// Forgets how `group`'s terminals were laid out: its workspace was removed.
+pub fn forget_layout(group: &str) {
+    with_layouts(|layouts| {
+        if layouts.groups.remove(group).is_some() {
+            layouts.store();
+        }
+    });
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum SavedTab {

@@ -391,8 +391,10 @@ impl Den {
                             c.order.retain(|other| other != &config);
                             c.own_worktrees.retain(|other| other != &config);
                             c.sessions.remove(&config);
+                            c.debug.remove(&config);
                         });
                         crate::notes::forget(&config, cx);
+                        crate::terminals::forget_layout(&key.path.to_string_lossy());
                         if this.active.as_ref() == Some(&key) {
                             this.active = None;
                             if let Some(next) = this.ordered(cx).first().map(|(key, _)| key.clone()) {
