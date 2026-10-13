@@ -45,8 +45,10 @@ const LAUNCH_TEMPLATE: &str = r#"{
 }
 "#;
 
-/// How often to look whether the program listens on the port of its page.
+/// How often to look whether the program listens on the port of its page,
+/// and for how long: a program that never does isn't waited for forever.
 const OPEN_POLL: Duration = Duration::from_millis(100);
+const OPEN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long a value's card waits, once the pointer leaves its name, before
 /// it goes or shows another name's: time to reach it across other names.
@@ -224,6 +226,10 @@ struct Conn {
     relay: u64,
     next_id: u64,
     pending: HashMap<u64, Reply>,
+    /// The running VMs were asked for and haven't been answered: they
+    /// aren't asked again until they are, so a program that doesn't answer
+    /// doesn't pile up a request a second.
+    counting: bool,
     /// The program's working directory, which its paths are relative to.
     cwd: PathBuf,
 }
@@ -996,12 +1002,18 @@ impl Debugger {
         };
         let generation = self.generation;
         let group = self.root.to_string_lossy().into_owned();
+        let started = Instant::now();
         cx.spawn(async move |this, cx| {
             loop {
                 let Ok(gone) = this.update(cx, |this, _| this.generation != generation) else {
                     return;
                 };
                 if gone {
+                    return;
+                }
+                if started.elapsed() > OPEN_TIMEOUT {
+                    let message = format!("The page wasn't opened: nothing listened on port {port}");
+                    this.update(cx, |this, cx| this.info(message, cx)).ok();
                     return;
                 }
                 if let Ok(Response::Ports(ports)) = client.request(Request::Ports).await
@@ -1045,7 +1057,7 @@ impl Debugger {
             client.close_relay(relay);
             return;
         }
-        self.conn = Some(Conn { client, relay, next_id: 0, pending: HashMap::new(), cwd: self.root.clone() });
+        self.conn = Some(Conn { client, relay, next_id: 0, pending: HashMap::new(), counting: false, cwd: self.root.clone() });
         cx.spawn(async move |this, cx| {
             while let Ok(update) = rx.recv().await {
                 let alive = this
@@ -1075,8 +1087,15 @@ impl Debugger {
                         if this.generation != generation {
                             return false;
                         }
-                        if this.status == Status::Connected {
+                        let counting = this.conn.as_ref().is_some_and(|conn| conn.counting);
+                        if this.status == Status::Connected && !counting {
+                            if let Some(conn) = &mut this.conn {
+                                conn.counting = true;
+                            }
                             this.send("threads", json!({}), |this, result, cx| {
+                                if let Some(conn) = &mut this.conn {
+                                    conn.counting = false;
+                                }
                                 let running = result.ok().and_then(|body| body.get("running").and_then(Value::as_u64));
                                 if let Some(running) = running.filter(|running| *running != this.running) {
                                     this.running = running;
