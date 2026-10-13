@@ -12,6 +12,7 @@ use std::{
 };
 
 use client::{Client, RelayUpdate};
+use proto::Request;
 use crate::common::serial;
 
 #[test]
@@ -66,4 +67,6 @@ fn a_relay_carries_lines_both_ways_until_the_program_closes_it() {
 
     // nothing listens there now
     assert!(smol::block_on(client.connect_relay(port, |_| {})).is_err());
+    client.notify(Request::Shutdown);
+    let _ = std::fs::remove_dir_all(&dir);
 }
