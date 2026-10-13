@@ -194,7 +194,8 @@ pub struct Config {
     #[serde(deserialize_with = "lenient")]
     pub layout: Layout,
     /// The debugging layout while it isn't in use, as the last debug session
-    /// left it; unset, `Layout::for_debugging` of the editing one.
+    /// left it; unset, the editing one. Its side column and activity bar
+    /// are the editing one's (`Layout::keep_column`).
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub debug_layout: Option<Layout>,
     /// The editing layout while the debugging one is in use: set only while
@@ -575,16 +576,19 @@ impl Config {
     }
 
     /// Puts the debugging layout in use, or the editing one back, each as it
-    /// was left: what changes while debugging stays in the debugging one.
+    /// was left: what changes while debugging stays in the debugging one,
+    /// except the side column and the activity bar, which are one in both.
     pub fn use_debug_layout(&mut self, debugging: bool) {
         if debugging == self.debugging() {
             return;
         }
+        let mut next = if debugging { self.debug_layout.take().unwrap_or_else(|| self.layout.clone()) } else { self.edit_layout.take().unwrap_or_default() };
+        next.keep_column(&self.layout);
+        let left = std::mem::replace(&mut self.layout, next);
         if debugging {
-            let debug = self.debug_layout.take().unwrap_or_else(|| self.layout.for_debugging());
-            self.edit_layout = Some(std::mem::replace(&mut self.layout, debug));
-        } else if let Some(edit) = self.edit_layout.take() {
-            self.debug_layout = Some(std::mem::replace(&mut self.layout, edit));
+            self.edit_layout = Some(left);
+        } else {
+            self.debug_layout = Some(left);
         }
     }
 

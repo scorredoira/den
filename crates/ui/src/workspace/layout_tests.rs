@@ -901,9 +901,9 @@ fn debug(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, on: bool) {
     cx.run_until_parked();
 }
 
-/// A debug session puts the debugging layout in use: the first time, the
-/// side column closed and the debugger's tab in front. Its end puts back
-/// the editing layout exactly as it was.
+/// A debug session puts the debugging layout in use: the debugger's tab in
+/// front, the side column where it was. Its end puts back the editing
+/// layout exactly as it was.
 #[gpui_kit::test]
 fn a_session_uses_the_debugging_layout(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |layout| {
@@ -913,7 +913,7 @@ fn a_session_uses_the_debugging_layout(cx: &mut TestAppContext) {
     let editing = cx.update(|_, cx| Config::get(cx).layout.clone());
     let shown = workspace.read_with(cx, |workspace, _| workspace.panels.shown());
     debug(&workspace, cx, true);
-    assert!(cx.debug_bounds("side-column").is_none(), "the side column closes");
+    bounds(cx, "side-column");
     bounds(cx, "debug-tab");
     assert!(cx.update(|_, cx| Config::get(cx).debugging()));
     let whereabouts = workspace.read_with(cx, |workspace, cx| workspace.whereabouts(cx));
@@ -926,22 +926,24 @@ fn a_session_uses_the_debugging_layout(cx: &mut TestAppContext) {
 }
 
 /// What changes while debugging stays for the next session, and not in the
-/// editing layout.
+/// editing layout; but the side column and the activity bar are one in
+/// both, so going between a workspace that debugs and one that doesn't
+/// moves neither.
 #[gpui_kit::test]
 fn a_change_while_debugging_stays_for_the_next_session(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     debug(&workspace, cx, true);
-    assert!(cx.debug_bounds("side-column").is_none());
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Files, cx));
     workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    cx.update(|_, cx| Config::update(cx, |config| config.layout.move_panel(Panel::Files, Place(Panel::Workspaces), None)));
+    let column = cx.update(|_, cx| Config::get(cx).layout.places.clone());
     cx.run_until_parked();
     debug(&workspace, cx, false);
-    // editing: as before the session
-    bounds(cx, "side-column");
+    // editing: the terminals as before the session, the column as it was left
     bounds(cx, "terminals");
+    assert_eq!(cx.update(|_, cx| Config::get(cx).layout.places.clone()), column, "the side column's places as moved while debugging");
     debug(&workspace, cx, true);
-    bounds(cx, "side-column");
     assert!(cx.debug_bounds("terminals").is_none(), "the terminals hidden, as the last session left them");
+    assert_eq!(cx.update(|_, cx| Config::get(cx).layout.places.clone()), column);
 }
 
 /// A restart is one session: the layout doesn't go back to editing in
@@ -994,7 +996,7 @@ fn the_app_starts_editing() {
     let mut config = Config::default();
     config.layout.side_width = 300.;
     config.use_debug_layout(true);
-    assert!(!config.layout.side, "the first debugging layout closes the side column");
+    assert!(config.layout.side, "the side column stays");
     config.layout.dock = Dock::Bottom;
     let saved = serde_json::to_vec(&config).unwrap();
     let mut loaded: Config = serde_json::from_slice(&saved).unwrap();

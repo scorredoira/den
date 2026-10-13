@@ -261,10 +261,19 @@ fn known_heights<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Ha
 }
 
 impl Layout {
-    /// The first layout of debugging, made from the editing one: the side
-    /// column closed, as everything of the debugger is in its tab.
-    pub fn for_debugging(&self) -> Layout {
-        Layout { side: false, ..self.clone() }
+    /// The side column and the activity bar of `from`: one in every
+    /// workspace, whether it debugs or not, so that going from one to
+    /// another moves neither.
+    pub fn keep_column(&mut self, from: &Layout) {
+        self.side = from.side;
+        self.place = from.place;
+        self.places = from.places.clone();
+        self.bar = from.bar.clone();
+        self.off = from.off.clone();
+        self.hidden = from.hidden.clone();
+        self.collapsed = from.collapsed.clone();
+        self.heights = from.heights.clone();
+        self.side_width = from.side_width;
     }
 
     /// Mends one edited by hand: every side panel in one place, once.
