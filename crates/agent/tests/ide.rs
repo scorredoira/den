@@ -79,6 +79,9 @@ fn claude_code_connects_as_to_an_ide() {
     assert_eq!((lock["ideName"].as_str(), lock["transport"].as_str()), (Some("Den"), Some("ws")));
     let token = lock["authToken"].as_str().unwrap().to_string();
     assert_eq!(token.len(), 32);
+    // only its user reads the token
+    let mode = std::os::unix::fs::PermissionsExt::mode(&locks[0].metadata().unwrap().permissions());
+    assert_eq!(mode & 0o777, 0o600);
 
     // its terminals say where it listens; this one's shell is the "Claude Code"
     let group = dir.to_string_lossy().into_owned();

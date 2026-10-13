@@ -92,7 +92,7 @@ pub fn start(host: Arc<dyn Host>, handed: Option<(TcpListener, String)>) -> Resu
         "transport": "ws",
         "authToken": ide.token,
     });
-    std::fs::write(&ide.lock, serde_json::to_vec(&lock)?)?;
+    write_private(&ide.lock, &serde_json::to_vec(&lock)?)?;
     let _ = IDE.set(ide.clone());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -109,6 +109,18 @@ pub fn start(host: Arc<dyn Host>, handed: Option<(TcpListener, String)>) -> Resu
             });
         }
     });
+    Ok(())
+}
+
+/// Writes `path` anew, readable only by its user: the lock file holds the
+/// token that lets a program act as Claude Code's IDE.
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(path)?, bytes)?;
     Ok(())
 }
 
