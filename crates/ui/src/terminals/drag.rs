@@ -86,8 +86,10 @@ impl TerminalArea {
     }
 
     /// Detach layout data while keeping each terminal view and backend alive.
-    /// A tab left with only the notes goes: they're their tab again.
-    fn take_source(&mut self, drag: &TerminalDrag) -> Option<TerminalTab> {
+    /// A tab left with only the notes goes: they're their tab again. Unless
+    /// the source goes back beside them (`into`, where it's dropped): then
+    /// the tab stays for it.
+    fn take_source(&mut self, drag: &TerminalDrag, into: Option<Pane>) -> Option<TerminalTab> {
         if self.notes_from_tab(drag) {
             return Some(TerminalTab { id: self.next_tab_id(), tree: Tree::Leaf(Pane::Notes), active: Pane::Notes, name: None });
         }
@@ -103,7 +105,7 @@ impl TerminalArea {
                             tab.active = tree.leaves()[0];
                         }
                         tab.tree = tree;
-                        if tab.notes_only() {
+                        if tab.notes_only() && into != Some(Pane::Notes) {
                             self.tabs.remove(ix);
                         }
                         Some(TerminalTab { id: self.next_tab_id(), tree: Tree::Leaf(pane), active: pane, name: None })
@@ -118,8 +120,13 @@ impl TerminalArea {
         if !self.can_drop_on(drag, target) {
             return false;
         }
-        let source = self.take_source(drag).expect("validated source");
-        let ix = self.tabs.iter().position(|tab| tab.contains(target)).expect("destination survives detaching source");
+        let source = self.take_source(drag, Some(target)).expect("validated source");
+        let Some(ix) = self.tabs.iter().position(|tab| tab.contains(target)) else {
+            // Nothing left to go beside: the source is a tab of its own.
+            self.tabs.push(source);
+            self.active = self.tabs.len() - 1;
+            return true;
+        };
         self.tabs[ix].tree.insert(target, &source.tree, axis, side == 0);
         self.tabs[ix].active = source.active;
         self.active = ix;
@@ -140,7 +147,7 @@ impl TerminalArea {
         let Some(source_ix) = self.source_index(drag) else { return false };
         if matches!(drag.source, Source::Pane(Pane::Notes)) {
             let active = self.tabs[source_ix].id;
-            self.take_source(drag);
+            self.take_source(drag, None);
             self.active = self.tabs.iter().position(|tab| tab.id == active).unwrap_or(self.active.min(self.tabs.len().saturating_sub(1)));
             return true;
         }
@@ -150,7 +157,7 @@ impl TerminalArea {
             self.active = source_ix;
             return true;
         }
-        let source = self.take_source(drag).expect("validated source");
+        let source = self.take_source(drag, None).expect("validated source");
         let ix = before.and_then(|id| self.tabs.iter().position(|tab| tab.id == id)).unwrap_or(self.tabs.len());
         self.tabs.insert(ix, source);
         self.active = ix;
@@ -319,6 +326,28 @@ mod tests {
                 this.remove(Pane::Term(3), window, cx);
                 assert_eq!(this.notes_split(), None);
                 assert_eq!(this.tabs.len(), 1);
+            })
+        });
+    }
+
+    /// The one terminal beside the notes, dropped on their other side, goes
+    /// there: the tab stays, though for a moment only the notes were in it.
+    #[gpui_kit::test]
+    fn a_terminal_moves_around_the_notes_it_is_alone_with(cx: &mut TestAppContext) {
+        init(cx);
+        let cx = cx.add_empty_window();
+        let area = cx.new_window_entity(area);
+        cx.update(|_, cx| {
+            area.update(cx, |this, _| {
+                let notes = drag(this, Source::Pane(Pane::Notes));
+                assert!(this.move_to_pane(&notes, Pane::Term(1), DropPlacement::Right));
+                let tab = this.tabs[this.active].id;
+                let term = drag(this, Source::Pane(Pane::Term(1)));
+                assert!(this.move_to_pane(&term, Pane::Notes, DropPlacement::Right));
+                assert_eq!(this.tabs.len(), 3);
+                assert_eq!(this.tabs[this.active].id, tab);
+                assert_eq!(this.tabs[this.active].tree, Tree::Split { axis: Axis::Row, children: vec![Tree::Leaf(Pane::Notes), Tree::Leaf(Pane::Term(1))] });
+                assert_eq!(this.tabs[this.active].active, Pane::Term(1));
             })
         });
     }
