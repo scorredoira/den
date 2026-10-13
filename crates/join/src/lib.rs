@@ -43,6 +43,9 @@ const VERSION: u64 = 1;
 const CONNECT_RETRY: Duration = Duration::from_millis(100);
 /// How long a program, or a client, has to say hello.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a write to the client or a program may wait for it to read:
+/// one that stops reading must not hold join, which serves the others.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to reach a program that already listens, for a new client.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// How often the loop looks at the programs and at an interrupt.
@@ -502,7 +505,7 @@ fn client(session: u64, stream: TcpStream, tx: Sender<Msg>) {
     if !said_hello {
         return eprintln!("den debug join: refused a debugger: its first line is not a hello");
     }
-    if let Err(error) = stream.set_read_timeout(None) {
+    if let Err(error) = stream.set_read_timeout(None).and_then(|()| stream.set_write_timeout(Some(WRITE_TIMEOUT))) {
         return eprintln!("den debug join: a debugger's connection: {error}");
     }
     if tx.send(Msg::Client { session, stream, hello }).is_err() {
@@ -667,6 +670,7 @@ impl Hub {
                 continue;
             }
             let conn = TcpStream::connect_timeout(&loopback(kid.port), CONNECT_TIMEOUT).and_then(|conn| {
+                conn.set_write_timeout(Some(WRITE_TIMEOUT))?;
                 let reader = conn.try_clone()?;
                 Ok((conn, reader))
             });
