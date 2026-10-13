@@ -64,22 +64,32 @@ impl Den {
                         }
                     })
                     .await;
+                // A newer attempt started meanwhile (or the server went): this
+                // one's outcome is no longer the server's.
                 match result {
                     Ok(client) => {
-                        this.update_in(cx, |this, window, cx| this.connected(name.clone(), client, window, cx))
-                            .ok();
+                        this.update_in(cx, |this, window, cx| {
+                            if this.host(&name).is_some_and(|host| host.generation == generation) {
+                                this.connected(name.clone(), client, window, cx);
+                            } else if !is_app_agent(&client, cx) {
+                                client.disconnect();
+                            }
+                        })
+                        .ok();
                         return;
                     }
                     Err(err) => {
-                        let alive = this
+                        let current = this
                             .update(cx, |this, cx| {
-                                if let Some(host) = this.host_mut(&name) {
-                                    host.status = HostStatus::Failed(format!("{err:#}").into());
-                                }
+                                let Some(host) = this.host_mut(&name).filter(|host| host.generation == generation) else {
+                                    return false;
+                                };
+                                host.status = HostStatus::Failed(format!("{err:#}").into());
                                 cx.notify();
+                                true
                             })
-                            .is_ok();
-                        if !alive {
+                            .unwrap_or(false);
+                        if !current {
                             return;
                         }
                         delay = (delay * 2).clamp(Duration::from_secs(1), Duration::from_secs(30));
