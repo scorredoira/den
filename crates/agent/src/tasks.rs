@@ -83,7 +83,7 @@ fn folder_for(path: &Path) -> Result<PathBuf> {
 /// `~/something` → this machine's home folder plus `something`.
 pub fn expand_home(path: &Path) -> PathBuf {
     match (path.strip_prefix("~"), dirs::home_dir()) {
-        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        (Ok(rest), Some(home)) => home.join(rest),
         _ => path.to_path_buf(),
     }
 }

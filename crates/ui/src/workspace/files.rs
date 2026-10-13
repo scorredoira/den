@@ -608,7 +608,7 @@ impl Workspace {
                     Ok(_) => {
                         if let Some(tab) = tab {
                             // The user may have kept typing while the write was in flight.
-                            tab.dirty = tab.editor.read(cx).text().to_string() != tab.saved;
+                            tab.dirty = *tab.editor.read(cx).text() != tab.saved;
                             tab.confirm_close = false;
                             tab.preview = false;
                         }

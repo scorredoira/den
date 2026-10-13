@@ -49,6 +49,7 @@ pub struct GridLayout {
 }
 
 impl TerminalElement {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         terminal: Entity<Terminal>,
         view: Entity<TerminalView>,

@@ -61,7 +61,7 @@ impl Debugger {
         }
     }
 
-    pub(super) fn change_hover(&mut self, to: Option<(String, Bounds<Pixels>)>, cx: &mut Context<Self>) {
+    pub(super) fn change_hover(&mut self, to: Option<HoverAt>, cx: &mut Context<Self>) {
         if self.hover_change.as_ref().is_some_and(|(pending, _)| *pending == to) {
             return;
         }

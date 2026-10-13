@@ -320,9 +320,12 @@ impl Kid {
     }
 }
 
+/// A program's last lines of stderr, and whether it's still to be told.
+type Tail = (Arc<Mutex<VecDeque<String>>>, Arc<AtomicBool>);
+
 /// Copies a program's output to join's, each line after its name. Lines
 /// of stderr are kept in `tail` too.
-fn pass(from: impl Read + Send + 'static, prefix: String, stderr: bool, tail: Option<(Arc<Mutex<VecDeque<String>>>, Arc<AtomicBool>)>) {
+fn pass(from: impl Read + Send + 'static, prefix: String, stderr: bool, tail: Option<Tail>) {
     thread::spawn(move || {
         let mut reader = BufReader::new(from);
         let mut line = Vec::new();
@@ -651,9 +654,9 @@ impl Hub {
         let current = self.session.as_ref().map(|session| session.id);
         match msg {
             Msg::Client { session, stream, hello } => self.open_session(session, stream, &hello),
-            Msg::ClientLine { session, line } if Some(session) == current => self.from_client(&line),
+            Msg::ClientLine { session, line } if Some(session) == current => self.on_client(&line),
             Msg::ClientGone { session } if Some(session) == current => self.end_session(),
-            Msg::ChildLine { session, child, line } if Some(session) == current => self.from_child(child, &line),
+            Msg::ChildLine { session, child, line } if Some(session) == current => self.on_child(child, &line),
             Msg::ChildGone { session, child, error } if Some(session) == current => {
                 let kid = &mut self.kids.0[child];
                 match kid.process.try_wait() {
@@ -709,7 +712,7 @@ impl Hub {
         }
         let count = conns.len();
         self.session = Some(Session { id, client, conns, pending: HashMap::new(), next: 0, stops: vec![HashSet::new(); count] });
-        self.from_client(hello);
+        self.on_client(hello);
         for note in notes {
             self.output(note);
         }
@@ -727,7 +730,7 @@ impl Hub {
         }
     }
 
-    fn from_client(&mut self, line: &str) {
+    fn on_client(&mut self, line: &str) {
         let mut request = match serde_json::from_str::<Value>(line) {
             Ok(Value::Object(request)) => request,
             Ok(_) => return self.reply(0, Err("a request must be an object".into())),
@@ -794,7 +797,7 @@ impl Hub {
         }
     }
 
-    fn from_child(&mut self, child: usize, line: &str) {
+    fn on_child(&mut self, child: usize, line: &str) {
         let name = self.kids.0[child].name.clone();
         let mut value = serde_json::from_str::<Value>(line).unwrap_or(Value::Null);
         let numbered = namespace(&mut value, child);
@@ -819,7 +822,7 @@ impl Hub {
                     _ => {}
                 }
             }
-            return self.to_client(&Value::Object(message));
+            return self.send_client(&Value::Object(message));
         }
 
         let Some(number) = message.get("id").and_then(Value::as_u64) else {
@@ -908,7 +911,7 @@ impl Hub {
         }
         self.output(why.clone());
         for vm in stops {
-            self.to_client(&json!({ "event": "resumed", "vm": vm }));
+            self.send_client(&json!({ "event": "resumed", "vm": vm }));
         }
         for (_, id) in failed {
             self.reply(id, Err(why.clone()));
@@ -931,17 +934,17 @@ impl Hub {
                 response.insert("error".into(), json!(error));
             }
         }
-        self.to_client(&Value::Object(response));
+        self.send_client(&Value::Object(response));
     }
 
     /// A line in the client's console.
     fn output(&mut self, text: String) {
-        self.to_client(&json!({ "event": "output", "text": format!("den debug join: {text}\n"), "file": "", "line": 0 }));
+        self.send_client(&json!({ "event": "output", "text": format!("den debug join: {text}\n"), "file": "", "line": 0 }));
     }
 
     /// A client that can't be written to is closed: its reader then ends
     /// the session.
-    fn to_client(&mut self, message: &Value) {
+    fn send_client(&mut self, message: &Value) {
         let Some(session) = self.session.as_ref() else {
             return;
         };

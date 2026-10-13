@@ -204,16 +204,14 @@ pub fn inline(sides: &SideBySide) -> Inline {
         }
         let end = (row..sides.old.lines.len()).find(|&end| matches!(sides.old.lines[end].kind, Kind::Same | Kind::Skipped(_))).unwrap_or(sides.old.lines.len());
         result.changes.push(result.lines.len());
-        for ix in row..end {
-            let line = &sides.old.lines[ix];
+        for (line, (start, text)) in sides.old.lines[row..end].iter().zip(&old_rows[row..end]) {
             if line.kind == Kind::Changed {
-                result.push(line.number, None, old_rows[ix].0, old_rows[ix].1.clone());
+                result.push(line.number, None, start, text.clone());
             }
         }
-        for ix in row..end {
-            let line = &sides.new.lines[ix];
+        for (line, (start, text)) in sides.new.lines[row..end].iter().zip(&new_rows[row..end]) {
             if line.kind == Kind::Changed {
-                result.push(None, line.number, new_rows[ix].0, new_rows[ix].1.clone());
+                result.push(None, line.number, start, text.clone());
             }
         }
         row = end;

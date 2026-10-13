@@ -221,6 +221,8 @@ fn notification(method: &str, params: Value) -> String {
 impl Ide {
     /// One Claude Code: its token checked, then its requests answered and
     /// what it should hear sent, until it goes.
+    // The handshake's callback returns tungstenite's own error response.
+    #[allow(clippy::result_large_err)]
     fn serve(self: &Arc<Self>, stream: TcpStream) -> Result<()> {
         let token = self.token.clone();
         let mut socket = tungstenite::accept_hdr(stream.try_clone()?, |request: &Upgrade, mut response: Accepted| {

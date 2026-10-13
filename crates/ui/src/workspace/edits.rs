@@ -83,7 +83,7 @@ impl Workspace {
         match error {
             None => {
                 tab.saved = text;
-                tab.dirty = tab.editor.read(cx).text().to_string() != tab.saved;
+                tab.dirty = *tab.editor.read(cx).text() != tab.saved;
                 tab.confirm_close = false;
                 self.message = None;
             }

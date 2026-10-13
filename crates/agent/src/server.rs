@@ -190,9 +190,10 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
     std::thread::spawn({
         let state = state.clone();
         let mut saved = Vec::new();
-        move || for tick in 0u64.. {
+        let mut tick = 0u64;
+        move || loop {
             std::thread::sleep(Duration::from_millis(500));
-            if tick % SAVE_TICKS == 0 {
+            if tick.is_multiple_of(SAVE_TICKS) {
                 lsp::stop_idle();
             }
             let changed = state.locked().foregrounds_changed();
@@ -211,9 +212,10 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
             }
             state.expire_activity();
             state.send_agents();
-            if tick % SAVE_TICKS == 0 {
+            if tick.is_multiple_of(SAVE_TICKS) {
                 save_if_changed(&state, &mut saved);
             }
+            tick = tick.wrapping_add(1);
         }
     });
 

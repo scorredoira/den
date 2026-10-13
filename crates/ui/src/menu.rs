@@ -23,13 +23,16 @@ pub fn item<T: 'static>(
 /// icon of its own (a side panel with company), set by its place before any
 /// menu in it opens; none in the code's, which is never hidden.
 struct PanelUnder {
-    hide: Option<Rc<dyn Fn(&mut App)>>,
-    own_icon: Option<Rc<dyn Fn(&mut App)>>,
+    hide: Option<PanelAction>,
+    own_icon: Option<PanelAction>,
 }
+
+/// Something done to the panel under the menu.
+pub type PanelAction = Rc<dyn Fn(&mut App)>;
 
 impl Global for PanelUnder {}
 
-pub fn set_panel_under(hide: Option<Rc<dyn Fn(&mut App)>>, own_icon: Option<Rc<dyn Fn(&mut App)>>, cx: &mut App) {
+pub fn set_panel_under(hide: Option<PanelAction>, own_icon: Option<PanelAction>, cx: &mut App) {
     cx.set_global(PanelUnder { hide, own_icon });
 }
 

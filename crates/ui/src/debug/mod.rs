@@ -90,6 +90,9 @@ fn page_of(hello: &Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A name hovered and where it is, in window coordinates.
+pub type HoverAt = (String, Bounds<Pixels>);
+
 /// A value shown by hovering its name, opened like a variable.
 pub struct HoverValue {
     pub var: Var,
@@ -306,7 +309,7 @@ pub struct Debugger {
     hover_inside: bool,
     /// What replaces the card once the grace is over: another name's value,
     /// or nothing.
-    hover_change: Option<(Option<(String, Bounds<Pixels>)>, Task<()>)>,
+    hover_change: Option<(Option<HoverAt>, Task<()>)>,
     /// The test (its file and name) launched from the code, until it connects.
     launching_test: Option<(PathBuf, String)>,
     /// How the session started, for Restart.

@@ -314,37 +314,6 @@ pub fn spawn_daemon(log: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn hooks_in_den() {
-        let repo = std::env::temp_dir().join(format!("den-hooks-{}", std::process::id()));
-        std::fs::create_dir_all(repo.join(".den")).unwrap();
-        assert_eq!(super::repo_hook(&repo, "create"), None);
-        std::fs::write(repo.join(".den/create"), "").unwrap();
-        assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".den/create")));
-        let _ = std::fs::remove_dir_all(&repo);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn only_its_user_connects_to_the_socket() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("agent.sock");
-        let _listener = super::Listener::bind(&socket).unwrap();
-        assert_eq!(std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777, 0o600);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn reads_own_cwd() {
-        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
-        let read = super::process_cwd(std::process::id()).map(|path| path.canonicalize().unwrap());
-        assert_eq!(read, Some(cwd));
-    }
-}
-
 /// Avoid flashing console windows when a GUI-launched agent runs a helper.
 pub fn configure_background(command: &mut std::process::Command) {
     #[cfg(windows)]
@@ -500,4 +469,35 @@ pub fn close_failed_pty(pair: portable_pty::PtyPair) {
     }
     #[cfg(unix)]
     drop(pair);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hooks_in_den() {
+        let repo = std::env::temp_dir().join(format!("den-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(repo.join(".den")).unwrap();
+        assert_eq!(super::repo_hook(&repo, "create"), None);
+        std::fs::write(repo.join(".den/create"), "").unwrap();
+        assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".den/create")));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn only_its_user_connects_to_the_socket() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let _listener = super::Listener::bind(&socket).unwrap();
+        assert_eq!(std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn reads_own_cwd() {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let read = super::process_cwd(std::process::id()).map(|path| path.canonicalize().unwrap());
+        assert_eq!(read, Some(cwd));
+    }
 }

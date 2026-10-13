@@ -1064,17 +1064,17 @@ impl Workspace {
             .capture_any_mouse_down(move |event: &MouseDownEvent, _, cx| {
                 if event.button == MouseButton::Right && !terminal_mode {
                     let workspace = hide.clone();
-                    let hide: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+                    let hide: menu::PanelAction = Rc::new(move |cx| {
                         workspace.update(cx, |this, cx| this.remove_panel(panel, cx)).ok();
                     });
                     // Its own icon, if it has company where it is.
                     let layout = &Config::get(cx).layout;
                     let company = layout.place_of(panel).is_some_and(|place| layout.panels(place).len() > 1);
                     let workspace = hide_workspace.clone();
-                    let own_icon: Option<Rc<dyn Fn(&mut App)>> = company.then(|| {
+                    let own_icon: Option<menu::PanelAction> = company.then(|| {
                         Rc::new(move |cx: &mut App| {
                             workspace.update(cx, |this, cx| this.own_place(panel, cx)).ok();
-                        }) as Rc<dyn Fn(&mut App)>
+                        }) as menu::PanelAction
                     });
                     menu::set_panel_under(Some(hide), own_icon, cx);
                 }

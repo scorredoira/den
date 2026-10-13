@@ -195,6 +195,29 @@ impl Render for NotesPanel {
     }
 }
 
+/// The text's right-click menu: editing, and where they go from `place`.
+/// It's built while the editor is mid-update and can't read whether it
+/// has text selected: Cut and Copy are always enabled.
+fn notes_menu(menu: NativeMenu, place: Place) -> NativeMenu {
+    let menu = menu
+        .menu("Cut", Box::new(input::Cut))
+        .menu("Copy", Box::new(input::Copy))
+        .menu("Paste", Box::new(input::Paste))
+        .separator()
+        .menu("Select All", Box::new(input::SelectAll))
+        .separator();
+    match place {
+        Place::Tab => menu.menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab)),
+        Place::Split => menu
+            .menu("Split Right", Box::new(crate::SplitRight))
+            .menu("Split Down", Box::new(crate::SplitDown))
+            .separator()
+            .menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab))
+            .menu("Close Split", Box::new(crate::CloseTab)),
+        Place::Editor => menu.menu("Move to Terminals", Box::new(crate::NotesToTerminals)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,28 +239,5 @@ mod tests {
         cx.update(|window, _| window.remove_window());
         cx.run_until_parked();
         cx.cx.update(|cx| assert_eq!(get("closing-test", cx), "ship it"));
-    }
-}
-
-/// The text's right-click menu: editing, and where they go from `place`.
-/// It's built while the editor is mid-update and can't read whether it
-/// has text selected: Cut and Copy are always enabled.
-fn notes_menu(menu: NativeMenu, place: Place) -> NativeMenu {
-    let menu = menu
-        .menu("Cut", Box::new(input::Cut))
-        .menu("Copy", Box::new(input::Copy))
-        .menu("Paste", Box::new(input::Paste))
-        .separator()
-        .menu("Select All", Box::new(input::SelectAll))
-        .separator();
-    match place {
-        Place::Tab => menu.menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab)),
-        Place::Split => menu
-            .menu("Split Right", Box::new(crate::SplitRight))
-            .menu("Split Down", Box::new(crate::SplitDown))
-            .separator()
-            .menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab))
-            .menu("Close Split", Box::new(crate::CloseTab)),
-        Place::Editor => menu.menu("Move to Terminals", Box::new(crate::NotesToTerminals)),
     }
 }

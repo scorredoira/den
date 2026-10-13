@@ -145,11 +145,11 @@ impl Workspace {
             return Err(format!("unsaved changes, nothing closed: {}", unsaved.join(", ")));
         }
         if let Some(path) = path
-            && !self.tabs.iter().any(|tab| hits(tab))
+            && !self.tabs.iter().any(&hits)
         {
             return Err(format!("{} isn't open", path.display()));
         }
-        while let Some(ix) = self.tabs.iter().position(|tab| hits(tab)) {
+        while let Some(ix) = self.tabs.iter().position(&hits) {
             self.close(ix, window, cx);
         }
         Ok(())

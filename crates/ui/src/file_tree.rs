@@ -81,6 +81,9 @@ const READ_AHEAD: usize = 64;
 /// How many operations Undo goes back.
 const UNDO_LIMIT: usize = 100;
 
+/// What a context menu item does to the tree.
+type TreeAction = dyn Fn(&mut FileTree, &mut Window, &mut Context<FileTree>);
+
 /// What was cut or copied in a files panel, for any of the app's trees to
 /// paste: one on the same agent, or both on this machine.
 #[derive(Clone)]
@@ -1194,9 +1197,9 @@ impl FileTree {
         let absolute = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
         // Rename and Trash have their shortcuts in the tree's context.
         let menu = menu.action_context(self.focus_handle.clone());
-        let item = |label: &'static str, action: Box<dyn Fn(&mut FileTree, &mut Window, &mut Context<FileTree>)>| {
+        let item = |label: &'static str, action: Box<TreeAction>| {
             let tree = tree.clone();
-            let action: std::rc::Rc<dyn Fn(&mut FileTree, &mut Window, &mut Context<FileTree>)> = action.into();
+            let action: std::rc::Rc<TreeAction> = action.into();
             PopupMenuItem::new(label).on_click(move |_, window, cx| {
                 let action = action.clone();
                 tree.update(cx, |tree, cx| action(tree, window, cx)).ok();

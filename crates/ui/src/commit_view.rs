@@ -322,7 +322,7 @@ fn halves(side: &diff::Side, language: &str, word: Hsla, theme: &HighlightTheme)
             let changed: Vec<(Range<usize>, HighlightStyle)> = line
                 .changed
                 .iter()
-                .map(|absolute| relative(absolute))
+                .map(relative)
                 .filter(|range| !range.is_empty())
                 .map(|range| (range, HighlightStyle { background_color: Some(word), ..Default::default() }))
                 .collect();

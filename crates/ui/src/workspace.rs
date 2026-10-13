@@ -301,11 +301,14 @@ struct Place {
     position: Position,
 }
 
+/// An editor, its selections and its scroll.
+type Origin = (Entity<EditorState>, Vec<(usize, usize)>, Point<Pixels>);
+
 /// Cmd-Shift-O or Cmd-Shift-T, while open.
 struct SymbolSearch {
     picker: Entity<SymbolPicker>,
     /// The editor in front, its selections and scroll: what Esc goes back to.
-    origin: Option<(Entity<EditorState>, Vec<(usize, usize)>, Point<Pixels>)>,
+    origin: Option<Origin>,
     /// The workspace's symbols being asked for.
     request: Task<()>,
     _subscription: Subscription,

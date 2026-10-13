@@ -127,7 +127,13 @@ fn project_root(language: &Language, task: &Path, file: &Path) -> PathBuf {
     found.unwrap_or_else(|| task.to_path_buf())
 }
 
-static SERVERS: LazyLock<Mutex<HashMap<(PathBuf, &'static str), Arc<Mutex<Slot>>>>> = LazyLock::new(Default::default);
+/// The requests waiting for their reply, by id.
+type Pending = Arc<Mutex<HashMap<i64, mpsc::Sender<Result<Value, String>>>>>;
+
+/// Each project and language's server.
+type Servers = HashMap<(PathBuf, &'static str), Arc<Mutex<Slot>>>;
+
+static SERVERS: LazyLock<Mutex<Servers>> = LazyLock::new(Default::default);
 
 /// A project and language's server. Locked on its own while the server
 /// starts, so other servers aren't kept waiting.
@@ -498,7 +504,7 @@ fn from_shell(_name: &str) -> Option<PathBuf> { None }
 struct Server {
     stdin: Arc<Mutex<ChildStdin>>,
     next_id: AtomicI64,
-    pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Result<Value, String>>>>>,
+    pending: Pending,
     /// The currently open document and its version (only one: the rest come from disk).
     open: Mutex<Option<(PathBuf, i64, String)>>,
     /// Positions in UTF-8 bytes instead of UTF-16.
@@ -554,7 +560,7 @@ impl Server {
             });
         }
         let stdout = child.stdout.take().context("no stdout")?;
-        let pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Result<Value, String>>>>> = Default::default();
+        let pending: Pending = Default::default();
         let alive = Arc::new(AtomicBool::new(true));
         let (replies_tx, replies_rx) = mpsc::channel::<Value>();
         {
@@ -893,6 +899,7 @@ impl Server {
     /// `DocumentSymbol` or a list of `SymbolInformation`, flattened in the
     /// order of the file.
     fn symbols(&self, result: &Value, path: &Path, text: &str) -> Vec<LspSymbol> {
+        #[allow(clippy::too_many_arguments)]
         fn walk(server: &Server, items: &[Value], container: Option<&str>, depth: u32, local: bool, path: &Path, text: &str, out: &mut Vec<LspSymbol>) {
             for item in items {
                 // `DocumentSymbol` has where the name is; `SymbolInformation`, the whole thing.
@@ -1085,7 +1092,7 @@ fn send(stdin: &Mutex<ChildStdin>, message: &Value) -> Result<()> {
 /// server's requests to `replies`; notifications are ignored.
 fn read_loop(
     stdout: impl Read,
-    pending: Arc<Mutex<HashMap<i64, mpsc::Sender<Result<Value, String>>>>>,
+    pending: Pending,
     alive: Arc<AtomicBool>,
     replies: mpsc::Sender<Value>,
 ) {

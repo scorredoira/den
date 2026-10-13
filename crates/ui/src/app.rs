@@ -1308,7 +1308,7 @@ impl Den {
             if self.active.as_ref() == Some(key) {
                 usize::MAX
             } else {
-                recent.iter().position(|task| task.host == key.host.to_string() && task.path == key.path).unwrap_or(RECENT)
+                recent.iter().position(|task| task.host == key.host && task.path == key.path).unwrap_or(RECENT)
             }
         });
         let labels = distinct_labels(keys.iter().map(|key| (self.label(key), key.path.as_path())));

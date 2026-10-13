@@ -7,14 +7,18 @@ use std::{
 
 use anyhow::Result;
 
+/// A connection to the agent: its reading end, its writing end, and what
+/// closes both.
+pub type Socket = (Box<dyn Read + Send>, Box<dyn Write + Send>, crate::CloseStream);
+
 /// Connects to the agent's local socket: one end for reading and one for writing.
 #[cfg(unix)]
-pub fn connect(socket: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, crate::CloseStream)> {
+pub fn connect(socket: &Path) -> Result<Socket> {
     split(std::os::unix::net::UnixStream::connect(socket)?)
 }
 
 #[cfg(unix)]
-pub(crate) fn split(stream: std::os::unix::net::UnixStream) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, crate::CloseStream)> {
+pub(crate) fn split(stream: std::os::unix::net::UnixStream) -> Result<Socket> {
     let closer = stream.try_clone()?;
     let close = Box::new(move || {
         let _ = closer.shutdown(std::net::Shutdown::Both);
@@ -23,7 +27,7 @@ pub(crate) fn split(stream: std::os::unix::net::UnixStream) -> Result<(Box<dyn R
 }
 
 #[cfg(windows)]
-pub fn connect(socket: &Path) -> Result<(Box<dyn Read + Send>, Box<dyn Write + Send>, crate::CloseStream)> {
+pub fn connect(socket: &Path) -> Result<Socket> {
     let stream = crate::windows_pipe::Stream::connect(socket)?;
     let closer = stream.clone();
     Ok((Box::new(stream.clone()), Box::new(stream), Box::new(move || closer.close())))
