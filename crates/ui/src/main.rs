@@ -33,9 +33,17 @@ mod terminals;
 mod update;
 mod workspace;
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc::RecvTimeoutError,
+    time::Duration,
+};
 
 use gpui_kit::*;
+
+/// How long the window waits for the agent to open on the workspace: a
+/// running one answers at once, and a new one starts in well under it.
+const AGENT_WAIT: Duration = Duration::from_secs(2);
 
 
 actions!(
@@ -184,12 +192,17 @@ fn main() {
     }
 
     // Terminals live in the agent; if it doesn't start, the app works without
-    // them. It connects, and lists the tasks, while the app starts: the
-    // window opens on the workspace, without waiting for it.
-    let agent = std::thread::spawn(|| {
-        let client = agent::connect().inspect_err(|err| eprintln!("no agent: {err:#}")).ok()?;
-        let tasks = smol::block_on(app::list_tasks(&client)).ok();
-        Some((client, tasks))
+    // them. It connects, and lists the tasks, while the app starts, for the
+    // window to open on the workspace in its first frame. An agent slow to
+    // answer isn't waited for longer than `AGENT_WAIT`: the window opens
+    // without it, and connects when it answers.
+    let (agent_tx, agent) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let started = agent::connect().inspect_err(|err| eprintln!("no agent: {err:#}")).ok().map(|client| {
+            let tasks = smol::block_on(app::list_tasks(&client)).ok();
+            (client, tasks)
+        });
+        let _ = agent_tx.send(started);
     });
 
     let application = gpui_kit::application().with_assets(assets::Assets);
@@ -217,9 +230,19 @@ fn main() {
         app_menu::set(cx);
 
         update::init(cx);
-        let (agent, tasks) = match agent.join().ok().flatten() {
-            Some((client, tasks)) => (Some(client), tasks),
-            None => (None, None),
+        let (agent, tasks) = match agent.recv_timeout(AGENT_WAIT) {
+            Ok(Some((client, tasks))) => (Some(client), tasks),
+            Ok(None) | Err(RecvTimeoutError::Disconnected) => (None, None),
+            Err(RecvTimeoutError::Timeout) => {
+                app::set_agent_pending(cx);
+                let root = root.clone();
+                cx.spawn(async move |cx| {
+                    let started = cx.background_spawn(async move { agent.recv().ok().flatten() }).await;
+                    cx.update(|cx| app::agent_started(started, root, cx));
+                })
+                .detach();
+                (None, None)
+            }
         };
         app::set_agent(agent.clone(), cx);
         app::set_start_tasks(tasks, cx);

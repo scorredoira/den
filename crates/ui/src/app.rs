@@ -178,6 +178,9 @@ struct Main {
     /// The local tasks, listed while the app started, for the first window
     /// to open on.
     start_tasks: Option<Vec<TaskInfo>>,
+    /// The agent was slow to answer while the app started: the main window
+    /// opened without it, connecting.
+    agent_pending: bool,
 }
 
 impl Global for Main {}
@@ -197,6 +200,42 @@ pub fn set_agent(agent: Option<Arc<Client>>, cx: &mut App) {
 
 pub fn set_start_tasks(tasks: Option<Vec<TaskInfo>>, cx: &mut App) {
     cx.default_global::<Main>().start_tasks = tasks;
+}
+
+/// The agent is still starting: the main window opens connecting to it.
+pub fn set_agent_pending(cx: &mut App) {
+    cx.default_global::<Main>().agent_pending = true;
+}
+
+/// The agent answered after the main window opened without it (see
+/// `set_agent_pending`), or (`None`) it didn't start: the window connects to
+/// it, and opens on the workspace it would have opened on (`root`, or the
+/// last one) if none was opened meanwhile.
+pub fn agent_started(started: Option<(Arc<Client>, Option<Vec<TaskInfo>>)>, root: Option<PathBuf>, cx: &mut App) {
+    cx.default_global::<Main>().agent_pending = false;
+    let Some((handle, den)) = main_window(cx) else {
+        if let Some((client, _)) = started {
+            set_agent(Some(client.clone()), cx);
+            crate::listen_for_open(&client, cx);
+        }
+        return;
+    };
+    handle
+        .update(cx, |_, window, cx| {
+            den.update(cx, |den, cx| match started {
+                Some((client, tasks)) => {
+                    den.connected(LOCAL.into(), client, window, cx);
+                    if den.active.is_none() && den.pending_last.is_none() {
+                        den.enter_start(tasks.unwrap_or_default(), root, true, window, cx);
+                    }
+                }
+                None => {
+                    den.hosts[0].status = HostStatus::Failed("no agent".into());
+                    cx.notify();
+                }
+            })
+        })
+        .ok();
 }
 
 /// Whether `client` is the app's connection to the local agent.
@@ -788,6 +827,8 @@ impl Den {
             destination: None,
             status: if client.is_some() {
                 HostStatus::Connected
+            } else if cx.default_global::<Main>().agent_pending {
+                HostStatus::Connecting(CONNECTING)
             } else {
                 HostStatus::Failed("no agent".into())
             },
@@ -2020,6 +2061,28 @@ mod palette_tests {
         cx.simulate_prompt_answer("Discard Changes");
         cx.run_until_parked();
         assert!(den.read_with(cx, |den, _| !den.workspaces.contains_key(&key)));
+    }
+
+    /// An agent slow to start: the main window opens connecting to it, and
+    /// says so if it doesn't start after all.
+    #[gpui_kit::test]
+    fn the_window_opens_while_the_agent_starts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            super::set_agent_pending(cx);
+            super::open_window(None, None, false, cx);
+        });
+        let status = |cx: &mut TestAppContext| {
+            cx.update(|cx| match &super::main_window(cx).unwrap().1.read(cx).hosts[0].status {
+                super::HostStatus::Connecting(_) => "connecting".to_string(),
+                super::HostStatus::Failed(message) => message.to_string(),
+                _ => "connected".to_string(),
+            })
+        };
+        assert_eq!(status(cx), "connecting");
+        cx.update(|cx| super::agent_started(None, None, cx));
+        assert_eq!(status(cx), "no agent");
     }
 
     /// A hidden project is left out of Cmd-E and Cmd-K, unless it's in
