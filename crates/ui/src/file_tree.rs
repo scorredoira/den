@@ -190,8 +190,11 @@ pub struct FileTree {
     local: bool,
     /// In a plain editor: no terminals nor history to send things to.
     plain: bool,
-    /// Folders requested from the agent that haven't arrived yet.
+    /// Folders requested from the agent that haven't arrived yet, and
+    /// those of them that changed again meanwhile: what arrives may be
+    /// from before that, and they're asked for again.
     loading: HashSet<PathBuf>,
+    stale: HashSet<PathBuf>,
     children: HashMap<PathBuf, Vec<DirEntry>>,
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
@@ -246,6 +249,7 @@ impl FileTree {
             local,
             plain: false,
             loading: HashSet::new(),
+            stale: HashSet::new(),
             children: HashMap::new(),
             rows: Vec::new(),
             selected: None,
@@ -386,6 +390,7 @@ impl FileTree {
     /// came back.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.loading.clear();
+        self.stale.clear();
         self.children.retain(|dir, _| self.expanded.contains(dir));
         let dirs: Vec<PathBuf> = self.children.keys().cloned().collect();
         for dir in dirs {
@@ -402,12 +407,14 @@ impl FileTree {
     }
 
     fn load_dir(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        if self.loading.contains(&dir) {
+            self.stale.insert(dir);
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
-        if !self.loading.insert(dir.clone()) {
-            return;
-        }
+        self.loading.insert(dir.clone());
         let ignored = self.ignored;
         cx.spawn(async move |this, cx| {
             let mut response = Err(anyhow::anyhow!("not asked"));
@@ -419,7 +426,6 @@ impl FileTree {
                 response = client.request(Request::ListDir { path: dir.clone() }).await;
             }
             this.update(cx, |this, cx| {
-                this.loading.remove(&dir);
                 let entries = match response {
                     Ok(Response::Dir(entries)) => entries
                         .into_iter()
@@ -432,39 +438,50 @@ impl FileTree {
                     // A folder that no longer exists (or can't be read) is left empty.
                     _ => Vec::new(),
                 };
-                // Only repaint if something actually changed.
-                if this.children.get(&dir) == Some(&entries) {
-                    return;
-                }
-                // An open folder's folders are read ahead: opening one shows
-                // its contents at once.
-                let shown = this.expanded.contains(&dir);
-                let ahead: Vec<PathBuf> = match shown {
-                    true => entries
-                        .iter()
-                        .filter(|entry| entry.is_dir && !this.children.contains_key(&entry.path))
-                        .take(READ_AHEAD)
-                        .map(|entry| entry.path.clone())
-                        .collect(),
-                    false => Vec::new(),
-                };
-                this.children.insert(dir, entries);
-                for dir in ahead {
-                    this.load_dir(dir, cx);
-                }
-                // A closed folder's list changes no row.
-                if !shown {
-                    return;
-                }
-                this.rebuild(cx);
-                if this.revealing {
-                    this.revealing = !this.scroll_to_selected();
-                }
-                cx.notify();
+                this.listed(dir, entries, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// What arrived of a folder asked for with `load_dir`.
+    fn listed(&mut self, dir: PathBuf, entries: Vec<DirEntry>, cx: &mut Context<Self>) {
+        self.loading.remove(&dir);
+        // It changed while being read: it's read again, and meanwhile shows
+        // this, which is newer than what it showed.
+        if self.stale.remove(&dir) {
+            self.load_dir(dir.clone(), cx);
+        }
+        // Only repaint if something actually changed.
+        if self.children.get(&dir) == Some(&entries) {
+            return;
+        }
+        // An open folder's folders are read ahead: opening one shows
+        // its contents at once.
+        let shown = self.expanded.contains(&dir);
+        let ahead: Vec<PathBuf> = match shown {
+            true => entries
+                .iter()
+                .filter(|entry| entry.is_dir && !self.children.contains_key(&entry.path))
+                .take(READ_AHEAD)
+                .map(|entry| entry.path.clone())
+                .collect(),
+            false => Vec::new(),
+        };
+        self.children.insert(dir, entries);
+        for dir in ahead {
+            self.load_dir(dir, cx);
+        }
+        // A closed folder's list changes no row.
+        if !shown {
+            return;
+        }
+        self.rebuild(cx);
+        if self.revealing {
+            self.revealing = !self.scroll_to_selected();
+        }
+        cx.notify();
     }
 
     fn entry(&self, path: &Path) -> Option<&DirEntry> {
@@ -1672,6 +1689,21 @@ mod tests {
         tree.expanded.insert(p("/t/src"));
         tree.rebuild(cx);
         tree
+    }
+
+    /// A folder that changes while it's being read is read again once that
+    /// arrives, which may be from before the change.
+    #[gpui_kit::test]
+    fn a_change_while_reading_a_folder_reads_it_again(cx: &mut TestAppContext) {
+        let tree = tree(cx);
+        tree.update(cx, |tree, cx| {
+            tree.loading.insert(p("/t/src"));
+            tree.invalidate([&p("/t/src/new.rs")], cx);
+            assert!(tree.stale.contains(&p("/t/src")));
+            let entries = tree.children[&p("/t/src")].clone();
+            tree.listed(p("/t/src"), entries, cx);
+            assert!(tree.stale.is_empty() && tree.loading.is_empty(), "with no agent, nothing to read it again with");
+        });
     }
 
     /// Right-clicking a row opens the menu on that row, selected alone,
