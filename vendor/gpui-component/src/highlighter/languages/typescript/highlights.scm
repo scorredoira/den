@@ -170,6 +170,7 @@
   "${" @punctuation.special
   "}" @punctuation.special) @embedded
 
+; (den) The control keywords left this list: keyword.control, below.
 [
   "async"
   "class"

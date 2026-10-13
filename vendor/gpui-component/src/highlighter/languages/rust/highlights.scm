@@ -103,6 +103,7 @@
 
 "as" @keyword
 "async" @keyword
+; (den) Control keywords as keyword.control.
 "await" @keyword.control
 "break" @keyword.control
 "const" @keyword
@@ -151,6 +152,7 @@
 (string_literal) @string
 (raw_string_literal) @string
 
+; (den) Booleans and numbers as boolean and number, not constant.builtin.
 (boolean_literal) @boolean
 (integer_literal) @number
 (float_literal) @number

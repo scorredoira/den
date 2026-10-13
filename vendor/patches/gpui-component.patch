@@ -1,0 +1,2335 @@
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/Cargo.toml vendor/gpui-component/Cargo.toml
+--- a/Cargo.toml	2026-10-13 09:11:25
++++ b/Cargo.toml	2026-10-13 09:11:26
+@@ -232,38 +232,11 @@
+     "dep:tree-sitter-zig",
+ ]
+ 
++# (den) The [[test]] entries are dropped with tests/.
+ [lib]
+ name = "gpui_component"
+ path = "src/lib.rs"
+ doctest = false
+-
+-[[test]]
+-name = "base_compat"
+-path = "tests/base_compat.rs"
+-
+-[[test]]
+-name = "controlled_change_callbacks"
+-path = "tests/controlled_change_callbacks.rs"
+-
+-[[test]]
+-name = "legacy_button_compat"
+-path = "tests/legacy_button_compat.rs"
+-
+-[[test]]
+-name = "legacy_controls_compat"
+-path = "tests/legacy_controls_compat.rs"
+-
+-[[test]]
+-name = "legacy_language_config_compat"
+-path = "tests/legacy_language_config_compat.rs"
+-
+-[[test]]
+-name = "table_dump_range"
+-path = "tests/table_dump_range.rs"
+-
+-[[test]]
+-name = "theme_compat"
+-path = "tests/theme_compat.rs"
+ 
+ [dependencies.anyhow]
+ version = "1"
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/highlighter.rs vendor/gpui-component/src/highlighter/highlighter.rs
+--- a/src/highlighter/highlighter.rs	2026-10-13 09:11:26
++++ b/src/highlighter/highlighter.rs	2026-10-13 09:11:26
+@@ -14,7 +14,7 @@
+ };
+ use sum_tree::Bias;
+ use tree_sitter::{
+-    InputEdit, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator, Tree,
++    InputEdit, Node, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator, Tree, // (den) Node
+ };
+ 
+ const MAX_INJECTION_RANGES: usize = 4096;
+@@ -1090,9 +1090,22 @@
+                 let Some(highlight_name) = query.capture_names().get(cap.index as usize) else {
+                     continue;
+                 };
++                // (den) The locals query precedes the highlights, so its captures
++                // would otherwise shadow them (a parameter's
++                // `local.definition` over `variable.parameter`).
++                if highlight_name.starts_with("local.") {
++                    continue;
++                }
+ 
+                 let node_range: Range<usize> = node.start_byte()..node.end_byte();
+-                let highlight_name = SharedString::from(highlight_name.to_string());
++                let highlight_name = if *highlight_name == "punctuation.bracket"
++                    && is_bracket(node.kind())
++                {
++                    // (den) Colored by nesting depth, like VS Code.
++                    SharedString::from(BRACKET_LEVELS[bracket_depth(node) % BRACKET_LEVELS.len()])
++                } else {
++                    SharedString::from(highlight_name.to_string())
++                };
+ 
+                 // Merge near range and same highlight name
+                 let last_item = highlights.last();
+@@ -1324,6 +1337,49 @@
+     if let Some(fade_out) = other.fade_out {
+         style.fade_out = Some(fade_out);
+     }
++}
++
++/// (den) Highlight names of the bracket pair colors, cycled by depth.
++const BRACKET_LEVELS: [&str; 3] = [
++    "punctuation.bracket.1",
++    "punctuation.bracket.2",
++    "punctuation.bracket.3",
++];
++
++fn is_bracket(kind: &str) -> bool {
++    matches!(kind, "(" | ")" | "[" | "]" | "{" | "}")
++}
++
++/// (den) How many bracket pairs enclose `node`, a bracket: the ancestors above
++/// its own pair's node with an opening bracket child before it and a closing
++/// one after it. Only the first and last children of a node with many (a
++/// file's top level) are looked at, so a deep file stays cheap.
++fn bracket_depth(node: Node) -> usize {
++    let (start, end) = (node.start_byte(), node.end_byte());
++    let encloses = |ancestor: Node| {
++        let count = ancestor.child_count();
++        let children: Vec<Node> = if count <= 8 {
++            (0..count).filter_map(|i| ancestor.child(i as _)).collect()
++        } else {
++            [ancestor.child(0), ancestor.child((count - 1) as _)].into_iter().flatten().collect()
++        };
++        let opens = children
++            .iter()
++            .any(|c| matches!(c.kind(), "(" | "[" | "{") && c.end_byte() <= start);
++        let closes = children
++            .iter()
++            .any(|c| matches!(c.kind(), ")" | "]" | "}") && c.start_byte() >= end);
++        opens && closes
++    };
++    let mut depth = 0;
++    let mut ancestor = node.parent().and_then(|parent| parent.parent());
++    while let Some(a) = ancestor {
++        if encloses(a) {
++            depth += 1;
++        }
++        ancestor = a.parent();
++    }
++    depth
+ }
+ 
+ #[cfg(test)]
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/input_adapter.rs vendor/gpui-component/src/highlighter/input_adapter.rs
+--- a/src/highlighter/input_adapter.rs	2026-10-13 09:11:26
++++ b/src/highlighter/input_adapter.rs	2026-10-13 09:11:26
+@@ -234,29 +234,37 @@
+     tree: &tree_sitter::Tree,
+     byte_range: Range<usize>,
+ ) -> Vec<FoldRange> {
+-    fn collect(node: tree_sitter::Node, bytes: &Range<usize>, ranges: &mut Vec<FoldRange>) {
+-        if node.end_byte() <= bytes.start || node.start_byte() >= bytes.end {
+-            return;
++    // (den) Walks the tree with a cursor instead of recursing: a deeply nested
++    // tree (a long chain of expressions, say) overflowed the stack and crashed.
++    let mut ranges = Vec::new();
++    let mut cursor = tree.root_node().walk();
++    if !cursor.goto_first_child() {
++        return ranges;
++    }
++    loop {
++        let node = cursor.node();
++        let mut descend = false;
++        if node.is_named()
++            && node.end_byte() > byte_range.start
++            && node.start_byte() < byte_range.end
++        {
++            let start = node.start_position().row;
++            let end = node.end_position().row;
++            if end.saturating_sub(start) >= 2 {
++                ranges.push(FoldRange::new(start, end));
++                descend = true;
++            }
+         }
+-        let start = node.start_position().row;
+-        let end = node.end_position().row;
+-        if end.saturating_sub(start) < 2 {
+-            return;
++        if descend && cursor.goto_first_child() {
++            continue;
+         }
+-        ranges.push(FoldRange::new(start, end));
+-        let mut cursor = node.walk();
+-        for child in node.named_children(&mut cursor) {
+-            collect(child, bytes, ranges);
++        while !cursor.goto_next_sibling() {
++            if !cursor.goto_parent() || cursor.depth() == 0 {
++                ranges.sort_by_key(|range| range.start_line);
++                ranges.dedup_by_key(|range| range.start_line);
++                return ranges;
++            }
+         }
+     }
+-
+-    let root = tree.root_node();
+-    let mut ranges = Vec::new();
+-    let mut cursor = root.walk();
+-    for child in root.named_children(&mut cursor) {
+-        collect(child, &byte_range, &mut ranges);
+-    }
+-    ranges.sort_by_key(|range| range.start_line);
+-    ranges.dedup_by_key(|range| range.start_line);
+-    ranges
+ }
++
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/go/highlights.scm vendor/gpui-component/src/highlighter/languages/go/highlights.scm
+--- a/src/highlighter/languages/go/highlights.scm	2026-10-13 09:11:26
++++ b/src/highlighter/languages/go/highlights.scm	2026-10-13 09:11:26
+@@ -1,3 +1,9 @@
++; (den) Parameters come first: the first capture of a node wins over the generic
++; `(identifier) @variable` below.
++
++(parameter_declaration name: (identifier) @variable.parameter)
++(variadic_parameter_declaration name: (identifier) @variable.parameter)
++
+ ; Function calls
+ 
+ (call_expression
+@@ -77,33 +83,29 @@
+ ; Keywords
+ 
+ [
+-  "break"
+-  "case"
+   "chan"
+   "const"
+-  "continue"
+-  "default"
+-  "defer"
+-  "else"
+-  "fallthrough"
+-  "for"
+   "func"
+-  "go"
+-  "goto"
+-  "if"
+   "import"
+   "interface"
+   "map"
+   "package"
+-  "range"
+-  "return"
+-  "select"
+   "struct"
+-  "switch"
+   "type"
+   "var"
+ ] @keyword
+ 
++; (den) Brackets, for the bracket pair colors.
++
++[
++  "("
++  ")"
++  "["
++  "]"
++  "{"
++  "}"
++] @punctuation.bracket
++
+ ; Literals
+ 
+ [
+@@ -134,3 +136,22 @@
+ ] @constant.builtin
+ 
+ (comment) @comment
++
++; (den) Control keywords, colored apart like VS Code does.
++[
++  "break"
++  "case"
++  "continue"
++  "default"
++  "defer"
++  "else"
++  "fallthrough"
++  "for"
++  "go"
++  "goto"
++  "if"
++  "range"
++  "return"
++  "select"
++  "switch"
++] @keyword.control
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/javascript/highlights.scm vendor/gpui-component/src/highlighter/languages/javascript/highlights.scm
+--- a/src/highlighter/languages/javascript/highlights.scm	2026-10-13 09:11:26
++++ b/src/highlighter/languages/javascript/highlights.scm	2026-10-13 09:11:26
+@@ -1,3 +1,9 @@
++; (den) Parameters come first: the first capture of a node wins over the generic
++; `(identifier) @variable` below.
++
++(formal_parameters (identifier) @variable.parameter)
++(formal_parameters (assignment_pattern left: (identifier) @variable.parameter))
++
+ ; Variables
+ ;----------
+ 
+@@ -163,45 +169,49 @@
+   "}" @punctuation.special) @embedded
+ 
+ [
+-  "as"
+   "async"
+-  "await"
+-  "break"
+-  "case"
+-  "catch"
+   "class"
+   "const"
+-  "continue"
+   "debugger"
+-  "default"
+   "delete"
+-  "do"
+-  "else"
+-  "export"
+   "extends"
+-  "finally"
+-  "for"
+-  "from"
+   "function"
+   "get"
+-  "if"
+-  "import"
+   "in"
+   "instanceof"
+   "let"
+   "new"
+   "of"
+-  "return"
+   "set"
+   "static"
+-  "switch"
+   "target"
+-  "throw"
+-  "try"
+   "typeof"
+   "var"
+   "void"
++] @keyword
++
++; (den) Control keywords, colored apart like VS Code does.
++[
++  "as"
++  "await"
++  "break"
++  "case"
++  "catch"
++  "continue"
++  "default"
++  "do"
++  "else"
++  "export"
++  "finally"
++  "for"
++  "from"
++  "if"
++  "import"
++  "return"
++  "switch"
++  "throw"
++  "try"
+   "while"
+   "with"
+   "yield"
+-] @keyword
++] @keyword.control
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/json/highlights.scm vendor/gpui-component/src/highlighter/languages/json/highlights.scm
+--- a/src/highlighter/languages/json/highlights.scm	2026-10-13 09:11:26
++++ b/src/highlighter/languages/json/highlights.scm	2026-10-13 09:11:26
+@@ -1,11 +1,15 @@
+ (comment) @comment
+ 
++; (den) As VS Code: keys and string values each their color. The first
++; capture of a node wins, so these go before `(string)`.
++(pair key: (string) @string.key)
++(pair value: (string) @string.value)
++(array (string) @string.value)
++
+ (string) @string
+ (escape_sequence) @string.escape
+ 
+ (number) @number
+-
+-(pair key: (string) @property)
+ 
+ [
+   (true)
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/rust/highlights.scm vendor/gpui-component/src/highlighter/languages/rust/highlights.scm
+--- a/src/highlighter/languages/rust/highlights.scm	2026-10-13 09:11:26
++++ b/src/highlighter/languages/rust/highlights.scm	2026-10-13 09:11:26
+@@ -103,31 +103,32 @@
+ 
+ "as" @keyword
+ "async" @keyword
+-"await" @keyword
+-"break" @keyword
++; (den) Control keywords as keyword.control.
++"await" @keyword.control
++"break" @keyword.control
+ "const" @keyword
+-"continue" @keyword
++"continue" @keyword.control
+ "default" @keyword
+ "dyn" @keyword
+-"else" @keyword
++"else" @keyword.control
+ "enum" @keyword
+ "extern" @keyword
+ "fn" @keyword
+-"for" @keyword
++"for" @keyword.control
+ "gen" @keyword
+-"if" @keyword
++"if" @keyword.control
+ "impl" @keyword
+ "in" @keyword
+ "let" @keyword
+-"loop" @keyword
++"loop" @keyword.control
+ "macro_rules!" @keyword
+-"match" @keyword
++"match" @keyword.control
+ "mod" @keyword
+ "move" @keyword
+ "pub" @keyword
+ "raw" @keyword
+ "ref" @keyword
+-"return" @keyword
++"return" @keyword.control
+ "static" @keyword
+ "struct" @keyword
+ "trait" @keyword
+@@ -136,8 +137,8 @@
+ "unsafe" @keyword
+ "use" @keyword
+ "where" @keyword
+-"while" @keyword
+-"yield" @keyword
++"while" @keyword.control
++"yield" @keyword.control
+ (crate) @keyword
+ (mutable_specifier) @keyword
+ (use_list (self) @keyword)
+@@ -151,9 +152,10 @@
+ (string_literal) @string
+ (raw_string_literal) @string
+ 
+-(boolean_literal) @constant.builtin
+-(integer_literal) @constant.builtin
+-(float_literal) @constant.builtin
++; (den) Booleans and numbers as boolean and number, not constant.builtin.
++(boolean_literal) @boolean
++(integer_literal) @number
++(float_literal) @number
+ 
+ (escape_sequence) @escape
+ 
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/typescript/highlights.scm vendor/gpui-component/src/highlighter/languages/typescript/highlights.scm
+--- a/src/highlighter/languages/typescript/highlights.scm	2026-10-13 09:11:26
++++ b/src/highlighter/languages/typescript/highlights.scm	2026-10-13 09:11:26
+@@ -1,3 +1,10 @@
++; (den) Parameters and namespaces come first: the first capture of a node wins
++; over the generic `(identifier) @variable` below.
++
++(required_parameter (identifier) @variable.parameter)
++(optional_parameter (identifier) @variable.parameter)
++(nested_type_identifier module: (identifier) @namespace)
++
+ ; Types
+ ; Variables
+ ;----------
+@@ -163,48 +170,27 @@
+   "${" @punctuation.special
+   "}" @punctuation.special) @embedded
+ 
++; (den) The control keywords left this list: keyword.control, below.
+ [
+-  "as"
+   "async"
+-  "await"
+-  "break"
+-  "case"
+-  "catch"
+   "class"
+   "const"
+-  "continue"
+   "debugger"
+-  "default"
+   "delete"
+-  "do"
+-  "else"
+-  "export"
+   "extends"
+-  "finally"
+-  "for"
+-  "from"
+   "function"
+   "get"
+-  "if"
+-  "import"
+   "in"
+   "instanceof"
+   "let"
+   "new"
+   "of"
+-  "return"
+   "set"
+   "static"
+-  "switch"
+   "target"
+-  "throw"
+-  "try"
+   "typeof"
+   "var"
+   "void"
+-  "while"
+-  "with"
+-  "yield"
+ ] @keyword
+ 
+ 
+@@ -218,17 +204,12 @@
+   "<" @punctuation.bracket
+   ">" @punctuation.bracket)
+ 
+-; Variables
+ 
+-(required_parameter (identifier) @variable.parameter)
+-(optional_parameter (identifier) @variable.parameter)
+-
+ ; Keywords
+ 
+ [ "abstract"
+   "declare"
+   "enum"
+-  "export"
+   "implements"
+   "interface"
+   "keyof"
+@@ -241,3 +222,29 @@
+   "override"
+   "satisfies"
+ ] @keyword
++
++; (den) Control keywords, colored apart like VS Code does.
++[
++  "as"
++  "await"
++  "break"
++  "case"
++  "catch"
++  "continue"
++  "default"
++  "do"
++  "else"
++  "export"
++  "finally"
++  "for"
++  "from"
++  "if"
++  "import"
++  "return"
++  "switch"
++  "throw"
++  "try"
++  "while"
++  "with"
++  "yield"
++] @keyword.control
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/registry.rs vendor/gpui-component/src/highlighter/registry.rs
+--- a/src/highlighter/registry.rs	2026-10-13 09:11:26
++++ b/src/highlighter/registry.rs	2026-10-13 09:11:26
+@@ -15,12 +15,14 @@
+ 
+ use crate::{ActiveTheme, DEFAULT_THEME_COLORS, ThemeMode, highlighter::languages};
+ 
+-pub(super) const HIGHLIGHT_NAMES: [&str; 41] = [
++pub(super) const HIGHLIGHT_NAMES: [&str; 52] = [ // (den) 41 + 11
+     "attribute",
++    "attribute.value",
+     "boolean",
+     "comment",
+     "comment.doc",
+     "constant",
++    "constant.builtin",
+     "constructor",
+     "embedded",
+     "emphasis",
+@@ -29,9 +31,11 @@
+     "function",
+     "hint",
+     "keyword",
++    "keyword.control",
+     "label",
+     "link_text",
+     "link_uri",
++    "namespace",
+     "number",
+     "operator",
+     "predictive",
+@@ -40,21 +44,28 @@
+     "property",
+     "punctuation",
+     "punctuation.bracket",
++    "punctuation.bracket.1",
++    "punctuation.bracket.2",
++    "punctuation.bracket.3",
+     "punctuation.delimiter",
+     "punctuation.list_marker",
+     "punctuation.special",
+     "string",
++    "string.key",
++    "string.value",
+     "string.escape",
+     "string.regex",
+     "string.special",
+     "string.special.symbol",
+     "tag",
++    "tag.delimiter",
+     "tag.doctype",
+     "text.code.span",
+     "text.literal",
+     "title",
+     "type",
+     "variable",
++    "variable.parameter",
+     "variable.special",
+     "variant",
+ ];
+@@ -115,10 +126,20 @@
+ #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, JsonSchema, Serialize, Deserialize)]
+ pub struct SyntaxColors {
+     pub attribute: Option<ThemeStyle>,
++    // (den) What XML and JSON need to look like VS Code: an attribute's
++    // value, a key, a string value and a tag's `<` and `>`. Each falls back
++    // to what it is in other themes.
++    #[serde(rename = "attribute.value")]
++    pub attribute_value: Option<ThemeStyle>,
+     pub boolean: Option<ThemeStyle>,
+     pub comment: Option<ThemeStyle>,
+     pub comment_doc: Option<ThemeStyle>,
+     pub constant: Option<ThemeStyle>,
++    // (den) `constant.builtin`, `keyword.control`, `namespace`,
++    // `variable.parameter` and the bracket levels, so code can be colored
++    // like VS Code.
++    #[serde(rename = "constant.builtin")]
++    pub constant_builtin: Option<ThemeStyle>,
+     pub constructor: Option<ThemeStyle>,
+     pub embedded: Option<ThemeStyle>,
+     pub emphasis: Option<ThemeStyle>,
+@@ -129,11 +150,14 @@
+     pub function: Option<ThemeStyle>,
+     pub hint: Option<ThemeStyle>,
+     pub keyword: Option<ThemeStyle>,
++    #[serde(rename = "keyword.control")]
++    pub keyword_control: Option<ThemeStyle>,
+     pub label: Option<ThemeStyle>,
+     #[serde(rename = "link_text")]
+     pub link_text: Option<ThemeStyle>,
+     #[serde(rename = "link_uri")]
+     pub link_uri: Option<ThemeStyle>,
++    pub namespace: Option<ThemeStyle>,
+     pub number: Option<ThemeStyle>,
+     pub operator: Option<ThemeStyle>,
+     pub predictive: Option<ThemeStyle>,
+@@ -143,6 +167,13 @@
+     pub punctuation: Option<ThemeStyle>,
+     #[serde(rename = "punctuation.bracket")]
+     pub punctuation_bracket: Option<ThemeStyle>,
++    // (den) Bracket pair colors by nesting depth, cycled.
++    #[serde(rename = "punctuation.bracket.1")]
++    pub punctuation_bracket_1: Option<ThemeStyle>,
++    #[serde(rename = "punctuation.bracket.2")]
++    pub punctuation_bracket_2: Option<ThemeStyle>,
++    #[serde(rename = "punctuation.bracket.3")]
++    pub punctuation_bracket_3: Option<ThemeStyle>,
+     #[serde(rename = "punctuation.delimiter")]
+     pub punctuation_delimiter: Option<ThemeStyle>,
+     #[serde(rename = "punctuation.list_marker")]
+@@ -150,6 +181,10 @@
+     #[serde(rename = "punctuation.special")]
+     pub punctuation_special: Option<ThemeStyle>,
+     pub string: Option<ThemeStyle>,
++    #[serde(rename = "string.key")]
++    pub string_key: Option<ThemeStyle>,
++    #[serde(rename = "string.value")]
++    pub string_value: Option<ThemeStyle>,
+     #[serde(rename = "string.escape")]
+     pub string_escape: Option<ThemeStyle>,
+     #[serde(rename = "string.regex")]
+@@ -159,6 +194,8 @@
+     #[serde(rename = "string.special.symbol")]
+     pub string_special_symbol: Option<ThemeStyle>,
+     pub tag: Option<ThemeStyle>,
++    #[serde(rename = "tag.delimiter")]
++    pub tag_delimiter: Option<ThemeStyle>,
+     #[serde(rename = "tag.doctype")]
+     pub tag_doctype: Option<ThemeStyle>,
+     #[serde(rename = "text.code.span")]
+@@ -169,6 +206,8 @@
+     #[serde(rename = "type")]
+     pub type_: Option<ThemeStyle>,
+     pub variable: Option<ThemeStyle>,
++    #[serde(rename = "variable.parameter")]
++    pub variable_parameter: Option<ThemeStyle>,
+     #[serde(rename = "variable.special")]
+     pub variable_special: Option<ThemeStyle>,
+     pub variant: Option<ThemeStyle>,
+@@ -248,10 +287,13 @@
+ 
+         let style = match name {
+             "attribute" => self.attribute,
++            // (den)
++            "attribute.value" => self.attribute_value.or(self.string),
+             "boolean" => self.boolean,
+             "comment" => self.comment,
+             "comment.doc" => self.comment_doc,
+             "constant" => self.constant,
++            "constant.builtin" => self.constant_builtin,
+             "constructor" => self.constructor,
+             "embedded" => self.embedded,
+             "emphasis" => self.emphasis,
+@@ -260,9 +302,11 @@
+             "function" => self.function,
+             "hint" => self.hint,
+             "keyword" => self.keyword,
++            "keyword.control" => self.keyword_control,
+             "label" => self.label,
+             "link_text" => self.link_text,
+             "link_uri" => self.link_uri,
++            "namespace" => self.namespace,
+             "number" => self.number,
+             "operator" => self.operator,
+             "predictive" => self.predictive,
+@@ -271,21 +315,28 @@
+             "property" => self.property,
+             "punctuation" => self.punctuation,
+             "punctuation.bracket" => self.punctuation_bracket,
++            "punctuation.bracket.1" => self.punctuation_bracket_1.or(self.punctuation_bracket),
++            "punctuation.bracket.2" => self.punctuation_bracket_2.or(self.punctuation_bracket),
++            "punctuation.bracket.3" => self.punctuation_bracket_3.or(self.punctuation_bracket),
+             "punctuation.delimiter" => self.punctuation_delimiter,
+             "punctuation.list_marker" => self.punctuation_list_marker,
+             "punctuation.special" => self.punctuation_special,
+             "string" => self.string,
++            "string.key" => self.string_key.or(self.property),
++            "string.value" => self.string_value.or(self.string),
+             "string.escape" => self.string_escape,
+             "string.regex" => self.string_regex,
+             "string.special" => self.string_special,
+             "string.special.symbol" => self.string_special_symbol,
+             "tag" => self.tag,
++            "tag.delimiter" => self.tag_delimiter.or(self.punctuation_delimiter),
+             "tag.doctype" => self.tag_doctype,
+             "text.code.span" => self.text_code_span,
+             "text.literal" => self.text_literal,
+             "title" => self.title,
+             "type" => self.type_,
+             "variable" => self.variable,
++            "variable.parameter" => self.variable_parameter,
+             "variable.special" => self.variable_special,
+             "variant" => self.variant,
+             _ => None,
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/wasm_stub.rs vendor/gpui-component/src/highlighter/wasm_stub.rs
+--- a/src/highlighter/wasm_stub.rs	2026-10-13 09:11:26
++++ b/src/highlighter/wasm_stub.rs	2026-10-13 09:11:26
+@@ -165,10 +165,20 @@
+ #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, JsonSchema, Serialize, Deserialize)]
+ pub struct SyntaxColors {
+     pub attribute: Option<ThemeStyle>,
++    // (den) What XML and JSON need to look like VS Code: an attribute's
++    // value, a key, a string value and a tag's `<` and `>`. Each falls back
++    // to what it is in other themes.
++    #[serde(rename = "attribute.value")]
++    pub attribute_value: Option<ThemeStyle>,
+     pub boolean: Option<ThemeStyle>,
+     pub comment: Option<ThemeStyle>,
+     pub comment_doc: Option<ThemeStyle>,
+     pub constant: Option<ThemeStyle>,
++    // (den) `constant.builtin`, `keyword.control`, `namespace`,
++    // `variable.parameter` and the bracket levels, so code can be colored
++    // like VS Code.
++    #[serde(rename = "constant.builtin")]
++    pub constant_builtin: Option<ThemeStyle>,
+     pub constructor: Option<ThemeStyle>,
+     pub embedded: Option<ThemeStyle>,
+     pub emphasis: Option<ThemeStyle>,
+@@ -179,11 +189,14 @@
+     pub function: Option<ThemeStyle>,
+     pub hint: Option<ThemeStyle>,
+     pub keyword: Option<ThemeStyle>,
++    #[serde(rename = "keyword.control")]
++    pub keyword_control: Option<ThemeStyle>,
+     pub label: Option<ThemeStyle>,
+     #[serde(rename = "link_text")]
+     pub link_text: Option<ThemeStyle>,
+     #[serde(rename = "link_uri")]
+     pub link_uri: Option<ThemeStyle>,
++    pub namespace: Option<ThemeStyle>,
+     pub number: Option<ThemeStyle>,
+     pub operator: Option<ThemeStyle>,
+     pub predictive: Option<ThemeStyle>,
+@@ -193,6 +206,13 @@
+     pub punctuation: Option<ThemeStyle>,
+     #[serde(rename = "punctuation.bracket")]
+     pub punctuation_bracket: Option<ThemeStyle>,
++    // (den) Bracket pair colors by nesting depth, cycled.
++    #[serde(rename = "punctuation.bracket.1")]
++    pub punctuation_bracket_1: Option<ThemeStyle>,
++    #[serde(rename = "punctuation.bracket.2")]
++    pub punctuation_bracket_2: Option<ThemeStyle>,
++    #[serde(rename = "punctuation.bracket.3")]
++    pub punctuation_bracket_3: Option<ThemeStyle>,
+     #[serde(rename = "punctuation.delimiter")]
+     pub punctuation_delimiter: Option<ThemeStyle>,
+     #[serde(rename = "punctuation.list_marker")]
+@@ -200,6 +220,10 @@
+     #[serde(rename = "punctuation.special")]
+     pub punctuation_special: Option<ThemeStyle>,
+     pub string: Option<ThemeStyle>,
++    #[serde(rename = "string.key")]
++    pub string_key: Option<ThemeStyle>,
++    #[serde(rename = "string.value")]
++    pub string_value: Option<ThemeStyle>,
+     #[serde(rename = "string.escape")]
+     pub string_escape: Option<ThemeStyle>,
+     #[serde(rename = "string.regex")]
+@@ -209,6 +233,8 @@
+     #[serde(rename = "string.special.symbol")]
+     pub string_special_symbol: Option<ThemeStyle>,
+     pub tag: Option<ThemeStyle>,
++    #[serde(rename = "tag.delimiter")]
++    pub tag_delimiter: Option<ThemeStyle>,
+     #[serde(rename = "tag.doctype")]
+     pub tag_doctype: Option<ThemeStyle>,
+     #[serde(rename = "text.code.span")]
+@@ -219,6 +245,8 @@
+     #[serde(rename = "type")]
+     pub type_: Option<ThemeStyle>,
+     pub variable: Option<ThemeStyle>,
++    #[serde(rename = "variable.parameter")]
++    pub variable_parameter: Option<ThemeStyle>,
+     #[serde(rename = "variable.special")]
+     pub variable_special: Option<ThemeStyle>,
+     pub variant: Option<ThemeStyle>,
+@@ -232,10 +260,13 @@
+ 
+         let style = match name {
+             "attribute" => self.attribute,
++            // (den)
++            "attribute.value" => self.attribute_value.or(self.string),
+             "boolean" => self.boolean,
+             "comment" => self.comment,
+             "comment.doc" => self.comment_doc,
+             "constant" => self.constant,
++            "constant.builtin" => self.constant_builtin,
+             "constructor" => self.constructor,
+             "embedded" => self.embedded,
+             "emphasis" => self.emphasis,
+@@ -244,9 +275,11 @@
+             "function" => self.function,
+             "hint" => self.hint,
+             "keyword" => self.keyword,
++            "keyword.control" => self.keyword_control,
+             "label" => self.label,
+             "link_text" => self.link_text,
+             "link_uri" => self.link_uri,
++            "namespace" => self.namespace,
+             "number" => self.number,
+             "operator" => self.operator,
+             "predictive" => self.predictive,
+@@ -255,21 +288,28 @@
+             "property" => self.property,
+             "punctuation" => self.punctuation,
+             "punctuation.bracket" => self.punctuation_bracket,
++            "punctuation.bracket.1" => self.punctuation_bracket_1.or(self.punctuation_bracket),
++            "punctuation.bracket.2" => self.punctuation_bracket_2.or(self.punctuation_bracket),
++            "punctuation.bracket.3" => self.punctuation_bracket_3.or(self.punctuation_bracket),
+             "punctuation.delimiter" => self.punctuation_delimiter,
+             "punctuation.list_marker" => self.punctuation_list_marker,
+             "punctuation.special" => self.punctuation_special,
+             "string" => self.string,
++            "string.key" => self.string_key.or(self.property),
++            "string.value" => self.string_value.or(self.string),
+             "string.escape" => self.string_escape,
+             "string.regex" => self.string_regex,
+             "string.special" => self.string_special,
+             "string.special.symbol" => self.string_special_symbol,
+             "tag" => self.tag,
++            "tag.delimiter" => self.tag_delimiter.or(self.punctuation_delimiter),
+             "tag.doctype" => self.tag_doctype,
+             "text.code.span" => self.text_code_span,
+             "text.literal" => self.text_literal,
+             "title" => self.title,
+             "type" => self.type_,
+             "variable" => self.variable,
++            "variable.parameter" => self.variable_parameter,
+             "variable.special" => self.variable_special,
+             "variant" => self.variant,
+             _ => None,
+@@ -286,12 +326,14 @@
+     }
+ 
+     pub fn style_for_index(&self, index: usize) -> Option<HighlightStyle> {
+-        const HIGHLIGHT_NAMES: [&str; 41] = [
++        const HIGHLIGHT_NAMES: [&str; 52] = [ // (den) 41 + 11
+             "attribute",
++            "attribute.value",
+             "boolean",
+             "comment",
+             "comment.doc",
+             "constant",
++            "constant.builtin",
+             "constructor",
+             "embedded",
+             "emphasis",
+@@ -300,9 +342,11 @@
+             "function",
+             "hint",
+             "keyword",
++            "keyword.control",
+             "label",
+             "link_text",
+             "link_uri",
++            "namespace",
+             "number",
+             "operator",
+             "predictive",
+@@ -311,21 +355,28 @@
+             "property",
+             "punctuation",
+             "punctuation.bracket",
++            "punctuation.bracket.1",
++            "punctuation.bracket.2",
++            "punctuation.bracket.3",
+             "punctuation.delimiter",
+             "punctuation.list_marker",
+             "punctuation.special",
+             "string",
++            "string.key",
++            "string.value",
+             "string.escape",
+             "string.regex",
+             "string.special",
+             "string.special.symbol",
+             "tag",
++            "tag.delimiter",
+             "tag.doctype",
+             "text.code.span",
+             "text.literal",
+             "title",
+             "type",
+             "variable",
++            "variable.parameter",
+             "variable.special",
+             "variant",
+         ];
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/input.rs vendor/gpui-component/src/input/input.rs
+--- a/src/input/input.rs	2026-10-13 09:11:26
++++ b/src/input/input.rs	2026-10-13 09:11:26
+@@ -506,11 +506,22 @@
+         search_panel: Option<AnyElement>,
+         _: &Window,
+     ) -> impl IntoElement {
+-        v_flex().size_full().children(search_panel).child(
++        // (den) The find bar floats at the top right, over the text and
++        // clear of the scrollbar, and narrows when there isn't room.
++        v_flex().size_full().child(
+             div()
+                 .relative()
+                 .flex_1()
+-                .child(input_state.into_any_element()),
++                .child(input_state.into_any_element())
++                .children(search_panel.map(|panel| {
++                    h_flex()
++                        .absolute()
++                        .top_1()
++                        .left(px(8.))
++                        .right(px(16.))
++                        .justify_end()
++                        .child(panel)
++                })),
+         )
+     }
+ }
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/mod.rs vendor/gpui-component/src/input/mod.rs
+--- a/src/input/mod.rs	2026-10-13 09:11:26
++++ b/src/input/mod.rs	2026-10-13 09:11:26
+@@ -6,6 +6,7 @@
+     ActivateToken, InlineToken, InlineTokenClickEvent, InlineTokenContext, InlineTokenError,
+     InlineTokenSpan, InputContent,
+ };
++pub use search::FindBarMemory; // (den)
+ pub use token::InputToken;
+ pub mod language_config;
+ mod number_input;
+@@ -32,7 +33,7 @@
+     Lsp, MaskPattern, MoveDown, MoveEnd, MoveHome, MoveLeft, MovePageDown, MovePageUp, MoveRight,
+     MoveToEnd, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveToStart, MoveToStartOfLine,
+     MoveUp, Outdent, OutdentInline, Paste, Point, RangeDecoration, RangeDecorationCollection,
+-    RangeDecorationStyle, Redo, Replace, Rope, RopeExt, RopeLines, Search, SelectAll, SelectToEnd,
++    RangeDecorationStyle, Redo, Replace, Rope, RopeExt, RopeLines, Search, SearchOptions, SelectAll, SelectToEnd, // (den) SearchOptions
+     SelectToEndOfLine, SelectToNextWordEnd, SelectToPreviousWordStart, SelectToStart,
+     SelectToStartOfLine, Selection, ShowCharacterPalette, ShowDocumentHandler, TabSize,
+     TextDecoration, TextDecorationCollection, TextareaState, ToggleCodeActions, Undo,
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/overlay.rs vendor/gpui-component/src/input/overlay.rs
+--- a/src/input/overlay.rs	2026-10-13 09:11:26
++++ b/src/input/overlay.rs	2026-10-13 09:11:26
+@@ -522,7 +522,7 @@
+             state.update(cx, |state, cx| {
+                 state.set_value("foo bar foo baz foo", window, cx);
+                 state.open_search(false, cx);
+-                state.set_search_query("foo", true, cx);
++                state.set_search_query("foo", gpui_base::input::SearchOptions::default(), cx); // (den)
+                 assert_eq!(state.next_search_match(cx), Some(8..11));
+                 assert_eq!(state.search_session().matcher.current_match_index(), 1);
+                 state.close_search(cx);
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/popovers/completion_menu.rs vendor/gpui-component/src/input/popovers/completion_menu.rs
+--- a/src/input/popovers/completion_menu.rs	2026-10-13 09:11:26
++++ b/src/input/popovers/completion_menu.rs	2026-10-13 09:11:26
+@@ -2,38 +2,79 @@
+ 
+ use gpui::{
+     Action, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity, EventEmitter,
+-    Half as _, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement, Pixels, Point,
++    Half as _, HighlightStyle, Hsla, InteractiveElement as _, IntoElement, ParentElement, Pixels, Point,
+     Render, RenderOnce, SharedString, Styled, StyledText, Subscription, WeakEntity, Window,
+     deferred, div, prelude::FluentBuilder, px, relative,
+ };
+-use lsp_types::CompletionItem;
++use gpui_base::input::RopeExt as _;
++use lsp_types::{CompletionItem, CompletionItemKind};
+ 
+ const MAX_MENU_HEIGHT: Pixels = px(240.);
+ const POPOVER_GAP: Pixels = px(4.);
+ 
+ use crate::{
+-    ActiveTheme, IndexPath, Selectable, actions, h_flex,
++    ActiveTheme, Icon, IndexPath, Selectable, actions, h_flex,
+     input::{
+         self, EditorState,
+         popovers::{editor_popover, render_markdown},
+     },
+-    label::Label,
+     list::{List, ListDelegate, ListEvent, ListState},
+ };
+ 
+ struct ContextMenuDelegate {
+     query: SharedString,
+-    menu: Entity<CompletionMenu>,
++    /// (den) Weak: the menu owns this list, and a strong handle back would
++    /// keep both alive after the menu goes.
++    menu: WeakEntity<CompletionMenu>,
++    /// (den) The menu's editor, kept here so resolving doesn't read the menu.
++    editor: WeakEntity<EditorState>,
+     items: Vec<Rc<CompletionItem>>,
+     selected_ix: usize,
++    /// (den) Items already asked for their detail and documentation.
++    resolved: std::collections::HashSet<usize>,
+ }
+ 
+ impl ContextMenuDelegate {
+     fn set_items(&mut self, items: Vec<CompletionItem>) {
+         self.items = items.into_iter().map(Rc::new).collect();
+         self.selected_ix = 0;
++        self.resolved.clear();
+     }
+ 
++    /// (den) Asks the provider once for the rest of the selected item (the
++    /// detail and documentation some servers leave out of the list).
++    fn resolve_selected(&mut self, cx: &mut Context<ListState<Self>>) {
++        let ix = self.selected_ix;
++        let Some(item) = self.items.get(ix).cloned() else {
++            return;
++        };
++        if item.detail.is_some() || item.documentation.is_some() || !self.resolved.insert(ix) {
++            return;
++        }
++        let Some(editor) = self.editor.upgrade() else {
++            return;
++        };
++        let Some(provider) = editor.read(cx).lsp().completion_provider.clone() else {
++            return;
++        };
++        let task = provider.resolve_completion(&item, cx);
++        let menu = self.menu.clone();
++        cx.spawn(async move |list, cx| {
++            let Ok(resolved) = task.await else {
++                return;
++            };
++            let _ = list.update(cx, |list, cx| {
++                let delegate = list.delegate_mut();
++                if delegate.items.get(ix).is_some_and(|current| Rc::ptr_eq(current, &item)) {
++                    delegate.items[ix] = Rc::new(resolved);
++                }
++                cx.notify();
++            });
++            let _ = menu.update(cx, |_, cx| cx.notify());
++        })
++        .detach();
++    }
++
+     fn selected_item(&self) -> Option<&Rc<CompletionItem>> {
+         self.items.get(self.selected_ix)
+     }
+@@ -85,21 +126,18 @@
+         let item = self.item;
+ 
+         let deprecated = item.deprecated.unwrap_or(false);
+-        let matched_len = item
+-            .filter_text
+-            .as_ref()
+-            .map(|s| s.len())
+-            .unwrap_or(self.highlight_prefix.len())
+-            .min(item.label.len());
++        // (den) The letters of the label that match what's typed, as VS Code.
++        let highlight = HighlightStyle {
++            color: Some(cx.theme().blue),
++            font_weight: Some(gpui::FontWeight::BOLD),
++            ..Default::default()
++        };
++        let highlights = matched(&item.label, &self.highlight_prefix)
++            .into_iter()
++            .map(|range| (range, highlight))
++            .collect::<Vec<_>>();
++        let (icon, color) = kind_icon(item.kind, cx);
+ 
+-        let highlights = vec![(
+-            0..matched_len,
+-            HighlightStyle {
+-                color: Some(cx.theme().blue),
+-                ..Default::default()
+-            },
+-        )];
+-
+         h_flex()
+             .id(self.ix)
+             .gap_2()
+@@ -113,19 +151,83 @@
+                 this.bg(cx.theme().tokens.accent)
+                     .text_color(cx.theme().accent_foreground)
+             })
+-            .child(div().child(StyledText::new(item.label.clone()).with_highlights(highlights)))
+-            .when(item.detail.is_some(), |this| {
++            .child(Icon::default().path(icon).size_3p5().flex_none().text_color(color))
++            .child(
++                div()
++                    .flex_none()
++                    .child(StyledText::new(item.label.clone()).with_highlights(highlights)),
++            )
++            // (den) The detail only on the selected one, at the right, as VS Code.
++            .when_some(item.detail.clone().filter(|_| self.selected), |this, detail| {
+                 this.child(
+-                    Label::new(item.detail.as_deref().unwrap_or("").to_string())
+-                        .text_color(cx.theme().muted_foreground)
++                    div()
++                        .flex_1()
++                        .min_w_0()
++                        .pl_4()
++                        .truncate()
++                        .text_right()
++                        .opacity(0.7)
+                         .when(deprecated, |this| this.line_through())
+-                        .italic(),
++                        .child(detail),
+                 )
+             })
+             .children(self.children)
+     }
+ }
+ 
++/// (den) Byte ranges of `label` matching `query`: its start if it starts with
++/// it, or else each letter of it in order (case ignored).
++fn matched(label: &str, query: &str) -> Vec<std::ops::Range<usize>> {
++    if query.is_empty() {
++        return Vec::new();
++    }
++    if label.to_lowercase().starts_with(&query.to_lowercase()) {
++        // As many characters as the query has: lowercase may change byte
++        // lengths (`İ`), so the query's length in bytes may end mid-character.
++        let end = label.char_indices().nth(query.chars().count()).map_or(label.len(), |(ix, _)| ix);
++        return vec![0..end];
++    }
++    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
++    let mut wanted = query.chars().flat_map(char::to_lowercase).peekable();
++    for (ix, ch) in label.char_indices() {
++        let Some(next) = wanted.peek() else { break };
++        if ch.to_lowercase().eq(std::iter::once(*next)) {
++            wanted.next();
++            let end = ix + ch.len_utf8();
++            match ranges.last_mut() {
++                Some(last) if last.end == ix => last.end = end,
++                _ => ranges.push(ix..end),
++            }
++        }
++    }
++    ranges
++}
++
++/// (den) The icon and color of a `CompletionItemKind`, after VS Code's.
++fn kind_icon(kind: Option<CompletionItemKind>, cx: &App) -> (&'static str, Hsla) {
++    let theme = cx.theme();
++    match kind {
++        Some(CompletionItemKind::METHOD | CompletionItemKind::FUNCTION | CompletionItemKind::CONSTRUCTOR) => {
++            ("icons/box.svg", theme.magenta)
++        }
++        Some(CompletionItemKind::FIELD | CompletionItemKind::PROPERTY) => ("icons/tag.svg", theme.blue),
++        Some(CompletionItemKind::VARIABLE | CompletionItemKind::VALUE | CompletionItemKind::REFERENCE) => {
++            ("icons/variable.svg", theme.blue)
++        }
++        Some(CompletionItemKind::CONSTANT) => ("icons/pi.svg", theme.blue),
++        Some(CompletionItemKind::CLASS | CompletionItemKind::STRUCT) => ("icons/shapes.svg", theme.yellow),
++        Some(CompletionItemKind::INTERFACE | CompletionItemKind::TYPE_PARAMETER) => ("icons/type.svg", theme.cyan),
++        Some(CompletionItemKind::ENUM | CompletionItemKind::ENUM_MEMBER) => ("icons/list.svg", theme.yellow),
++        Some(CompletionItemKind::MODULE) => ("icons/package.svg", theme.muted_foreground),
++        Some(CompletionItemKind::KEYWORD | CompletionItemKind::OPERATOR) => ("icons/key.svg", theme.muted_foreground),
++        Some(CompletionItemKind::SNIPPET) => ("icons/code.svg", theme.muted_foreground),
++        Some(CompletionItemKind::FILE) => ("icons/file.svg", theme.muted_foreground),
++        Some(CompletionItemKind::FOLDER) => ("icons/folder.svg", theme.muted_foreground),
++        Some(CompletionItemKind::EVENT) => ("icons/zap.svg", theme.yellow),
++        _ => ("icons/type.svg", theme.muted_foreground),
++    }
++}
++
+ impl EventEmitter<DismissEvent> for ContextMenuDelegate {}
+ 
+ impl ListDelegate for ContextMenuDelegate {
+@@ -152,6 +254,13 @@
+         cx: &mut Context<ListState<Self>>,
+     ) {
+         self.selected_ix = ix.map(|i| i.row).unwrap_or(0);
++        // (den) Resolved once the current update is over: the selection
++        // changes while the editor (arrow keys) or the menu (`show`) is
++        // leased, and resolving reads the editor.
++        let list = cx.entity().downgrade();
++        cx.defer(move |cx| {
++            let _ = list.update(cx, |list, cx| list.delegate_mut().resolve_selected(cx));
++        });
+         cx.notify();
+     }
+ 
+@@ -160,7 +269,7 @@
+             return;
+         };
+ 
+-        self.menu.update(cx, |this, cx| {
++        let _ = self.menu.update(cx, |this, cx| {
+             this.select_item(&item, window, cx);
+         });
+     }
+@@ -189,12 +298,14 @@
+         cx: &mut App,
+     ) -> Entity<Self> {
+         cx.new(|cx| {
+-            let view = cx.entity();
+             let menu = ContextMenuDelegate {
+                 query: SharedString::default(),
+-                menu: view,
++                // (den) Weak, and the editor to read the typed word from.
++                menu: cx.entity().downgrade(),
++                editor: editor.downgrade(),
+                 items: vec![],
+                 selected_ix: 0,
++                resolved: Default::default(),
+             };
+ 
+             let list = cx.new(|cx| ListState::new(menu, window, cx));
+@@ -319,6 +430,22 @@
+         let items = items.into();
+         self.offset = offset;
+         self.open = true;
++        // (den) What's highlighted is the word typed before the cursor.
++        if let Some(editor) = self.editor.upgrade() {
++            let text = editor.read(cx).text();
++            let position = text.offset_to_position(offset);
++            let before: Vec<char> = text
++                .slice_line(position.line as usize)
++                .chars()
++                .take(position.character as usize)
++                .collect();
++            let word = before
++                .iter()
++                .rev()
++                .take_while(|ch| ch.is_alphanumeric() || **ch == '_' || **ch == '$')
++                .count();
++            self.query = before[before.len() - word..].iter().collect::<String>().into();
++        }
+         self.list.update(cx, |this, cx| {
+             let longest_ix = items
+                 .iter()
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/search.rs vendor/gpui-component/src/input/search.rs
+--- a/src/input/search.rs	2026-10-13 09:11:26
++++ b/src/input/search.rs	2026-10-13 09:11:26
+@@ -1,20 +1,22 @@
++// (den) The find bar as VS Code's (see vendor/README.md); every change
++// from 0.7.0 is in vendor/patches/gpui-component.patch.
+ use ropey::Rope;
+-use rust_i18n::t;
+ use std::ops::Range;
+ 
+ use gpui::{
+-    App, AppContext as _, Context, Empty, Entity, FocusHandle, Focusable, Half,
+-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Styled, Subscription,
+-    WeakEntity, Window, actions, div, prelude::FluentBuilder as _,
++    App, AppContext as _, BorrowAppContext as _, Context, DragMoveEvent, Empty, Entity, FocusHandle, Focusable, Global,
++    Half, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render,
++    SharedString, StatefulInteractiveElement as _, Styled, Subscription, WeakEntity, Window,
++    actions, div, prelude::FluentBuilder as _, px,
+ };
+ 
+ use crate::{
+-    ActiveTheme, Disableable, ElementExt, IconName, Selectable, Sizable,
++    ActiveTheme, Disableable, ElementExt, Icon, IconName, Selectable, Sizable,
+     button::{Button, ButtonVariants},
+     h_flex,
+     input::{
+         Enter, Escape, IndentInline, Input, InputBaseState, InputEvent, InputState, OutdentInline,
+-        Replace,
++        Replace, SearchOptions,
+     },
+     label::Label,
+     v_flex,
+@@ -22,8 +24,47 @@
+ 
+ const CONTEXT: &'static str = "SearchPanel";
+ 
++/// (den) The find bar floats at the editor's top right, as VS Code's.
++const DEFAULT_WIDTH: Pixels = px(420.);
++const MIN_WIDTH: Pixels = px(300.);
++/// The queries remembered for ↑ and ↓.
++const HISTORY: usize = 50;
++
+ actions!(input, [Tab]);
+ 
++/// (den) What the find bar keeps across editors: its width as dragged, the
++/// queries searched (the newest last) and its toggles. The app sets it on
++/// start and observes it to save it.
++#[derive(Clone, Default)]
++pub struct FindBarMemory {
++    pub width: Option<Pixels>,
++    pub history: Vec<String>,
++    pub options: SearchOptions,
++}
++
++impl Global for FindBarMemory {}
++
++impl FindBarMemory {
++    fn get(cx: &App) -> Self {
++        cx.try_global::<Self>().cloned().unwrap_or_default()
++    }
++
++    fn update(cx: &mut App, change: impl FnOnce(&mut Self)) {
++        cx.update_default_global::<Self, _>(|memory, _| change(memory));
++    }
++}
++
++/// What is dragged by the find bar's left edge.
++#[derive(Clone)]
++struct ResizeFindBar;
++
++impl Render for ResizeFindBar {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        Empty
++    }
++}
++
++
+ #[cfg(test)]
+ use gpui_base::input::SearchMatcher;
+ 
+@@ -58,6 +99,7 @@
+     }
+ }
+ 
++
+ pub(super) struct SearchPanel<M: crate::input::overlay::OverlayMode> {
+     editor: WeakEntity<InputBaseState<M>>,
+     search_input: Entity<InputState>,
+@@ -94,8 +136,9 @@
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Entity<Self> {
+-        let search_input = cx.new(|cx| InputState::new(window, cx));
+-        let replace_input = cx.new(|cx| InputState::new(window, cx));
++        let search_input =
++            cx.new(|cx| InputState::new(window, cx).placeholder("Find (↑↓ for history)"));
++        let replace_input = cx.new(|cx| InputState::new(window, cx).placeholder("Replace"));
+ 
+         cx.new(|cx| {
+             let _subscriptions =
+@@ -150,7 +193,7 @@
+         self.update_search_query(visible_range_offset, cx);
+     }
+ 
+-    /// Update the matcher by the value of the search input.
++    /// Update the matcher by the value of the search input and the toggles.
+     ///
+     /// The `visible_range_offset` is to select the nearest match of the visible range,
+     /// it is passed in, because the editor may be borrowed by the caller.
+@@ -160,9 +203,10 @@
+         cx: &mut Context<Self>,
+     ) {
+         let query = self.search_input.read(cx).value();
++        let options = FindBarMemory::get(cx).options;
+         let editor = self.editor.clone();
+         let _ = editor.update(cx, |state, cx| {
+-            state.set_search_query(query.clone(), self.session.case_insensitive, cx);
++            state.set_search_query(query.clone(), options, cx);
+         });
+         if let Ok(session) = editor.read_with(cx, |state, _| state.search_session().clone()) {
+             self.session = session;
+@@ -175,6 +219,53 @@
+         cx.notify();
+     }
+ 
++    /// Flips one of the toggles, for every editor.
++    fn toggle(&mut self, change: impl FnOnce(&mut SearchOptions), cx: &mut Context<Self>) {
++        FindBarMemory::update(cx, |memory| change(&mut memory.options));
++        self.update_search_query(None, cx);
++    }
++
++    /// The query searched goes last in the history.
++    fn remember(&self, cx: &mut App) {
++        let query = self.search_input.read(cx).value().to_string();
++        if query.is_empty() {
++            return;
++        }
++        FindBarMemory::update(cx, |memory| {
++            memory.history.retain(|old| *old != query);
++            memory.history.push(query);
++            let extra = memory.history.len().saturating_sub(HISTORY);
++            memory.history.drain(..extra);
++        });
++    }
++
++    /// ↑ and ↓ in the search input: the query before or after in the
++    /// history. What was typed and not searched yet is kept in it first.
++    fn browse_history(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
++        let current = self.search_input.read(cx).value().to_string();
++        if !current.is_empty() && !FindBarMemory::get(cx).history.contains(&current) {
++            self.remember(cx);
++        }
++        let history = FindBarMemory::get(cx).history;
++        let at = history
++            .iter()
++            .rposition(|query| *query == current)
++            .unwrap_or(history.len());
++        let to = if back {
++            at.checked_sub(1)
++        } else {
++            (at + 1 < history.len()).then_some(at + 1)
++        };
++        let Some(query) = to.and_then(|ix| history.get(ix)) else {
++            return;
++        };
++        self.search_input.update(cx, |input, cx| {
++            input.set_value(query.clone(), window, cx);
++            input.select_all(window, cx);
++        });
++        self.update_search_query(None, cx);
++    }
++
+     fn replaceable(&self, cx: &App) -> bool {
+         self.editor
+             .read_with(cx, |editor, _| editor.is_replaceable())
+@@ -191,6 +282,7 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.remember(cx);
+         self.session.open = false;
+         let _ = self.editor.update(cx, |state, cx| {
+             state.close_search(cx);
+@@ -201,8 +293,12 @@
+         cx.notify();
+     }
+ 
++    /// Enter goes to the next match (Shift-Enter, the previous one); in the
++    /// replace input it replaces the current one.
+     fn on_action_enter(&mut self, action: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+-        if action.shift {
++        if self.session.replace_mode && self.replace_input.read(cx).focus_handle(cx).is_focused(window) {
++            self.replace_next(window, cx);
++        } else if action.shift {
+             self.prev(window, cx);
+         } else {
+             self.next(window, cx);
+@@ -269,12 +365,14 @@
+     }
+ 
+     fn prev(&mut self, _: &mut Window, cx: &mut Context<Self>) {
++        self.remember(cx);
+         let _ = self.editor.update(cx, |state, cx| {
+             _ = state.previous_search_match(cx);
+         });
+     }
+ 
+     fn next(&mut self, _: &mut Window, cx: &mut Context<Self>) {
++        self.remember(cx);
+         let _ = self.editor.update(cx, |state, cx| {
+             _ = state.next_search_match(cx);
+         });
+@@ -287,6 +385,7 @@
+             return;
+         }
+ 
++        self.remember(cx);
+         let replacement = self.replace_input.read(cx).value();
+         let _ = self.editor.update(cx, |state, cx| {
+             _ = state.replace_current_search_match(&replacement, window, cx);
+@@ -300,13 +399,48 @@
+             return;
+         }
+ 
++        self.remember(cx);
+         let replacement = self.replace_input.read(cx).value();
+         let _ = self.editor.update(cx, |state, cx| {
+             _ = state.replace_all_search_matches(&replacement, window, cx);
+         });
+     }
++
++    /// "3 of 12", "No results", or why the query matches nothing.
++    fn status(&self) -> (SharedString, bool) {
++        let matcher = &self.session.matcher;
++        if matcher.is_invalid() {
++            ("Invalid regex".into(), true)
++        } else {
++            match matcher.current() {
++                Some(ix) => (format!("{} of {}", ix + 1, matcher.len()).into(), false),
++                None => ("No results".into(), false),
++            }
++        }
++    }
+ }
+ 
++/// A toggle inside an input, VS Code's Aa, ab and .*.
++fn toggle_button(
++    id: &'static str,
++    icon: impl Into<Icon>,
++    tooltip: &'static str,
++    on: bool,
++) -> Button {
++    Button::new(id)
++        .xsmall()
++        .compact()
++        .ghost()
++        .icon(icon)
++        .tooltip(tooltip)
++        .selected(on)
++}
++
++/// One of the den's own icons (`crates/ui/assets/icons`).
++fn den_icon(name: &str) -> Icon {
++    Icon::empty().path(format!("icons/{name}.svg"))
++}
++
+ impl<M: crate::input::overlay::OverlayMode> Focusable for SearchPanel<M> {
+     fn focus_handle(&self, cx: &App) -> FocusHandle {
+         self.search_input.read(cx).focus_handle(cx)
+@@ -324,10 +458,15 @@
+         if !allow_replace {
+             self.session.replace_mode = false;
+         }
++        let replace_mode = self.session.replace_mode;
++        let options = FindBarMemory::get(cx).options;
++        let width = FindBarMemory::get(cx).width.unwrap_or(DEFAULT_WIDTH);
++        let (status, invalid) = self.status();
+ 
+-        v_flex()
++        h_flex()
+             .id("search-panel")
+             .occlude()
++            .relative()
+             .track_focus(&self.focus_handle(cx))
+             .key_context(CONTEXT)
+             .on_action(cx.listener(Self::on_action_enter))
+@@ -335,138 +474,249 @@
+             .on_action(cx.listener(Self::on_action_tab))
+             .on_action(cx.listener(Self::on_action_tab_prev))
+             .on_action(cx.listener(Self::on_action_replace))
++            .on_drag_move(cx.listener(|_, event: &DragMoveEvent<ResizeFindBar>, _, cx| {
++                let width = (event.bounds.right() - event.event.position.x).max(MIN_WIDTH);
++                FindBarMemory::update(cx, |memory| memory.width = Some(width));
++                cx.notify();
++            }))
+             .font_family(cx.theme().font_family.clone())
+-            .items_center()
+-            .py_2()
+-            .px_3()
+-            .w_full()
++            .w(width)
++            .min_w_0()
++            .items_start()
+             .gap_1()
++            .py_1()
++            .pl_1()
++            .pr_1p5()
+             .bg(cx.theme().tokens.popover)
+-            .border_b_1()
+-            .rounded(cx.theme().radius.half())
++            .border_1()
+             .border_color(cx.theme().border)
++            .rounded(cx.theme().radius.half())
++            .shadow_md()
++            // The left edge sizes it.
+             .child(
+-                h_flex()
+-                    .w_full()
+-                    .gap_2()
++                div()
++                    .id("search-panel-resize")
++                    .absolute()
++                    .left_0()
++                    .top_0()
++                    .bottom_0()
++                    .w(px(4.))
++                    .cursor_col_resize()
++                    .on_drag(ResizeFindBar, |drag, _, _, cx| cx.new(|_| drag.clone())),
++            )
++            .child(
++                Button::new("replace-mode")
++                    .xsmall()
++                    .ghost()
++                    .icon(if replace_mode {
++                        IconName::ChevronDown
++                    } else {
++                        IconName::ChevronRight
++                    })
++                    .tooltip("Toggle Replace")
++                    .disabled(!allow_replace)
++                    .when(replace_mode, |this| this.h(px(52.)))
++                    .on_click(cx.listener(|this, _, window, cx| {
++                        this.toggle_replace_mode(window, cx);
++                    })),
++            )
++            .child(
++                v_flex()
++                    .flex_1()
++                    .min_w_0()
++                    .gap_1()
+                     .child(
+-                        div()
+-                            .flex()
+-                            .flex_1()
+-                            .gap_1()
++                        h_flex()
++                            .w_full()
++                            .gap_2()
+                             .child(
+-                                Input::new(&self.search_input)
+-                                    .focus_bordered(false)
+-                                    .suffix(
+-                                        Button::new("case-insensitive")
+-                                            .selected(!self.session.case_insensitive)
+-                                            .toggled(!self.session.case_insensitive)
+-                                            .xsmall()
+-                                            .compact()
+-                                            .text()
+-                                            .icon(IconName::CaseSensitive)
+-                                            .on_click(cx.listener(|this, _, _, cx| {
+-                                                this.session.case_insensitive =
+-                                                    !this.session.case_insensitive;
+-                                                this.update_search_query(None, cx);
+-                                                cx.notify();
+-                                            })),
++                                div()
++                                    .flex_1()
++                                    .min_w_0()
++                                    .capture_key_down(cx.listener(
++                                        |this, event: &KeyDownEvent, window, cx| {
++                                            let keystroke = &event.keystroke;
++                                            if keystroke.modifiers.modified() {
++                                                return;
++                                            }
++                                            let back = match keystroke.key.as_str() {
++                                                "up" => true,
++                                                "down" => false,
++                                                _ => return,
++                                            };
++                                            cx.stop_propagation();
++                                            this.browse_history(back, window, cx);
++                                        },
++                                    ))
++                                    .child(
++                                        Input::new(&self.search_input)
++                                            .focus_bordered(true)
++                                            .when(invalid, |this| {
++                                                this.border_color(cx.theme().danger)
++                                            })
++                                            .suffix(
++                                                h_flex()
++                                                    .gap_0p5()
++                                                    .child(
++                                                        toggle_button(
++                                                            "case-sensitive",
++                                                            IconName::CaseSensitive,
++                                                            "Match Case",
++                                                            !options.case_insensitive,
++                                                        )
++                                                        .on_click(cx.listener(|this, _, _, cx| {
++                                                            this.toggle(
++                                                                |options| {
++                                                                    options.case_insensitive =
++                                                                        !options.case_insensitive
++                                                                },
++                                                                cx,
++                                                            )
++                                                        })),
++                                                    )
++                                                    .child(
++                                                        toggle_button(
++                                                            "whole-word",
++                                                            den_icon("whole-word"),
++                                                            "Match Whole Word",
++                                                            options.whole_word,
++                                                        )
++                                                        .on_click(cx.listener(|this, _, _, cx| {
++                                                            this.toggle(
++                                                                |options| {
++                                                                    options.whole_word =
++                                                                        !options.whole_word
++                                                                },
++                                                                cx,
++                                                            )
++                                                        })),
++                                                    )
++                                                    .child(
++                                                        toggle_button(
++                                                            "regex",
++                                                            den_icon("regex"),
++                                                            "Use Regular Expression",
++                                                            options.regex,
++                                                        )
++                                                        .on_click(cx.listener(|this, _, _, cx| {
++                                                            this.toggle(
++                                                                |options| options.regex = !options.regex,
++                                                                cx,
++                                                            )
++                                                        })),
++                                                    ),
++                                            )
++                                            .small()
++                                            .w_full()
++                                            .shadow_none(),
+                                     )
+-                                    .small()
+-                                    .w_full()
+-                                    .shadow_none(),
++                                    .on_prepaint({
++                                        let view = cx.entity();
++                                        move |bounds, _, cx| {
++                                            view.update(cx, |r, _| {
++                                                r.input_width = bounds.size.width
++                                            })
++                                        }
++                                    }),
+                             )
+-                            .on_prepaint({
+-                                let view = cx.entity();
+-                                move |bounds, _, cx| {
+-                                    view.update(cx, |r, _| r.input_width = bounds.size.width)
+-                                }
+-                            }),
++                            .child(
++                                Label::new(status)
++                                    .text_sm()
++                                    .whitespace_nowrap()
++                                    .when(invalid, |this| this.text_color(cx.theme().danger))
++                                    .when(!has_matches && !invalid, |this| {
++                                        this.text_color(cx.theme().muted_foreground)
++                                    })
++                                    .text_left()
++                                    .min_w(px(72.)),
++                            )
++                            .child(
++                                Button::new("prev")
++                                    .xsmall()
++                                    .ghost()
++                                    .icon(IconName::ArrowUp)
++                                    .tooltip("Previous Match (⇧Enter)")
++                                    .disabled(!has_matches)
++                                    .on_click(cx.listener(|this, _, window, cx| {
++                                        this.prev(window, cx);
++                                    })),
++                            )
++                            .child(
++                                Button::new("next")
++                                    .xsmall()
++                                    .ghost()
++                                    .icon(IconName::ArrowDown)
++                                    .tooltip("Next Match (Enter)")
++                                    .disabled(!has_matches)
++                                    .on_click(cx.listener(|this, _, window, cx| {
++                                        this.next(window, cx);
++                                    })),
++                            )
++                            .child(
++                                Button::new("close")
++                                    .xsmall()
++                                    .ghost()
++                                    .icon(IconName::Close)
++                                    .tooltip("Close (Escape)")
++                                    .on_click(cx.listener(|this, _, window, cx| {
++                                        this.on_action_escape(&Escape, window, cx);
++                                    })),
++                            ),
+                     )
+-                    .when(allow_replace, |this| {
++                    .when(replace_mode, |this| {
+                         this.child(
+-                            Button::new("replace-mode")
+-                                .xsmall()
+-                                .ghost()
+-                                .icon(IconName::Replace)
+-                                .selected(self.session.replace_mode)
+-                                .toggled(self.session.replace_mode)
+-                                .on_click(cx.listener(|this, _, window, cx| {
+-                                    this.toggle_replace_mode(window, cx);
+-                                })),
++                            h_flex()
++                                .w_full()
++                                .gap_2()
++                                .child(
++                                    Input::new(&self.replace_input)
++                                        .focus_bordered(true)
++                                        .suffix(
++                                            toggle_button(
++                                                "preserve-case",
++                                                den_icon("case-upper"),
++                                                "Preserve Case",
++                                                options.preserve_case,
++                                            )
++                                            .on_click(cx.listener(|this, _, _, cx| {
++                                                this.toggle(
++                                                    |options| {
++                                                        options.preserve_case =
++                                                            !options.preserve_case
++                                                    },
++                                                    cx,
++                                                )
++                                            })),
++                                        )
++                                        .small()
++                                        .w(self.input_width)
++                                        .shadow_none(),
++                                )
++                                .child(
++                                    Button::new("replace-one")
++                                        .xsmall()
++                                        .ghost()
++                                        .icon(IconName::Replace)
++                                        .tooltip("Replace (Enter)")
++                                        .disabled(!has_matches)
++                                        .on_click(cx.listener(|this, _, window, cx| {
++                                            this.replace_next(window, cx);
++                                        })),
++                                )
++                                .child(
++                                    Button::new("replace-all")
++                                        .xsmall()
++                                        .ghost()
++                                        .icon(den_icon("replace-all"))
++                                        .tooltip("Replace All")
++                                        .disabled(!has_matches)
++                                        .on_click(cx.listener(|this, _, window, cx| {
++                                            this.replace_all(window, cx);
++                                        })),
++                                ),
+                         )
+-                    })
+-                    .child(
+-                        Button::new("prev")
+-                            .xsmall()
+-                            .ghost()
+-                            .icon(IconName::ChevronLeft)
+-                            .disabled(!has_matches)
+-                            .on_click(cx.listener(|this, _, window, cx| {
+-                                this.prev(window, cx);
+-                            })),
+-                    )
+-                    .child(
+-                        Button::new("next")
+-                            .xsmall()
+-                            .ghost()
+-                            .icon(IconName::ChevronRight)
+-                            .disabled(!has_matches)
+-                            .on_click(cx.listener(|this, _, window, cx| {
+-                                this.next(window, cx);
+-                            })),
+-                    )
+-                    .child(
+-                        Label::new(self.session.matcher.label())
+-                            .when(!has_matches, |this| {
+-                                this.text_color(cx.theme().muted_foreground)
+-                            })
+-                            .text_left()
+-                            .min_w_16(),
+-                    )
+-                    .child(div().w_7())
+-                    .child(
+-                        Button::new("close")
+-                            .xsmall()
+-                            .ghost()
+-                            .icon(IconName::Close)
+-                            .on_click(cx.listener(|this, _, window, cx| {
+-                                this.on_action_escape(&Escape, window, cx);
+-                            })),
+-                    ),
++                    }),
+             )
+-            .when(self.session.replace_mode && allow_replace, |this| {
+-                this.child(
+-                    h_flex()
+-                        .w_full()
+-                        .gap_2()
+-                        .child(
+-                            Input::new(&self.replace_input)
+-                                .focus_bordered(false)
+-                                .small()
+-                                .w(self.input_width)
+-                                .shadow_none(),
+-                        )
+-                        .child(
+-                            Button::new("replace-one")
+-                                .small()
+-                                .label(t!("Input.Replace"))
+-                                .disabled(!has_matches)
+-                                .on_click(cx.listener(|this, _, window, cx| {
+-                                    this.replace_next(window, cx);
+-                                })),
+-                        )
+-                        .child(
+-                            Button::new("replace-all")
+-                                .small()
+-                                .label(t!("Input.Replace All"))
+-                                .disabled(!has_matches)
+-                                .on_click(cx.listener(|this, _, window, cx| {
+-                                    this.replace_all(window, cx);
+-                                })),
+-                        ),
+-                )
+-            })
+             .into_any_element()
+     }
+ }
+@@ -476,11 +726,18 @@
+     use super::*;
+     use ropey::Rope;
+ 
++    fn case(case_insensitive: bool) -> SearchOptions {
++        SearchOptions {
++            case_insensitive,
++            ..SearchOptions::default()
++        }
++    }
++
+     #[test]
+     fn test_search() {
+         let mut matcher = SearchMatcher::new();
+         matcher.update(&Rope::from("Hello 世界 this is a Is test string."));
+-        matcher.update_query("Is", true);
++        matcher.update_query("Is", case(true));
+ 
+         assert_eq!(matcher.len(), 3);
+         let mut matches = matcher.clone();
+@@ -498,7 +755,7 @@
+         assert_eq!(matches.current_match_index(), 0);
+         assert_eq!(matches.next_back(), Some(23..25));
+ 
+-        matcher.update_query("IS", false);
++        matcher.update_query("IS", case(false));
+         assert_eq!(matcher.len(), 0);
+         assert_eq!(matcher.next(), None);
+         assert_eq!(matcher.next_back(), None);
+@@ -508,7 +765,7 @@
+     fn test_search_label() {
+         let mut matcher = SearchMatcher::new();
+         matcher.update(&Rope::from("Hello 世界 this is a Is test string."));
+-        matcher.update_query("Is", true);
++        matcher.update_query("Is", case(true));
+         assert_eq!(matcher.label(), "1/3");
+         matcher.next();
+         assert_eq!(matcher.label(), "2/3");
+@@ -517,7 +774,7 @@
+         matcher.next();
+         assert_eq!(matcher.label(), "1/3");
+ 
+-        matcher.update_query("IS", false);
++        matcher.update_query("IS", case(false));
+         assert_eq!(matcher.label(), "0/0");
+     }
+ 
+@@ -525,7 +782,7 @@
+     fn test_select_range_start() {
+         let mut matcher = SearchMatcher::new();
+         matcher.update(&Rope::from(".....aaaaa.....aaaaa.....aaaaa"));
+-        matcher.update_query("aaaaa", false);
++        matcher.update_query("aaaaa", case(false));
+         matcher.update_cursor_by_offset(0);
+         assert_eq!(matcher.current_match_index(), 0);
+ 
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/menu/context_menu.rs vendor/gpui-component/src/menu/context_menu.rs
+--- a/src/menu/context_menu.rs	2026-10-13 09:11:26
++++ b/src/menu/context_menu.rs	2026-10-13 09:11:26
+@@ -128,6 +128,9 @@
+     /// the previously rendered frame, where the menu's own element is not yet.
+     trigger_focus_handle: Option<FocusHandle>,
+     _subscription: Option<Subscription>,
++    /// (den) Held while the menu is open, as an open popover's: tooltips
++    /// step aside for it (see `Tooltip`'s render).
++    _popover: Option<gpui_base::DeferredPopover>,
+ }
+ 
+ pub struct ContextMenuState {
+@@ -154,6 +157,7 @@
+                 position: Default::default(),
+                 trigger_focus_handle: None,
+                 _subscription: None,
++                _popover: None, // (den)
+             })),
+         }
+     }
+@@ -407,6 +411,11 @@
+                             }
+                         });
+ 
++                        // (den)
++                        // The innermost menu is the one shown: not those of
++                        // the elements around it.
++                        cx.stop_propagation();
++
+                         {
+                             let mut shared_state = shared_state.borrow_mut();
+                             // Clear any existing menu view to allow immediate replacement
+@@ -415,6 +424,8 @@
+                             shared_state._subscription = None;
+                             shared_state.position = event.position;
+                             shared_state.open = true;
++                            shared_state._popover =
++                                Some(gpui_base::GlobalState::register_deferred_popover(cx)); // (den)
+                         }
+ 
+                         // Use defer to build the menu in the next frame, avoiding race conditions
+@@ -445,7 +456,9 @@
+                                     let shared_state = Rc::downgrade(&shared_state);
+                                     move |_, _: &DismissEvent, window, _cx| {
+                                         if let Some(shared_state) = shared_state.upgrade() {
+-                                            shared_state.borrow_mut().open = false;
++                                            let mut shared_state = shared_state.borrow_mut();
++                                            shared_state.open = false;
++                                            shared_state._popover = None; // (den)
+                                             window.refresh();
+                                         }
+                                     }
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/fallback.rs vendor/gpui-component/src/native_menu/fallback.rs
+--- a/src/native_menu/fallback.rs	2026-10-13 09:11:26
++++ b/src/native_menu/fallback.rs	2026-10-13 09:11:26
+@@ -81,6 +81,7 @@
+                     checked,
+                     icon: Some(icon),
+                     action: Some(action),
++                    .. // (den) key
+                 } => menu.item(
+                     PopupMenuItem::new(label)
+                         .icon(*icon)
+@@ -94,6 +95,7 @@
+                     checked,
+                     icon: None,
+                     action: Some(action),
++                    .. // (den) key
+                 } => menu.menu_with_check_and_disabled(label, checked, action, disabled),
+                 NativeMenuItem::Item { action: None, .. } => menu,
+                 NativeMenuItem::Submenu {
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/macos.rs vendor/gpui-component/src/native_menu/macos.rs
+--- a/src/native_menu/macos.rs	2026-10-13 09:11:26
++++ b/src/native_menu/macos.rs	2026-10-13 09:11:26
+@@ -2,11 +2,11 @@
+ 
+ use std::{cell::Cell, sync::Arc};
+ 
+-use gpui::{Action, App, AssetSource, Pixels, Point, Window};
++use gpui::{Action, App, AssetSource, Keystroke, Pixels, Point, Window}; // (den) Keystroke
+ use objc2::rc::Retained;
+ use objc2::runtime::{AnyObject, NSObject};
+ use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send, sel};
+-use objc2_app_kit::{NSImage, NSMenu, NSMenuItem, NSView};
++use objc2_app_kit::{NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSView}; // (den) NSEventModifierFlags
+ use objc2_foundation::{NSData, NSPoint, NSSize, NSString};
+ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+ 
+@@ -139,10 +139,15 @@
+                 checked,
+                 icon,
+                 action,
++                key, // (den)
+             } => {
+                 let ns_item = NSMenuItem::new(mtm);
+                 unsafe {
+                     ns_item.setTitle(&NSString::from_str(label));
++                    // (den)
++                    if let Some(key) = key {
++                        set_key_equivalent(&ns_item, key);
++                    }
+                     ns_item.setEnabled(!*disabled);
+                     if let Some(icon) = icon {
+                         if let Some(ns_image) = ns_image_for_icon(icon, asset_source) {
+@@ -183,6 +188,53 @@
+     }
+ 
+     menu
++}
++
++// (den)
++/// Shows `key` at the right of the item, as the menu bar does.
++fn set_key_equivalent(item: &NSMenuItem, key: &Keystroke) {
++    let modifiers = key.modifiers;
++    let mut mask = NSEventModifierFlags::empty();
++    for (on, flag) in [
++        (modifiers.platform, NSEventModifierFlags::Command),
++        (modifiers.control, NSEventModifierFlags::Control),
++        (modifiers.alt, NSEventModifierFlags::Option),
++        (modifiers.shift, NSEventModifierFlags::Shift),
++    ] {
++        if on {
++            mask |= flag;
++        }
++    }
++    item.setKeyEquivalent(&NSString::from_str(&key_to_native(&key.key)));
++    item.setKeyEquivalentModifierMask(mask);
++}
++
++// (den)
++/// The character AppKit uses for `key` (the function keys have their own).
++fn key_to_native(key: &str) -> String {
++    let code: u16 = match key {
++        "space" => return " ".into(),
++        "tab" => 0x09,
++        "enter" => 0x0d,
++        "backspace" => 0x08,
++        "escape" => 0x1b,
++        "up" => 0xf700,
++        "down" => 0xf701,
++        "left" => 0xf702,
++        "right" => 0xf703,
++        "insert" => 0xf727,
++        "delete" => 0xf728,
++        "home" => 0xf729,
++        "end" => 0xf72b,
++        "pageup" => 0xf72c,
++        "pagedown" => 0xf72d,
++        _ => match key.strip_prefix('f').and_then(|n| n.parse::<u16>().ok()) {
++            // NSF1FunctionKey is 0xF704, and the rest follow it.
++            Some(n @ 1..=35) => 0xf703 + n,
++            _ => return key.into(),
++        },
++    };
++    String::from_utf16_lossy(&[code])
+ }
+ 
+ fn ns_image_for_icon(
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/mod.rs vendor/gpui-component/src/native_menu/mod.rs
+--- a/src/native_menu/mod.rs	2026-10-13 09:11:26
++++ b/src/native_menu/mod.rs	2026-10-13 09:11:26
+@@ -30,7 +30,7 @@
+ 
+ #[cfg(any(target_os = "macos", target_os = "windows"))]
+ use gpui::AssetSource;
+-use gpui::{Action, App, Pixels, Point, SharedString, Window};
++use gpui::{Action, App, AsKeystroke as _, FocusHandle, Keystroke, Pixels, Point, SharedString, Window}; // (den) AsKeystroke, FocusHandle, Keystroke
+ #[cfg(any(target_os = "macos", target_os = "windows"))]
+ use gpui::{Image, ImageFormat};
+ #[cfg(any(target_os = "macos", target_os = "windows"))]
+@@ -56,6 +56,8 @@
+         icon: Option<Box<Icon>>,
+         /// Action dispatched when the item is selected.
+         action: Option<Box<dyn Action>>,
++        /// The action's shortcut, shown beside the label; filled in by [`NativeMenu::show`].
++        key: Option<Keystroke>, // (den)
+     },
+     Submenu {
+         label: SharedString,
+@@ -168,6 +170,7 @@
+             checked,
+             icon: icon.map(Box::new),
+             action,
++            key: None, // (den)
+         });
+         self
+     }
+@@ -202,15 +205,19 @@
+         if self.items.is_empty() {
+             return;
+         }
++        // (den) The shortcuts, resolved before the menu is built.
++        let mut items = self.items;
++        let focused = window.focused(cx);
++        resolve_keys(&mut items, focused.as_ref(), window);
+ 
+         #[cfg(target_os = "macos")]
+         {
+-            macos::show(self.items, cx.asset_source().clone(), position, window, cx);
++            macos::show(items, cx.asset_source().clone(), position, window, cx);
+         }
+         #[cfg(target_os = "windows")]
+         {
+             windows::show(
+-                self.items,
++                items,
+                 cx.asset_source().clone(),
+                 position,
+                 cx.theme().is_dark(),
+@@ -219,10 +226,43 @@
+             );
+         }
+         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+-        fallback::show(self.items, position, window, cx);
++        fallback::show(items, position, window, cx);
+     }
+ }
+ 
++// (den)
++/// Fills in each item's shortcut: the binding its action has where the focus
++/// is (the menu dispatches there), else one registered without a key context.
++/// Only single keystrokes: a native menu can't show a sequence.
++fn resolve_keys(items: &mut [NativeMenuItem], focused: Option<&FocusHandle>, window: &Window) {
++    for item in items {
++        match item {
++            NativeMenuItem::Item {
++                action: Some(action),
++                key,
++                ..
++            } => {
++                let binding = focused
++                    .and_then(|handle| {
++                        window.highest_precedence_binding_for_action_in(action.as_ref(), handle)
++                    })
++                    .or_else(|| {
++                        window.highest_precedence_binding_for_action_in_context(
++                            action.as_ref(),
++                            Default::default(),
++                        )
++                    });
++                *key = binding.and_then(|binding| match binding.keystrokes() {
++                    [keystroke] => Some(keystroke.as_keystroke().clone()),
++                    _ => None,
++                });
++            }
++            NativeMenuItem::Submenu { items, .. } => resolve_keys(items, focused, window),
++            _ => {}
++        }
++    }
++}
++
+ #[cfg(any(target_os = "macos", target_os = "windows"))]
+ pub(super) fn resolve_icon_image(
+     icon: &Icon,
+@@ -341,6 +381,7 @@
+                     checked,
+                     icon: None,
+                     action: Some(action),
++                    key: None, // (den)
+                 }),
+                 gpui::MenuItem::Submenu(submenu) => native.items.push(NativeMenuItem::Submenu {
+                     label: submenu.name.clone(),
+@@ -376,6 +417,7 @@
+             checked,
+             icon: Some(icon),
+             action: Some(_),
++            .. // (den) key
+         } = &menu.items[0]
+         else {
+             panic!("expected an actionable item with an icon");
+@@ -403,6 +445,7 @@
+             checked,
+             icon: Some(icon),
+             action: Some(_),
++            .. // (den) key
+         } = &menu.items[0]
+         else {
+             panic!("expected a disabled actionable item with an icon");
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/windows.rs vendor/gpui-component/src/native_menu/windows.rs
+--- a/src/native_menu/windows.rs	2026-10-13 09:11:26
++++ b/src/native_menu/windows.rs	2026-10-13 09:11:26
+@@ -218,6 +218,7 @@
+                 checked,
+                 icon,
+                 action,
++                key, // (den)
+             } => {
+                 let mut flags = MF_STRING;
+                 if *disabled {
+@@ -226,6 +227,12 @@
+                 if *checked {
+                     flags |= MF_CHECKED;
+                 }
++                // (den)
++                // After a tab, Windows aligns the shortcut to the right.
++                let label = match key {
++                    Some(key) => format!("{label}\t{}", crate::kbd::Kbd::format(key)),
++                    None => label.to_string(),
++                };
+                 let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
+                 // Actionable, enabled items get an id; others use 0.
+                 let id = match action {
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/text/compat.rs vendor/gpui-component/src/text/compat.rs
+--- a/src/text/compat.rs	2026-10-13 09:11:26
++++ b/src/text/compat.rs	2026-10-13 09:11:26
+@@ -64,6 +64,14 @@
+             stream_fade: None,
+         }
+     }
++    /// (den) Resolve file images while preserving default URI/data URL handling.
++    pub fn resolve_image_source<F>(mut self, resolver: F) -> Self
++    where
++        F: Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync + 'static,
++    {
++        self.inner = self.inner.resolve_image_source(resolver);
++        self
++    }
+     /// Creates a text view that parses `text` as Markdown.
+     pub fn markdown(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
+         let id = id.into();
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/tooltip.rs vendor/gpui-component/src/tooltip.rs
+--- a/src/tooltip.rs	2026-10-13 09:11:26
++++ b/src/tooltip.rs	2026-10-13 09:11:26
+@@ -91,6 +91,12 @@
+ }
+ impl Render for Tooltip {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        // (den) Never over an open menu or popover: the element under the
++        // mouse is still hovered while it's open, and its tooltip showed
++        // through the menu.
++        if crate::GlobalState::is_in_deferred_context(cx) {
++            return div().into_any_element();
++        }
+         let key_binding = if let Some(key_binding) = &self.key_binding {
+             Some(key_binding.clone())
+         } else {
+@@ -140,6 +146,7 @@
+                     )
+                 }),
+         )
++        .into_any_element() // (den)
+     }
+ }
+ 

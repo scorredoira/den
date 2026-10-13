@@ -14,7 +14,7 @@ use std::{
 };
 use sum_tree::Bias;
 use tree_sitter::{
-    InputEdit, Node, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator, Tree,
+    InputEdit, Node, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator, Tree, // (den) Node
 };
 
 const MAX_INJECTION_RANGES: usize = 4096;

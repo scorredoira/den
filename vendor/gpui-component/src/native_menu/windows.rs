@@ -218,7 +218,7 @@ unsafe fn build_menu<'a>(
                 checked,
                 icon,
                 action,
-                key,
+                key, // (den)
             } => {
                 let mut flags = MF_STRING;
                 if *disabled {
@@ -227,6 +227,7 @@ unsafe fn build_menu<'a>(
                 if *checked {
                     flags |= MF_CHECKED;
                 }
+                // (den)
                 // After a tab, Windows aligns the shortcut to the right.
                 let label = match key {
                     Some(key) => format!("{label}\t{}", crate::kbd::Kbd::format(key)),

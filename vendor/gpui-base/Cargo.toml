@@ -43,6 +43,8 @@ inspector = [
 ]
 test-support = ["gpui/test-support"]
 
+# (den) The [[test]] and [[bench]] entries are dropped, and aho-corasick
+# (search matches with regex instead).
 [lib]
 name = "gpui_base"
 path = "src/lib.rs"

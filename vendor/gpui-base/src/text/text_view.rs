@@ -75,6 +75,7 @@ impl TextViewDefaults {
 pub(crate) type TableActionsFn =
     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+// (den) `None` keeps the default handling.
 pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync;
 
 pub(crate) type LinkClickHandlerFn =

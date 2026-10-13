@@ -2,7 +2,7 @@ use crate::input::{InputExtras as _, InputModeKind};
 use gpui::Corners;
 use gpui::Half;
 use gpui::{
-    AnyElement, App, Bounds, ContentMask, Edges, Element, ElementId, ElementInputHandler, Entity,
+    AnyElement, App, Bounds, ContentMask, Edges, Element, ElementId, ElementInputHandler, Entity, // (den) ContentMask
     GlobalElementId,
 };
 use gpui::{
@@ -140,7 +140,7 @@ pub(super) struct EditorScrollbarSnapshot {
     layout: EditorScrollbarLayout,
     cursor_scroll_offset: Point<Pixels>,
     soft_wrap: bool,
-    line_height: Pixels,
+    line_height: Pixels, // (den)
 }
 
 impl EditorScrollbarSnapshot {
@@ -160,7 +160,7 @@ impl EditorScrollbarSnapshot {
             ),
             cursor_scroll_offset,
             soft_wrap: state.soft_wrap,
-            line_height: last_layout.line_height,
+            line_height: last_layout.line_height, // (den)
         }
     }
 }
@@ -271,6 +271,7 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let state = self.state.read(cx);
+        // (den) The scrollbar's marks, laid out with the snapshot kept for paint.
         let Some(snapshot) = state.editor_scrollbar_snapshot.get() else {
             return (Vec::new(), None);
         };

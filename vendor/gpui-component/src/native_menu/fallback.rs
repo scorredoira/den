@@ -81,7 +81,7 @@ fn build_popup(
                     checked,
                     icon: Some(icon),
                     action: Some(action),
-                    ..
+                    .. // (den) key
                 } => menu.item(
                     PopupMenuItem::new(label)
                         .icon(*icon)
@@ -95,7 +95,7 @@ fn build_popup(
                     checked,
                     icon: None,
                     action: Some(action),
-                    ..
+                    .. // (den) key
                 } => menu.menu_with_check_and_disabled(label, checked, action, disabled),
                 NativeMenuItem::Item { action: None, .. } => menu,
                 NativeMenuItem::Submenu {

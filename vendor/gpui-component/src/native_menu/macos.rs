@@ -2,11 +2,11 @@
 
 use std::{cell::Cell, sync::Arc};
 
-use gpui::{Action, App, AssetSource, Keystroke, Pixels, Point, Window};
+use gpui::{Action, App, AssetSource, Keystroke, Pixels, Point, Window}; // (den) Keystroke
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, define_class, msg_send, sel};
-use objc2_app_kit::{NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSView};
+use objc2_app_kit::{NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSView}; // (den) NSEventModifierFlags
 use objc2_foundation::{NSData, NSPoint, NSSize, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -139,11 +139,12 @@ fn build_menu<'a>(
                 checked,
                 icon,
                 action,
-                key,
+                key, // (den)
             } => {
                 let ns_item = NSMenuItem::new(mtm);
                 unsafe {
                     ns_item.setTitle(&NSString::from_str(label));
+                    // (den)
                     if let Some(key) = key {
                         set_key_equivalent(&ns_item, key);
                     }
@@ -189,6 +190,7 @@ fn build_menu<'a>(
     menu
 }
 
+// (den)
 /// Shows `key` at the right of the item, as the menu bar does.
 fn set_key_equivalent(item: &NSMenuItem, key: &Keystroke) {
     let modifiers = key.modifiers;
@@ -207,6 +209,7 @@ fn set_key_equivalent(item: &NSMenuItem, key: &Keystroke) {
     item.setKeyEquivalentModifierMask(mask);
 }
 
+// (den)
 /// The character AppKit uses for `key` (the function keys have their own).
 fn key_to_native(key: &str) -> String {
     let code: u16 = match key {

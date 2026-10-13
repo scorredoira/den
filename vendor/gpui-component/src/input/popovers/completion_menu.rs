@@ -300,6 +300,7 @@ impl CompletionMenu {
         cx.new(|cx| {
             let menu = ContextMenuDelegate {
                 query: SharedString::default(),
+                // (den) Weak, and the editor to read the typed word from.
                 menu: cx.entity().downgrade(),
                 editor: editor.downgrade(),
                 items: vec![],

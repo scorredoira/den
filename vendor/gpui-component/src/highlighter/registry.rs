@@ -15,7 +15,7 @@ use anyhow::Result;
 
 use crate::{ActiveTheme, DEFAULT_THEME_COLORS, ThemeMode, highlighter::languages};
 
-pub(super) const HIGHLIGHT_NAMES: [&str; 52] = [
+pub(super) const HIGHLIGHT_NAMES: [&str; 52] = [ // (den) 41 + 11
     "attribute",
     "attribute.value",
     "boolean",
@@ -287,6 +287,7 @@ impl SyntaxColors {
 
         let style = match name {
             "attribute" => self.attribute,
+            // (den)
             "attribute.value" => self.attribute_value.or(self.string),
             "boolean" => self.boolean,
             "comment" => self.comment,

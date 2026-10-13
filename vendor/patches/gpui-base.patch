@@ -1,0 +1,1665 @@
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/Cargo.toml vendor/gpui-base/Cargo.toml
+--- a/Cargo.toml	2026-10-13 09:11:18
++++ b/Cargo.toml	2026-10-13 09:11:18
+@@ -43,27 +43,12 @@
+ ]
+ test-support = ["gpui/test-support"]
+ 
++# (den) The [[test]] and [[bench]] entries are dropped, and aho-corasick
++# (search matches with regex instead).
+ [lib]
+ name = "gpui_base"
+ path = "src/lib.rs"
+ doctest = false
+-
+-[[test]]
+-name = "element_ext"
+-path = "tests/element_ext.rs"
+-
+-[[bench]]
+-name = "motion"
+-path = "benches/motion.rs"
+-harness = false
+-
+-[[bench]]
+-name = "text_view_scroll"
+-path = "benches/text_view_scroll.rs"
+-harness = false
+-
+-[dependencies.aho-corasick]
+-version = "1.1.3"
+ 
+ [dependencies.anyhow]
+ version = "1"
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/base/element.rs vendor/gpui-base/src/input/base/element.rs
+--- a/src/input/base/element.rs	2026-10-13 09:11:18
++++ b/src/input/base/element.rs	2026-10-13 09:11:18
+@@ -2,7 +2,7 @@
+ use gpui::Corners;
+ use gpui::Half;
+ use gpui::{
+-    AnyElement, App, Bounds, Edges, Element, ElementId, ElementInputHandler, Entity,
++    AnyElement, App, Bounds, ContentMask, Edges, Element, ElementId, ElementInputHandler, Entity, // (den) ContentMask
+     GlobalElementId,
+ };
+ use gpui::{
+@@ -49,6 +49,8 @@
+ const BOTTOM_MARGIN_ROWS: usize = 3;
+ pub(super) const RIGHT_MARGIN: Pixels = px(10.);
+ pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(6.);
++/// (den) Width of the debugger's column before the line numbers.
++const GUTTER_COLUMN_WIDTH: Pixels = px(16.);
+ const FOLD_ICON_WIDTH: Pixels = px(14.);
+ const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
+ const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
+@@ -138,6 +140,7 @@
+     layout: EditorScrollbarLayout,
+     cursor_scroll_offset: Point<Pixels>,
+     soft_wrap: bool,
++    line_height: Pixels, // (den)
+ }
+ 
+ impl EditorScrollbarSnapshot {
+@@ -157,6 +160,7 @@
+             ),
+             cursor_scroll_offset,
+             soft_wrap: state.soft_wrap,
++            line_height: last_layout.line_height, // (den)
+         }
+     }
+ }
+@@ -195,11 +199,12 @@
+ 
+ pub(super) struct EditorScrollbar<M: InputModeKind> {
+     state: Entity<InputBaseState<M>>,
++    snapshot: Option<EditorScrollbarSnapshot>,
+ }
+ 
+ impl<M: InputModeKind> EditorScrollbar<M> {
+     pub(super) fn new(state: Entity<InputBaseState<M>>) -> Self {
+-        Self { state }
++        Self { state, snapshot: None }
+     }
+ }
+ 
+@@ -211,9 +216,27 @@
+     }
+ }
+ 
++/// (den) Where the scrollbar marks go in the track: each line at its share
++/// of the content's height, so a click on a mark (which centers the thumb
++/// there) centers its lines; at least 2 px tall, in the thumb's lane.
++fn scrollbar_mark_bounds(
++    track: Bounds<Pixels>,
++    content_height: Pixels,
++    top: Pixels,
++    height: Pixels,
++) -> Bounds<Pixels> {
++    const MIN_HEIGHT: Pixels = px(2.);
++    const WIDTH: Pixels = px(6.);
++    const INSET: Pixels = px(4.);
++    let scale = track.size.height / content_height.max(track.size.height);
++    let height = (height * scale).max(MIN_HEIGHT);
++    let y = (track.origin.y + top * scale).min(track.bottom() - height);
++    Bounds::new(point(track.right() - INSET - WIDTH, y), size(WIDTH, height))
++}
++
+ impl<M: InputModeKind> Element for EditorScrollbar<M> {
+     type RequestLayoutState = ();
+-    type PrepaintState = Option<AnyElement>;
++    type PrepaintState = (Vec<(Bounds<Pixels>, Hsla, Pixels)>, Option<AnyElement>);
+ 
+     fn id(&self) -> Option<ElementId> {
+         Some("editor-scrollbar".into())
+@@ -248,9 +271,28 @@
+         cx: &mut App,
+     ) -> Self::PrepaintState {
+         let state = self.state.read(cx);
++        // (den) The scrollbar's marks, laid out with the snapshot kept for paint.
+         let Some(snapshot) = state.editor_scrollbar_snapshot.get() else {
+-            return None;
++            return (Vec::new(), None);
+         };
++        self.snapshot = Some(snapshot);
++        let line_height = snapshot.line_height;
++        let marks = state
++            .scrollbar_marks
++            .iter()
++            .filter(|mark| !mark.lines.is_empty())
++            .map(|mark| {
++                let first = state.display_map.buffer_line_to_display_row(mark.lines.start);
++                let last = state.display_map.buffer_line_to_display_row(mark.lines.end - 1);
++                let bounds = scrollbar_mark_bounds(
++                    snapshot.layout.bounds,
++                    snapshot.layout.scroll_size.height,
++                    line_height * first,
++                    line_height * (last + 1 - first),
++                );
++                (bounds, mark.color, line_height * (first + last + 1) as f32 / 2.)
++            })
++            .collect();
+         let scroll_handle = state.scroll_handle.clone();
+ 
+         if scroll_handle.offset() != snapshot.cursor_scroll_offset {
+@@ -272,7 +314,7 @@
+             window,
+             cx,
+         );
+-        Some(scrollbar)
++        (marks, Some(scrollbar))
+     }
+ 
+     fn paint(
+@@ -285,7 +327,55 @@
+         window: &mut Window,
+         cx: &mut App,
+     ) {
+-        if let Some(scrollbar) = prepaint.as_mut() {
++        let (marks, scrollbar) = prepaint;
++        for (bounds, color, _) in marks.iter() {
++            window.paint_quad(fill(*bounds, *color));
++        }
++        // (den) A click by a mark centers its lines even while the scrollbar
++        // is hidden (when visible, the scrollbar takes the click first). The
++        // track is wider than the marks and they can be 2 px tall, so the
++        // click counts within a few pixels of one and goes to the nearest.
++        if let Some(snapshot) = self.snapshot
++            && !marks.is_empty()
++        {
++            const SLACK: Pixels = px(4.);
++            let viewport = snapshot.layout.bounds;
++            let scroll_height = snapshot.layout.scroll_size.height;
++            let track_left = viewport.right() - Scrollbar::width();
++            let targets: Vec<(Bounds<Pixels>, Pixels)> =
++                marks.iter().map(|(bounds, _, center)| (*bounds, *center)).collect();
++            let state = self.state.clone();
++            window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, _, cx| {
++                let position = event.position;
++                if !phase.bubble()
++                    || event.button != MouseButton::Left
++                    || position.x < track_left
++                    || position.x > viewport.right()
++                {
++                    return;
++                }
++                let distance = |bounds: &Bounds<Pixels>| {
++                    (bounds.top() - position.y).max(position.y - bounds.bottom()).max(px(0.))
++                };
++                let Some((_, center)) = targets
++                    .iter()
++                    .filter(|(bounds, _)| distance(bounds) <= SLACK)
++                    .min_by(|a, b| f32::from(distance(&a.0)).total_cmp(&f32::from(distance(&b.0))))
++                else {
++                    return;
++                };
++                cx.stop_propagation();
++                let max = (scroll_height - viewport.size.height).max(px(0.));
++                let top = (*center - viewport.size.height / 2.).clamp(px(0.), max);
++                state.update(cx, |state, cx| {
++                    let mut offset = state.scroll_handle.offset();
++                    offset.y = -top;
++                    state.scroll_handle.set_offset(offset);
++                    cx.notify();
++                });
++            });
++        }
++        if let Some(scrollbar) = scrollbar.as_mut() {
+             scrollbar.paint(window, cx);
+         }
+     }
+@@ -781,6 +871,128 @@
+         (!corners.is_empty()).then_some(corners)
+     }
+ 
++    /// (den) Paints the lines that are bands (see [`LineStyle::band`]) over
++    /// everything, the gutter included.
++    fn paint_bands(&self, prepaint: &PrepaintState, input_bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
++        let state = self.state.read(cx);
++        if state.line_styles.iter().all(|style| style.band.is_none()) {
++            return;
++        }
++        let line_height = window.line_height();
++        let layout = &prepaint.last_layout;
++        let (left, right) = (input_bounds.origin.x, input_bounds.right());
++        let text_left = prepaint.bounds.origin.x + layout.line_number_width;
++        let style = window.text_style();
++        let text_size = style.font_size.to_pixels(window.rem_size());
++        let (border, muted) = (state.editor_style.border, state.editor_style.muted_foreground);
++        let mut bands = Vec::new();
++        let mut y = prepaint.bounds.origin.y + layout.visible_top;
++        for (line, &buffer_line) in layout.lines.iter().zip(layout.visible_buffer_lines.iter()) {
++            let height = line.size(line_height).height;
++            if let Some(style) = state.line_styles.get(buffer_line)
++                && let Some(text) = &style.band
++            {
++                bands.push((y, height, style.background, text.clone()));
++            }
++            y += height;
++            if Some(buffer_line) == prepaint.current_row {
++                y += prepaint.ghost_lines_height;
++            }
++        }
++        let background = state.editor_style.background;
++        for (y, height, color, text) in bands {
++            let bounds = Bounds::new(point(left, y), size(right - left, height));
++            window.paint_quad(fill(bounds, background));
++            if let Some(color) = color {
++                window.paint_quad(fill(bounds, color));
++            }
++            window.paint_quad(fill(Bounds::new(point(left, y), size(right - left, px(1.))), border));
++            window.paint_quad(fill(Bounds::new(point(left, y + height - px(1.)), size(right - left, px(1.))), border));
++            let run = TextRun { len: text.len(), font: style.font(), color: muted, background_color: None, underline: None, strikethrough: None };
++            let shaped = window.text_system().shape_line(text, text_size, &[run], None);
++            _ = shaped.paint(point(text_left, y), line_height, TextAlign::Left, None, window, cx);
++        }
++    }
++
++    /// (den) Paints the background of the line a debugger is stopped at,
++    /// from the gutter's edge to the right.
++    fn paint_execution_line(
++        &self,
++        prepaint: &PrepaintState,
++        input_bounds: Bounds<Pixels>,
++        window: &mut Window,
++        cx: &App,
++    ) {
++        let Some(execution) = self.state.read(cx).execution_line else {
++            return;
++        };
++        let line_height = window.line_height();
++        let layout = &prepaint.last_layout;
++        let left = prepaint.bounds.origin.x + layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN / 2.;
++        let right = input_bounds.right();
++        let mut y = prepaint.bounds.origin.y + layout.visible_top;
++        for (line, &buffer_line) in layout.lines.iter().zip(layout.visible_buffer_lines.iter()) {
++            let height = line.size(line_height).height;
++            if buffer_line == execution.line && right > left {
++                window.paint_quad(fill(Bounds::new(point(left, y), size(right - left, height)), execution.background));
++                return;
++            }
++            y += height;
++            if Some(buffer_line) == prepaint.current_row {
++                y += prepaint.ghost_lines_height;
++            }
++        }
++    }
++
++    /// (den) Paints each styled line's background and hatching, from the
++    /// gutter's edge to the right, under everything else.
++    fn paint_line_styles(
++        &self,
++        prepaint: &PrepaintState,
++        input_bounds: Bounds<Pixels>,
++        window: &mut Window,
++        cx: &App,
++    ) {
++        let state = self.state.read(cx);
++        let line_height = window.line_height();
++        let layout = &prepaint.last_layout;
++        let left = prepaint.bounds.origin.x + layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN / 2.;
++        let right = input_bounds.right();
++        if right <= left {
++            return;
++        }
++        let stripe = state.editor_style.muted_foreground.opacity(0.25);
++        let mut y = prepaint.bounds.origin.y + layout.visible_top;
++        for (line, &buffer_line) in layout.lines.iter().zip(layout.visible_buffer_lines.iter()) {
++            let height = line.size(line_height).height;
++            if let Some(style) = state.line_styles.get(buffer_line) {
++                let line_bounds = Bounds::new(point(left, y), size(right - left, height));
++                if let Some(color) = style.background {
++                    window.paint_quad(fill(line_bounds, color));
++                }
++                if style.hatched {
++                    window.with_content_mask(Some(ContentMask { bounds: line_bounds }), |window| {
++                        let step = px(8.);
++                        let mut x = left - height;
++                        let mut builder = gpui::PathBuilder::stroke(px(1.));
++                        while x < right {
++                            builder.move_to(point(x, y + height));
++                            builder.line_to(point(x + height, y));
++                            x += step;
++                        }
++                        if let Ok(path) = builder.build() {
++                            window.paint_path(path, stripe);
++                        }
++                    });
++                }
++            }
++            y += height;
++            if Some(buffer_line) == prepaint.current_row {
++                y += prepaint.ghost_lines_height;
++            }
++        }
++    }
++
+     fn layout_range_decorations(
+         &self,
+         last_layout: &LastLayout,
+@@ -1081,7 +1293,17 @@
+         let total_lines = text.lines_len();
+         // Reserve three digits for small documents, then follow the actual
+         // line count up to seven digits.
+-        let line_number_len = line_number_len(total_lines);
++        let mut line_number_len = line_number_len(total_lines);
++        // (den) Labels of their own: as wide as the widest.
++        if !state.line_styles.is_empty() {
++            line_number_len = state
++                .line_styles
++                .iter()
++                .filter_map(|style| style.number.as_ref().map(|number| number.chars().count()))
++                .max()
++                .unwrap_or(0)
++                .max(1);
++        }
+ 
+         let mut line_number_width = if state.mode.line_number() {
+             let empty_line_number = window.text_system().shape_line(
+@@ -1110,6 +1332,11 @@
+             line_number_width += FOLD_ICON_HITBOX_WIDTH
+         }
+ 
++        // (den)
++        if state.gutter_column && state.mode.line_number() {
++            line_number_width += GUTTER_COLUMN_WIDTH
++        }
++
+         (line_number_width, line_number_len)
+     }
+ 
+@@ -2491,6 +2718,35 @@
+         }
+ 
+         let line_height = window.line_height();
++        // (den) A row to bring into view, now that the size is known.
++        if self.state.read(cx).reveal.is_some() {
++            let height = bounds.size.height;
++            self.state.update(cx, |state, _| {
++                let Some(reveal) = state.reveal.take() else {
++                    return;
++                };
++                let display_row = state
++                    .display_map
++                    .buffer_pos_to_display_pos(crate::input::BufferPoint::new(reveal.row, 0))
++                    .row as f32;
++                let rows = height / line_height;
++                let offset = state.scroll_handle.offset();
++                let x = state.deferred_scroll_offset.map_or(offset.x, |offset| offset.x);
++                if let Some(margin) = reveal.margin {
++                    // A short view keeps a third of it as margin at most;
++                    // the edge rows, maybe half shown, count as outside.
++                    let margin = (margin as f32).min(((rows - 1.) / 3.).floor().max(1.));
++                    let top = -offset.y / line_height;
++                    if rows > 2. && display_row >= top + margin && display_row + 1. + margin <= top + rows {
++                        state.deferred_scroll_offset = Some(point(x, offset.y));
++                        return;
++                    }
++                }
++                let last_top = (state.display_map.wrap_row_count() as f32 - rows + 1.).max(0.);
++                let top = (display_row - rows * reveal.at).round().clamp(0., last_top);
++                state.deferred_scroll_offset = Some(point(x, -(line_height * top)));
++            });
++        }
+         let token_elements = self.measure_tokens(
+             (bounds.size.width - line_number_width - RIGHT_MARGIN).max(px(1.)),
+             line_height,
+@@ -2806,18 +3062,31 @@
+                 .iter()
+                 .zip(last_layout.visible_buffer_lines.iter())
+             {
+-                let line_no: SharedString = format!(
+-                    "{:>width$}",
+-                    displayed_line_number(buffer_line + 1),
+-                    width = line_number_len
+-                )
++                let line_no: SharedString = if state.line_styles.is_empty() {
++                    format!(
++                        "{:>width$}",
++                        displayed_line_number(buffer_line + 1),
++                        width = line_number_len
++                    )
++                } else {
++                    // (den)
++                    let label = state
++                        .line_styles
++                        .get(buffer_line)
++                        .and_then(|style| style.number.as_deref())
++                        .unwrap_or("");
++                    format!("{label:>line_number_len$}")
++                }
+                 .into();
+ 
+-                let runs = if current_row == Some(buffer_line) {
+-                    &current_line_runs
++                let mut runs = if current_row == Some(buffer_line) {
++                    current_line_runs.clone()
+                 } else {
+-                    &other_line_runs
++                    other_line_runs.clone()
+                 };
++                // (den) A label's width is in characters and a run's length
++                // in bytes: they differ with a label like `12−`.
++                runs[0].len = line_no.len();
+ 
+                 let mut sub_lines: SmallVec<[ShapedLine; 1]> = SmallVec::new();
+                 sub_lines.push(
+@@ -2948,6 +3217,14 @@
+             }
+         }
+ 
++        // (den) Line backgrounds and hatched gaps, across the whole line.
++        if !self.state.read(cx).line_styles.is_empty() {
++            self.paint_line_styles(prepaint, input_bounds, window, cx);
++        }
++
++        // (den) The line a debugger is stopped at.
++        self.paint_execution_line(prepaint, input_bounds, window, cx);
++
+         // Keep scrollbar offset always be positive，Start from the left position
+         let scroll_offset = if text_align == TextAlign::Right {
+             (prepaint.scroll_size.width - prepaint.bounds.size.width).max(px(0.))
+@@ -3134,12 +3411,29 @@
+             );
+             window.paint_quad(fill(gutter_bounds, gutter_bg));
+ 
++            // (den) The debugger's column comes before the numbers.
++            let (gutter_column, gutter_marks, execution_line, gutter_click) = {
++                let state = self.state.read(cx);
++                (
++                    state.gutter_column,
++                    state.gutter_marks.clone(),
++                    state.execution_line,
++                    state.gutter_click.clone(),
++                )
++            };
++            let numbers_x = if gutter_column {
++                input_bounds.origin.x + GUTTER_COLUMN_WIDTH
++            } else {
++                input_bounds.origin.x
++            };
++            let mut rows: Vec<(Pixels, Pixels, usize)> = Vec::new();
++
+             // Each item is the normal lines.
+             for (lines, &buffer_line) in line_numbers
+                 .iter()
+                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+             {
+-                let p = point(input_bounds.origin.x, origin.y + offset_y);
++                let p = point(numbers_x, origin.y + offset_y);
+                 let is_active = prepaint.current_row == Some(buffer_line);
+ 
+                 let height = line_height * lines.len() as f32;
+@@ -3161,13 +3455,56 @@
+                     offset_y += line_height;
+                 }
+ 
++                // (den)
++                if gutter_column {
++                    let column = point(input_bounds.origin.x, p.y);
++                    if let Some(mark) = gutter_marks.iter().find(|mark| mark.line == buffer_line) {
++                        paint_gutter_mark(column, line_height, mark.color, mark.hollow, window);
++                    }
++                    if let Some(execution) = execution_line.filter(|execution| execution.line == buffer_line) {
++                        paint_gutter_arrow(column, line_height, execution.arrow, window);
++                    }
++                }
++                rows.push((p.y, p.y + height, buffer_line));
++
+                 // Add ghost line height after cursor row for line numbers alignment
+                 if !prepaint.ghost_lines.is_empty() && prepaint.current_row == Some(buffer_line) {
+                     offset_y += prepaint.ghost_lines_height;
+                 }
+             }
++
++            // (den) A click in the gutter goes to whoever asked for it,
++            // instead of moving the cursor.
++            if let Some(click) = gutter_click {
++                // Over the breakpoints and the numbers, an arrow: they are
++                // clicked, not typed in.
++                window.set_cursor_style(
++                    gpui::CursorStyle::Arrow,
++                    &prepaint.fold_icon_layout.line_number_hitbox,
++                );
++                // Only where nothing lies over it: a resize handle straddling
++                // the editor's edge takes the press, to drag.
++                let hitboxes = [prepaint.fold_icon_layout.line_number_hitbox.clone(), prepaint.hitbox.clone()];
++                window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, window, cx| {
++                    if !phase.capture()
++                        || !gutter_bounds.contains(&event.position)
++                        || !hitboxes.iter().any(|hitbox| hitbox.is_hovered(window))
++                    {
++                        return;
++                    }
++                    let y = event.position.y;
++                    if let Some(&(_, _, line)) = rows.iter().find(|(top, bottom, _)| *top <= y && y < *bottom) {
++                        cx.stop_propagation();
++                        window.prevent_default();
++                        click(line, event, window, cx);
++                    }
++                });
++            }
+         }
+ 
++        // (den)
++        self.paint_bands(prepaint, input_bounds, window, cx);
++
+         // Paint fold icons (only visible on hover or for current line)
+         self.paint_fold_icons(
+             &mut prepaint.fold_icon_layout,
+@@ -3192,6 +3529,11 @@
+             state.scroll_size = prepaint.scroll_size;
+             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+             state.deferred_scroll_offset = None;
++            // (den) The scrollbar moves the offset without notifying.
++            let offset = state.scroll_handle.offset();
++            if state.painted_scroll_offset.replace(offset).is_some_and(|painted| painted != offset) {
++                cx.notify();
++            }
+ 
+             // Layout consumers need changed geometry, not another notification
+             // for every paint of an unchanged input.
+@@ -3229,6 +3571,36 @@
+         }
+ 
+         self.paint_mouse_listeners(&prepaint.hitbox, window, cx);
++    }
++}
++
++/// (den) A breakpoint: a dot centred in the gutter column, or a ring.
++fn paint_gutter_mark(column: Point<Pixels>, line_height: Pixels, color: Hsla, hollow: bool, window: &mut Window) {
++    let diameter = px(10.);
++    let origin = point(
++        column.x + (GUTTER_COLUMN_WIDTH - diameter).half(),
++        column.y + (line_height - diameter).half(),
++    );
++    let bounds = Bounds::new(origin, size(diameter, diameter));
++    let background = if hollow { gpui::transparent_black() } else { color };
++    window.paint_quad(
++        gpui::quad(bounds, diameter.half(), background, px(1.5), color, gpui::BorderStyle::Solid),
++    );
++}
++
++/// (den) Where a debugger is stopped: an arrow in the gutter column.
++fn paint_gutter_arrow(column: Point<Pixels>, line_height: Pixels, color: Hsla, window: &mut Window) {
++    let height = px(10.);
++    let width = px(9.);
++    let left = column.x + (GUTTER_COLUMN_WIDTH - width).half();
++    let top = column.y + (line_height - height).half();
++    let mut builder = gpui::PathBuilder::fill();
++    builder.move_to(point(left, top));
++    builder.line_to(point(left + width, top + height.half()));
++    builder.line_to(point(left, top + height));
++    builder.close();
++    if let Ok(path) = builder.build() {
++        window.paint_path(path, color);
+     }
+ }
+ 
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/base/state.rs vendor/gpui-base/src/input/base/state.rs
+--- a/src/input/base/state.rs	2026-10-13 09:11:18
++++ b/src/input/base/state.rs	2026-10-13 09:11:18
+@@ -2,7 +2,7 @@
+ //!
+ //! Based on the `Input` example from the `gpui` crate.
+ //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
+-use gpui::TextAlign;
++use gpui::{Hsla, TextAlign}; // (den) Hsla
+ use gpui::{
+     Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
+     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
+@@ -344,6 +344,51 @@
+ /// public: an alias is only as usable as the type behind it, so hiding this
+ /// would leave `InputState` unable to do anything. Prefer naming the aliases
+ /// — write `InputState`, not `InputBaseState<InputMode>`.
++/// How one line looks, as the sides of a diff need: a background across
++/// the whole line, a hatched gap standing for lines only the other side has,
++/// and the label in the gutter (`None`: blank). With `band`, the line is a
++/// band that stands apart, as where a diff leaves lines out: the background
++/// over the gutter too, edged above and below, and this text in it, muted,
++/// still as the text scrolls sideways. (den)
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct LineStyle {
++    pub background: Option<Hsla>,
++    pub hatched: bool,
++    pub number: Option<SharedString>,
++    pub band: Option<SharedString>,
++}
++
++/// A mark in the vertical scrollbar's track, as a diff's changes show
++/// where they are: `lines` (buffer lines) in `color`, at the height of
++/// the document they're at. (den)
++#[derive(Clone, Debug, PartialEq)]
++pub struct ScrollbarMark {
++    pub lines: Range<usize>,
++    pub color: Hsla,
++}
++
++/// A debugger's mark in the gutter column before the line numbers (see
++/// [`InputBaseState::set_gutter_column`]): a breakpoint's dot, filled, or a
++/// ring when `hollow`. (den)
++#[derive(Clone, Debug, PartialEq)]
++pub struct GutterMark {
++    pub line: usize,
++    pub color: Hsla,
++    pub hollow: bool,
++}
++
++/// The line a debugger is stopped at: painted with `background` across the
++/// whole line and an arrow of `arrow` color in the gutter column. (den)
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct ExecutionLine {
++    pub line: usize,
++    pub background: Hsla,
++    pub arrow: Hsla,
++}
++
++/// Called with the buffer line clicked in the gutter. (den)
++pub type GutterClick = Rc<dyn Fn(usize, &MouseDownEvent, &mut Window, &mut App)>;
++
+ pub struct InputBaseState<M: InputModeKind> {
+     /// State only this mode needs. See [`InputModeKind::Extras`].
+     pub(crate) extras: M::Extras,
+@@ -415,6 +460,22 @@
+     pub(crate) scroll_handle: ScrollHandle,
+     /// The deferred scroll offset to apply on next layout.
+     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
++    /// (den) A buffer row to bring into view once laid out, see
++    /// [`Self::reveal_row`].
++    pub(crate) reveal: Option<Reveal>,
++    /// (den) How each line looks, by buffer line; see [`LineStyle`].
++    pub(crate) line_styles: Vec<LineStyle>,
++    /// (den) Marks in the scrollbar's track; see [`ScrollbarMark`].
++    pub(crate) scrollbar_marks: Vec<ScrollbarMark>,
++    /// (den) A column for debugger marks before the line numbers, its
++    /// marks, the line stopped at and what a click in the gutter does.
++    pub(crate) gutter_column: bool,
++    pub(crate) gutter_marks: Vec<GutterMark>,
++    pub(crate) execution_line: Option<ExecutionLine>,
++    pub(crate) gutter_click: Option<GutterClick>,
++    /// (den) The scroll offset of the last paint, to notify when something
++    /// else (the scrollbar) moved it.
++    pub(crate) painted_scroll_offset: Option<Point<Pixels>>,
+     /// The size of the scrollable content.
+     pub(crate) scroll_size: gpui::Size<Pixels>,
+     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
+@@ -753,6 +814,15 @@
+             longest_line_width: Cell::new(None),
+             editor_paddings: Edges::default(),
+             deferred_scroll_offset: None,
++            // (den)
++            reveal: None,
++            line_styles: Vec::new(),
++            scrollbar_marks: Vec::new(),
++            gutter_column: false,
++            gutter_marks: Vec::new(),
++            execution_line: None,
++            gutter_click: None,
++            painted_scroll_offset: None,
+             placeholder: SharedString::default(),
+             mask_pattern: MaskPattern::default(),
+             mask_pattern_set: false,
+@@ -2405,12 +2475,9 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
+-        // Check if mouse is within bounds
+-        let within_bounds = self
+-            .last_bounds
+-            .as_ref()
+-            .map(|bounds| bounds.contains(&event.position))
+-            .unwrap_or(false);
++        // (den) The visible area: `last_bounds` moves up with the scroll.
++        let within_bounds = self.last_bounds.is_some()
++            && self.input_bounds.contains(&event.position);
+ 
+         if !within_bounds {
+             // Clear hover when mouse leaves the input
+@@ -2977,6 +3044,22 @@
+         cx.notify();
+     }
+ 
++    /// (den) Centers buffer `row` in the viewport on the next layout, even the
++    /// first one: a freshly opened editor is drawn there from its first frame
++    /// instead of moving there on a later one.
++    pub fn center_row(&mut self, row: usize, cx: &mut Context<Self>) {
++        self.reveal_row(row, 0.5, None, cx);
++    }
++
++    /// (den) Scrolls so that buffer `row` is `at` of the way down the
++    /// viewport (0 the top, 0.5 the middle), on the next layout, in rows
++    /// as drawn (wrapped lines take more than one); unless, with `margin`,
++    /// it's that many rows or more inside what shows.
++    pub fn reveal_row(&mut self, row: usize, at: f32, margin: Option<usize>, cx: &mut Context<Self>) {
++        self.reveal = Some(Reveal { row, at, margin });
++        cx.notify();
++    }
++
+     /// Laid-out line height; `None` before first layout.
+     pub fn line_height(&self) -> Option<gpui::Pixels> {
+         self.last_layout.as_ref().map(|l| l.line_height)
+@@ -3020,6 +3103,131 @@
+         self.select_to(end, cx);
+     }
+ 
++    /// Every selection as `(anchor, cursor)` UTF-8 byte offsets; the first is
++    /// the active one. (den)
++    pub fn selections(&self) -> Vec<(usize, usize)> {
++        self.selections
++            .iter()
++            .map(|sel| if sel.reversed { (sel.end, sel.start) } else { (sel.start, sel.end) })
++            .collect()
++    }
++
++    /// Replaces every selection with `selections`, `(anchor, cursor)` UTF-8
++    /// byte offsets; the first is the active one and overlapping ones merge.
++    /// An empty list is ignored. (den)
++    pub fn set_selections(&mut self, selections: &[(usize, usize)], cx: &mut Context<Self>) {
++        if selections.is_empty() {
++            return;
++        }
++        self.undo_manager.break_transaction_coalescing();
++        let new: Vec<CursorSelection> = selections
++            .iter()
++            .map(|&(anchor, cursor)| {
++                let anchor = self.text.clip_offset(anchor.min(self.text.len()), Bias::Left);
++                let cursor = self.text.clip_offset(cursor.min(self.text.len()), Bias::Left);
++                let id = self.selections.generate_id();
++                let mut sel = CursorSelection::new(id, anchor.min(cursor), anchor.max(cursor));
++                sel.reversed = cursor < anchor;
++                sel
++            })
++            .collect();
++        self.selections.replace_all(new);
++        self.selections.merge_overlapping();
++        self.selected_word_range = None;
++        self.pause_blink_cursor(cx);
++        cx.notify();
++    }
++
++    /// Sets how each line looks (`styles[i]` for buffer line `i`); with any,
++    /// the gutter shows each line's `number` instead of its position. (den)
++    pub fn set_line_styles(&mut self, styles: Vec<LineStyle>, cx: &mut Context<Self>) {
++        if self.line_styles != styles {
++            self.line_styles = styles;
++            cx.notify();
++        }
++    }
++
++    /// Reserves a column before the line numbers for debugger marks, so they
++    /// don't move the text when they come and go. (den)
++    pub fn set_gutter_column(&mut self, on: bool, cx: &mut Context<Self>) {
++        if self.gutter_column != on {
++            self.gutter_column = on;
++            cx.notify();
++        }
++    }
++
++    /// The marks in the scrollbar's track. (den)
++    pub fn set_scrollbar_marks(&mut self, marks: Vec<ScrollbarMark>, cx: &mut Context<Self>) {
++        if self.scrollbar_marks != marks {
++            self.scrollbar_marks = marks;
++            cx.notify();
++        }
++    }
++
++    /// The marks of the gutter column, by buffer line. (den)
++    pub fn set_gutter_marks(&mut self, marks: Vec<GutterMark>, cx: &mut Context<Self>) {
++        if self.gutter_marks != marks {
++            self.gutter_marks = marks;
++            cx.notify();
++        }
++    }
++
++    /// The line a debugger is stopped at, if any. (den)
++    pub fn set_execution_line(&mut self, line: Option<ExecutionLine>, cx: &mut Context<Self>) {
++        if self.execution_line != line {
++            self.execution_line = line;
++            cx.notify();
++        }
++    }
++
++    /// What a mouse down on the gutter (column and line numbers) does,
++    /// instead of moving the cursor. (den)
++    pub fn on_gutter_click(&mut self, click: Option<GutterClick>) {
++        self.gutter_click = click;
++    }
++
++    /// The scroll offset, counting one set but not applied yet. (den)
++    pub fn target_scroll_offset(&self) -> Point<Pixels> {
++        self.deferred_scroll_offset.unwrap_or_else(|| self.scroll_handle.offset())
++    }
++
++    /// Scrolls just enough to show `offset`. (den)
++    pub fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
++        self.scroll_to(offset.min(self.text.len()), None, cx);
++    }
++
++    /// Applies `edits` (disjoint UTF-8 byte ranges of the current text and
++    /// their replacements) and then sets `selections` (as in
++    /// [`Self::set_selections`], offsets in the new text), undone as one step
++    /// that brings the old selections back. With `reveal`, it scrolls to the
++    /// cursor. (den)
++    pub fn edit(
++        &mut self,
++        edits: &[(Range<usize>, String)],
++        selections: &[(usize, usize)],
++        reveal: bool,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if !self.is_editable() || edits.is_empty() {
++            return;
++        }
++        let before: Vec<CursorSelection> = self.selections.iter().copied().collect();
++        self.undo_manager.break_transaction_coalescing();
++        self.undo_manager.begin_transaction_with(EditIntent::Atomic);
++        self.undo_manager.record_selections(before.clone(), before.clone());
++        self.undo_manager.set_pending_intent(EditIntent::Atomic);
++        self.replace_text_in_ranges(edits, window, cx);
++        self.set_selections(selections, cx);
++        self.undo_manager
++            .record_selections(before, self.selections.iter().copied().collect());
++        self.undo_manager.commit_transaction();
++        if reveal {
++            let cursor = self.cursor();
++            self.scroll_to(cursor, None, cx);
++        }
++    }
++
+     /// Resolve a mouse position to a byte offset in the text.
+     ///
+     /// Also reports the caret's line-end affinity for that offset: `true` when the position
+@@ -4813,7 +5021,7 @@
+     use crate::theme::Theme;
+     use gpui::{TestAppContext, VisualTestContext, size};
+ 
+-    use crate::input::{EditorMode, EditorState, InputMode, LanguageConfig, TextareaMode};
++    use crate::input::{EditorMode, EditorState, InputMode, LanguageConfig, SearchOptions, TextareaMode}; // (den) SearchOptions
+ 
+     fn set_test_syntax_provider(
+         provider: Rc<dyn crate::input::SyntaxContextProvider>,
+@@ -5550,7 +5758,7 @@
+             input.update(cx, |state, cx| {
+                 state.set_cursor_surrounding_lines(Some(3), window, cx);
+                 state.set_value(text, window, cx);
+-                state.set_search_query("match", true, cx);
++                state.set_search_query("match", SearchOptions::default(), cx); // (den)
+                 if previous {
+                     state.search_session.matcher.next();
+                     state.search_session.matcher.next();
+@@ -5682,7 +5890,7 @@
+         cx.update(|window, cx| {
+             input.update(cx, |state, cx| {
+                 state.set_value("foo bar foo", window, cx);
+-                state.set_search_query("foo", true, cx);
++                state.set_search_query("foo", SearchOptions::default(), cx); // (den)
+             });
+         });
+         cx.run_until_parked();
+@@ -5710,14 +5918,14 @@
+         cx.update(|window, cx| {
+             input.update(cx, |state, cx| {
+                 state.set_value("foo bar foo", window, cx);
+-                state.set_search_query("foo", true, cx);
++                state.set_search_query("foo", SearchOptions::default(), cx); // (den)
+                 state.close_search(cx);
+ 
+                 state.set_value("bar foo", window, cx);
+                 assert_eq!(state.next_search_match(cx), Some(4..7));
+ 
+                 state.set_value("foo foo foo", window, cx);
+-                state.set_search_query("foo", true, cx);
++                state.set_search_query("foo", SearchOptions::default(), cx); // (den)
+                 assert_eq!(state.search_session().matcher.len(), 3);
+             });
+         });
+@@ -5738,7 +5946,7 @@
+             input.update(cx, |state, cx| {
+                 state.set_cursor_surrounding_lines(Some(3), window, cx);
+                 state.set_value(text, window, cx);
+-                state.set_search_query("match", true, cx);
++                state.set_search_query("match", SearchOptions::default(), cx); // (den)
+             });
+         });
+         cx.run_until_parked();
+@@ -7437,6 +7645,59 @@
+         });
+     }
+ 
++    // (den) A test of the hover fix in `on_mouse_move`.
++    struct CountingHover(Rc<std::cell::Cell<usize>>);
++
++    impl crate::input::HoverProvider for CountingHover {
++        fn hover(
++            &self,
++            _: &Rope,
++            _: usize,
++            _: &mut Window,
++            _: &mut App,
++        ) -> gpui::Task<anyhow::Result<Option<lsp_types::Hover>>> {
++            self.0.set(self.0.get() + 1);
++            gpui::Task::ready(Ok(None))
++        }
++    }
++
++    /// Hovering asks the provider also once the editor has scrolled.
++    ///
++    /// The bounds the text is laid out in move up with the scroll, so they
++    /// stopped containing the pointer and every move was taken for leaving
++    /// the input: hover only worked at the top of a file.
++    #[gpui::test]
++    fn test_hover_in_a_scrolled_editor(cx: &mut TestAppContext) {
++        let calls = Rc::new(std::cell::Cell::new(0));
++        let provider_calls = calls.clone();
++        let view = InputView::build_editor(cx, move |mut state| {
++            state.extras.lsp.hover_provider = Some(Rc::new(CountingHover(provider_calls)));
++            state
++        });
++        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++        let input = view.input;
++        let text = (0..400).map(|i| format!("select {i}")).collect::<Vec<_>>().join("\n");
++        cx.update(|window, cx| {
++            input.update(cx, |state, cx| state.set_value(text, window, cx));
++        });
++        cx.run_until_parked();
++        cx.update(|_, cx| {
++            input.update(cx, |state, cx| {
++                let line_height = state.last_layout.as_ref().unwrap().line_height;
++                state.set_scroll_offset(point(px(0.), -line_height * 200.), cx);
++            });
++        });
++        cx.run_until_parked();
++        let scrolled = input.read_with(&cx, |state, _| state.scroll_handle.offset().y);
++        assert!(scrolled < px(-1000.), "the editor must have scrolled: {scrolled:?}");
++
++        cx.simulate_mouse_move(gpui::point(px(60.), px(200.)), None, gpui::Modifiers::default());
++        cx.executor().advance_clock(std::time::Duration::from_millis(300));
++        cx.run_until_parked();
++
++        assert_eq!(calls.get(), 1, "the hover provider must be asked");
++    }
++
+     /// Losing focus hides the hover popover but keeps the decorations.
+     ///
+     /// Both used to be dropped by one call, so clicking away threw away
+@@ -10222,4 +10483,13 @@
+         self.mode.set_smart_indent(smart_indent);
+         cx.notify();
+     }
++}
++
++/// (den) A row to bring into view on the next layout, see
++/// [`InputState::reveal_row`].
++#[derive(Clone, Copy, Debug)]
++pub(crate) struct Reveal {
++    pub row: usize,
++    pub at: f32,
++    pub margin: Option<usize>,
+ }
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/lsp/completions.rs vendor/gpui-base/src/input/editor/lsp/completions.rs
+--- a/src/input/editor/lsp/completions.rs	2026-10-13 09:11:18
++++ b/src/input/editor/lsp/completions.rs	2026-10-13 09:11:18
+@@ -96,6 +96,12 @@
+         Task::ready(Ok(false))
+     }
+ 
++    /// (den) `item` with its detail and documentation, for servers that only
++    /// give them when asked for one item (`completionItem/resolve`).
++    fn resolve_completion(&self, item: &CompletionItem, _: &mut App) -> Task<Result<CompletionItem>> {
++        Task::ready(Ok(item.clone()))
++    }
++
+     /// Determines if the completion should be triggered based on the given byte offset.
+     ///
+     /// This is called on the main thread.
+@@ -141,17 +147,22 @@
+         let start = range.end;
+         let new_offset = self.cursor();
+ 
++        // (den) An open menu closes on text that isn't a trigger, and on
++        // going back past where it opened; a closed one starts again here.
++        let open = self.extras.context_menu_content.completion.open;
+         if !provider.is_completion_trigger(start, new_text, cx) {
++            if open {
++                self.hide_context_menu(cx);
++            }
+             return;
+         }
+ 
+-        let start_offset = self
+-            .extras
+-            .context_menu_content
+-            .completion
+-            .trigger_start_offset
+-            .unwrap_or(start);
++        let start_offset = match self.extras.context_menu_content.completion.trigger_start_offset {
++            Some(offset) if open => offset,
++            _ => start,
++        };
+         if new_offset < start_offset {
++            self.hide_context_menu(cx);
+             return;
+         }
+ 
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/lsp/definitions.rs vendor/gpui-base/src/input/editor/lsp/definitions.rs
+--- a/src/input/editor/lsp/definitions.rs	2026-10-13 09:11:18
++++ b/src/input/editor/lsp/definitions.rs	2026-10-13 09:11:18
+@@ -21,6 +21,19 @@
+         _window: &mut Window,
+         _cx: &mut App,
+     ) -> Task<Result<Vec<lsp_types::LocationLink>>>;
++
++    /// (den) What's underlined while Cmd is held over `offset`: by default
++    /// the definitions. A host may answer less here (what it knows at once),
++    /// and leave the rest to the click, which asks `definitions`.
++    fn hover_definitions(
++        &self,
++        text: &Rope,
++        offset: usize,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> Task<Result<Vec<lsp_types::LocationLink>>> {
++        self.definitions(text, offset, window, cx)
++    }
+ }
+ 
+ #[derive(Clone, Default)]
+@@ -70,8 +83,8 @@
+             return;
+         }
+ 
+-        // Currently not implemented.
+-        let task = provider.definitions(&self.text, offset, window, cx);
++        // (den) `hover_definitions`, not `definitions`.
++        let task = provider.hover_definitions(&self.text, offset, window, cx);
+         let mut symbol_range = self.text.word_range(offset).unwrap_or(offset..offset);
+         let editor = cx.entity();
+         self.extras.lsp._hover_task = cx.spawn_in(window, async move |_, cx| {
+@@ -147,11 +160,16 @@
+             return false;
+         }
+ 
+-        if self.extras.hover_definition.is_empty() {
+-            return false;
+-        };
+-        if !self.extras.hover_definition.is_same(offset) {
+-            return false;
++        // (den) Nothing underlined there: asks, as Go to Definition does,
++        // where it was clicked.
++        if self.extras.hover_definition.is_empty() || !self.extras.hover_definition.is_same(offset) {
++            if self.extras.lsp.definition_provider.is_none() {
++                return false;
++            }
++            self.move_to(offset, None, cx);
++            self.focus(window, cx);
++            self.on_action_go_to_definition(&GoToDefinition, window, cx);
++            return true;
+         }
+ 
+         let Some(location) = self.extras.hover_definition.locations.first().cloned() else {
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/search.rs vendor/gpui-base/src/input/editor/search.rs
+--- a/src/input/editor/search.rs	2026-10-13 09:11:18
++++ b/src/input/editor/search.rs	2026-10-13 09:11:18
+@@ -1,6 +1,9 @@
++// (den) Reworked for `SearchOptions` (whole words, regular expressions and
++// replacements that keep the case), matched with `regex`; every change
++// from 0.7.0 is in vendor/patches/gpui-base.patch.
+ use crate::input::InputModeKind;
+-use aho_corasick::AhoCorasick;
+ use gpui::{Context, Window};
++use regex::{Regex, RegexBuilder};
+ use ropey::Rope;
+ use std::{ops::Range, rc::Rc};
+ 
+@@ -8,11 +11,36 @@
+     InputBaseState, Replace, RopeExt as _, Search, movement::MoveDirection, state::ScrollPadding,
+ };
+ 
++/// How a query matches. (den) Whole words, regular expressions and the
++/// case kept by a replacement, as VS Code's find widget.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct SearchOptions {
++    pub case_insensitive: bool,
++    pub whole_word: bool,
++    pub regex: bool,
++    /// Each replacement takes the case of what it replaces.
++    pub preserve_case: bool,
++}
++
++impl Default for SearchOptions {
++    fn default() -> Self {
++        Self {
++            case_insensitive: true,
++            whole_word: false,
++            regex: false,
++            preserve_case: false,
++        }
++    }
++}
++
+ /// Stateful, presentation-independent search engine used by text inputs.
+ #[derive(Debug, Clone)]
+ pub struct SearchMatcher {
+     text: Rope,
+-    pub query: Option<AhoCorasick>,
++    pub query: Option<Regex>,
++    /// The query is not a valid regular expression.
++    invalid: bool,
++    options: SearchOptions,
+     matched_ranges: Rc<Vec<Range<usize>>>,
+     current_match_ix: usize,
+     replacing: bool,
+@@ -28,7 +56,7 @@
+     /// The built-in search panel is showing.
+     pub open: bool,
+     pub replace_mode: bool,
+-    pub case_insensitive: bool,
++    pub options: SearchOptions,
+     pub query: String,
+     pub replacement: String,
+     pub anchor_offset: Option<usize>,
+@@ -44,7 +72,7 @@
+             open: false,
+             active: false,
+             replace_mode: false,
+-            case_insensitive: true,
++            options: SearchOptions::default(),
+             query: String::new(),
+             replacement: String::new(),
+             anchor_offset: None,
+@@ -79,15 +107,15 @@
+         self.active
+     }
+ 
+-    pub(crate) fn update_query(&mut self, query: impl Into<String>, case_insensitive: bool) {
++    pub(crate) fn update_query(&mut self, query: impl Into<String>, options: SearchOptions) {
+         let query = query.into();
+-        if self.query == query && self.case_insensitive == case_insensitive {
++        if self.query == query && self.options == options {
+             return;
+         }
+ 
+         self.query = query;
+-        self.case_insensitive = case_insensitive;
+-        self.matcher.update_query(&self.query, case_insensitive);
++        self.options = options;
++        self.matcher.update_query(&self.query, options);
+     }
+ }
+ 
+@@ -124,8 +152,8 @@
+         } else {
+             None
+         };
+-        let case_insensitive = self.search_session.case_insensitive;
+-        self.search_session.update_query(query, case_insensitive);
++        let options = self.search_session.options;
++        self.search_session.update_query(query, options);
+         self.search_session.matcher.update(&self.text);
+         if query_changed && let Some(anchor) = self.search_session.anchor_offset {
+             self.search_session.matcher.update_cursor_by_offset(anchor);
+@@ -172,11 +200,11 @@
+     pub fn set_search_query(
+         &mut self,
+         query: impl Into<String>,
+-        case_insensitive: bool,
++        options: SearchOptions,
+         cx: &mut Context<Self>,
+     ) {
+         self.search_session.activate();
+-        self.search_session.update_query(query, case_insensitive);
++        self.search_session.update_query(query, options);
+         self.search_session.matcher.update(&self.text);
+         cx.notify();
+     }
+@@ -226,6 +254,7 @@
+         else {
+             return false;
+         };
++        let replacement = matcher.replacement_at(&range, replacement);
+         let next = matcher.peek().unwrap_or_else(|| range.clone());
+         let direction = matcher
+             .has_next_without_wrap()
+@@ -236,7 +265,7 @@
+         matcher.begin_replacement();
+         let range_utf16 = self.range_to_utf16(&range);
+         self.scroll_to(next.end, direction, cx);
+-        self.replace_text_in_range_silent(Some(range_utf16), replacement, window, cx);
++        self.replace_text_in_range_silent(Some(range_utf16), &replacement, window, cx);
+         true
+     }
+ 
+@@ -251,16 +280,16 @@
+             return 0;
+         }
+         self.sync_search_matcher();
+-        let ranges = self.search_session.matcher.matched_ranges();
+-        if ranges.is_empty() {
++        let replacements = self.search_session.matcher.replacements(replacement);
++        if replacements.is_empty() {
+             return 0;
+         }
+         let mut text = self.text.clone();
+-        for range in ranges.iter().rev() {
+-            text.replace(range.clone(), replacement);
++        for (range, with) in replacements.iter().rev() {
++            text.replace(range.clone(), with);
+         }
+         self.search_session.matcher.begin_replacement();
+-        let count = ranges.len();
++        let count = replacements.len();
+         self.replace_text_in_range_silent(Some(0..self.text.len()), &text.to_string(), window, cx);
+         self.scroll_to(0, Some(MoveDirection::Down), cx);
+         count
+@@ -316,6 +345,8 @@
+         Self {
+             text: "".into(),
+             query: None,
++            invalid: false,
++            options: SearchOptions::default(),
+             matched_ranges: Rc::new(Vec::new()),
+             current_match_ix: 0,
+             replacing: false,
+@@ -332,16 +363,67 @@
+         self.update_matches();
+     }
+ 
+-    pub fn update_query(&mut self, query: &str, case_insensitive: bool) {
+-        self.query = (!query.is_empty()).then(|| {
+-            AhoCorasick::builder()
+-                .ascii_case_insensitive(case_insensitive)
+-                .build([query])
+-                .expect("failed to build input search query")
+-        });
++    pub fn update_query(&mut self, query: &str, options: SearchOptions) {
++        let built = (!query.is_empty()).then(|| build_query(query, options));
++        self.invalid = matches!(built, Some(Err(_)));
++        self.query = built.and_then(Result::ok);
++        self.options = options;
+         self.update_matches();
+     }
+ 
++    /// The query is not a valid regular expression, so nothing matches.
++    pub fn is_invalid(&self) -> bool {
++        self.invalid
++    }
++
++    /// What replaces the match at `range`: `$1`… expanded with a regular
++    /// expression, in the case of the match with `preserve_case`.
++    fn replacement_at(&self, range: &Range<usize>, replacement: &str) -> String {
++        let Some(query) = self.query.as_ref().filter(|_| self.options.regex) else {
++            return self.with_case(&self.text.slice(range.clone()).to_string(), replacement.into());
++        };
++        let text = self.text.to_string();
++        match query.captures_at(&text, range.start) {
++            Some(caps) if caps.get(0).is_some_and(|m| m.range() == *range) => {
++                self.expand(&caps, replacement)
++            }
++            _ => self.with_case(&text[range.clone()], replacement.into()),
++        }
++    }
++
++    /// Every match and what replaces it.
++    fn replacements(&self, replacement: &str) -> Vec<(Range<usize>, String)> {
++        let Some(query) = &self.query else {
++            return Vec::new();
++        };
++        let text = self.text.to_string();
++        query
++            .captures_iter(&text)
++            .filter_map(|caps| {
++                let range = caps.get(0)?.range();
++                (!range.is_empty()).then(|| (range, self.expand(&caps, replacement)))
++            })
++            .collect()
++    }
++
++    fn expand(&self, caps: &regex::Captures, replacement: &str) -> String {
++        let mut with = String::new();
++        if self.options.regex {
++            caps.expand(replacement, &mut with);
++        } else {
++            with.push_str(replacement);
++        }
++        self.with_case(&caps[0], with)
++    }
++
++    fn with_case(&self, like: &str, with: String) -> String {
++        if self.options.preserve_case {
++            with_case_of(like, &with)
++        } else {
++            with
++        }
++    }
++
+     pub fn matched_ranges(&self) -> Rc<Vec<Range<usize>>> {
+         self.matched_ranges.clone()
+     }
+@@ -415,8 +497,9 @@
+             let text = self.text.to_string();
+             ranges.extend(
+                 query
+-                    .stream_find_iter(text.as_bytes())
+-                    .map(|result| result.expect("input search match").range()),
++                    .find_iter(&text)
++                    .map(|m| m.range())
++                    .filter(|range| !range.is_empty()),
+             );
+         }
+         self.matched_ranges = Rc::new(ranges);
+@@ -429,6 +512,52 @@
+     }
+ }
+ 
++/// The query as a regular expression. A whole word is bounded only on the
++/// sides that are word characters, so `.foo` still finds `x.foo`.
++fn build_query(query: &str, options: SearchOptions) -> Result<Regex, regex::Error> {
++    let mut pattern = if options.regex {
++        query.to_string()
++    } else {
++        regex::escape(query)
++    };
++    if options.whole_word {
++        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
++        if options.regex {
++            pattern = format!(r"\b(?:{pattern})\b");
++        } else {
++            if word(query.chars().next()) {
++                pattern.insert_str(0, r"\b");
++            }
++            if word(query.chars().last()) {
++                pattern.push_str(r"\b");
++            }
++        }
++    }
++    RegexBuilder::new(&pattern)
++        .case_insensitive(options.case_insensitive)
++        .multi_line(true)
++        .build()
++}
++
++/// `with`, in the case of `like`: all capitals, all lowercase, or with the
++/// first letter capitalized or not (`payment` → `invoice`, `Payment` →
++/// `Invoice`, `PAYMENT` → `INVOICE`).
++fn with_case_of(like: &str, with: &str) -> String {
++    let has_letters = like.chars().any(char::is_alphabetic);
++    if has_letters && like.chars().filter(|c| c.is_alphabetic()).all(char::is_uppercase) && like.chars().count() > 1 {
++        return with.to_uppercase();
++    }
++    if has_letters && like.chars().filter(|c| c.is_alphabetic()).all(char::is_lowercase) {
++        return with.to_lowercase();
++    }
++    let mut chars = with.chars();
++    match (like.chars().next(), chars.next()) {
++        (Some(first), Some(head)) if first.is_uppercase() => head.to_uppercase().chain(chars).collect(),
++        (Some(first), Some(head)) if first.is_lowercase() => head.to_lowercase().chain(chars).collect(),
++        _ => with.to_string(),
++    }
++}
++
+ impl Iterator for SearchMatcher {
+     type Item = Range<usize>;
+ 
+@@ -456,11 +585,76 @@
+ mod tests {
+     use super::*;
+ 
++    fn case(case_insensitive: bool) -> SearchOptions {
++        SearchOptions {
++            case_insensitive,
++            ..SearchOptions::default()
++        }
++    }
++
++    fn matches(text: &str, query: &str, options: SearchOptions) -> Vec<Range<usize>> {
++        let mut matcher = SearchMatcher::new();
++        matcher.update(&Rope::from(text));
++        matcher.update_query(query, options);
++        matcher.matched_ranges().to_vec()
++    }
++
+     #[test]
++    fn whole_words_are_bounded_only_on_their_word_sides() {
++        let whole = SearchOptions {
++            whole_word: true,
++            ..SearchOptions::default()
++        };
++        assert_eq!(matches("save saved save_x save", "save", whole), [0..4, 18..22]);
++        assert_eq!(matches("x.foo .foobar", ".foo", whole), [1..5]);
++    }
++
++    #[test]
++    fn a_regex_matches_and_an_invalid_one_matches_nothing() {
++        let regex = SearchOptions {
++            regex: true,
++            ..SearchOptions::default()
++        };
++        assert_eq!(matches("a1 b22 c", r"\d+", regex), [1..2, 4..6]);
++        assert_eq!(matches("a\nb", "^b", regex), [2..3]);
++        assert!(matches("aaa", "x*", regex).is_empty());
++
++        let mut matcher = SearchMatcher::new();
++        matcher.update(&Rope::from("a(b"));
++        matcher.update_query("(", regex);
++        assert!(matcher.is_invalid());
++        assert!(matcher.is_empty());
++        matcher.update_query("(", SearchOptions::default());
++        assert!(!matcher.is_invalid());
++        assert_eq!(matcher.len(), 1);
++    }
++
++    #[test]
++    fn replacements_expand_groups_and_keep_the_case() {
++        let mut matcher = SearchMatcher::new();
++        matcher.update(&Rope::from("let a = f(1); let b = f(22);"));
++        matcher.update_query(r"f\((\d+)\)", SearchOptions {
++            regex: true,
++            ..SearchOptions::default()
++        });
++        let replaced: Vec<String> = matcher.replacements("g($1)").into_iter().map(|(_, with)| with).collect();
++        assert_eq!(replaced, ["g(1)", "g(22)"]);
++        assert_eq!(matcher.replacement_at(&(22..27), "[$1]"), "[22]");
++
++        matcher.update(&Rope::from("payment Payment PAYMENT"));
++        matcher.update_query("payment", SearchOptions {
++            preserve_case: true,
++            ..SearchOptions::default()
++        });
++        let replaced: Vec<String> = matcher.replacements("invoice").into_iter().map(|(_, with)| with).collect();
++        assert_eq!(replaced, ["invoice", "Invoice", "INVOICE"]);
++    }
++
++    #[test]
+     fn finds_navigates_and_preserves_replacement_position() {
+         let mut matcher = SearchMatcher::new();
+         matcher.update(&Rope::from("foo FOO foo"));
+-        matcher.update_query("foo", true);
++        matcher.update_query("foo", case(true));
+         assert_eq!(&*matcher.matched_ranges(), &[0..3, 4..7, 8..11]);
+         assert_eq!(matcher.next(), Some(4..7));
+         assert_eq!(matcher.next_back(), Some(0..3));
+@@ -475,7 +669,7 @@
+     fn next_wraps_to_start() {
+         let mut matcher = SearchMatcher::new();
+         matcher.update(&Rope::from(".....aaaaa.....aaaaa.....aaaaa"));
+-        matcher.update_query("aaaaa", false);
++        matcher.update_query("aaaaa", case(false));
+         matcher.set_current_match_index(2);
+         assert_eq!(matcher.next(), Some(5..10));
+     }
+@@ -502,7 +696,7 @@
+     #[test]
+     fn identical_query_keeps_the_current_match() {
+         let mut session = SearchSession::default();
+-        session.update_query("foo", true);
++        session.update_query("foo", case(true));
+         session.matcher.update(&Rope::from("foo bar foo baz foo"));
+         session.matcher.update_cursor_by_offset(12);
+         assert_eq!(session.matcher.current_match_index(), 2);
+@@ -510,7 +704,7 @@
+         // Reopening Find and the styled search panel's initial query echo both
+         // update the session with the same query. Neither should reset the
+         // previously active occurrence.
+-        session.update_query("foo", true);
++        session.update_query("foo", case(true));
+ 
+         assert_eq!(session.matcher.current_match_index(), 2);
+         assert_eq!(session.matcher.label(), "3/3");
+@@ -520,7 +714,7 @@
+     fn replacement_keeps_current_match_index_on_next_match() {
+         let mut matcher = SearchMatcher::new();
+         matcher.update(&Rope::from("foo foo foo"));
+-        matcher.update_query("foo", true);
++        matcher.update_query("foo", case(true));
+         assert_eq!(matcher.label(), "1/3");
+ 
+         assert!(matcher.has_next_without_wrap());
+@@ -544,7 +738,7 @@
+     fn update_matches_clamps_current_match_index_while_replacing() {
+         let mut matcher = SearchMatcher::new();
+         matcher.update(&Rope::from("foo foo foo"));
+-        matcher.update_query("foo", true);
++        matcher.update_query("foo", case(true));
+         matcher.set_current_match_index(2);
+         matcher.begin_replacement();
+ 
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/mod.rs vendor/gpui-base/src/input/mod.rs
+--- a/src/input/mod.rs	2026-10-13 09:11:18
++++ b/src/input/mod.rs	2026-10-13 09:11:18
+@@ -118,6 +118,6 @@
+ pub use native::{NativeMenu, NativeMenuItem};
+ pub use rope_ext::{InputEdit, Point, RopeExt, RopeLines};
+ pub use ropey::Rope;
+-pub use search::{SearchMatcher, SearchSession};
++pub use search::{SearchMatcher, SearchOptions, SearchSession}; // (den) SearchOptions
+ pub use state::*;
+ pub use textarea::{Textarea, TextareaState};
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/resizable/mod.rs vendor/gpui-base/src/resizable/mod.rs
+--- a/src/resizable/mod.rs	2026-10-13 09:11:18
++++ b/src/resizable/mod.rs	2026-10-13 09:11:18
+@@ -217,6 +217,14 @@
+         cx.notify();
+     }
+ 
++    /// (den) A hidden panel takes no room in the sizes a drag redistributes.
++    pub(crate) fn hide_panel(&mut self, panel_ix: usize) {
++        if let (Some(size), Some(panel)) = (self.sizes.get_mut(panel_ix), self.panels.get_mut(panel_ix)) {
++            *size = px(0.);
++            panel.bounds = Bounds::default();
++        }
++    }
++
+     /// Remove the panel at `panel_ix` and redistribute the remaining space.
+     pub fn remove_panel(&mut self, panel_ix: usize, cx: &mut Context<Self>) {
+         self.panels.remove(panel_ix);
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/resizable/panel.rs vendor/gpui-base/src/resizable/panel.rs
+--- a/src/resizable/panel.rs	2026-10-13 09:11:18
++++ b/src/resizable/panel.rs	2026-10-13 09:11:18
+@@ -301,6 +301,11 @@
+ impl RenderOnce for ResizablePanel {
+     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+         if !self.visible {
++            // (den) Hidden, it takes no room: otherwise dragging a handle counts
++            // its last size as taken, and the dragged panel jumps back.
++            if let Some(state) = &self.state {
++                state.update(cx, |state, _| state.hide_panel(self.panel_ix));
++            }
+             return div().id(("resizable-panel", self.panel_ix));
+         }
+ 
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/inline.rs vendor/gpui-base/src/text/inline.rs
+--- a/src/text/inline.rs	2026-10-13 09:11:18
++++ b/src/text/inline.rs	2026-10-13 09:11:18
+@@ -1130,6 +1130,7 @@
+                 let hitbox = hitbox.clone();
+                 let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+                 let link_click_handler = self.link_click_handler.clone();
++                let text = self.text.clone();
+ 
+                 move |event: &MouseUpEvent, phase, window, cx| {
+                     if !phase.bubble() || !hitbox.is_hovered(window) {
+@@ -1142,8 +1143,18 @@
+                         return;
+                     }
+ 
++                    // (den) Cmd-click on plain text: the word under the
++                    // pointer, as a `word:` link, for the handler to tell
++                    // whether it's something to open (`path:line`).
++                    let word = event
++                        .modifiers
++                        .secondary()
++                        .then(|| text_layout.index_for_position(event.position).ok())
++                        .flatten()
++                        .and_then(|offset| word_at(&text, offset))
++                        .map(|word| LinkMark { url: format!("word:{word}").into(), ..Default::default() });
+                     if let Some(link) =
+-                        Self::link_for_position(&text_layout, &links, event.position)
++                        Self::link_for_position(&text_layout, &links, event.position).or(word)
+                     {
+                         TextSelection::end(window, cx);
+                         cx.stop_propagation();
+@@ -1166,6 +1177,17 @@
+         drop(state);
+         self.retain_styled_text();
+     }
++}
++
++/// (den) The word of `text` at byte `offset`: what's between spaces, quotes,
++/// backticks and brackets, without punctuation at its end.
++fn word_at(text: &str, offset: usize) -> Option<&str> {
++    let delimiter = |c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>' | '{' | '}');
++    let offset = offset.min(text.len());
++    let start = text[..offset].rfind(delimiter).map_or(0, |at| at + text[at..].chars().next().map_or(1, char::len_utf8));
++    let end = text[offset..].find(delimiter).map_or(text.len(), |at| offset + at);
++    let word = text.get(start..end)?.trim_end_matches(['.', ',', ';', ':', '!', '?']);
++    (!word.is_empty()).then_some(word)
+ }
+ 
+ /// Where one glyph of laid-out text paints: its row, and its horizontal
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/node.rs vendor/gpui-base/src/text/node.rs
+--- a/src/text/node.rs	2026-10-13 09:11:18
++++ b/src/text/node.rs	2026-10-13 09:11:18
+@@ -2005,10 +2005,9 @@
+ 
+ impl NodeContext {
+     fn image_source(&self, image: &ImageNode) -> ImageSource {
+-        match &self.image_source {
+-            Some(resolve) => resolve(&image.url),
+-            None => image.source(),
+-        }
++        // (den) Unhandled URLs retain the default, including embedded images.
++        self.image_source.as_ref().and_then(|resolve| resolve(&image.url))
++            .unwrap_or_else(|| image.source())
+     }
+ 
+     pub(super) fn add_ref(&mut self, identifier: SharedString, link: LinkMark) {
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/text_view.rs vendor/gpui-base/src/text/text_view.rs
+--- a/src/text/text_view.rs	2026-10-13 09:11:18
++++ b/src/text/text_view.rs	2026-10-13 09:11:18
+@@ -75,7 +75,8 @@
+ pub(crate) type TableActionsFn =
+     dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
+ 
+-pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> gpui::ImageSource + Send + Sync;
++// (den) `None` keeps the default handling.
++pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync;
+ 
+ pub(crate) type LinkClickHandlerFn =
+     dyn Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync;
+@@ -246,6 +247,16 @@
+     pub fn image_source<F>(mut self, resolver: F) -> Self
+     where
+         F: Fn(&gpui::SharedUri) -> gpui::ImageSource + Send + Sync + 'static,
++    {
++        self.image_source = Some(Arc::new(move |url| Some(resolver(url))));
++        self
++    }
++
++    /// (den) Resolves document images selectively. `None` keeps the default
++    /// URI/data URL handling; a returned source stays authoritative while loading.
++    pub fn resolve_image_source<F>(mut self, resolver: F) -> Self
++    where
++        F: Fn(&gpui::SharedUri) -> Option<gpui::ImageSource> + Send + Sync + 'static,
+     {
+         self.image_source = Some(Arc::new(resolver));
+         self

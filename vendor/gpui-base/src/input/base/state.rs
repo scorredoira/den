@@ -2,7 +2,7 @@
 //!
 //! Based on the `Input` example from the `gpui` crate.
 //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
-use gpui::{Hsla, TextAlign};
+use gpui::{Hsla, TextAlign}; // (den) Hsla
 use gpui::{
     Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
@@ -814,6 +814,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
+            // (den)
             reveal: None,
             line_styles: Vec::new(),
             scrollbar_marks: Vec::new(),
@@ -5020,7 +5021,7 @@ mod tests {
     use crate::theme::Theme;
     use gpui::{TestAppContext, VisualTestContext, size};
 
-    use crate::input::{EditorMode, EditorState, InputMode, LanguageConfig, SearchOptions, TextareaMode};
+    use crate::input::{EditorMode, EditorState, InputMode, LanguageConfig, SearchOptions, TextareaMode}; // (den) SearchOptions
 
     fn set_test_syntax_provider(
         provider: Rc<dyn crate::input::SyntaxContextProvider>,
@@ -5757,7 +5758,7 @@ mod tests {
             input.update(cx, |state, cx| {
                 state.set_cursor_surrounding_lines(Some(3), window, cx);
                 state.set_value(text, window, cx);
-                state.set_search_query("match", SearchOptions::default(), cx);
+                state.set_search_query("match", SearchOptions::default(), cx); // (den)
                 if previous {
                     state.search_session.matcher.next();
                     state.search_session.matcher.next();
@@ -5889,7 +5890,7 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
                 state.set_value("foo bar foo", window, cx);
-                state.set_search_query("foo", SearchOptions::default(), cx);
+                state.set_search_query("foo", SearchOptions::default(), cx); // (den)
             });
         });
         cx.run_until_parked();
@@ -5917,14 +5918,14 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
                 state.set_value("foo bar foo", window, cx);
-                state.set_search_query("foo", SearchOptions::default(), cx);
+                state.set_search_query("foo", SearchOptions::default(), cx); // (den)
                 state.close_search(cx);
 
                 state.set_value("bar foo", window, cx);
                 assert_eq!(state.next_search_match(cx), Some(4..7));
 
                 state.set_value("foo foo foo", window, cx);
-                state.set_search_query("foo", SearchOptions::default(), cx);
+                state.set_search_query("foo", SearchOptions::default(), cx); // (den)
                 assert_eq!(state.search_session().matcher.len(), 3);
             });
         });
@@ -5945,7 +5946,7 @@ mod tests {
             input.update(cx, |state, cx| {
                 state.set_cursor_surrounding_lines(Some(3), window, cx);
                 state.set_value(text, window, cx);
-                state.set_search_query("match", SearchOptions::default(), cx);
+                state.set_search_query("match", SearchOptions::default(), cx); // (den)
             });
         });
         cx.run_until_parked();
@@ -7644,6 +7645,7 @@ mod tests {
         });
     }
 
+    // (den) A test of the hover fix in `on_mouse_move`.
     struct CountingHover(Rc<std::cell::Cell<usize>>);
 
     impl crate::input::HoverProvider for CountingHover {

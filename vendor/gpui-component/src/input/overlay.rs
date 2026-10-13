@@ -522,7 +522,7 @@ mod tests {
             state.update(cx, |state, cx| {
                 state.set_value("foo bar foo baz foo", window, cx);
                 state.open_search(false, cx);
-                state.set_search_query("foo", gpui_base::input::SearchOptions::default(), cx);
+                state.set_search_query("foo", gpui_base::input::SearchOptions::default(), cx); // (den)
                 assert_eq!(state.next_search_match(cx), Some(8..11));
                 assert_eq!(state.search_session().matcher.current_match_index(), 1);
                 state.close_search(cx);

@@ -30,7 +30,7 @@ use crate::icon::IconSource;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gpui::AssetSource;
-use gpui::{Action, App, AsKeystroke as _, FocusHandle, Keystroke, Pixels, Point, SharedString, Window};
+use gpui::{Action, App, AsKeystroke as _, FocusHandle, Keystroke, Pixels, Point, SharedString, Window}; // (den) AsKeystroke, FocusHandle, Keystroke
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gpui::{Image, ImageFormat};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -57,7 +57,7 @@ enum NativeMenuItem {
         /// Action dispatched when the item is selected.
         action: Option<Box<dyn Action>>,
         /// The action's shortcut, shown beside the label; filled in by [`NativeMenu::show`].
-        key: Option<Keystroke>,
+        key: Option<Keystroke>, // (den)
     },
     Submenu {
         label: SharedString,
@@ -170,7 +170,7 @@ impl NativeMenu {
             checked,
             icon: icon.map(Box::new),
             action,
-            key: None,
+            key: None, // (den)
         });
         self
     }
@@ -205,6 +205,7 @@ impl NativeMenu {
         if self.items.is_empty() {
             return;
         }
+        // (den) The shortcuts, resolved before the menu is built.
         let mut items = self.items;
         let focused = window.focused(cx);
         resolve_keys(&mut items, focused.as_ref(), window);
@@ -229,6 +230,7 @@ impl NativeMenu {
     }
 }
 
+// (den)
 /// Fills in each item's shortcut: the binding its action has where the focus
 /// is (the menu dispatches there), else one registered without a key context.
 /// Only single keystrokes: a native menu can't show a sequence.
@@ -379,7 +381,7 @@ impl From<gpui::Menu> for NativeMenu {
                     checked,
                     icon: None,
                     action: Some(action),
-                    key: None,
+                    key: None, // (den)
                 }),
                 gpui::MenuItem::Submenu(submenu) => native.items.push(NativeMenuItem::Submenu {
                     label: submenu.name.clone(),
@@ -415,7 +417,7 @@ mod tests {
             checked,
             icon: Some(icon),
             action: Some(_),
-            ..
+            .. // (den) key
         } = &menu.items[0]
         else {
             panic!("expected an actionable item with an icon");
@@ -443,7 +445,7 @@ mod tests {
             checked,
             icon: Some(icon),
             action: Some(_),
-            ..
+            .. // (den) key
         } = &menu.items[0]
         else {
             panic!("expected a disabled actionable item with an icon");

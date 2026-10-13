@@ -232,6 +232,7 @@ tree-sitter-zig = [
     "dep:tree-sitter-zig",
 ]
 
+# (den) The [[test]] entries are dropped with tests/.
 [lib]
 name = "gpui_component"
 path = "src/lib.rs"

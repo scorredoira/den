@@ -1,3 +1,5 @@
+// (den) The find bar as VS Code's (see vendor/README.md); every change
+// from 0.7.0 is in vendor/patches/gpui-component.patch.
 use ropey::Rope;
 use std::ops::Range;
 

@@ -260,6 +260,7 @@ impl SyntaxColors {
 
         let style = match name {
             "attribute" => self.attribute,
+            // (den)
             "attribute.value" => self.attribute_value.or(self.string),
             "boolean" => self.boolean,
             "comment" => self.comment,
@@ -325,7 +326,7 @@ impl SyntaxColors {
     }
 
     pub fn style_for_index(&self, index: usize) -> Option<HighlightStyle> {
-        const HIGHLIGHT_NAMES: [&str; 52] = [
+        const HIGHLIGHT_NAMES: [&str; 52] = [ // (den) 41 + 11
             "attribute",
             "attribute.value",
             "boolean",

@@ -83,6 +83,7 @@ impl InputBaseState<EditorMode> {
             return;
         }
 
+        // (den) `hover_definitions`, not `definitions`.
         let task = provider.hover_definitions(&self.text, offset, window, cx);
         let mut symbol_range = self.text.word_range(offset).unwrap_or(offset..offset);
         let editor = cx.entity();

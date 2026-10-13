@@ -157,7 +157,7 @@ impl Default for ContextMenuState {
                 position: Default::default(),
                 trigger_focus_handle: None,
                 _subscription: None,
-                _popover: None,
+                _popover: None, // (den)
             })),
         }
     }
@@ -411,6 +411,7 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                             }
                         });
 
+                        // (den)
                         // The innermost menu is the one shown: not those of
                         // the elements around it.
                         cx.stop_propagation();
@@ -424,7 +425,7 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                             shared_state.position = event.position;
                             shared_state.open = true;
                             shared_state._popover =
-                                Some(gpui_base::GlobalState::register_deferred_popover(cx));
+                                Some(gpui_base::GlobalState::register_deferred_popover(cx)); // (den)
                         }
 
                         // Use defer to build the menu in the next frame, avoiding race conditions
@@ -457,7 +458,7 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                         if let Some(shared_state) = shared_state.upgrade() {
                                             let mut shared_state = shared_state.borrow_mut();
                                             shared_state.open = false;
-                                            shared_state._popover = None;
+                                            shared_state._popover = None; // (den)
                                             window.refresh();
                                         }
                                     }

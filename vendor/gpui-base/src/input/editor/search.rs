@@ -1,3 +1,6 @@
+// (den) Reworked for `SearchOptions` (whole words, regular expressions and
+// replacements that keep the case), matched with `regex`; every change
+// from 0.7.0 is in vendor/patches/gpui-base.patch.
 use crate::input::InputModeKind;
 use gpui::{Context, Window};
 use regex::{Regex, RegexBuilder};
