@@ -195,7 +195,7 @@ struct Outgoing {
 
 #[derive(Default)]
 struct Queues {
-    /// A terminal's keys and size: what someone is waiting to see.
+    /// What a terminal's view sends (`urgent`): what someone is waiting to see.
     urgent: std::collections::VecDeque<Vec<u8>>,
     normal: std::collections::VecDeque<Vec<u8>>,
     closed: bool,
@@ -537,7 +537,7 @@ impl Client {
     }
 
     fn send(&self, id: Option<u64>, request: Request) -> Result<()> {
-        let urgent = matches!(request, Request::TermInput { .. } | Request::TermResize { .. });
+        let urgent = urgent(&request);
         let frame = proto::encode_frame(&ClientMessage { id, request })?;
         self.outgoing.push(frame, urgent);
         Ok(())
@@ -724,6 +724,22 @@ impl Client {
         drop(relays);
         self.notify(Request::RelayClose { relay });
     }
+}
+
+/// Whether a request goes ahead of the others: a terminal's keys and size,
+/// and with them whatever else its view sends, which they must not overtake
+/// (keys typed after a clear go to the cleared screen, a detach stays after
+/// its attach).
+fn urgent(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::TermInput { .. }
+            | Request::TermResize { .. }
+            | Request::TermAttach { .. }
+            | Request::TermDetach { .. }
+            | Request::TermClear { .. }
+            | Request::TermKill { .. }
+    )
 }
 
 /// The agent didn't answer in time.
@@ -937,6 +953,32 @@ mod tests {
         assert!(!first.exists(), "the old copy is deleted");
         assert!(in_flight.exists(), "another instance's copy in progress is left alone");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn keys_stay_after_what_the_terminal_sent_before() {
+        let outgoing = Outgoing::default();
+        let push = |request: Request| {
+            let urgent = urgent(&request);
+            outgoing.push(proto::encode_frame(&ClientMessage { id: None, request }).unwrap(), urgent);
+        };
+        push(Request::TaskList);
+        push(Request::TermClear { term: 1 });
+        push(Request::TermInput { term: 1, data: b"ls".to_vec() });
+        push(Request::TermDetach { term: 1 });
+        let mut order = Vec::new();
+        for _ in 0..4 {
+            let frame = outgoing.next().unwrap();
+            let Some(message) = proto::read_frame::<ClientMessage>(&mut frame.as_slice()).unwrap() else { panic!("no frame") };
+            order.push(match message.request {
+                Request::TaskList => "tasks",
+                Request::TermClear { .. } => "clear",
+                Request::TermInput { .. } => "keys",
+                Request::TermDetach { .. } => "detach",
+                _ => "other",
+            });
+        }
+        assert_eq!(order, vec!["clear", "keys", "detach", "tasks"]);
     }
 
     #[test]
