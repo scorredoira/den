@@ -28,3 +28,15 @@ To check a download by hand:
 minisign -V -p packaging/minisign.pub -m SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
+
+## Pruning target/
+
+Every release changes the workspace version, which gives each of Den's crates new artifacts without removing the old ones, so `target/` grows with each release built locally. [cargo-sweep](https://github.com/holmgr/cargo-sweep) removes what recent builds didn't use:
+
+```sh
+cargo install cargo-sweep
+cargo sweep --time 14     # artifacts not used in the last 14 days
+cargo sweep --installed   # artifacts of toolchains no longer installed
+```
+
+`cargo clean` removes everything; the next build is a full one.

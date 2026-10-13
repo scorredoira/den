@@ -30,12 +30,25 @@ trash = "5"
 serde_bytes = "0.11"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
+# Line numbers in our own crates' backtraces. "unpacked" leaves the debug
+# info in the object files instead of copying it into each binary: the
+# fastest link on macOS (no dsymutil) and Linux (.dwo files), at the cost
+# of keeping those files in target/ (docs/releasing.md says how to prune).
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
+# Dependencies optimized, and without debug info: nothing of theirs is
+# stepped through, and their object files were most of target/.
 [profile.dev.package."*"]
 opt-level = 2
+debug = 0
+
+# crash.rs symbolizes its backtrace in the process, from the symbol table:
+# only the debug info may be stripped, never the symbols.
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
 
 # gpui-base with a few public additions for the editor (selections and
 # batch edits), and gpui-component with the completion menu drawn like VS
