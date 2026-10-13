@@ -461,6 +461,11 @@ pub struct Workspace {
     signature: Option<SignatureHint>,
     signature_at: Option<Position>,
     signature_task: Task<()>,
+    /// The last F12 or Shift-F12, and the search for the word when there's
+    /// no language server: a new one drops them, so a slow answer doesn't
+    /// move the cursor or replace the References after a newer one.
+    lsp_task: Task<()>,
+    word_task: Task<()>,
     debugger: Entity<Debugger>,
     /// Its parts with a panel or a tab of their own.
     debug_view: Entity<DebugView>,
@@ -672,6 +677,8 @@ impl Workspace {
             signature: None,
             signature_at: None,
             signature_task: Task::ready(()),
+            lsp_task: Task::ready(()),
+            word_task: Task::ready(()),
             debugger,
             debug_view,
             debug_hover,

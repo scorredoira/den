@@ -400,7 +400,8 @@ impl Workspace {
             column: cursor.character,
             op,
         };
-        cx.spawn_in(window, async move |this, cx| {
+        self.word_task = Task::ready(());
+        self.lsp_task = cx.spawn_in(window, async move |this, cx| {
             let response = client.request(request).await;
             this.update_in(cx, |this, window, cx| {
                 this.report_lsp(&editor, &response, cx);
@@ -443,8 +444,7 @@ impl Workspace {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        });
     }
 
     /// Without a language server, the references are the places where the
@@ -463,7 +463,7 @@ impl Workspace {
             exclude: Vec::new(),
             max_hits: 5_000,
         };
-        cx.spawn(async move |this, cx| {
+        self.word_task = cx.spawn(async move |this, cx| {
             let response = client.request(request).await;
             this.update(cx, |this, cx| {
                 let result = match response {
@@ -474,8 +474,7 @@ impl Workspace {
                 this.references.update(cx, |references, cx| references.set_results(title, result, cx));
             })
             .ok();
-        })
-        .detach();
+        });
     }
 
     /// The language server's locations as panel rows: relative to the task
