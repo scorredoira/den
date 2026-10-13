@@ -515,15 +515,25 @@ impl TerminalArea {
         cx: &mut Context<Self>,
     ) -> Task<Option<TermId>> {
         if let Some(term) = term
-            && let Some(view) = self.views.get(&term).cloned()
-            && !view.read(cx).terminal().read(cx).exited()
+            && self.type_line(term, &line, cx)
         {
-            let terminal = view.read(cx).terminal().clone();
-            terminal.update(cx, |terminal, cx| terminal.input(format!("{line}\r").into_bytes(), cx));
             self.select(Pane::Term(term), cx);
             return Task::ready(Some(term));
         }
         self.open_running(Place::NewTab, None, Some(line), false, window, cx)
+    }
+
+    /// Types `line` and Enter in the shell of terminal `term`, if it's here
+    /// and still open; false if it isn't.
+    fn type_line(&self, term: TermId, line: &str, cx: &mut App) -> bool {
+        let Some(terminal) = self.views.get(&term).map(|view| view.read(cx).terminal().clone()) else {
+            return false;
+        };
+        if terminal.read(cx).exited() {
+            return false;
+        }
+        terminal.update(cx, |terminal, cx| terminal.input(format!("{line}\r").into_bytes(), cx));
+        true
     }
 
     /// Runs `line` in the shell of the debugger's terminal, which its console
@@ -538,11 +548,8 @@ impl TerminalArea {
         cx: &mut Context<Self>,
     ) -> Task<Option<TermId>> {
         if let Some(term) = term.filter(|term| Some(*term) == self.debug_term)
-            && let Some(view) = self.views.get(&term).cloned()
-            && !view.read(cx).terminal().read(cx).exited()
+            && self.type_line(term, &line, cx)
         {
-            let terminal = view.read(cx).terminal().clone();
-            terminal.update(cx, |terminal, cx| terminal.input(format!("{line}\r").into_bytes(), cx));
             return Task::ready(Some(term));
         }
         if let Some(before) = self.debug_term {
