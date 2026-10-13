@@ -716,18 +716,9 @@ fn read_body(reader: &mut impl Read) -> Result<Option<Vec<u8>>> {
 
 /// Reads a frame; `None` if the stream closed cleanly between frames.
 pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read) -> Result<Option<T>> {
-    let mut len = [0u8; 4];
-    match reader.read_exact(&mut len) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(err) => return Err(err.into()),
-    }
-    let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_FRAME {
-        bail!("frame too large: {len} bytes");
-    }
-    let mut body = vec![0u8; len];
-    reader.read_exact(&mut body)?;
+    let Some(body) = read_body(reader)? else {
+        return Ok(None);
+    };
     Ok(Some(rmp_serde::from_slice(&body).context("invalid frame")?))
 }
 
@@ -986,9 +977,6 @@ mod tests {
         (protocol, items)
     }
 
-    /// `wire.txt` is the wire of `PROTOCOL` as last recorded. A change a side
-    /// of the old version can't read must come with a new `PROTOCOL`; any
-    /// change is recorded with `UPDATE_WIRE=1 cargo test -p proto wire`.
     #[test]
     fn copies_are_named_like_finder_names_them() {
         assert_eq!(copy_name("a.txt", 0), "a.txt");
@@ -998,6 +986,9 @@ mod tests {
         assert_eq!(copy_name("src", 3), "src copy 3");
     }
 
+    /// `wire.txt` is the wire of `PROTOCOL` as last recorded. A change a side
+    /// of the old version can't read must come with a new `PROTOCOL`; any
+    /// change is recorded with `UPDATE_WIRE=1 cargo test -p proto wire`.
     #[test]
     fn wire_changes_bump_the_protocol() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wire.txt");
