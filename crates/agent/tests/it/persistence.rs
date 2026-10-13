@@ -4,22 +4,16 @@
 use std::{
     path::Path,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use client::Client;
 use proto::{Event, Request, Response};
-
-fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !check() {
-        assert!(start.elapsed() < Duration::from_secs(5), "never arrived: {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+use crate::common::{serial, wait_for};
 
 #[test]
 fn terminal_survives_reconnect() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("den-agent-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // SAFETY: the test is the only thread touching the environment.

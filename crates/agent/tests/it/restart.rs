@@ -1,27 +1,20 @@
-//! End-to-end test: an agent that dies without a restart (killed, the Mac
-//! restarted) leaves its terminals for the next one, under the same ids. Its
-//! own file, so it runs in its own process (the socket is chosen with an
-//! environment variable).
+//! End-to-end test: restarting the agent (to update it) brings its terminals
+//! back under the same ids. It takes its turn (`serial`): the socket is chosen
+//! with an environment variable.
 
 use std::{
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use client::Client;
 use proto::{Request, Response};
-
-fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !check() {
-        assert!(start.elapsed() < Duration::from_secs(5), "never arrived: {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+use crate::common::{serial, wait_for};
 
 #[test]
-fn terminals_come_back_after_the_agent_dies() {
-    let dir = std::env::temp_dir().join(format!("den-agent-killed-{}", std::process::id()));
+fn terminals_come_back_after_a_restart() {
+    let _serial = serial();
+    let dir = std::env::temp_dir().join(format!("den-agent-restart-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     let socket = dir.join("agent.sock");
@@ -33,13 +26,10 @@ fn terminals_come_back_after_the_agent_dies() {
     }
     let agent = Path::new(env!("CARGO_BIN_EXE_den-agent"));
 
+    eprintln!("connecting to the agent for restart test");
     let client = Client::connect_local(agent).unwrap();
-    let Response::Hello { pid, .. } = smol::block_on(client.request(Request::Hello { protocol: proto::PROTOCOL })).unwrap()
-    else {
-        panic!("no hello");
-    };
     let Response::TermCreated { term } = smol::block_on(client.request(Request::TermCreate {
-        group: "killed".into(),
+        group: "restart".into(),
         cwd: dir.clone(),
         command: None,
         cols: 50,
@@ -48,23 +38,35 @@ fn terminals_come_back_after_the_agent_dies() {
     .unwrap() else {
         panic!("no terminal");
     };
-    // It saves its terminals every few seconds, without being asked.
+    eprintln!("requesting agent shutdown");
+    client.notify(Request::Shutdown);
     let saved = socket.with_extension("restart.json");
-    wait_for("the terminal saved", || {
-        std::fs::read_to_string(&saved).is_ok_and(|text| text.contains(&format!("\"term\":{term},")))
-    });
-    std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap();
+    wait_for("the restart file", || saved.exists());
     drop(client);
     std::thread::sleep(Duration::from_millis(300));
 
+    // The new agent opens it again under the same id, in the same folder and size.
+    eprintln!("connecting to the agent for restart test");
     let client = Client::connect_local(agent).unwrap();
     let Response::TermList(terms) =
-        smol::block_on(client.request(Request::TermList { group: "killed".into() })).unwrap()
+        smol::block_on(client.request(Request::TermList { group: "restart".into() })).unwrap()
     else {
         panic!("no list");
     };
     assert_eq!(terms.iter().map(|info| info.term).collect::<Vec<_>>(), vec![term]);
+    let Response::TermSnapshot { cols, rows, .. } = smol::block_on(client.request(Request::TermAttach { term })).unwrap()
+    else {
+        panic!("no snapshot");
+    };
+    assert_eq!((cols, rows), (50, 12));
+    wait_for("the shell's folder", || {
+        matches!(
+            smol::block_on(client.request(Request::TermCwd { term })),
+            Ok(Response::Path(Some(cwd))) if cwd == dir
+        )
+    });
 
+    eprintln!("requesting agent shutdown");
     client.notify(Request::Shutdown);
     std::thread::sleep(Duration::from_millis(300));
     let _ = std::fs::remove_dir_all(&dir);

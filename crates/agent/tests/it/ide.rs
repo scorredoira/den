@@ -16,6 +16,7 @@ use client::Client;
 use proto::{Event, IdeSelection, Request, Response};
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, client::IntoClientRequest as _};
+use crate::common::serial;
 
 type Socket = WebSocket<TcpStream>;
 
@@ -58,6 +59,7 @@ fn call(socket: &mut Socket, id: u64, name: &str, arguments: Value) -> String {
 
 #[test]
 fn claude_code_connects_as_to_an_ide() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("den-agent-ide-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();

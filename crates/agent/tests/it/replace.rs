@@ -1,24 +1,16 @@
 //! End-to-end test: an agent replaced by a new build keeps its terminals
-//! running, with their screens, in the same process. Its own file, so it
-//! runs in its own process (the socket is chosen with an environment
-//! variable).
+//! running, with their screens, in the same process. It takes its turn
+//! (`serial`): the socket is chosen with an environment variable.
 #![cfg(unix)]
 
 use std::{
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use client::Client;
 use proto::{PROTOCOL, Request, Response, TermId};
-
-fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !check() {
-        assert!(start.elapsed() < Duration::from_secs(5), "never arrived: {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+use crate::common::{serial, wait_for};
 
 fn text(client: &Client, term: TermId) -> String {
     match smol::block_on(client.request(Request::TermRead { term, lines: 50 })) {
@@ -36,6 +28,7 @@ fn pid(client: &Client) -> u32 {
 
 #[test]
 fn a_replaced_agent_keeps_its_terminals_running() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("den-agent-replace-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();

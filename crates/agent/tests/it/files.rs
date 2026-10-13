@@ -1,14 +1,16 @@
 //! End-to-end test: the files panel's copy goes through the agent, never over
-//! anything. Its own file, so it runs in its own process (the socket is
-//! chosen with an environment variable).
+//! anything. It takes its turn (`serial`): the socket is chosen with an
+//! environment variable.
 
 use std::path::Path;
 
 use client::Client;
 use proto::{Request, Response};
+use crate::common::serial;
 
 #[test]
 fn copies_go_next_to_what_they_would_overwrite() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("den-agent-files-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("work/src")).unwrap();

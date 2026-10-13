@@ -1,26 +1,20 @@
 //! End-to-end test: an agent of the previous protocol still running when the
 //! new one starts (Den was updated) hands its terminals over under the same
-//! ids. Its own file, so it runs in its own process (the socket is chosen
-//! with an environment variable).
+//! ids. It takes its turn (`serial`): the socket is chosen with an environment
+//! variable.
 
 use std::{
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use client::Client;
 use proto::{PROTOCOL, Request, Response};
-
-fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !check() {
-        assert!(start.elapsed() < Duration::from_secs(5), "never arrived: {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+use crate::common::{serial, wait_for};
 
 #[test]
 fn the_new_protocol_takes_the_terminals_of_the_old_one() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("den-agent-takeover-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();

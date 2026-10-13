@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use proto::{ClientMessage, Request, Response, ServerMessage};
+use crate::common::serial;
 
 struct Agent(Child);
 impl Drop for Agent {
@@ -18,6 +19,7 @@ impl Drop for Agent {
 
 #[test]
 fn requests_overtake_a_slow_task_list() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("agent.sock");
     let config = dir.path().join("config");

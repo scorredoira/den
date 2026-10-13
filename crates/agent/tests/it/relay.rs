@@ -1,7 +1,7 @@
-//! End-to-end test: a UI talks to a program listening on the agent's
-//! loopback through a relay, lines both ways, and learns when the program
-//! closes it. Its own file, so it runs in its own process (the socket is
-//! chosen with an environment variable).
+//! End-to-end test: a UI talks to a program listening on the agent's loopback
+//! through a relay, lines both ways, and learns when the program closes it. It
+//! takes its turn (`serial`): the socket is chosen with an environment
+//! variable.
 
 use std::{
     io::{BufRead, BufReader, Write},
@@ -12,9 +12,11 @@ use std::{
 };
 
 use client::{Client, RelayUpdate};
+use crate::common::serial;
 
 #[test]
 fn a_relay_carries_lines_both_ways_until_the_program_closes_it() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("den-agent-relay-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();

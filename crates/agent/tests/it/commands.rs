@@ -1,15 +1,17 @@
 //! End-to-end test: a `den` command from a terminal goes to the app that
-//! serves them (the window showing the terminal), with its workspace, and
-//! the app's answer comes back to it. Its own file, so it runs in its own
-//! process (the socket is chosen with an environment variable).
+//! serves them (the window showing the terminal), with its workspace, and the
+//! app's answer comes back to it. It takes its turn (`serial`): the socket is
+//! chosen with an environment variable.
 
 use std::{path::Path, sync::mpsc, time::Duration};
 
 use client::Client;
 use proto::{Event, Request, Response};
+use crate::common::serial;
 
 #[test]
 fn the_app_answers_commands_from_its_terminals() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("den-agent-commands-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
