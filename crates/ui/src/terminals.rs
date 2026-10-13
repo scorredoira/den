@@ -236,7 +236,7 @@ impl TerminalArea {
                 let debug = debug_term.filter(|term| alive.remove(term));
                 let saved = with_layouts(|layouts| layouts.groups.get(&group).cloned()).unwrap_or_default();
                 let mut names = saved.names;
-                let mut tabs: Vec<(Tree<Pane>, Option<String>)> = saved
+                let tabs: Vec<(Tree<Pane>, Option<String>)> = saved
                     .tabs
                     .into_iter()
                     .filter_map(SavedTab::into_tab)
@@ -248,9 +248,8 @@ impl TerminalArea {
                         }
                         (_, name) => (tree, name),
                     })
-                    .filter_map(|(tree, name)| Some((tree.retain(&|pane| pane.term().is_none_or(|term| alive.contains(&term)))?, name)))
-                    .filter(|(tree, _)| *tree != Tree::Leaf(Pane::Notes))
                     .collect();
+                let mut tabs = keep_terms(tabs, &alive);
                 let placed: HashSet<TermId> = tabs.iter().flat_map(|(tree, _)| tree.leaves()).filter_map(Pane::term).collect();
                 // Those still alive but not saved, each in its own tab.
                 let mut orphans: Vec<TermId> = alive.difference(&placed).copied().collect();
@@ -259,11 +258,15 @@ impl TerminalArea {
 
                 let terms: Vec<TermId> =
                     debug.into_iter().chain(tabs.iter().flat_map(|(tree, _)| tree.leaves()).filter_map(Pane::term)).collect();
-                let mut terminals = Vec::new();
-                for (term, terminal) in agent::attach_all(&client, &terms, cx).await {
-                    terminals.push((term, terminal?));
-                }
-                names.retain(|term, _| terms.contains(term));
+                // One that ended since it was listed is left out, not the rest.
+                let terminals: Vec<(TermId, Entity<Terminal>)> = agent::attach_all(&client, &terms, cx)
+                    .await
+                    .into_iter()
+                    .filter_map(|(term, terminal)| Some((term, terminal.ok()?)))
+                    .collect();
+                let attached: HashSet<TermId> = terminals.iter().map(|(term, _)| *term).collect();
+                let tabs = keep_terms(tabs, &attached);
+                names.retain(|term, _| attached.contains(term));
                 Ok((tabs, names, terminals))
             }
             .await;
@@ -1694,6 +1697,15 @@ impl SavedLayouts {
     }
 }
 
+/// The tabs with only the terminals in `terms`: one left with none, or with
+/// only the notes, goes.
+fn keep_terms(tabs: Vec<(Tree<Pane>, Option<String>)>, terms: &HashSet<TermId>) -> Vec<(Tree<Pane>, Option<String>)> {
+    tabs.into_iter()
+        .filter_map(|(tree, name)| Some((tree.retain(&|pane| pane.term().is_none_or(|term| terms.contains(&term)))?, name)))
+        .filter(|(tree, _)| *tree != Tree::Leaf(Pane::Notes))
+        .collect()
+}
+
 /// Hide Panel: the terminals' place.
 fn hide_item(area: &WeakEntity<TerminalArea>) -> menu::PopupMenuItem {
     menu::item("Hide Panel", area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide))
@@ -1734,4 +1746,25 @@ fn layout_glyph(tree: &Tree<Pane>, active: Pane, lit: bool, cx: &App) -> AnyElem
         }
     }
     div().flex_none().w(px(15.)).h(px(11.)).flex().child(cell(tree, active, lit, cx)).into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// A terminal that couldn't be attached leaves its tab, not the others:
+    /// a split keeps the rest, and one alone with the notes goes.
+    #[test]
+    fn restoring_leaves_out_only_the_terminals_not_attached() {
+        let leaf = |term| Tree::Leaf(Pane::Term(term));
+        let split = |children| Tree::Split { axis: Axis::Row, children };
+        let tabs = vec![
+            (split(vec![leaf(1), leaf(2)]), Some("both".to_string())),
+            (leaf(3), None),
+            (split(vec![leaf(4), Tree::Leaf(Pane::Notes)]), None),
+        ];
+        let attached: HashSet<TermId> = [1, 3].into_iter().collect();
+        assert_eq!(keep_terms(tabs, &attached), vec![(leaf(1), Some("both".to_string())), (leaf(3), None)]);
+    }
 }
