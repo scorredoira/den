@@ -1,6 +1,8 @@
 # Publishing releases
 
-CI builds, tests and packages macOS Apple Silicon, macOS Intel, Linux and Windows on every branch push and pull request. Packages can be downloaded from the successful workflow's artifacts before publishing. No signing certificates are needed; the one repository secret is the release key (see below).
+CI tests every crate on macOS Apple Silicon, macOS Intel, Linux and Windows on every branch push and pull request, and checks the code with Clippy and the dependencies with `cargo audit` (allowed advisories are in `.cargo/audit.toml`). Pushes to master and manual runs (**Actions → CI → Run workflow**) also build the release packages, which can be downloaded from the successful workflow's artifacts before publishing. No signing certificates are needed; the one repository secret is the release key (see below).
+
+The Rust version is pinned in `rust-toolchain.toml` and, for CI, in `RUST_TOOLCHAIN` in `.github/workflows/build.yml`; change both together. Actions are pinned to commits, which Dependabot keeps up to date along with the crates (except the vendored GPUI ones).
 
 Once your changes are committed, publish a new version from the repository root:
 

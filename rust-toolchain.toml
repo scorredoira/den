@@ -1,0 +1,6 @@
+# The Rust that builds Den, here and in CI (RUST_TOOLCHAIN in
+# .github/workflows/build.yml, which adds each package's target).
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
