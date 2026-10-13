@@ -255,6 +255,10 @@ struct Kid {
 
 impl Kid {
     fn spawn(mut program: Program) -> Result<Self> {
+        // In a process group of its own, which is what gets signalled: what
+        // it starts (a dev server, a browser) ends with it.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut program.command, 0);
         let mut process = program
             .command
             .stdin(Stdio::null())
@@ -286,20 +290,33 @@ impl Kid {
 
     fn interrupt(&mut self) {
         #[cfg(unix)]
-        {
-            let Ok(pid) = libc::pid_t::try_from(self.process.id()) else {
-                eprintln!("den debug join: {}: pid {} out of range", self.name, self.process.id());
-                return;
-            };
-            // SAFETY: a signal to a child of ours, not yet waited for.
-            if unsafe { libc::kill(pid, libc::SIGINT) } == -1 {
-                eprintln!("den debug join: interrupting {}: {}", self.name, std::io::Error::last_os_error());
-            }
+        if let Err(error) = self.signal(libc::SIGINT) {
+            eprintln!("den debug join: interrupting {}: {error}", self.name);
         }
         #[cfg(not(unix))]
         if let Err(error) = self.process.kill() {
             eprintln!("den debug join: ending {}: {error}", self.name);
         }
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return self.signal(libc::SIGKILL);
+        #[cfg(not(unix))]
+        self.process.kill()
+    }
+
+    /// Signals its process group.
+    #[cfg(unix)]
+    fn signal(&self, signal: libc::c_int) -> std::io::Result<()> {
+        let pid = libc::pid_t::try_from(self.process.id())
+            .map_err(|_| std::io::Error::other(format!("pid {} out of range", self.process.id())))?;
+        // SAFETY: a signal to the group of a child of ours, not yet waited
+        // for: the group's id is still its.
+        if unsafe { libc::kill(-pid, signal) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 
@@ -443,7 +460,7 @@ impl Drop for Kids {
         }
         for kid in self.0.iter_mut().filter(|kid| kid.exit.is_none()) {
             eprintln!("den debug join: {} didn't end: killing it", kid.name);
-            if let Err(error) = kid.process.kill() {
+            if let Err(error) = kid.kill() {
                 eprintln!("den debug join: killing {}: {error}", kid.name);
             }
             match kid.process.wait() {

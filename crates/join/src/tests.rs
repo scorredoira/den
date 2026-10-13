@@ -427,3 +427,31 @@ fn the_programs_start_in_order() {
     assert_eq!(hello["running"], 2);
     join.stop().unwrap();
 }
+
+/// Ending a program ends what it started too.
+#[test]
+#[cfg(unix)]
+fn a_program_ends_with_what_it_started() {
+    let file = std::env::temp_dir().join(format!("den-join-group-{}", std::process::id()));
+    let _ = std::fs::remove_file(&file);
+    let mut command = Command::new("sh");
+    // the inner shell's pid, then it waits in the foreground
+    command.args(["-c", &format!("sh -c 'echo $$ > {}; sleep 60; true'; true", file.display())]);
+    let kids = Kids(vec![Kid::spawn(Program { name: "group".into(), port: 0, command }).unwrap()]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&file).ok().and_then(|text| text.trim().parse::<libc::pid_t>().ok()) {
+            break pid;
+        }
+        assert!(Instant::now() < deadline, "the program didn't start its own");
+        thread::sleep(Duration::from_millis(20));
+    };
+    drop(kids);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // SAFETY: signal 0 only asks whether it's there.
+    while unsafe { libc::kill(pid, 0) } == 0 {
+        assert!(Instant::now() < deadline, "what the program started is still running");
+        thread::sleep(Duration::from_millis(20));
+    }
+    std::fs::remove_file(&file).unwrap();
+}
