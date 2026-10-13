@@ -16,7 +16,7 @@ use client::Client;
 use proto::{Event, IdeSelection, Request, Response};
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, client::IntoClientRequest as _};
-use crate::common::serial;
+use crate::common::{serial, wait_for};
 
 type Socket = WebSocket<TcpStream>;
 
@@ -73,8 +73,15 @@ fn claude_code_connects_as_to_an_ide() {
     let app = Client::connect_local(agent).unwrap();
     let request = |request| smol::block_on(app.request(request));
 
-    // an isolated agent announces itself in its own folder, never in ~/.claude
-    let locks: Vec<_> = std::fs::read_dir(dir.join("state/claude-ide")).unwrap().flatten().collect();
+    // an isolated agent announces itself in its own folder, never in ~/.claude,
+    // once its server listens: maybe just after it answers
+    let ide = dir.join("state/claude-ide");
+    let locks = || -> Vec<_> {
+        let entries = std::fs::read_dir(&ide).into_iter().flatten().flatten();
+        entries.filter(|entry| entry.path().extension().is_some_and(|extension| extension == "lock")).collect()
+    };
+    wait_for("the lock file", || !locks().is_empty());
+    let locks = locks();
     assert_eq!(locks.len(), 1);
     let port: u16 = locks[0].path().file_stem().unwrap().to_string_lossy().parse().unwrap();
     let lock: Value = serde_json::from_slice(&std::fs::read(locks[0].path()).unwrap()).unwrap();

@@ -113,14 +113,18 @@ pub fn start(host: Arc<dyn Host>, handed: Option<(TcpListener, String)>) -> Resu
 }
 
 /// Writes `path` anew, readable only by its user: the lock file holds the
-/// token that lets a program act as Claude Code's IDE.
+/// token that lets a program act as Claude Code's IDE. Written beside and
+/// renamed over, so whoever finds it finds all of it.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let _ = std::fs::remove_file(path);
+    let name = path.file_name().context("a lock file without a name")?.to_string_lossy();
+    let temporary = path.with_file_name(format!(".{name}.{}", std::process::id()));
+    let _ = std::fs::remove_file(&temporary);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(path)?, bytes)?;
+    std::io::Write::write_all(&mut options.open(&temporary)?, bytes)?;
+    std::fs::rename(&temporary, path)?;
     Ok(())
 }
 
