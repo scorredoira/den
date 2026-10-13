@@ -4,7 +4,7 @@
 use std::{
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use client::Client;
@@ -131,8 +131,14 @@ fn terminal_survives_reconnect() {
         panic!("no listing");
     };
     assert!(entries.iter().any(|entry| entry.name == "note.txt" && !entry.is_dir));
-    let changed = rx.recv_timeout(Duration::from_secs(5)).expect("FsChanged never arrived");
-    assert!(changed.iter().any(|path| path.ends_with("note.txt")), "{changed:?}");
+    // A save is written beside and renamed over: the temporary file can come first.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let changed = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).expect("FsChanged never named note.txt");
+        if changed.iter().any(|path| path.ends_with("note.txt")) {
+            break;
+        }
+    }
 
     // The agent's fingerprint is its binary's (it starts from an identical copy).
     let Response::Text(id) = smol::block_on(client.request(Request::Version)).unwrap() else {
