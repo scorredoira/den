@@ -58,11 +58,15 @@ impl Workspace {
                     this.on_edit(editor, window, cx);
                 }
             }),
-            // The status bar shows the cursor position, and the blame follows it.
+            // The status bar shows the cursor position, and the blame follows
+            // it. The editor also redraws for itself (its cursor blinks): only
+            // a change in what's drawn around it concerns the workspace.
             cx.observe(&editor, |this, editor, cx| {
-                this.highlight_occurrences(&editor, cx);
-                this.follow_signature(&editor, cx);
-                cx.notify()
+                if this.look_changed(&editor, cx) {
+                    this.highlight_occurrences(&editor, cx);
+                    this.follow_signature(&editor, cx);
+                    cx.notify()
+                }
             }),
         ];
         FileTab {
@@ -90,6 +94,7 @@ impl Workspace {
             occurrences: None,
             occurrences_for: Vec::new(),
             occurrences_task: None,
+            look: EditorLook::default(),
             group: self.group,
             shown: 0,
             view: false,
@@ -99,6 +104,20 @@ impl Workspace {
             stand_in: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Whether what the workspace draws from `editor` changed since it was
+    /// last looked at (see `EditorLook`).
+    pub(super) fn look_changed(&mut self, editor: &Entity<EditorState>, cx: &App) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.editor == editor) else {
+            return false;
+        };
+        let look = EditorLook::of(editor.read(cx));
+        if tab.look == look {
+            return false;
+        }
+        tab.look = look;
+        true
     }
 
     /// Reads a tab's file. On reload (it changed on disk) the cursor and

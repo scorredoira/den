@@ -72,6 +72,8 @@ pub(crate) mod autosave_tests;
 #[cfg(test)]
 mod edit_tests;
 #[cfg(test)]
+mod files_tests;
+#[cfg(test)]
 mod layout_tests;
 #[cfg(test)]
 mod new_file_tests;
@@ -178,6 +180,8 @@ struct FileTab {
     occurrences_for: Vec<editing::Selection>,
     /// Looking for them, in the background: a big file doesn't slow typing.
     occurrences_task: Option<Task<()>>,
+    /// What the workspace last drew from the editor.
+    look: EditorLook,
     /// The editor group it's in: 0, or 1 for the second one of a split.
     group: usize,
     /// When it was last shown: a group shows its most recent tab.
@@ -197,6 +201,29 @@ struct FileTab {
     /// the area doesn't go blank between one file and the next.
     stand_in: Option<Box<FileTab>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What the workspace draws from an editor: the cursor's place in the
+/// status bar, the blame at its line, the debugger's values by the lines in
+/// view, all placed by its layout. The text's length stands for the text:
+/// an edit that keeps the length almost always moves the cursor.
+#[derive(Default, PartialEq)]
+struct EditorLook {
+    selections: Vec<editing::Selection>,
+    scroll: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    len: usize,
+}
+
+impl EditorLook {
+    fn of(state: &EditorState) -> Self {
+        Self {
+            selections: state.selections(),
+            scroll: state.scroll_offset(),
+            bounds: state.input_bounds(),
+            len: state.text().len(),
+        }
+    }
 }
 
 /// The old side of a side-by-side diff, which scrolls with the new one, and
@@ -788,8 +815,11 @@ impl Workspace {
             return;
         }
         let session = self.session(cx);
-        let saved = Config::get(cx).sessions.get(&self.session_key).cloned().unwrap_or_default();
-        if saved == session {
+        // Most notifications change nothing that's kept: they cost the
+        // comparison only.
+        let default = Session::default();
+        let saved = Config::get(cx).sessions.get(&self.session_key).unwrap_or(&default);
+        if *saved == session {
             return;
         }
         let moved_only = saved.active == session.active
