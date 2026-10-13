@@ -118,7 +118,7 @@ struct Listener_(Arc<Mutex<Vec<AlacEvent>>>);
 
 impl EventListener for Listener_ {
     fn send_event(&self, event: AlacEvent) {
-        self.0.lock().unwrap().push(event);
+        self.0.locked().push(event);
     }
 }
 
@@ -231,6 +231,19 @@ struct State {
 
 type Shared = Arc<Mutex<State>>;
 
+/// A lock whose holder panicked is taken all the same: one request that
+/// fails that way mustn't leave every terminal unreachable, with the agent
+/// still holding the socket so that no other can take its place.
+trait Lock<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> Lock<T> for Mutex<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Who waits for a `den` command the app runs.
 enum Asker {
     /// A connection's request (`den` in a terminal).
@@ -257,11 +270,11 @@ struct IdeHost(Shared);
 impl crate::ide::Host for IdeHost {
     fn terminal_of(&self, pid: u32) -> Option<(TermId, String)> {
         let shells: HashMap<u32, TermId> = {
-            let state = self.0.lock().unwrap();
-            state.terms.iter().filter_map(|(term, entry)| Some((entry.lock().unwrap().pty.pid()?, *term))).collect()
+            let state = self.0.locked();
+            state.terms.iter().filter_map(|(term, entry)| Some((entry.locked().pty.pid()?, *term))).collect()
         };
         let term = crate::ports::shell_of(pid, &shells)?;
-        let group = self.0.lock().unwrap().terms.get(&term)?.lock().unwrap().group.clone();
+        let group = self.0.locked().terms.get(&term)?.locked().group.clone();
         Some((term, group))
     }
 
@@ -283,7 +296,7 @@ impl State {
 
     fn broadcast(&self, term: TermId, make: impl Fn() -> Event) {
         if let Some(entry) = self.terms.get(&term) {
-            entry.lock().unwrap().broadcast(make);
+            entry.locked().broadcast(make);
         }
     }
 
@@ -312,7 +325,7 @@ impl State {
     fn expire_activity(&mut self) {
         let mut working = HashSet::new();
         for entry in self.terms.values() {
-            let mut entry = entry.lock().unwrap();
+            let mut entry = entry.locked();
             if !entry.settled && entry.last_output.elapsed() >= WORKING_WINDOW {
                 entry.settled = true;
             }
@@ -337,7 +350,7 @@ impl State {
     fn check_blocked(&mut self) {
         let mut now = HashSet::new();
         for entry in self.terms.values() {
-            let mut entry = entry.lock().unwrap();
+            let mut entry = entry.locked();
             if entry.checked != entry.last_output && entry.last_output.elapsed() >= QUIET {
                 entry.checked = entry.last_output;
                 entry.blocked = blocked::is_blocked(&bottom_lines(&entry.emulator));
@@ -362,7 +375,7 @@ impl State {
     fn foregrounds_changed(&mut self) -> Vec<(TermId, Option<u32>)> {
         let mut changed = Vec::new();
         for (term, entry) in &self.terms {
-            let mut entry = entry.lock().unwrap();
+            let mut entry = entry.locked();
             let foreground = entry.pty.foreground_pid();
             if foreground != entry.foreground {
                 entry.foreground = foreground;
@@ -380,7 +393,7 @@ impl State {
             .terms
             .iter()
             .filter_map(|(term, entry)| {
-                let entry = entry.lock().unwrap();
+                let entry = entry.locked();
                 let name = entry.agent.clone().or_else(|| entry.claude_title().map(|_| "claude".to_string()))?;
                 Some(AgentInfo {
                     term: *term,
@@ -415,7 +428,7 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
     let state: Shared = Arc::default();
     #[cfg(unix)]
     {
-        state.lock().unwrap().listener = listener.raw_fd();
+        state.locked().listener = listener.raw_fd();
     }
     // Before any terminal starts: they're told where it listens.
     if let Err(err) = crate::ide::start(Arc::new(IdeHost(state.clone())), handover.as_mut().and_then(handed_ide)) {
@@ -432,23 +445,23 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
     for path in older {
         restore_after_restart(&state, &path, &mut resumed);
     }
-    state.lock().unwrap().update_idle();
+    state.locked().update_idle();
 
     std::thread::spawn({
         let state = state.clone();
         let mut saved = Vec::new();
         move || for tick in 0u64.. {
             std::thread::sleep(Duration::from_millis(500));
-            let changed = state.lock().unwrap().foregrounds_changed();
+            let changed = state.locked().foregrounds_changed();
             // Reading a command line runs `ps`: not while holding the lock.
             let agents: Vec<(TermId, Option<String>)> = changed
                 .into_iter()
                 .map(|(term, pid)| (term, pid.and_then(platform::process_args).filter(|args| agent_name(args).is_some())))
                 .collect();
-            let mut state = state.lock().unwrap();
+            let mut state = state.locked();
             for (term, args) in agents {
                 if let Some(entry) = state.terms.get(&term) {
-                    let mut entry = entry.lock().unwrap();
+                    let mut entry = entry.locked();
                     entry.agent = args.as_deref().and_then(agent_name);
                     entry.agent_args = args;
                 }
@@ -465,7 +478,7 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
         let state = state.clone();
         move || loop {
             std::thread::sleep(Duration::from_secs(30));
-            let idle = state.lock().unwrap().idle_since;
+            let idle = state.locked().idle_since;
             if idle.is_some_and(|since| since.elapsed() >= IDLE_EXIT) {
                 eprintln!("no terminals or connections: exiting");
                 crate::ide::stop();
@@ -495,7 +508,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     let writer_closed = tx.closed.clone();
     let close_writer = tx.close.clone();
     let conn = {
-        let mut state = state.lock().unwrap();
+        let mut state = state.locked();
         let conn = state.next_conn;
         state.next_conn += 1;
         state.clients.insert(conn, tx);
@@ -548,7 +561,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
                 Decoded::Unknown { id } => {
                     if let Some(id) = id {
                         let result = Err("this agent does not know the request: close it so a new one starts".into());
-                        state.lock().unwrap().send(conn, ServerMessage::Response { id, result });
+                        state.locked().send(conn, ServerMessage::Response { id, result });
                     }
                     continue;
                 }
@@ -562,33 +575,19 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
                 }
                 continue;
             }
-            // Anything that may take a while (task scripts, git, searches) runs on
-            // its own thread, so it doesn't hold up terminal keystrokes.
-            if is_slow(&message.request) {
-                let state = state.clone();
-                std::thread::spawn(move || {
-                    let reply = handle_slow(&state, message.request);
-                    reply_to(&state, conn, id, reply);
-                });
-                continue;
+            match caught(|| handle(&state, conn, message.request)) {
+                Ok(Reply::Now(response)) => reply_to(&state, conn, id, Ok(response)),
+                Ok(Reply::Later(work)) => {
+                    let state = state.clone();
+                    std::thread::spawn(move || reply_to(&state, conn, id, caught(work)));
+                }
+                Err(err) => reply_to(&state, conn, id, Err(err)),
             }
-            // Watching a large folder takes a while on Linux (inotify watches
-            // each folder in it).
-            if matches!(message.request, Request::Watch { .. }) {
-                let state = state.clone();
-                std::thread::spawn(move || {
-                    let reply = handle(&state, conn, message.request);
-                    reply_to(&state, conn, id, reply);
-                });
-                continue;
-            }
-            let reply = handle(&state, conn, message.request);
-            reply_to(&state, conn, id, reply);
         }
         Ok(())
     })();
 
-    let mut state = state.lock().unwrap();
+    let mut state = state.locked();
     if let Some(client) = state.clients.remove(&conn) {
         client.disconnect();
     }
@@ -601,7 +600,7 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
         asker.answer(&state, Err("the app closed before answering".into()));
     }
     for entry in state.terms.values() {
-        entry.lock().unwrap().subscribers.remove(&conn);
+        entry.locked().subscribers.remove(&conn);
     }
     state.update_idle();
     result
@@ -617,8 +616,8 @@ fn send_command(
     cwd: PathBuf,
     term: Option<TermId>,
 ) -> Result<()> {
-    let mut state = state.lock().unwrap();
-    let entry = term.and_then(|term| state.terms.get(&term)).map(|entry| entry.lock().unwrap());
+    let mut state = state.locked();
+    let entry = term.and_then(|term| state.terms.get(&term)).map(|entry| entry.locked());
     let app = *state
         .apps
         .iter()
@@ -672,7 +671,7 @@ fn last_lines<T: EventListener>(term: &Term<T>, count: usize) -> Vec<String> {
 fn reply_to(state: &Shared, conn: ConnId, id: Option<u64>, reply: Result<Response>) {
     if let Some(id) = id {
         let result = reply.map_err(|err| format!("{err:#}"));
-        state.lock().unwrap().send(conn, ServerMessage::Response { id, result });
+        state.locked().send(conn, ServerMessage::Response { id, result });
     }
 }
 
@@ -704,7 +703,7 @@ mod frame_tests {
         std::thread::spawn(move || { let _ = done.send(serve(Box::new(stream), shared)); });
         let started = Instant::now();
         let outbox = loop {
-            if let Some(outbox) = state.lock().unwrap().clients.values().next().cloned() {
+            if let Some(outbox) = state.locked().clients.values().next().cloned() {
                 break outbox;
             }
             assert!(started.elapsed() < Duration::from_secs(2));
@@ -718,7 +717,7 @@ mod frame_tests {
             }
         }
         finished.recv_timeout(Duration::from_secs(2)).expect("connection stayed blocked").unwrap();
-        assert!(state.lock().unwrap().clients.is_empty());
+        assert!(state.locked().clients.is_empty());
     }
 
     #[test]
@@ -864,130 +863,16 @@ fn own_separators(request: &mut Request) {
     }
 }
 
-fn is_slow(request: &Request) -> bool {
-    matches!(
-        request,
-        Request::TaskCreate { .. }
-            | Request::TaskList
-            | Request::TaskRemove { .. }
-            | Request::TaskForceRemove { .. }
-            | Request::GitChanges { .. }
-            | Request::GitDiff { .. }
-            | Request::FindFiles { .. }
-            | Request::Search { .. }
-            | Request::ReadFile { .. }
-            | Request::WriteFile { .. }
-            | Request::ListDir { .. }
-            | Request::ListDirAll { .. }
-            | Request::Trash { .. }
-            | Request::Copy { .. }
-            | Request::Untrash { .. }
-            | Request::Git { .. }
-            | Request::Lsp { .. }
-            | Request::LspResolve { .. }
-            | Request::LspWorkspaceSymbols { .. }
-            | Request::Format { .. }
-            | Request::Replace { .. }
-            | Request::Ports
-    )
-}
-
-fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
-    match request {
-        Request::TaskList => {
-            let mut list = tasks::list();
-            let state = state.lock().unwrap();
-            for task in &mut list {
-                task.working = state.working.contains(task.path.to_string_lossy().as_ref());
-            }
-            Ok(Response::Tasks(list))
-        }
-        Request::Ports => {
-            let shells: HashMap<u32, String> = state
-                .lock()
-                .unwrap()
-                .terms
-                .values()
-                .filter_map(|entry| {
-                    let entry = entry.lock().unwrap();
-                    Some((entry.pty.pid()?, entry.group.clone()))
-                })
-                .collect();
-            Ok(Response::Ports(ports::listening(&shells)))
-        }
-        Request::TaskCreate { repo, name, open } => {
-            let task = tasks::add_repo(&repo).and_then(|repo| tasks::create(&repo, &name))?;
-            if open {
-                let path = task.path.clone();
-                state
-                    .lock()
-                    .unwrap()
-                    .broadcast_all(|| Event::OpenTask { path: path.clone() });
-            }
-            Ok(Response::Task(task))
-        }
-        Request::TaskRemove { path } => remove_task(state, &path, false),
-        Request::TaskForceRemove { path } => remove_task(state, &path, true),
-        Request::GitChanges { path, uncommitted } => {
-            let (base, files) = git::changes(&path, uncommitted)?;
-            Ok(Response::Changes { base, files })
-        }
-        Request::GitDiff { path, file, uncommitted } => Ok(Response::Text(git::diff(&path, &file, uncommitted)?)),
-        Request::Git { path, op } => git::run(&path, op),
-        Request::Lsp { root, path, text, line, column, op } => lsp::request(&root, &path, &text, line, column, op),
-        Request::LspResolve { root, path, list, item } => lsp::resolve(&root, &path, list, item),
-        Request::LspWorkspaceSymbols { root, path, text, query } => {
-            lsp::workspace_symbols(&root, path.as_deref(), &text, &query)
-        }
-        Request::Format { root, path, text } => format::format(&root, &path, &text),
-        Request::FindFiles { path } => Ok(Response::Files(search::files(&path))),
-        Request::Search {
-            path,
-            query,
-            include,
-            exclude,
-            max_hits,
-        } => {
-            let (hits, truncated) = search::search(&path, &query, &include, &exclude, max_hits)?;
-            Ok(Response::SearchResults { hits, truncated })
-        }
-        Request::Replace {
-            path,
-            files,
-            query,
-            replacement,
-            preserve_case,
-        } => {
-            let (files, replacements) = search::replace(&path, &files, &query, &replacement, preserve_case)?;
-            Ok(Response::Replaced { files, replacements })
-        }
-        Request::ReadFile { path } => Ok(Response::Bytes(fs::read(&path)?)),
-        Request::WriteFile { path, data } => {
-            fs::write(&path, &data)?;
-            Ok(Response::Ok)
-        }
-        Request::ListDir { path } => Ok(Response::Dir(fs::list(&tasks::expand_home(&path), false)?)),
-        Request::ListDirAll { path } => Ok(Response::Dir(fs::list(&tasks::expand_home(&path), true)?)),
-        Request::Trash { path } => Ok(Response::Path(fs::trash(&path)?)),
-        Request::Untrash { item, to } => {
-            fs::untrash(&item, &to)?;
-            Ok(Response::Ok)
-        }
-        Request::Copy { from, to } => Ok(Response::Path(Some(fs::copy(&from, &to)?))),
-        _ => unreachable!("not a slow request"),
-    }
-}
-
 /// Removes the task at `path` (with `force`, along with its uncommitted
 /// changes); its terminals close with it.
 fn remove_task(state: &Shared, path: &Path, force: bool) -> Result<Response> {
     tasks::remove(path, force)?;
     let group = path.to_string_lossy().into_owned();
-    let mut state = state.lock().unwrap();
+    let mut state = state.locked();
     let terms: Vec<TermId> = state
         .terms
         .iter()
-        .filter(|(_, entry)| entry.lock().unwrap().group == group)
+        .filter(|(_, entry)| entry.locked().group == group)
         .map(|(term, _)| *term)
         .collect();
     for term in terms {
@@ -998,18 +883,50 @@ fn remove_task(state: &Shared, path: &Path, force: bool) -> Result<Response> {
     Ok(Response::Ok)
 }
 
-fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
+/// How `handle` answers a request: now, or on a thread of its own.
+enum Reply {
+    Now(Response),
+    Later(Box<dyn FnOnce() -> Result<Response> + Send>),
+}
+
+impl Reply {
+    /// The response, on this thread even if it takes a while.
+    #[cfg(test)]
+    fn wait(self) -> Result<Response> {
+        match self {
+            Reply::Now(response) => Ok(response),
+            Reply::Later(work) => work(),
+        }
+    }
+}
+
+fn now(response: Response) -> Result<Reply> {
+    Ok(Reply::Now(response))
+}
+
+fn later(state: &Shared, work: impl FnOnce(&Shared) -> Result<Response> + Send + 'static) -> Result<Reply> {
+    let state = state.clone();
+    Ok(Reply::Later(Box::new(move || work(&state))))
+}
+
+/// A request that panics fails, and the connection goes on.
+fn caught<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("the agent failed on this request: see its log")))
+}
+
+fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Reply> {
     match request {
-        Request::Hello { .. } => Ok(Response::Hello {
+        Request::Hello { .. } => now(Response::Hello {
             protocol: PROTOCOL,
             pid: std::process::id(),
         }),
         Request::ReplaceAgent { exe } => {
-            let state = state.lock().unwrap();
-            replace_agent(&state, &tasks::expand_home(&exe))
+            let state = state.locked();
+            replace_agent(&state, &tasks::expand_home(&exe)).map(Reply::Now)
         }
         Request::Shutdown => {
-            let mut state = state.lock().unwrap();
+            let mut state = state.locked();
             save_for_restart(&state);
             // Dropping the terminals kills their processes.
             state.terms.clear();
@@ -1023,13 +940,13 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             command,
             cols,
             rows,
-        } => create(state, None, group, cwd, command, cols, rows),
+        } => create(state, None, group, cwd, command, cols, rows).map(Reply::Now),
         Request::TermList { group } => {
-            let state = state.lock().unwrap();
+            let state = state.locked();
             let mut terms: Vec<TermInfo> = state
                 .terms
                 .iter()
-                .map(|(term, entry)| (term, entry.lock().unwrap()))
+                .map(|(term, entry)| (term, entry.locked()))
                 .filter(|(_, entry)| entry.group == group)
                 .map(|(term, entry)| TermInfo {
                     term: *term,
@@ -1037,16 +954,16 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                 })
                 .collect();
             terms.sort_by_key(|info| info.term);
-            Ok(Response::TermList(terms))
+            now(Response::TermList(terms))
         }
         Request::TermAttach { term } => {
             let (entry, outbox) = {
-                let state = state.lock().unwrap();
+                let state = state.locked();
                 (state.term(term)?, state.clients.get(&conn).cloned())
             };
             // The snapshot and the subscription happen under the same lock: no pty
             // output falls between the two.
-            let mut entry = entry.lock().unwrap();
+            let mut entry = entry.locked();
             if let Some(outbox) = outbox {
                 entry.subscribers.insert(conn, outbox);
             }
@@ -1054,60 +971,60 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             use alacritty_terminal::grid::Dimensions as _;
             let (cols, rows) = (grid.columns() as u16, grid.screen_lines() as u16);
             let data = snapshot(&entry.emulator, entry.title.as_deref());
-            Ok(Response::TermSnapshot { cols, rows, data })
+            now(Response::TermSnapshot { cols, rows, data })
         }
         Request::TermDetach { term } => {
-            if let Ok(entry) = state.lock().unwrap().term(term) {
-                entry.lock().unwrap().subscribers.remove(&conn);
+            if let Ok(entry) = state.locked().term(term) {
+                entry.locked().subscribers.remove(&conn);
             }
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::TermInput { term, data } => {
-            let entry = state.lock().unwrap().term(term)?;
-            entry.lock().unwrap().pty.write(data);
-            Ok(Response::Ok)
+            let entry = state.locked().term(term)?;
+            entry.locked().pty.write(data);
+            now(Response::Ok)
         }
         Request::TermResize { term, cols, rows } => {
-            let entry = state.lock().unwrap().term(term)?;
-            let mut entry = entry.lock().unwrap();
+            let entry = state.locked().term(term)?;
+            let mut entry = entry.locked();
             // Both get the same size, or the program and the screen disagree.
             let (cols, rows) = (cols.max(2), rows.max(1));
             entry.emulator.resize(TermSize::new(cols as usize, rows as usize));
             entry.pty.resize(cols, rows);
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::TermClear { term } => {
             // Under its lock, as the pty's output: it lands between two
             // chunks of it, the same in every emulator.
-            let entry = state.lock().unwrap().term(term)?;
-            let mut entry = entry.lock().unwrap();
+            let entry = state.locked().term(term)?;
+            let mut entry = entry.locked();
             let data = snapshot::clear(&entry.emulator);
             let AgentTerm { parser, emulator, .. } = &mut *entry;
             parser.advance(emulator, &data);
             entry.broadcast(|| Event::TermOutput { term, data: data.clone() });
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::TermKill { term } => {
-            let mut state = state.lock().unwrap();
+            let mut state = state.locked();
             state.broadcast(term, || Event::TermExit { term });
             state.terms.remove(&term);
             state.update_idle();
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::RepoAdd { path } => {
             tasks::add_repo(&tasks::expand_home(&path))?;
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::RepoRemove { path } => {
             tasks::remove_repo(&path)?;
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
-        Request::RepoList => Ok(Response::Repos(tasks::repos())),
-        Request::BlockedList => Ok(Response::Files(state.lock().unwrap().blocked.iter().cloned().collect())),
-        Request::AgentList => Ok(Response::Agents(state.lock().unwrap().agent_list())),
-        Request::Version => Ok(Response::Text(own_build_id())),
+        Request::RepoList => now(Response::Repos(tasks::repos())),
+        Request::BlockedList => now(Response::Files(state.locked().blocked.iter().cloned().collect())),
+        Request::AgentList => now(Response::Agents(state.locked().agent_list())),
+        Request::Version => now(Response::Text(own_build_id())),
         Request::Open { root, file } => {
-            let state = state.lock().unwrap();
+            let state = state.locked();
             let mut count = 0;
             for (other, client) in &state.clients {
                 if *other != conn {
@@ -1115,46 +1032,105 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                     count += usize::from(client.send(ServerMessage::Event(event)).is_ok());
                 }
             }
-            Ok(Response::Count(count))
+            now(Response::Count(count))
         }
-        Request::TaskCreate { .. }
-        | Request::TaskList
-        | Request::TaskRemove { .. }
-        | Request::TaskForceRemove { .. }
-        | Request::GitChanges { .. }
-        | Request::GitDiff { .. }
-        | Request::FindFiles { .. }
-        | Request::Search { .. }
-        | Request::ReadFile { .. }
-        | Request::WriteFile { .. }
-        | Request::ListDir { .. }
-        | Request::ListDirAll { .. }
-        | Request::Trash { .. }
-        | Request::Copy { .. }
-        | Request::Untrash { .. }
-        | Request::Git { .. }
-        | Request::Lsp { .. }
-        | Request::LspResolve { .. }
-        | Request::LspWorkspaceSymbols { .. }
-        | Request::Format { .. }
-        | Request::Replace { .. }
-        | Request::Ports => unreachable!("handled on its own thread"),
+        // Anything that may take a while (task scripts, git, searches) runs on
+        // its own thread, so it doesn't hold up terminal keystrokes.
+        Request::TaskList => later(state, move |state| {
+            let mut list = tasks::list();
+            let state = state.locked();
+            for task in &mut list {
+                task.working = state.working.contains(task.path.to_string_lossy().as_ref());
+            }
+            Ok(Response::Tasks(list))
+        }),
+        Request::Ports => later(state, move |state| {
+            let shells: HashMap<u32, String> = state
+                .locked()
+                .terms
+                .values()
+                .filter_map(|entry| {
+                    let entry = entry.locked();
+                    Some((entry.pty.pid()?, entry.group.clone()))
+                })
+                .collect();
+            Ok(Response::Ports(ports::listening(&shells)))
+        }),
+        Request::TaskCreate { repo, name, open } => later(state, move |state| {
+            let task = tasks::add_repo(&repo).and_then(|repo| tasks::create(&repo, &name))?;
+            if open {
+                let path = task.path.clone();
+                state
+                    .locked()
+                    .broadcast_all(|| Event::OpenTask { path: path.clone() });
+            }
+            Ok(Response::Task(task))
+        }),
+        Request::TaskRemove { path } => later(state, move |state| remove_task(state, &path, false)),
+        Request::TaskForceRemove { path } => later(state, move |state| remove_task(state, &path, true)),
+        Request::GitChanges { path, uncommitted } => later(state, move |_| {
+            let (base, files) = git::changes(&path, uncommitted)?;
+            Ok(Response::Changes { base, files })
+        }),
+        Request::GitDiff { path, file, uncommitted } => later(state, move |_| Ok(Response::Text(git::diff(&path, &file, uncommitted)?))),
+        Request::Git { path, op } => later(state, move |_| git::run(&path, op)),
+        Request::Lsp { root, path, text, line, column, op } => later(state, move |_| lsp::request(&root, &path, &text, line, column, op)),
+        Request::LspResolve { root, path, list, item } => later(state, move |_| lsp::resolve(&root, &path, list, item)),
+        Request::LspWorkspaceSymbols { root, path, text, query } => later(state, move |_| {
+            lsp::workspace_symbols(&root, path.as_deref(), &text, &query)
+        }),
+        Request::Format { root, path, text } => later(state, move |_| format::format(&root, &path, &text)),
+        Request::FindFiles { path } => later(state, move |_| Ok(Response::Files(search::files(&path)))),
+        Request::Search {
+            path,
+            query,
+            include,
+            exclude,
+            max_hits,
+        } => later(state, move |_| {
+            let (hits, truncated) = search::search(&path, &query, &include, &exclude, max_hits)?;
+            Ok(Response::SearchResults { hits, truncated })
+        }),
+        Request::Replace {
+            path,
+            files,
+            query,
+            replacement,
+            preserve_case,
+        } => later(state, move |_| {
+            let (files, replacements) = search::replace(&path, &files, &query, &replacement, preserve_case)?;
+            Ok(Response::Replaced { files, replacements })
+        }),
+        Request::ReadFile { path } => later(state, move |_| Ok(Response::Bytes(fs::read(&path)?))),
+        Request::WriteFile { path, data } => later(state, move |_| {
+            fs::write(&path, &data)?;
+            Ok(Response::Ok)
+        }),
+        Request::ListDir { path } => later(state, move |_| Ok(Response::Dir(fs::list(&tasks::expand_home(&path), false)?))),
+        Request::ListDirAll { path } => later(state, move |_| Ok(Response::Dir(fs::list(&tasks::expand_home(&path), true)?))),
+        Request::Trash { path } => later(state, move |_| Ok(Response::Path(fs::trash(&path)?))),
+        Request::Untrash { item, to } => later(state, move |_| {
+            fs::untrash(&item, &to)?;
+            Ok(Response::Ok)
+        }),
+        Request::Copy { from, to } => later(state, move |_| Ok(Response::Path(Some(fs::copy(&from, &to)?)))),
         Request::Rename { from, to } => {
             fs::rename(&from, &to)?;
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::CreateFile { path } => {
             fs::create_file(&path)?;
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::CreateDir { path } => {
             fs::create_dir(&path)?;
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
-        Request::Watch { path } => {
+        // Watching a large folder takes a while on Linux (inotify watches
+        // each folder in it).
+        Request::Watch { path } => later(state, move |state| {
             let sender = state
-                .lock()
-                .unwrap()
+                .locked()
                 .clients
                 .get(&conn)
                 .cloned()
@@ -1167,22 +1143,21 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                 }));
             })?;
             // The connection may have closed meanwhile.
-            let mut state = state.lock().unwrap();
+            let mut state = state.locked();
             if state.clients.contains_key(&conn) {
                 state.watchers.entry(conn).or_default().insert(path, watcher);
             }
             Ok(Response::Ok)
-        }
+        }),
         Request::RelayConnect { port } => {
             let sender = state
-                .lock()
-                .unwrap()
+                .locked()
                 .clients
                 .get(&conn)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("connection closed"))?;
             let relay = {
-                let mut state = state.lock().unwrap();
+                let mut state = state.locked();
                 state.next_relay += 1;
                 state.next_relay
             };
@@ -1196,79 +1171,78 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
                     let _ = closed.send(ServerMessage::Event(Event::RelayClosed { relay }));
                 },
             )?;
-            state.lock().unwrap().relays.entry(conn).or_default().insert(relay, connection);
-            Ok(Response::Relay(relay))
+            state.locked().relays.entry(conn).or_default().insert(relay, connection);
+            now(Response::Relay(relay))
         }
         Request::RelaySend { relay, line } => {
             // Written without the lock: a program that stops reading would
             // otherwise stall every terminal.
             let writer = state
-                .lock()
-                .unwrap()
+                .locked()
                 .relays
                 .get(&conn)
                 .and_then(|relays| relays.get(&relay))
                 .map(|relay| relay.writer())
                 .ok_or_else(|| anyhow::anyhow!("the relay is closed"))?;
             writer.send(&line)?;
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::RelayClose { relay } => {
-            if let Some(relays) = state.lock().unwrap().relays.get_mut(&conn) {
+            if let Some(relays) = state.locked().relays.get_mut(&conn) {
                 relays.remove(&relay);
             }
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::Serve => {
-            let mut state = state.lock().unwrap();
+            let mut state = state.locked();
             state.apps.retain(|app| *app != conn);
             state.apps.push(conn);
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::Command { .. } => unreachable!("answered when the app is done"),
         Request::IdeSelection { group, selection } => {
             crate::ide::set_selection(group, selection);
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::CommandDone { command, result } => {
-            let mut state = state.lock().unwrap();
+            let mut state = state.locked();
             if let Some((_, asker)) = state.commands.remove(&command) {
                 asker.answer(&state, result);
             }
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::Resolve { path } => {
             let resolved = tasks::expand_home(&path).canonicalize()?;
-            Ok(Response::Path(Some(resolved)))
+            now(Response::Path(Some(resolved)))
         }
         Request::TermRead { term, lines } => {
-            let entry = state.lock().unwrap().term(term)?;
-            let entry = entry.lock().unwrap();
-            Ok(Response::Text(last_lines(&entry.emulator, lines as usize).join("\n")))
+            let entry = state.locked().term(term)?;
+            let entry = entry.locked();
+            now(Response::Text(last_lines(&entry.emulator, lines as usize).join("\n")))
         }
         Request::Unwatch { path } => {
-            if let Some(watchers) = state.lock().unwrap().watchers.get_mut(&conn) {
+            if let Some(watchers) = state.locked().watchers.get_mut(&conn) {
                 watchers.remove(&path);
             }
-            Ok(Response::Ok)
+            now(Response::Ok)
         }
         Request::SavePastedImage { extension, data } => {
-            Ok(Response::Path(Some(save_pasted_image(&extension, &data)?)))
+            now(Response::Path(Some(save_pasted_image(&extension, &data)?)))
         }
         Request::TermBusy { term } => {
-            let entry = state.lock().unwrap().term(term)?;
-            let entry = entry.lock().unwrap();
-            Ok(Response::Busy(entry.pty.foreground_pid() != entry.pty.pid()))
+            let entry = state.locked().term(term)?;
+            let entry = entry.locked();
+            now(Response::Busy(entry.pty.foreground_pid() != entry.pty.pid()))
         }
         Request::FreePort => {
             let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-            Ok(Response::Port(listener.local_addr()?.port()))
+            now(Response::Port(listener.local_addr()?.port()))
         }
         Request::TermCwd { term } => {
-            let entry = state.lock().unwrap().term(term)?;
-            let entry = entry.lock().unwrap();
+            let entry = state.locked().term(term)?;
+            let entry = entry.locked();
             let cwd = entry.pty.foreground_pid().and_then(platform::process_cwd).or_else(|| Some(entry.cwd.path.clone()));
-            Ok(Response::Path(cwd))
+            now(Response::Path(cwd))
         }
     }
 }
@@ -1364,7 +1338,7 @@ fn replace_agent(state: &State, exe: &Path) -> Result<Response> {
         .terms
         .iter()
         .filter_map(|(term, entry)| {
-            let entry = entry.lock().unwrap();
+            let entry = entry.locked();
             Some(crate::handover::Term {
                 term: *term,
                 group: entry.group.clone(),
@@ -1407,7 +1381,7 @@ fn handed_ide(handover: &mut Handover) -> Option<(std::net::TcpListener, String)
 /// under the same ids, with their screens.
 fn take_over(state: &Shared, handover: Handover) {
     {
-        let mut state = state.lock().unwrap();
+        let mut state = state.locked();
         state.next_term = state.next_term.max(handover.next_term);
     }
     for handed in handover.terms {
@@ -1493,7 +1467,7 @@ fn restart_terms(state: &State, fresh: bool) -> Vec<Restarted> {
         .terms
         .iter()
         .map(|(term, entry)| {
-            let entry = entry.lock().unwrap();
+            let entry = entry.locked();
             let foreground = if fresh { entry.pty.foreground_pid() } else { entry.foreground };
             let args = if fresh { foreground.and_then(platform::process_args) } else { entry.agent_args.clone() };
             let args = args.filter(|args| agent_name(args).as_deref() == Some("claude"));
@@ -1532,7 +1506,7 @@ fn restore_after_restart(state: &Shared, path: &Path, resumed: &mut HashSet<Stri
     for saved in terms {
         // The folder may be gone (a removed task): the terminal goes with it.
         // An id already taken is another agent's terminal, which the UI shows.
-        if !saved.cwd.is_dir() || state.lock().unwrap().terms.contains_key(&saved.term) {
+        if !saved.cwd.is_dir() || state.locked().terms.contains_key(&saved.term) {
             continue;
         }
         if let Some(session) = saved.claude.as_deref().and_then(resumed_session)
@@ -1545,8 +1519,8 @@ fn restore_after_restart(state: &Shared, path: &Path, resumed: &mut HashSet<Stri
         match (created, command) {
             (Ok(_), Some(command)) => {
                 // Typed into the shell, so it stays when Claude exits.
-                if let Ok(entry) = state.lock().unwrap().term(saved.term) {
-                    entry.lock().unwrap().pty.write(command);
+                if let Ok(entry) = state.locked().term(saved.term) {
+                    entry.locked().pty.write(command);
                 }
             }
             (Ok(_), None) => {}
@@ -1764,7 +1738,7 @@ fn create(
     let (cols, rows) = (cols.max(2), rows.max(1));
     // The id goes in the terminal's environment, so it's taken before starting it.
     let term = {
-        let mut state = state.lock().unwrap();
+        let mut state = state.locked();
         let term = id.unwrap_or(state.next_term);
         state.next_term = state.next_term.max(term + 1);
         term
@@ -1795,7 +1769,7 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
     let settled = screen.is_some();
     if let Some(screen) = screen {
         parser.advance(&mut emulator, &screen.data);
-        events.0.lock().unwrap().clear();
+        events.0.locked().clear();
         title = screen.title;
     }
     let entry = Arc::new(Mutex::new(AgentTerm {
@@ -1819,7 +1793,7 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
     // The reader doesn't keep it: closing it drops it, which kills its process.
     let weak = Arc::downgrade(&entry);
     {
-        let mut state = state.lock().unwrap();
+        let mut state = state.locked();
         state.terms.insert(term, entry);
         state.update_idle();
     }
@@ -1842,11 +1816,11 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
                 // Parsed under the terminal's own lock, not the agent's: a
                 // terminal printing a lot doesn't hold up the others.
                 let working = {
-                    let mut entry = entry.lock().unwrap();
+                    let mut entry = entry.locked();
                     let entry = &mut *entry;
                     entry.cwd.advance(&buf[..n]);
                     entry.parser.advance(&mut entry.emulator, &buf[..n]);
-                    let events = std::mem::take(&mut *entry.events.0.lock().unwrap());
+                    let events = std::mem::take(&mut *entry.events.0.locked());
                     let mut title_changed = false;
                     for event in events {
                         match event {
@@ -1881,7 +1855,7 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
                 };
                 drop(entry);
                 if let Some(group) = working {
-                    state.lock().unwrap().mark_working(group);
+                    state.locked().mark_working(group);
                 }
             }
         }
@@ -1892,7 +1866,7 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
         let state = state.clone();
         move || {
             let _ = child.wait();
-            let mut state = state.lock().unwrap();
+            let mut state = state.locked();
             state.broadcast(term, || Event::TermExit { term });
             state.terms.remove(&term);
             state.update_idle();
@@ -2085,8 +2059,29 @@ mod path_tests {
     fn resolves_the_home_folder() {
         let state: Shared = Arc::default();
         let home = dirs::home_dir().unwrap().canonicalize().unwrap();
-        let response = handle(&state, 0, Request::Resolve { path: PathBuf::from("~") }).unwrap();
+        let response = handle(&state, 0, Request::Resolve { path: PathBuf::from("~") }).and_then(Reply::wait).unwrap();
         assert!(matches!(response, Response::Path(Some(path)) if path == home));
+    }
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::*;
+
+    #[test]
+    fn a_request_that_panics_fails_and_the_agent_goes_on() {
+        let state: Shared = Arc::default();
+        let poisoned = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _state = poisoned.locked();
+            panic!("a bug while holding the lock");
+        })
+        .join();
+        assert!(state.is_poisoned());
+        let response = handle(&state, 0, Request::TermList { group: String::new() }).and_then(Reply::wait);
+        assert!(matches!(response, Ok(Response::TermList(terms)) if terms.is_empty()));
+        let failed: Result<()> = caught(|| panic!("a bug in a request"));
+        assert!(failed.is_err());
     }
 }
 
@@ -2106,8 +2101,8 @@ mod lock_tests {
             panic!("no terminals");
         };
         // As while its reader parses a large output.
-        let busy = state.lock().unwrap().term(busy).unwrap();
-        let parsing = busy.lock().unwrap();
+        let busy = state.locked().term(busy).unwrap();
+        let parsing = busy.locked();
         let (done, finished) = mpsc::channel();
         std::thread::spawn({
             let state = state.clone();
@@ -2121,7 +2116,7 @@ mod lock_tests {
         finished.recv_timeout(Duration::from_secs(2)).expect("the other terminal waited");
         drop(parsing);
         drop(busy);
-        state.lock().unwrap().terms.clear();
+        state.locked().terms.clear();
     }
 }
 
