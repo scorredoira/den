@@ -98,9 +98,20 @@ fn ssh(destination: &str) -> Command {
     command
 }
 
+/// `script` as the server's login shell should get it: run by `sh`, since
+/// that shell may not be a POSIX one (fish). WSL runs it with `sh` already.
+#[cfg_attr(unix, allow(unused_variables))]
+fn in_sh(destination: &str, script: &str) -> String {
+    #[cfg(windows)]
+    if crate::wsl::distro(destination).is_some() {
+        return script.to_string();
+    }
+    format!("sh -c '{}'", script.replace('\'', r"'\''"))
+}
+
 fn run(destination: &str, script: &str, input: Option<&[u8]>) -> Result<String> {
     let mut child = ssh(destination)
-        .arg(script)
+        .arg(in_sh(destination, script))
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -157,7 +168,7 @@ fn install(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Res
             // Old versions are deleted: an agent still using them doesn't notice.
             &format!(
                 "mkdir -p {REMOTE_DIR} && {unpack} > {remote}.part && chmod +x {remote}.part && mv {remote}.part {remote} \
-                 && find {REMOTE_DIR} -maxdepth 1 -name 'den-agent-*' ! -path {remote} -delete"
+                 && find {REMOTE_DIR} -maxdepth 1 -name \"den-agent-*\" ! -path {remote} -delete"
             ),
             Some(&payload),
         )
@@ -366,6 +377,15 @@ mod tests {
             .unwrap();
         child.stdin.take().unwrap().write_all(&packed).unwrap();
         assert_eq!(child.wait_with_output().unwrap().stdout, binary);
+    }
+
+    /// What the server's shell gets runs in `sh` as written, quotes and all.
+    #[test]
+    #[cfg(unix)]
+    fn scripts_run_in_sh() {
+        let script = super::in_sh("server", r#"x='it'\''s'; echo "$x" | tr a-z A-Z"#);
+        let output = std::process::Command::new("sh").args(["-c", &script]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "IT'S\n");
     }
 
     #[test]
