@@ -85,21 +85,12 @@ impl Pty {
         let killer = child.clone_killer();
         let output = pair.master.try_clone_reader()?;
 
-        // Writing happens on its own thread so it doesn't block if the pty is full.
-        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
-        let mut writer = pair.master.take_writer()?;
-        std::thread::spawn(move || {
-            while let Ok(bytes) = input_rx.recv() {
-                if writer.write_all(&bytes).and_then(|_| writer.flush()).is_err() {
-                    break;
-                }
-            }
-        });
+        let input = writer(pair.master.take_writer()?);
 
         Ok((
             Self {
                 master: Some(pair.master),
-                input: input_tx,
+                input,
                 killer,
                 pid,
             },
@@ -115,18 +106,10 @@ impl Pty {
         let master = adopted::Master(master);
         let output = master.try_clone_reader()?;
         let child = adopted::Child(pid);
-        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
-        let mut writer = master.take_writer()?;
-        std::thread::spawn(move || {
-            while let Ok(bytes) = input_rx.recv() {
-                if writer.write_all(&bytes).and_then(|_| writer.flush()).is_err() {
-                    break;
-                }
-            }
-        });
+        let input = writer(master.take_writer()?);
         let pty = Self {
             master: Some(Box::new(master)),
-            input: input_tx,
+            input,
             killer: child.clone_killer(),
             pid: Some(pid),
         };
@@ -165,6 +148,20 @@ impl Drop for Pty {
             crate::platform::close_pty(master);
         }
     }
+}
+
+/// Writes what's sent to the pty on a thread of its own, so a pty that's
+/// full doesn't block whoever sends it.
+fn writer(mut writer: Box<dyn std::io::Write + Send>) -> mpsc::Sender<Vec<u8>> {
+    let (input, received) = mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(bytes) = received.recv() {
+            if writer.write_all(&bytes).and_then(|_| writer.flush()).is_err() {
+                break;
+            }
+        }
+    });
+    input
 }
 
 fn size(cols: u16, rows: u16) -> PtySize {
