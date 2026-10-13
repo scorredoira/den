@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     cdp::{self, Cdp},
     fetch,
-    sourcemap::{Original, SourceMap},
+    sourcemap::{Original, Resolved, SourceMap},
     values,
 };
 
@@ -300,8 +300,9 @@ pub struct Core {
     refs: HashMap<u64, Ref>,
     next_ref: u64,
     pause_any: bool,
-    /// Inline source maps already parsed, by a hash of their URL.
-    maps: HashMap<u64, Arc<SourceMap>>,
+    /// Source maps already parsed.
+    maps: Maps,
+    resolved: Resolved,
     /// The tabs that have shown the app (a debugged host), open or not.
     app_tabs: HashSet<String>,
     /// The app showed, and every tab of it has closed since: the bridge ends.
@@ -327,7 +328,8 @@ impl Core {
             refs: HashMap::new(),
             next_ref: 1,
             pause_any: false,
-            maps: HashMap::new(),
+            maps: Maps::default(),
+            resolved: Resolved::default(),
             app_tabs: HashSet::new(),
             app_closed: false,
         }
@@ -1216,7 +1218,7 @@ impl Core {
             start_column: params["startColumn"].as_u64().unwrap_or(0) as u32,
         };
         if debugged && !source_map.is_empty() {
-            match self.load_map(&url, &source_map) {
+            match self.load_map(&url, &source_map, values::str_of(params, "hash")) {
                 Ok(map) => script.map = Some(map),
                 Err(err) => self.report(&format!("the source map of {}: {err:#}", fetch::short(&url))),
             }
@@ -1238,22 +1240,30 @@ impl Core {
         Ok(())
     }
 
-    fn load_map(&mut self, script_url: &str, map_url: &str) -> Result<Arc<SourceMap>> {
-        if map_url.starts_with("data:") {
+    /// The map of a script, `hash` its content's (CDP's): an inline map is
+    /// the same while its URL is, and one from the server while the script
+    /// is (a rebuild changes both); each page and reload loads the scripts
+    /// again.
+    fn load_map(&mut self, script_url: &str, map_url: &str, hash: &str) -> Result<Arc<SourceMap>> {
+        let url = match map_url.starts_with("data:") {
+            true => map_url.to_string(),
+            false => fetch::resolve_url(script_url, map_url),
+        };
+        // Without the script's hash nothing tells when the map changed.
+        let key = (map_url.starts_with("data:") || !hash.is_empty()).then(|| {
             let mut hasher = DefaultHasher::new();
-            map_url.hash(&mut hasher);
-            let key = hasher.finish();
-            if let Some(map) = self.maps.get(&key) {
-                return Ok(map.clone());
-            }
-            let text = fetch::load(map_url)?;
-            let map = Arc::new(SourceMap::parse(&text, &self.settings.root)?);
-            self.maps.insert(key, map.clone());
+            (&url, hash).hash(&mut hasher);
+            hasher.finish()
+        });
+        if let Some(map) = key.and_then(|key| self.maps.get(key)) {
             return Ok(map);
         }
-        let url = fetch::resolve_url(script_url, map_url);
         let text = fetch::load(&url).with_context(|| format!("load {}", fetch::short(&url)))?;
-        Ok(Arc::new(SourceMap::parse(&text, &self.settings.root)?))
+        let map = Arc::new(SourceMap::parse(&text, &self.settings.root, &mut self.resolved)?);
+        if let Some(key) = key {
+            self.maps.insert(key, map.clone());
+        }
+        Ok(map)
     }
 
     fn on_paused(&mut self, vm: u64, params: Value) -> Result<()> {
@@ -2034,6 +2044,34 @@ impl std::fmt::Display for SideEffect {
 
 impl std::error::Error for SideEffect {}
 
+/// Source maps already parsed, by a hash of what identifies them; the
+/// oldest go first.
+#[derive(Default)]
+struct Maps {
+    by_key: HashMap<u64, Arc<SourceMap>>,
+    order: std::collections::VecDeque<u64>,
+}
+
+/// Maps kept at most: enough for the bundles of a few apps.
+const MAX_MAPS: usize = 64;
+
+impl Maps {
+    fn get(&self, key: u64) -> Option<Arc<SourceMap>> {
+        self.by_key.get(&key).cloned()
+    }
+
+    fn insert(&mut self, key: u64, map: Arc<SourceMap>) {
+        if self.by_key.insert(key, map).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > MAX_MAPS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_key.remove(&oldest);
+            }
+        }
+    }
+}
+
 impl Script {
     /// A position of the map in the resource: an inline script starts where
     /// its tag is.
@@ -2210,6 +2248,17 @@ mod tests {
         assert!(!is_assignment("a.b()"));
         assert!(!is_assignment("f(a = 1)"));
         assert!(!is_assignment("1 = 2"));
+    }
+
+    #[test]
+    fn the_oldest_maps_go_first() {
+        let mut maps = Maps::default();
+        for key in 0..MAX_MAPS as u64 + 2 {
+            maps.insert(key, Arc::default());
+        }
+        assert!(maps.get(0).is_none() && maps.get(1).is_none());
+        assert!(maps.get(2).is_some() && maps.get(MAX_MAPS as u64 + 1).is_some());
+        assert_eq!(maps.by_key.len(), MAX_MAPS);
     }
 
     #[test]

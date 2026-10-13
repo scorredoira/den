@@ -38,8 +38,31 @@ pub struct Original {
     pub line: u32,
 }
 
+/// The file of the root each source resolved to: the same sources come in
+/// map after map (every chunk of a bundle, every reload), and resolving one
+/// looks for every suffix of its path on disk.
+#[derive(Default)]
+pub struct Resolved(HashMap<String, Option<String>>);
+
+/// Sources remembered at most; past it, the memory starts over.
+const MAX_RESOLVED: usize = 100_000;
+
+impl Resolved {
+    fn get(&mut self, source: String, root: &Path) -> Option<String> {
+        if let Some(file) = self.0.get(&source) {
+            return file.clone();
+        }
+        if self.0.len() >= MAX_RESOLVED {
+            self.0.clear();
+        }
+        let file = resolve_file(&source, root);
+        self.0.insert(source, file.clone());
+        file
+    }
+}
+
 impl SourceMap {
-    pub fn parse(text: &str, root: &Path) -> Result<SourceMap> {
+    pub fn parse(text: &str, root: &Path, resolved: &mut Resolved) -> Result<SourceMap> {
         let value: Value = serde_json::from_str(text).context("the source map is not JSON")?;
         if value.get("sections").is_some() {
             bail!("index source maps (with sections) are not supported");
@@ -54,8 +77,7 @@ impl SourceMap {
             .iter()
             .map(|source| {
                 let source = source.as_str()?;
-                let joined = join_source_root(source_root, source);
-                resolve_file(&joined, root)
+                resolved.get(join_source_root(source_root, source), root)
             })
             .collect();
         let mappings = value.get("mappings").and_then(Value::as_str).context("the source map has no mappings")?;
@@ -287,7 +309,7 @@ mod tests {
         // line 0: nothing; line 1: col 2 -> a.ts line 0; line 2: col 4 -> line 2, col 0 -> line 1
         let map = r#"{"version":3,"sources":["webpack://app/./src/a.ts","missing.ts"],
             "mappings":";EAAA;AACA,IACA,CCAA"}"#;
-        let map = SourceMap::parse(map, &dir).unwrap();
+        let map = SourceMap::parse(map, &dir, &mut Resolved::default()).unwrap();
         assert_eq!(map.original(1, 5), Some(Original { file: "src/a.ts".into(), line: 0 }));
         assert_eq!(map.original(2, 0), Some(Original { file: "src/a.ts".into(), line: 1 }));
         assert_eq!(map.original(2, 4), Some(Original { file: "src/a.ts".into(), line: 2 }));
