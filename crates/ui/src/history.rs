@@ -89,6 +89,10 @@ pub struct HistoryView {
     file_selected: Option<SharedString>,
     commit: Entity<CommitView>,
     refresh: Option<Task<()>>,
+    /// Counts the reads of the list from the top: a page more read for one
+    /// isn't added to another's (another search, or the same with other
+    /// commits), even if it happens to have as many.
+    listing: u64,
     reading: Option<Task<()>>,
     scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
@@ -142,6 +146,7 @@ impl HistoryView {
             file_selected: None,
             commit,
             refresh: None,
+            listing: 0,
             reading: None,
             scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -236,6 +241,7 @@ impl HistoryView {
         };
         let path = self.root.clone();
         let op = self.op(0, self.commits.len().max(PAGE), cx);
+        self.listing += 1;
         self.loading = true;
         self.refresh = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
@@ -292,11 +298,13 @@ impl HistoryView {
         let path = self.root.clone();
         let skip = self.commits.len();
         let op = self.op(skip, PAGE, cx);
+        let listing = self.listing;
         self.more = false;
         cx.spawn(async move |this, cx| {
             let result = read_graph(&client, path, op).await;
             this.update(cx, |this, cx| {
                 if let Ok(Response::Graph(commits)) = result
+                    && this.listing == listing
                     && this.commits.len() == skip
                 {
                     this.more = commits.len() == PAGE;
