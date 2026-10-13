@@ -27,6 +27,9 @@ use proto::{ClientMessage, Decoded, Event, PROTOCOL, Request, Response, ServerEn
 
 type Callback = Box<dyn FnOnce(Result<Response>) + Send>;
 type Subscriber = Box<dyn Fn(TermUpdate) + Send>;
+/// A follower the reader calls without holding the list it's in: following
+/// may add or drop followers, which locks that list.
+type Shared<T> = Arc<Mutex<T>>;
 type OnDisconnect = Box<dyn FnOnce() + Send>;
 type CloseStream = Box<dyn FnOnce() + Send + Sync>;
 
@@ -38,9 +41,12 @@ pub enum TermUpdate {
     Disconnected,
 }
 type Watcher = Box<dyn Fn(&Event) + Send>;
+/// Each terminal's followers, and the watchers, with their ids.
+type Subscribers = HashMap<TermId, Vec<(u64, Shared<Subscriber>)>>;
+type Watchers = Vec<(u64, Shared<Watcher>)>;
 
 /// Keeps a watcher (`Client::watch_scoped`, `Client::watch_fs`) registered;
-/// dropping it unregisters it.
+/// dropping it unregisters it (an event already being delivered still is).
 pub struct Watch {
     client: Weak<Client>,
     id: u64,
@@ -69,7 +75,7 @@ type RelaySubscriber = Box<dyn FnMut(RelayUpdate) + Send>;
 /// response that names the relay gets here.
 #[derive(Default)]
 struct Relays {
-    subscribers: HashMap<u64, RelaySubscriber>,
+    subscribers: HashMap<u64, Shared<RelaySubscriber>>,
     early: HashMap<u64, Vec<RelayUpdate>>,
     /// Closed here while still open in the agent: what it still sends for
     /// them is dropped, until its `RelayClosed`.
@@ -99,10 +105,10 @@ pub struct Client {
     pending: Arc<Mutex<HashMap<u64, Callback>>>,
     /// Several per terminal (two windows may show the same one), each with
     /// the id `subscribe` returned.
-    subscribers: Arc<Mutex<HashMap<TermId, Vec<(u64, Subscriber)>>>>,
+    subscribers: Arc<Mutex<Subscribers>>,
     /// Receive the events not tied to a specific terminal (activity), each
     /// with its id.
-    watchers: Arc<Mutex<Vec<(u64, Watcher)>>>,
+    watchers: Arc<Mutex<Watchers>>,
     /// How many watchers want each folder's changes: the agent is told to stop
     /// (`Request::Unwatch`) when the last one goes.
     watched: Mutex<HashMap<PathBuf, usize>>,
@@ -323,19 +329,24 @@ impl Client {
                 };
                 match message {
                     ServerMessage::Response { id, result } => {
-                        if let Some(callback) = pending.lock().unwrap().remove(&id) {
+                        let callback = pending.lock().unwrap().remove(&id);
+                        if let Some(callback) = callback {
                             callback(result.map_err(|err| anyhow!(err)));
                         }
                     }
                     ServerMessage::Event(event @ (Event::Activity { .. } | Event::Blocked { .. } | Event::OpenTask { .. } | Event::FsChanged { .. } | Event::Open { .. } | Event::Command { .. } | Event::Agents { .. })) => {
-                        for (_, watcher) in watchers.lock().unwrap().iter() {
-                            watcher(&event);
+                        let watchers: Vec<_> = watchers.lock().unwrap().iter().map(|(_, watcher)| watcher.clone()).collect();
+                        for watcher in watchers {
+                            (*watcher.lock().unwrap())(&event);
                         }
                     }
                     ServerMessage::Event(Event::RelayLine { relay, line }) => {
-                        let relays = &mut *relays.lock().unwrap();
-                        match relays.subscribers.get_mut(&relay) {
-                            Some(subscriber) => subscriber(RelayUpdate::Line(line)),
+                        let mut relays = relays.lock().unwrap();
+                        match relays.subscribers.get(&relay).cloned() {
+                            Some(subscriber) => {
+                                drop(relays);
+                                (*subscriber.lock().unwrap())(RelayUpdate::Line(line));
+                            }
                             None if relays.closed.contains(&relay) => {}
                             None => {
                                 let early = relays.early.entry(relay).or_default();
@@ -348,7 +359,10 @@ impl Client {
                     ServerMessage::Event(Event::RelayClosed { relay }) => {
                         let mut relays = relays.lock().unwrap();
                         match relays.subscribers.remove(&relay) {
-                            Some(mut subscriber) => subscriber(RelayUpdate::Closed),
+                            Some(subscriber) => {
+                                drop(relays);
+                                (*subscriber.lock().unwrap())(RelayUpdate::Closed);
+                            }
                             None if relays.closed.remove(&relay) => {}
                             None => relays.early.entry(relay).or_default().push(RelayUpdate::Closed),
                         }
@@ -369,15 +383,19 @@ impl Client {
                             | Event::RelayClosed { .. } => unreachable!(),
                         };
                         let exit = matches!(event, Event::TermExit { .. });
-                        let mut subscribers = subscribers.lock().unwrap();
-                        if let Some(((_, last), others)) = subscribers.get(&term).and_then(|list| list.split_last()) {
-                            for (_, subscriber) in others {
-                                subscriber(TermUpdate::Event(copy_term_event(&event)));
+                        let list: Vec<_> = {
+                            let mut subscribers = subscribers.lock().unwrap();
+                            let list = subscribers.get(&term).into_iter().flatten().map(|(_, subscriber)| subscriber.clone()).collect();
+                            if exit {
+                                subscribers.remove(&term);
                             }
-                            last(TermUpdate::Event(event));
-                        }
-                        if exit {
-                            subscribers.remove(&term);
+                            list
+                        };
+                        if let Some((last, others)) = list.split_last() {
+                            for subscriber in others {
+                                (*subscriber.lock().unwrap())(TermUpdate::Event(copy_term_event(&event)));
+                            }
+                            (*last.lock().unwrap())(TermUpdate::Event(event));
                         }
                     }
                 }
@@ -390,16 +408,21 @@ impl Client {
             if let Some(client) = this.upgrade() {
                 client.disconnect();
             }
-            for (_, callback) in pending.lock().unwrap().drain() {
+            // Each list is taken before calling what's in it, which may lock it.
+            let callbacks = std::mem::take(&mut *pending.lock().unwrap());
+            for (_, callback) in callbacks {
                 callback(Err(anyhow!("lost the connection to the agent")));
             }
-            for (_, subscriber) in subscribers.lock().unwrap().drain().flat_map(|(_, list)| list) {
-                subscriber(TermUpdate::Disconnected);
+            let terminals = std::mem::take(&mut *subscribers.lock().unwrap());
+            for (_, subscriber) in terminals.into_values().flatten() {
+                (*subscriber.lock().unwrap())(TermUpdate::Disconnected);
             }
-            for (_, mut subscriber) in relays.lock().unwrap().subscribers.drain() {
-                subscriber(RelayUpdate::Closed);
+            let followers = std::mem::take(&mut relays.lock().unwrap().subscribers);
+            for (_, subscriber) in followers {
+                (*subscriber.lock().unwrap())(RelayUpdate::Closed);
             }
-            for callback in on_disconnect.lock().unwrap().drain(..) {
+            let callbacks = std::mem::take(&mut *on_disconnect.lock().unwrap());
+            for callback in callbacks {
                 callback();
             }
         });
@@ -503,10 +526,11 @@ impl Client {
             true => self.send(Some(id), request),
             false => Err(anyhow!("lost the connection to the agent")),
         };
-        if let Err(err) = result
-            && let Some(callback) = self.pending.lock().unwrap().remove(&id)
-        {
-            callback(Err(err));
+        if let Err(err) = result {
+            let callback = self.pending.lock().unwrap().remove(&id);
+            if let Some(callback) = callback {
+                callback(Err(err));
+            }
         }
     }
 
@@ -554,7 +578,8 @@ impl Client {
     /// terminal keep receiving its events.
     pub fn subscribe(&self, term: TermId, subscriber: impl Fn(TermUpdate) + Send + 'static) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.subscribers.lock().unwrap().entry(term).or_default().push((id, Box::new(subscriber)));
+        let subscriber: Subscriber = Box::new(subscriber);
+        self.subscribers.lock().unwrap().entry(term).or_default().push((id, Arc::new(Mutex::new(subscriber))));
         id
     }
 
@@ -602,7 +627,7 @@ impl Client {
 
     fn add_watcher(&self, watcher: Watcher) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.watchers.lock().unwrap().push((id, watcher));
+        self.watchers.lock().unwrap().push((id, Arc::new(Mutex::new(watcher))));
         id
     }
 
@@ -636,14 +661,16 @@ impl Client {
         self.request_with(Request::RelayConnect { port }, move |result| {
             let result = match result {
                 Ok(Response::Relay(relay)) => {
-                    let mut relays = relays.lock().unwrap();
+                    // Nothing new arrives for it meanwhile: this is the reader.
+                    let early = relays.lock().unwrap().early.remove(&relay).unwrap_or_default();
                     let mut closed = false;
-                    for update in relays.early.remove(&relay).unwrap_or_default() {
+                    for update in early {
                         closed |= matches!(update, RelayUpdate::Closed);
                         subscriber(update);
                     }
                     if !closed {
-                        relays.subscribers.insert(relay, Box::new(subscriber));
+                        let subscriber: RelaySubscriber = Box::new(subscriber);
+                        relays.lock().unwrap().subscribers.insert(relay, Arc::new(Mutex::new(subscriber)));
                     }
                     Ok(relay)
                 }
@@ -833,6 +860,34 @@ mod tests {
         assert!(!client.is_connected());
         assert!(proto::read_frame::<ClientMessage>(&mut peer).unwrap().is_some());
         assert_eq!(peer.read(&mut [0]).unwrap(), 0, "the agent must see EOF");
+    }
+
+    #[test]
+    fn a_callback_may_use_the_client() {
+        let (client, mut peer) = pair();
+        let (tx, rx) = mpsc::channel();
+        let this = Arc::downgrade(&client);
+        let first_tx = tx.clone();
+        client.request_with(Request::TaskList, move |_| {
+            let client = this.upgrade().unwrap();
+            client.request_with(Request::TaskList, |_| {});
+            first_tx.send("answered").unwrap();
+            client.on_disconnect(move || first_tx.send("disconnect").unwrap());
+        });
+        let Some(ClientMessage { id: Some(id), .. }) = proto::read_frame::<ClientMessage>(&mut peer).unwrap() else {
+            panic!("no request");
+        };
+        proto::write_frame(&mut peer, &ServerMessage::Response { id, result: Ok(Response::Ok) }).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), "answered");
+        assert!(proto::read_frame::<ClientMessage>(&mut peer).unwrap().is_some(), "the request made in the callback");
+        let this = Arc::downgrade(&client);
+        client.on_disconnect(move || {
+            this.upgrade().unwrap().on_disconnect(move || tx.send("late").unwrap());
+        });
+        drop(peer);
+        let mut got: Vec<_> = (0..2).map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap()).collect();
+        got.sort();
+        assert_eq!(got, vec!["disconnect", "late"]);
     }
 
     #[test]
