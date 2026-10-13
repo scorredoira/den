@@ -27,6 +27,8 @@ ignore = "0.4"
 notify = "7"
 smol = "2"
 trash = "5"
+serde_bytes = "0.11"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [profile.dev]
 debug = "line-tables-only"

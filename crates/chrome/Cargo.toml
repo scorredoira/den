@@ -9,4 +9,4 @@ anyhow.workspace = true
 dirs.workspace = true
 libc.workspace = true
 serde_json.workspace = true
-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+tungstenite.workspace = true

@@ -23,7 +23,6 @@ nucleo-matcher = "0.3"
 regex = "1"
 lsp-types = "0.97"
 tree-sitter-xml = "0.7"
-tree-sitter = "0.26"
 tempfile = "3"
 minisign-verify = "0.3"
 
@@ -32,4 +31,6 @@ minisign-verify = "0.3"
 objc2 = "0.6"
 
 [dev-dependencies]
+# Only for the XML grammar's test in language.rs.
+tree-sitter = "0.26"
 gpui-kit = { workspace = true, features = ["test-support"] }

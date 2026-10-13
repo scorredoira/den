@@ -20,7 +20,7 @@ chrome.workspace = true
 smol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_bytes = "0.11"
+serde_bytes.workspace = true
 ignore.workspace = true
 notify.workspace = true
 trash.workspace = true
@@ -29,7 +29,7 @@ grep-searcher = "0.1"
 grep-matcher = "0.1"
 regex = "1"
 url = "2"
-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+tungstenite.workspace = true
 getrandom = "0.4"
 dirs.workspace = true
 dunce = "1"
