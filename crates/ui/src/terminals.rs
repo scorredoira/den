@@ -317,7 +317,15 @@ impl TerminalArea {
             .map(|(term, view)| (*term, view.read(cx).terminal().clone()))
             .collect();
         cx.spawn_in(window, async move |this, cx| {
-            let alive: HashSet<TermId> = agent::list(&client, group).await.unwrap_or_default().into_iter().collect();
+            // Not knowing which are alive isn't none being so: they stay as
+            // they are, with their layout, for the next connection to find.
+            let alive: HashSet<TermId> = match agent::list(&client, group).await {
+                Ok(terms) => terms.into_iter().collect(),
+                Err(err) => {
+                    this.update(cx, |this, cx| this.error(format!("Couldn't reattach terminals: {err:#}"), cx)).ok();
+                    return;
+                }
+            };
             let (living, dead): (Vec<_>, Vec<_>) = terminals.into_iter().partition(|(term, _)| alive.contains(term));
             let mut gone: Vec<TermId> = dead.into_iter().map(|(term, _)| term).collect();
             gone.extend(agent::reattach_all(&client, living, cx).await);
