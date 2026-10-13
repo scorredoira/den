@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Vendored with Den's changes (vendor/README.md): updated by hand.
+      - dependency-name: gpui-kit
+      - dependency-name: gpui-base
+      - dependency-name: gpui-component
+    groups:
+      cargo:
+        update-types: [minor, patch]
