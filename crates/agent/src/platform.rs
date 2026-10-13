@@ -57,6 +57,10 @@ mod unix {
             }
             let listener = UnixListener::bind(path)
                 .with_context(|| format!("could not listen on {}", path.display()))?;
+            // Only its user connects, whoever can open the folder: it runs
+            // commands in their terminals. (`den` is installed in the state
+            // folder before this, which then already exists.)
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
             Ok(Self(listener))
         }
 
@@ -333,6 +337,16 @@ mod tests {
         std::fs::write(repo.join(".den/create"), "").unwrap();
         assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".den/create")));
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn only_its_user_connects_to_the_socket() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let _listener = super::Listener::bind(&socket).unwrap();
+        assert_eq!(std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]
