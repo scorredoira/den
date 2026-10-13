@@ -130,7 +130,9 @@ struct AgentTerm {
     parser: Processor,
     events: Listener_,
     title: Option<String>,
-    subscribers: HashSet<ConnId>,
+    /// The connections attached to it, each with its outbox: its output goes
+    /// to them without the agent's lock.
+    subscribers: HashMap<ConnId, Outbox>,
     last_output: Instant,
     /// When the output that keeps coming up to `last_output` began.
     burst_start: Instant,
@@ -174,11 +176,33 @@ impl AgentTerm {
             .filter(|title| claude_title(title))
             .filter(|_| cfg!(windows) || self.agent.as_deref() == Some("claude"))
     }
+
+    fn broadcast(&self, make: impl Fn() -> Event) {
+        for outbox in self.subscribers.values() {
+            let _ = outbox.send(ServerMessage::Event(make()));
+        }
+    }
+
+    /// Notes output, and whether that makes it work.
+    fn note_output(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.last_output) >= QUIET {
+            self.burst_start = now;
+        }
+        self.last_output = now;
+        self.blocked = false;
+        self.working()
+    }
 }
+
+/// A terminal has a lock of its own, so one that prints a lot holds up
+/// only itself. Whoever takes both takes the agent's first: never the
+/// agent's while holding a terminal's.
+type SharedTerm = Arc<Mutex<AgentTerm>>;
 
 #[derive(Default)]
 struct State {
-    terms: HashMap<TermId, AgentTerm>,
+    terms: HashMap<TermId, SharedTerm>,
     clients: HashMap<ConnId, Outbox>,
     next_term: TermId,
     next_conn: ConnId,
@@ -234,10 +258,10 @@ impl crate::ide::Host for IdeHost {
     fn terminal_of(&self, pid: u32) -> Option<(TermId, String)> {
         let shells: HashMap<u32, TermId> = {
             let state = self.0.lock().unwrap();
-            state.terms.iter().filter_map(|(term, entry)| Some((entry.pty.pid()?, *term))).collect()
+            state.terms.iter().filter_map(|(term, entry)| Some((entry.lock().unwrap().pty.pid()?, *term))).collect()
         };
         let term = crate::ports::shell_of(pid, &shells)?;
-        let group = self.0.lock().unwrap().terms.get(&term)?.group.clone();
+        let group = self.0.lock().unwrap().terms.get(&term)?.lock().unwrap().group.clone();
         Some((term, group))
     }
 
@@ -259,10 +283,13 @@ impl State {
 
     fn broadcast(&self, term: TermId, make: impl Fn() -> Event) {
         if let Some(entry) = self.terms.get(&term) {
-            for conn in &entry.subscribers {
-                self.send(*conn, ServerMessage::Event(make()));
-            }
+            entry.lock().unwrap().broadcast(make);
         }
+    }
+
+    /// The terminal `term`, to use without the agent's lock.
+    fn term(&self, term: TermId) -> Result<SharedTerm> {
+        self.terms.get(&term).cloned().ok_or_else(|| gone(term))
     }
 
     fn broadcast_all(&self, event: impl Fn() -> Event) {
@@ -271,21 +298,8 @@ impl State {
         }
     }
 
-    /// Notes output from `term`, marking its task as working if it now is.
-    fn note_output(&mut self, term: TermId) {
-        let Some(entry) = self.terms.get_mut(&term) else {
-            return;
-        };
-        let now = Instant::now();
-        if now.duration_since(entry.last_output) >= QUIET {
-            entry.burst_start = now;
-        }
-        entry.last_output = now;
-        entry.blocked = false;
-        if !entry.working() {
-            return;
-        }
-        let group = entry.group.clone();
+    /// Marks a task whose terminal produced output as working.
+    fn mark_working(&mut self, group: String) {
         if self.working.insert(group.clone()) {
             self.broadcast_all(|| Event::Activity {
                 group: group.clone(),
@@ -296,17 +310,17 @@ impl State {
 
     /// Considers tasks without a working terminal as stopped.
     fn expire_activity(&mut self) {
-        for entry in self.terms.values_mut() {
+        let mut working = HashSet::new();
+        for entry in self.terms.values() {
+            let mut entry = entry.lock().unwrap();
             if !entry.settled && entry.last_output.elapsed() >= WORKING_WINDOW {
                 entry.settled = true;
             }
+            if entry.working() {
+                working.insert(entry.group.clone());
+            }
         }
-        let stopped: Vec<String> = self
-            .working
-            .iter()
-            .filter(|group| !self.terms.values().any(|entry| &&entry.group == group && entry.working()))
-            .cloned()
-            .collect();
+        let stopped: Vec<String> = self.working.difference(&working).cloned().collect();
         for group in stopped {
             self.working.remove(&group);
             self.broadcast_all(|| Event::Activity {
@@ -321,18 +335,17 @@ impl State {
     /// since their last output) and notifies about tasks that start waiting
     /// for an answer, or stop doing so.
     fn check_blocked(&mut self) {
-        for entry in self.terms.values_mut() {
+        let mut now = HashSet::new();
+        for entry in self.terms.values() {
+            let mut entry = entry.lock().unwrap();
             if entry.checked != entry.last_output && entry.last_output.elapsed() >= QUIET {
                 entry.checked = entry.last_output;
                 entry.blocked = blocked::is_blocked(&bottom_lines(&entry.emulator));
             }
+            if entry.blocked {
+                now.insert(entry.group.clone());
+            }
         }
-        let now: HashSet<String> = self
-            .terms
-            .values()
-            .filter(|entry| entry.blocked)
-            .map(|entry| entry.group.clone())
-            .collect();
         let changed: Vec<(String, bool)> = now
             .difference(&self.blocked)
             .map(|group| (group.clone(), true))
@@ -348,7 +361,8 @@ impl State {
     /// with the new one: whether it's an agent is read off the lock.
     fn foregrounds_changed(&mut self) -> Vec<(TermId, Option<u32>)> {
         let mut changed = Vec::new();
-        for (term, entry) in &mut self.terms {
+        for (term, entry) in &self.terms {
+            let mut entry = entry.lock().unwrap();
             let foreground = entry.pty.foreground_pid();
             if foreground != entry.foreground {
                 entry.foreground = foreground;
@@ -366,6 +380,7 @@ impl State {
             .terms
             .iter()
             .filter_map(|(term, entry)| {
+                let entry = entry.lock().unwrap();
                 let name = entry.agent.clone().or_else(|| entry.claude_title().map(|_| "claude".to_string()))?;
                 Some(AgentInfo {
                     term: *term,
@@ -432,7 +447,8 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
                 .collect();
             let mut state = state.lock().unwrap();
             for (term, args) in agents {
-                if let Some(entry) = state.terms.get_mut(&term) {
+                if let Some(entry) = state.terms.get(&term) {
+                    let mut entry = entry.lock().unwrap();
                     entry.agent = args.as_deref().and_then(agent_name);
                     entry.agent_args = args;
                 }
@@ -584,8 +600,8 @@ fn serve(mut stream: Box<dyn Stream>, state: Shared) -> Result<()> {
     for (_, (_, asker)) in lost {
         asker.answer(&state, Err("the app closed before answering".into()));
     }
-    for entry in state.terms.values_mut() {
-        entry.subscribers.remove(&conn);
+    for entry in state.terms.values() {
+        entry.lock().unwrap().subscribers.remove(&conn);
     }
     state.update_idle();
     result
@@ -602,12 +618,12 @@ fn send_command(
     term: Option<TermId>,
 ) -> Result<()> {
     let mut state = state.lock().unwrap();
-    let entry = term.and_then(|term| state.terms.get(&term));
+    let entry = term.and_then(|term| state.terms.get(&term)).map(|entry| entry.lock().unwrap());
     let app = *state
         .apps
         .iter()
         .rev()
-        .find(|app| entry.is_some_and(|entry| entry.subscribers.contains(app)))
+        .find(|app| entry.as_ref().is_some_and(|entry| entry.subscribers.contains_key(app)))
         .or(state.apps.last())
         .ok_or_else(|| anyhow::anyhow!("no den app is connected to this machine"))?;
     let group = entry.map(|entry| entry.group.clone());
@@ -892,7 +908,10 @@ fn handle_slow(state: &Shared, request: Request) -> Result<Response> {
                 .unwrap()
                 .terms
                 .values()
-                .filter_map(|entry| Some((entry.pty.pid()?, entry.group.clone())))
+                .filter_map(|entry| {
+                    let entry = entry.lock().unwrap();
+                    Some((entry.pty.pid()?, entry.group.clone()))
+                })
                 .collect();
             Ok(Response::Ports(ports::listening(&shells)))
         }
@@ -968,7 +987,7 @@ fn remove_task(state: &Shared, path: &Path, force: bool) -> Result<Response> {
     let terms: Vec<TermId> = state
         .terms
         .iter()
-        .filter(|(_, entry)| entry.group == group)
+        .filter(|(_, entry)| entry.lock().unwrap().group == group)
         .map(|(term, _)| *term)
         .collect();
     for term in terms {
@@ -1010,6 +1029,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             let mut terms: Vec<TermInfo> = state
                 .terms
                 .iter()
+                .map(|(term, entry)| (term, entry.lock().unwrap()))
                 .filter(|(_, entry)| entry.group == group)
                 .map(|(term, entry)| TermInfo {
                     term: *term,
@@ -1020,11 +1040,16 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::TermList(terms))
         }
         Request::TermAttach { term } => {
+            let (entry, outbox) = {
+                let state = state.lock().unwrap();
+                (state.term(term)?, state.clients.get(&conn).cloned())
+            };
             // The snapshot and the subscription happen under the same lock: no pty
             // output falls between the two.
-            let mut state = state.lock().unwrap();
-            let entry = state.terms.get_mut(&term).ok_or_else(|| gone(term))?;
-            entry.subscribers.insert(conn);
+            let mut entry = entry.lock().unwrap();
+            if let Some(outbox) = outbox {
+                entry.subscribers.insert(conn, outbox);
+            }
             let grid = entry.emulator.grid();
             use alacritty_terminal::grid::Dimensions as _;
             let (cols, rows) = (grid.columns() as u16, grid.screen_lines() as u16);
@@ -1032,19 +1057,19 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::TermSnapshot { cols, rows, data })
         }
         Request::TermDetach { term } => {
-            if let Some(entry) = state.lock().unwrap().terms.get_mut(&term) {
-                entry.subscribers.remove(&conn);
+            if let Ok(entry) = state.lock().unwrap().term(term) {
+                entry.lock().unwrap().subscribers.remove(&conn);
             }
             Ok(Response::Ok)
         }
         Request::TermInput { term, data } => {
-            let state = state.lock().unwrap();
-            state.terms.get(&term).ok_or_else(|| gone(term))?.pty.write(data);
+            let entry = state.lock().unwrap().term(term)?;
+            entry.lock().unwrap().pty.write(data);
             Ok(Response::Ok)
         }
         Request::TermResize { term, cols, rows } => {
-            let mut state = state.lock().unwrap();
-            let entry = state.terms.get_mut(&term).ok_or_else(|| gone(term))?;
+            let entry = state.lock().unwrap().term(term)?;
+            let mut entry = entry.lock().unwrap();
             // Both get the same size, or the program and the screen disagree.
             let (cols, rows) = (cols.max(2), rows.max(1));
             entry.emulator.resize(TermSize::new(cols as usize, rows as usize));
@@ -1052,13 +1077,14 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::Ok)
         }
         Request::TermClear { term } => {
-            // Under the lock, as the pty's output: it lands between two
+            // Under its lock, as the pty's output: it lands between two
             // chunks of it, the same in every emulator.
-            let mut state = state.lock().unwrap();
-            let entry = state.terms.get_mut(&term).ok_or_else(|| gone(term))?;
+            let entry = state.lock().unwrap().term(term)?;
+            let mut entry = entry.lock().unwrap();
             let data = snapshot::clear(&entry.emulator);
-            entry.parser.advance(&mut entry.emulator, &data);
-            state.broadcast(term, || Event::TermOutput { term, data: data.clone() });
+            let AgentTerm { parser, emulator, .. } = &mut *entry;
+            parser.advance(emulator, &data);
+            entry.broadcast(|| Event::TermOutput { term, data: data.clone() });
             Ok(Response::Ok)
         }
         Request::TermKill { term } => {
@@ -1216,8 +1242,8 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::Path(Some(resolved)))
         }
         Request::TermRead { term, lines } => {
-            let state = state.lock().unwrap();
-            let entry = state.terms.get(&term).ok_or_else(|| gone(term))?;
+            let entry = state.lock().unwrap().term(term)?;
+            let entry = entry.lock().unwrap();
             Ok(Response::Text(last_lines(&entry.emulator, lines as usize).join("\n")))
         }
         Request::Unwatch { path } => {
@@ -1230,8 +1256,8 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::Path(Some(save_pasted_image(&extension, &data)?)))
         }
         Request::TermBusy { term } => {
-            let state = state.lock().unwrap();
-            let entry = state.terms.get(&term).ok_or_else(|| gone(term))?;
+            let entry = state.lock().unwrap().term(term)?;
+            let entry = entry.lock().unwrap();
             Ok(Response::Busy(entry.pty.foreground_pid() != entry.pty.pid()))
         }
         Request::FreePort => {
@@ -1239,8 +1265,8 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Response> {
             Ok(Response::Port(listener.local_addr()?.port()))
         }
         Request::TermCwd { term } => {
-            let state = state.lock().unwrap();
-            let entry = state.terms.get(&term).ok_or_else(|| gone(term))?;
+            let entry = state.lock().unwrap().term(term)?;
+            let entry = entry.lock().unwrap();
             let cwd = entry.pty.foreground_pid().and_then(platform::process_cwd).or_else(|| Some(entry.cwd.path.clone()));
             Ok(Response::Path(cwd))
         }
@@ -1338,6 +1364,7 @@ fn replace_agent(state: &State, exe: &Path) -> Result<Response> {
         .terms
         .iter()
         .filter_map(|(term, entry)| {
+            let entry = entry.lock().unwrap();
             Some(crate::handover::Term {
                 term: *term,
                 group: entry.group.clone(),
@@ -1466,6 +1493,7 @@ fn restart_terms(state: &State, fresh: bool) -> Vec<Restarted> {
         .terms
         .iter()
         .map(|(term, entry)| {
+            let entry = entry.lock().unwrap();
             let foreground = if fresh { entry.pty.foreground_pid() } else { entry.foreground };
             let args = if fresh { foreground.and_then(platform::process_args) } else { entry.agent_args.clone() };
             let args = args.filter(|args| agent_name(args).as_deref() == Some("claude"));
@@ -1517,8 +1545,8 @@ fn restore_after_restart(state: &Shared, path: &Path, resumed: &mut HashSet<Stri
         match (created, command) {
             (Ok(_), Some(command)) => {
                 // Typed into the shell, so it stays when Claude exits.
-                if let Some(entry) = state.lock().unwrap().terms.get(&saved.term) {
-                    entry.pty.write(command);
+                if let Ok(entry) = state.lock().unwrap().term(saved.term) {
+                    entry.lock().unwrap().pty.write(command);
                 }
             }
             (Ok(_), None) => {}
@@ -1770,29 +1798,29 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
         events.0.lock().unwrap().clear();
         title = screen.title;
     }
+    let entry = Arc::new(Mutex::new(AgentTerm {
+        group,
+        pty,
+        cwd: crate::shell_cwd::ShellCwd::new(cwd),
+        emulator,
+        parser,
+        events,
+        title,
+        subscribers: HashMap::new(),
+        last_output: Instant::now(),
+        burst_start: Instant::now(),
+        settled,
+        blocked: false,
+        checked: Instant::now(),
+        foreground: None,
+        agent: None,
+        agent_args: None,
+    }));
+    // The reader doesn't keep it: closing it drops it, which kills its process.
+    let weak = Arc::downgrade(&entry);
     {
         let mut state = state.lock().unwrap();
-        state.terms.insert(
-            term,
-            AgentTerm {
-                group,
-                pty,
-                cwd: crate::shell_cwd::ShellCwd::new(cwd),
-                emulator,
-                parser,
-                events,
-                title,
-                subscribers: HashSet::new(),
-                last_output: Instant::now(),
-                burst_start: Instant::now(),
-                settled,
-                blocked: false,
-                checked: Instant::now(),
-                foreground: None,
-                agent: None,
-                agent_args: None,
-            },
-        );
+        state.terms.insert(term, entry);
         state.update_idle();
     }
 
@@ -1806,44 +1834,54 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                let mut state = state.lock().unwrap();
-                let Some(entry) = state.terms.get_mut(&term) else {
+                let Some(entry) = weak.upgrade() else {
                     // ConPTY may emit final output while closing. Keep draining
                     // until EOF; its close runs on a separate thread.
                     continue;
                 };
-                entry.cwd.advance(&buf[..n]);
-                entry.parser.advance(&mut entry.emulator, &buf[..n]);
-                let events = std::mem::take(&mut *entry.events.0.lock().unwrap());
-                let mut title_changed = false;
-                for event in events {
-                    match event {
-                        // Replies to queries (cursor position, attributes…)
-                        // come from the agent, which is always present.
-                        AlacEvent::PtyWrite(text) => entry.pty.write(text.into_bytes()),
-                        AlacEvent::Title(title) => {
-                            entry.title = Some(title);
-                            title_changed = true;
+                // Parsed under the terminal's own lock, not the agent's: a
+                // terminal printing a lot doesn't hold up the others.
+                let working = {
+                    let mut entry = entry.lock().unwrap();
+                    let entry = &mut *entry;
+                    entry.cwd.advance(&buf[..n]);
+                    entry.parser.advance(&mut entry.emulator, &buf[..n]);
+                    let events = std::mem::take(&mut *entry.events.0.lock().unwrap());
+                    let mut title_changed = false;
+                    for event in events {
+                        match event {
+                            // Replies to queries (cursor position, attributes…)
+                            // come from the agent, which is always present.
+                            AlacEvent::PtyWrite(text) => entry.pty.write(text.into_bytes()),
+                            AlacEvent::Title(title) => {
+                                entry.title = Some(title);
+                                title_changed = true;
+                            }
+                            AlacEvent::ResetTitle => {
+                                entry.title = None;
+                                title_changed = true;
+                            }
+                            _ => {}
                         }
-                        AlacEvent::ResetTitle => {
-                            entry.title = None;
-                            title_changed = true;
-                        }
-                        _ => {}
                     }
-                }
-                let data = buf[..n].to_vec();
-                state.note_output(term);
-                state.broadcast(term, || Event::TermOutput {
-                    term,
-                    data: data.clone(),
-                });
-                if title_changed {
-                    let title = state.terms[&term].title.clone();
-                    state.broadcast(term, || Event::TermTitle {
+                    let data = buf[..n].to_vec();
+                    let working = entry.note_output().then(|| entry.group.clone());
+                    entry.broadcast(|| Event::TermOutput {
                         term,
-                        title: title.clone(),
+                        data: data.clone(),
                     });
+                    if title_changed {
+                        let title = entry.title.clone();
+                        entry.broadcast(|| Event::TermTitle {
+                            term,
+                            title: title.clone(),
+                        });
+                    }
+                    working
+                };
+                drop(entry);
+                if let Some(group) = working {
+                    state.lock().unwrap().mark_working(group);
                 }
             }
         }
@@ -2049,6 +2087,41 @@ mod path_tests {
         let home = dirs::home_dir().unwrap().canonicalize().unwrap();
         let response = handle(&state, 0, Request::Resolve { path: PathBuf::from("~") }).unwrap();
         assert!(matches!(response, Response::Path(Some(path)) if path == home));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn a_busy_terminal_holds_up_only_itself() {
+        let state: Shared = Arc::default();
+        let dir = std::env::temp_dir();
+        let cat = || Some(vec!["/bin/cat".to_string()]);
+        let (Ok(Response::TermCreated { term: busy }), Ok(Response::TermCreated { term: other })) = (
+            create(&state, None, "a".into(), dir.clone(), cat(), 80, 24),
+            create(&state, None, "b".into(), dir, cat(), 80, 24),
+        ) else {
+            panic!("no terminals");
+        };
+        // As while its reader parses a large output.
+        let busy = state.lock().unwrap().term(busy).unwrap();
+        let parsing = busy.lock().unwrap();
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn({
+            let state = state.clone();
+            move || {
+                handle(&state, 0, Request::TermInput { term: other, data: b"x".to_vec() }).unwrap();
+                handle(&state, 0, Request::TermResize { term: other, cols: 100, rows: 30 }).unwrap();
+                handle(&state, 0, Request::TermRead { term: other, lines: 1 }).unwrap();
+                let _ = done.send(());
+            }
+        });
+        finished.recv_timeout(Duration::from_secs(2)).expect("the other terminal waited");
+        drop(parsing);
+        drop(busy);
+        state.lock().unwrap().terms.clear();
     }
 }
 
