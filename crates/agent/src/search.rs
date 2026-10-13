@@ -161,8 +161,10 @@ pub fn search(
     });
     let mut hits = std::mem::take(&mut *hits.lock().unwrap());
     let truncated = hits.len() > max_hits;
-    hits.truncate(max_hits);
+    // Sorted first, so the hits kept are the first of those found, not
+    // whichever thread came first.
     hits.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
+    hits.truncate(max_hits);
     Ok((hits, truncated))
 }
 
