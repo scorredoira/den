@@ -185,6 +185,10 @@ struct FileTab {
     occurrences_task: Option<Task<()>>,
     /// What the workspace last drew from the editor.
     look: EditorLook,
+    /// How many reads of its file (or diff) and of its blame were asked
+    /// for: only the answer to the last one is shown (see `begin_read`).
+    reading: u64,
+    blaming: u64,
     /// The editor group it's in: 0, or 1 for the second one of a split.
     group: usize,
     /// When it was last shown: a group shows its most recent tab.
@@ -1240,13 +1244,18 @@ impl Workspace {
             return;
         };
         let request = Request::Git { path: self.root.clone(), op: GitOp::Blame { file: file.to_string_lossy().into_owned() } };
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) else {
+            return;
+        };
+        tab.blaming += 1;
+        let generation = tab.blaming;
         cx.spawn(async move |this, cx| {
             let blame = match client.request(request).await {
                 Ok(Response::Blame { commits, lines }) => Some(Arc::new(Blame { commits, lines })),
                 _ => None,
             };
             this.update(cx, |this, cx| {
-                if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) {
+                if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file() && tab.blaming == generation) {
                     tab.blame = blame;
                     cx.notify();
                 }

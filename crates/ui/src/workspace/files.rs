@@ -95,6 +95,8 @@ impl Workspace {
             occurrences: None,
             occurrences_for: Vec::new(),
             occurrences_task: None,
+            reading: 0,
+            blaming: 0,
             look: EditorLook::default(),
             group: self.group,
             shown: 0,
@@ -129,6 +131,7 @@ impl Workspace {
             .clone()
             .map(|client| client.request(Request::ReadFile { path: path.clone() }));
         let image_format = image_format(&path);
+        let generation = self.begin_read(&path);
         cx.spawn_in(window, async move |this, cx| {
             let read = match read {
                 Some(read) => match read.await {
@@ -141,14 +144,33 @@ impl Workspace {
                 },
                 None => Err("No agent".to_string()),
             };
-            this.update_in(cx, |this, window, cx| this.loaded(&path, reload, read, window, cx)).ok();
+            this.update_in(cx, |this, window, cx| this.loaded(&path, reload, generation, read, window, cx)).ok();
         })
         .detach();
     }
 
-    /// What `load` read of a tab's file.
-    pub(super) fn loaded(&mut self, path: &Path, reload: bool, read: Result<Read, String>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Counts a read of `path`'s tab, whose answer is what it shows unless
+    /// another one is asked for meanwhile: each request is answered on a
+    /// thread of its own, and an earlier read may come back last.
+    pub(super) fn begin_read(&mut self, path: &Path) -> u64 {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.path == *path && tab.is_file()) else {
+            return 0;
+        };
+        tab.reading += 1;
+        tab.reading
+    }
+
+    /// What `load` read of a tab's file, the `generation`th read of it.
+    pub(super) fn loaded(
+        &mut self,
+        path: &Path,
+        reload: bool,
+        generation: u64,
+        read: Result<Read, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.path == *path && tab.is_file() && tab.reading == generation) else {
             return;
         };
         let name = file_name(path);
@@ -397,7 +419,8 @@ impl Workspace {
                         };
                         tab.dirty = false;
                         this.message = None;
-                        this.loaded(&path, true, Ok(Read::Text(text)), window, cx);
+                        let generation = this.begin_read(&path);
+                        this.loaded(&path, true, generation, Ok(Read::Text(text)), window, cx);
                     }
                     Ok(2) => {
                         this.tabs[ix].on_disk = None;

@@ -61,7 +61,24 @@ fn a_blinking_cursor_leaves_the_workspace_alone(cx: &mut TestAppContext) {
 
 /// The agent answering a read of `path` with `text`.
 fn read(this: &mut Workspace, path: &str, reload: bool, text: &str, window: &mut Window, cx: &mut Context<Workspace>) {
-    this.loaded(Path::new(path), reload, Ok(Read::Text(text.into())), window, cx);
+    let generation = this.begin_read(Path::new(path));
+    this.loaded(Path::new(path), reload, generation, Ok(Read::Text(text.into())), window, cx);
+}
+
+/// Two changes on disk, two reads: if the first one's answer comes last,
+/// it's older than what the tab shows and is ignored.
+#[gpui_kit::test]
+fn a_stale_read_is_ignored(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        let editor = add_tab(this, "/files-test/a.txt", "one", window, cx);
+        let path = Path::new("/files-test/a.txt");
+        let (first, second) = (this.begin_read(path), this.begin_read(path));
+        this.loaded(path, true, second, Ok(Read::Text("three".into())), window, cx);
+        this.loaded(path, true, first, Ok(Read::Text("two".into())), window, cx);
+        assert_eq!(editor.read(cx).value(), "three");
+        assert_eq!(this.tabs[0].saved, "three");
+    }));
 }
 
 fn type_in(this: &mut Workspace, editor: &Entity<EditorState>, text: &str, window: &mut Window, cx: &mut Context<Workspace>) {

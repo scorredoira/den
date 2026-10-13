@@ -118,6 +118,8 @@ impl Workspace {
         };
         let cached = self.commit_texts.get(&of).cloned();
         let fetch = self.fetch_diff(&of, client);
+        self.tabs[ix].reading += 1;
+        let generation = self.tabs[ix].reading;
         cx.spawn_in(window, async move |this, cx| {
             let response = match cached {
                 Some(text) => Ok(Response::Text(text)),
@@ -155,7 +157,7 @@ impl Workspace {
                 prepared = Some(task.await);
             }
             this.update_in(cx, |this, window, cx| {
-                let Some(ix) = this.tabs.iter().position(|tab| tab.diff.as_ref() == Some(&of)) else {
+                let Some(ix) = this.tabs.iter().position(|tab| tab.diff.as_ref() == Some(&of) && tab.reading == generation) else {
                     return;
                 };
                 if let Some(sides) = sides {
