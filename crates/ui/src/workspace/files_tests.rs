@@ -177,6 +177,28 @@ fn save_asks_whether_to_overwrite_or_reload(cx: &mut TestAppContext) {
     });
 }
 
+/// Closing a file's tab leaves its other view holding the file: what's
+/// unsaved, what's on disk and the writes on their way.
+#[gpui_kit::test]
+fn the_other_view_takes_over_the_file(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        let editor = add_tab(this, "/files-test/a.txt", "one", window, cx);
+        this.editor_split = Some(Axis::Row);
+        this.new_view(0, 1, true, window, cx);
+        type_in(this, &editor, "mine", window, cx);
+        read(this, "/files-test/a.txt", true, "theirs", window, cx);
+        let lock = this.tabs[0].save_lock.clone();
+        this.close(0, window, cx);
+        assert_eq!(this.tabs.len(), 1, "it had another view: closed at once");
+        let tab = &this.tabs[0];
+        assert!(tab.is_file() && tab.dirty);
+        assert_eq!((tab.saved.as_str(), tab.on_disk.as_deref()), ("one", Some("theirs")));
+        assert_eq!(tab.text.as_ref().map(|text| text.to_string()).as_deref(), Some("mine"));
+        assert!(Arc::ptr_eq(&tab.save_lock, &lock));
+    }));
+}
+
 /// An edit that keeps the text's length still makes it unsaved, undoing it
 /// makes it saved again, and the file's other view follows both.
 #[gpui_kit::test]

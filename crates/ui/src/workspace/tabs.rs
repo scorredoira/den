@@ -159,13 +159,23 @@ impl Workspace {
         if tab.is_file()
             && let Some(view) = other_view
         {
-            let (saved, dirty, blame, external) = (tab.saved.clone(), tab.dirty, tab.blame.clone(), tab.external.take());
+            let (saved, dirty, blame, external) = (std::mem::take(&mut tab.saved), tab.dirty, tab.blame.clone(), tab.external.take());
+            // And with them, what moves its breakpoints, what's on disk if
+            // it changed there, the writes on their way (one more waits for
+            // them), and the reads (their answers are the view's now).
+            let (text, on_disk, save_lock) = (tab.text.take(), tab.on_disk.take(), tab.save_lock.clone());
+            let (reading, blaming) = (tab.reading, tab.blaming);
             let view = &mut self.tabs[view];
             view.view = false;
             view.external = external;
             view.saved = saved;
             view.dirty = dirty;
             view.blame = blame;
+            view.text = text;
+            view.on_disk = on_disk;
+            view.save_lock = save_lock;
+            view.reading = reading;
+            view.blaming = blaming;
         }
         let was_active = self.active == Some(ix);
         let next = self.remove_tab(ix);
