@@ -1217,9 +1217,11 @@ impl Config {
     pub fn update(cx: &mut App, change: impl FnOnce(&mut Self)) {
         let config = cx.global_mut::<Self>();
         change(config);
-        FILE.save_later(config);
-        // The panels drawn from cache read it too.
-        cx.refresh_windows();
+        // The panels drawn from cache read it too: if it changed, they're
+        // drawn again.
+        if FILE.save_later(config) {
+            cx.refresh_windows();
+        }
     }
 
     /// Changes something that moves often (panel sizes, the window, the

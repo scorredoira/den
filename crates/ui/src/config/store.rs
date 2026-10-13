@@ -5,6 +5,7 @@
 //! read is kept aside before the next save writes over it.
 
 use std::{
+    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     sync::{
         Mutex, MutexGuard, OnceLock,
@@ -26,6 +27,8 @@ pub struct JsonFile {
     /// save never replaces a newer one, and a flush waits for the write
     /// under way.
     written: Mutex<Option<u64>>,
+    /// The hash of the last one saved later, to tell whether it changed.
+    last: Mutex<Option<u64>>,
     /// Wakes the thread that writes the saves made later.
     writer: OnceLock<mpsc::Sender<()>>,
     /// The tests' folder: they never touch the real one.
@@ -43,6 +46,7 @@ impl JsonFile {
             saves: AtomicU64::new(0),
             waiting: Mutex::new(None),
             written: Mutex::new(None),
+            last: Mutex::new(None),
             writer: OnceLock::new(),
             #[cfg(test)]
             dir: Mutex::new(None),
@@ -92,11 +96,18 @@ impl JsonFile {
     }
 
     /// Saves `value` on the file's own thread: only the newest of those
-    /// waiting is written.
-    pub fn save_later<T: Serialize>(&'static self, value: &T) {
+    /// waiting is written. False if it's as it was last saved: then it
+    /// isn't saved again.
+    pub fn save_later<T: Serialize>(&'static self, value: &T) -> bool {
         let Some(save) = self.number(value) else {
-            return;
+            return false;
         };
+        let mut hasher = DefaultHasher::new();
+        save.1.hash(&mut hasher);
+        let hash = Some(hasher.finish());
+        if std::mem::replace(&mut *lock(&self.last), hash) == hash {
+            return false;
+        }
         *lock(&self.waiting) = Some(save);
         let writer = self.writer.get_or_init(|| {
             lock(&LATER).push(self);
@@ -109,6 +120,7 @@ impl JsonFile {
             tx
         });
         let _ = writer.send(());
+        true
     }
 
     /// Writes the save waiting, if there's one, once the one under way is.
@@ -192,6 +204,19 @@ mod tests {
         let read: HashMap<String, String> = file.load();
         assert_eq!(read, HashMap::from([("c".to_string(), "three".to_string())]));
         assert!(!dir.join("cut.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Saved later as it was saved last: it isn't saved again.
+    #[test]
+    fn the_same_is_saved_once() {
+        let (file, dir) = file("same.json");
+        assert!(file.save_later(&"one"));
+        assert!(!file.save_later(&"one"));
+        assert!(file.save_later(&"two"));
+        assert!(file.save_later(&"one"));
+        flush_all();
+        assert_eq!(file.load::<String>(), "one");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
