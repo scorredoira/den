@@ -215,9 +215,8 @@ impl Workspace {
                     editor.update(cx, |state, cx| {
                         let text = state.text();
                         let start = text.position_to_offset(&Position::new(symbol.line, symbol.column));
-                        let end = (start + symbol.name.len()).min(text.len());
-                        let named = text.slice(start..end) == symbol.name.as_str();
-                        state.set_selections(&[(start, if named { end } else { start })], cx);
+                        let end = name_end(text, start, &symbol.name).unwrap_or(start);
+                        state.set_selections(&[(start, end)], cx);
                     });
                     reveal_centered(editor, symbol.line, false, cx);
                 }
@@ -537,5 +536,31 @@ impl Workspace {
             search.focus(window, cx);
         });
         cx.notify();
+    }
+}
+
+/// Where `name` ends if the text at `start` is it. A server's symbol name
+/// isn't always the text (Go's `(*Server).Handle`, Rust's `impl Foo for
+/// Bar`), and its length may end inside a character.
+fn name_end(text: &input::Rope, start: usize, name: &str) -> Option<usize> {
+    let end = start.checked_add(name.len()).filter(|end| *end <= text.len())?;
+    text.try_slice(start..end).is_ok_and(|slice| slice == name).then_some(end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    #[test]
+    fn a_symbol_is_selected_only_where_its_name_is() {
+        let text = input::Rope::from("fn año() {}\nimpl Foo for Bar {}\n");
+        assert_eq!(name_end(&text, 3, "año"), Some(7));
+        // Its length ends inside the `ñ`: no name there, and no panic.
+        assert_eq!(name_end(&text, 0, "fn ax"), None);
+        assert_eq!(name_end(&text, 3, "añ"), Some(6));
+        assert_eq!(name_end(&text, 3, "ax"), None);
+        assert_eq!(name_end(&text, 13, "impl Foo for Bar"), Some(29));
+        assert_eq!(name_end(&text, 30, "impl Foo for Bar"), None);
     }
 }
