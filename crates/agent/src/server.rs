@@ -46,6 +46,9 @@ const QUIET: Duration = Duration::from_millis(800);
 /// would mark the task as finished again after it was seen.
 const WORK_BURST: Duration = Duration::from_secs(1);
 
+/// After a terminal's process ends, how long its output may take to be read.
+const DRAIN: Duration = Duration::from_secs(1);
+
 /// After a connection can't be accepted, how long before trying again.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
@@ -1812,9 +1815,12 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
     }
 
     let mut output = io.output;
+    // Dropped when the reader is done, which the end of its process waits for.
+    let (drained_tx, drained) = mpsc::channel::<()>();
     std::thread::spawn({
         let state = state.clone();
         move || {
+            let _drained = drained_tx;
             let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let n = match output.read(&mut buf) {
@@ -1879,6 +1885,13 @@ fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (pty, io): (
         let state = state.clone();
         move || {
             let _ = child.wait();
+            // What it printed last is still to be read: it goes out before
+            // the exit. Not for long, as a program it left running may keep
+            // the pty open; nor on Windows, where ConPTY ends its output only
+            // once closed.
+            if cfg!(unix) {
+                let _ = drained.recv_timeout(DRAIN);
+            }
             let mut state = state.locked();
             state.broadcast(term, || Event::TermExit { term });
             state.terms.remove(&term);
@@ -2130,6 +2143,36 @@ mod lock_tests {
         drop(parsing);
         drop(busy);
         state.locked().terms.clear();
+    }
+
+    #[test]
+    fn a_terminal_exits_after_its_last_output() {
+        let state: Shared = Arc::default();
+        let (outbox, events) = Outbox::new(Arc::new(|| {}));
+        state.locked().clients.insert(1, outbox);
+        let script = "sleep 0.3; printf A; sleep 0.3; printf THE-END";
+        let command = Some(vec!["/bin/sh".to_string(), "-c".to_string(), script.to_string()]);
+        let Ok(Response::TermCreated { term }) = create(&state, None, "a".into(), std::env::temp_dir(), command, 80, 24) else {
+            panic!("no terminal");
+        };
+        handle(&state, 1, Request::TermAttach { term }).unwrap();
+        // As while its reader parses a large output: what it printed last is
+        // still to be read when the process is gone.
+        let entry = state.locked().term(term).unwrap();
+        let parsing = entry.lock().unwrap();
+        std::thread::sleep(Duration::from_millis(1200));
+        drop(parsing);
+        drop(entry);
+        let mut output = Vec::new();
+        loop {
+            let event = events.recv_timeout(Duration::from_secs(10)).expect("no exit");
+            match &event.message {
+                ServerMessage::Event(Event::TermOutput { data, .. }) => output.extend_from_slice(data),
+                ServerMessage::Event(Event::TermExit { .. }) => break,
+                _ => {}
+            }
+        }
+        assert!(output.ends_with(b"THE-END"), "lost the end");
     }
 }
 
