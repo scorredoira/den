@@ -481,23 +481,9 @@ fn binary_dirs() -> Vec<PathBuf> {
 #[cfg(unix)]
 fn from_shell(name: &str) -> Option<PathBuf> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let mut child = std::process::Command::new(shell)
-        .args(["-ilc", &format!("command -v {name}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = String::new();
-        let _ = stdout.read_to_string(&mut out);
-        let _ = tx.send(out);
-    });
-    let out = rx.recv_timeout(Duration::from_secs(5)).ok();
-    let _ = child.kill();
-    let _ = child.wait();
+    let mut command = std::process::Command::new(shell);
+    command.args(["-ilc", &format!("command -v {name}")]);
+    let out = crate::platform::output_within(command, Duration::from_secs(5));
     out?.lines()
         .rev()
         .map(str::trim)

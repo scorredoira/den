@@ -238,9 +238,6 @@ pub fn process_args(pid: u32) -> Option<String> {
 
 #[cfg(windows)]
 pub fn process_args(pid: u32) -> Option<String> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::time::Duration;
     // ConPTY doesn't expose a foreground process group. At restart, inspect
     // descendants of this terminal's shell and find the Claude process there.
     // This runs only when explicitly restarting the agent, never while typing.
@@ -253,19 +250,9 @@ do {{
 }} while ($children.Count -gt 0)
 $all | Where-Object {{ $_.ProcessId -in $ids -and ($_.Name -eq 'claude.exe' -or ($_.Name -eq 'node.exe' -and $_.CommandLine -match '@anthropic-ai[\\/]claude-code')) }} | Select-Object -First 1 -ExpandProperty CommandLine
 "#);
-    let mut child = command("powershell.exe")
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script])
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = String::new();
-        let _ = stdout.read_to_string(&mut out);
-        let _ = tx.send(out);
-    });
-    let out = rx.recv_timeout(Duration::from_secs(3)).ok();
-    let _ = child.kill();
-    let _ = child.wait();
+    let mut powershell = command("powershell.exe");
+    powershell.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script]);
+    let out = output_within(powershell, std::time::Duration::from_secs(3));
     out.map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
 }
 
@@ -441,19 +428,11 @@ pub fn is_executable_script(path: &Path) -> bool {
     path.is_file()
 }
 
-/// PATH as the user's interactive login `shell` sets it, asked of `env`
-/// (an external program, so any shell runs it the same way). `None` if the
-/// shell doesn't answer within a few seconds: an rc file may hang.
-#[cfg(unix)]
-pub fn shell_path(shell: &str) -> Option<String> {
-    use std::io::Read as _;
-    let mut child = std::process::Command::new(shell)
-        .args(["-l", "-i", "-c", "/usr/bin/env"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+/// What `command` prints, if it finishes within `timeout`: it's killed
+/// otherwise (a shell's rc file may hang).
+pub fn output_within(mut command: std::process::Command, timeout: std::time::Duration) -> Option<String> {
+    use std::{io::Read as _, process::Stdio};
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -461,9 +440,20 @@ pub fn shell_path(shell: &str) -> Option<String> {
         let _ = stdout.read_to_string(&mut out);
         let _ = tx.send(out);
     });
-    let out = rx.recv_timeout(std::time::Duration::from_secs(10)).ok();
+    let out = rx.recv_timeout(timeout).ok();
     let _ = child.kill();
     let _ = child.wait();
+    out
+}
+
+/// PATH as the user's interactive login `shell` sets it, asked of `env`
+/// (an external program, so any shell runs it the same way). `None` if the
+/// shell doesn't answer within a few seconds: an rc file may hang.
+#[cfg(unix)]
+pub fn shell_path(shell: &str) -> Option<String> {
+    let mut command = std::process::Command::new(shell);
+    command.args(["-l", "-i", "-c", "/usr/bin/env"]);
+    let out = output_within(command, std::time::Duration::from_secs(10));
     // The rc files may print things of their own first.
     out?.lines().rev().find_map(|line| line.strip_prefix("PATH=")).map(str::to_string)
 }
