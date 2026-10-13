@@ -58,3 +58,104 @@ fn a_blinking_cursor_leaves_the_workspace_alone(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(workspace_notified.get() > 0, "the status bar shows where the cursor is");
 }
+
+/// The agent answering a read of `path` with `text`.
+fn read(this: &mut Workspace, path: &str, reload: bool, text: &str, window: &mut Window, cx: &mut Context<Workspace>) {
+    this.loaded(Path::new(path), reload, Ok(Read::Text(text.into())), window, cx);
+}
+
+fn type_in(this: &mut Workspace, editor: &Entity<EditorState>, text: &str, window: &mut Window, cx: &mut Context<Workspace>) {
+    editor.update(cx, |state, cx| state.set_value(text.to_string(), window, cx));
+    this.on_edit(editor, window, cx);
+}
+
+/// A file without unsaved changes shows what another program wrote.
+#[gpui_kit::test]
+fn a_clean_tab_follows_the_file(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        let editor = add_tab(this, "/files-test/a.txt", "one", window, cx);
+        read(this, "/files-test/a.txt", true, "two", window, cx);
+        assert_eq!(editor.read(cx).value(), "two");
+        let tab = &this.tabs[0];
+        assert_eq!((tab.saved.as_str(), tab.dirty, tab.on_disk.is_none()), ("two", false, true));
+    }));
+}
+
+/// What another program wrote while the tab had unsaved changes isn't
+/// overwritten without asking: not by saving all, nor on losing focus.
+#[gpui_kit::test]
+fn changes_on_disk_are_not_overwritten_silently(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    let (editor, saving) = cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        cx.global_mut::<Config>().auto_save_on_focus_loss = true;
+        let editor = add_tab(this, "/files-test/a.txt", "one", window, cx);
+        type_in(this, &editor, "mine", window, cx);
+        read(this, "/files-test/a.txt", true, "theirs", window, cx);
+        assert_eq!(editor.read(cx).value(), "mine", "the unsaved changes are kept");
+        assert_eq!(this.tabs[0].on_disk.as_deref(), Some("theirs"));
+        assert!(this.tabs[0].dirty);
+
+        this.auto_save_editor(&editor, window, cx);
+        assert!(this.message.as_deref().is_some_and(|message| message.contains("changed on disk")));
+        let saving = this.save_all(cx);
+        assert!(this.message.as_deref().is_some_and(|message| message.starts_with("Not saved")));
+        (editor, saving)
+    }));
+    assert!(!cx.foreground_executor().block_test(saving));
+
+    // Back as it was on disk: only the unsaved changes are left.
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        read(this, "/files-test/a.txt", true, "one", window, cx);
+        assert!(this.tabs[0].on_disk.is_none());
+        assert!(this.message.is_none());
+        assert_eq!(editor.read(cx).value(), "mine");
+    }));
+}
+
+/// Save asks: Overwrite saves (here, with no agent, tries to), Reload shows
+/// what is on disk and drops what wasn't saved, Cancel does nothing.
+#[gpui_kit::test]
+fn save_asks_whether_to_overwrite_or_reload(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    let editor = cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        let editor = add_tab(this, "/files-test/a.txt", "one", window, cx);
+        this.activate(0, window, cx);
+        type_in(this, &editor, "mine", window, cx);
+        read(this, "/files-test/a.txt", true, "theirs", window, cx);
+        editor
+    }));
+    let save = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| workspace.update(cx, |this, cx| this.save(&Save, window, cx)));
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+    };
+
+    save(cx);
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(workspace.read(cx).tabs[0].on_disk.is_some()));
+
+    save(cx);
+    cx.simulate_prompt_answer("Overwrite");
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let this = workspace.read(cx);
+        assert!(this.tabs[0].on_disk.is_none());
+        assert_eq!(this.message.as_deref(), Some("Couldn't save: no agent"));
+    });
+
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        read(this, "/files-test/a.txt", true, "theirs again", window, cx);
+    }));
+    save(cx);
+    cx.simulate_prompt_answer("Reload, Losing My Changes");
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let this = workspace.read(cx);
+        assert!(this.tabs[0].on_disk.is_none());
+        assert_eq!(editor.read(cx).value(), "theirs again");
+        assert_eq!(this.tabs[0].saved, "theirs again");
+        assert!(!this.tabs[0].dirty);
+    });
+}

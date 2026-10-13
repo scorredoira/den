@@ -149,6 +149,9 @@ struct FileTab {
     lsp_status: LspStatus,
     /// Text as it is on disk, to tell whether there are unsaved changes.
     saved: String,
+    /// The text on disk, if it changed there while this had unsaved
+    /// changes: saving asks before overwriting it.
+    on_disk: Option<String>,
     /// Serialize writes so rapid focus changes cannot save an older version last.
     save_lock: Arc<smol::lock::Mutex<()>>,
     dirty: bool,
@@ -1601,6 +1604,12 @@ fn image_format(path: &Path) -> Option<ImageFormat> {
         "tif" | "tiff" => ImageFormat::Tiff,
         _ => return None,
     })
+}
+
+/// What a file read: its text, or the image it is.
+enum Read {
+    Text(String),
+    Image(Arc<Image>),
 }
 
 fn decode_text(bytes: Vec<u8>) -> Result<String, String> {

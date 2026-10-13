@@ -78,6 +78,7 @@ impl Workspace {
             content: Content::Loading,
             lsp_status: LspStatus::default(),
             saved: String::new(),
+            on_disk: None,
             save_lock: Default::default(),
             dirty: false,
             preview,
@@ -129,114 +130,123 @@ impl Workspace {
             .map(|client| client.request(Request::ReadFile { path: path.clone() }));
         let image_format = image_format(&path);
         cx.spawn_in(window, async move |this, cx| {
-            let mut image = None;
-            let result = match read {
+            let read = match read {
                 Some(read) => match read.await {
                     Ok(Response::Bytes(bytes)) if let Some(format) = image_format => {
-                        image = Some(Arc::new(Image::from_bytes(format, bytes)));
-                        Ok(String::new())
+                        Ok(Read::Image(Arc::new(Image::from_bytes(format, bytes))))
                     }
-                    Ok(Response::Bytes(bytes)) => decode_text(bytes),
+                    Ok(Response::Bytes(bytes)) => decode_text(bytes).map(Read::Text),
                     Ok(other) => Err(format!("Unexpected response: {other:?}")),
                     Err(err) => Err(format!("Couldn't open: {err:#}")),
                 },
                 None => Err("No agent".to_string()),
             };
-            this.update_in(cx, |this, window, cx| {
-                let Some(tab) = this.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) else {
-                    return;
-                };
-                let name = file_name(&path);
-                if let Some(image) = image {
-                    tab.image = Some(image);
-                    tab.content = Content::Ready;
-                    tab.restored = false;
-                    return cx.notify();
-                }
-                match result {
-                    Ok(text) if reload && text == tab.saved => return,
-                    Ok(_) if reload && tab.dirty => {
-                        this.message = Some(
-                            format!("{name} changed on disk; your unsaved changes are kept")
-                                .into(),
-                        );
-                    }
-                    Ok(text) => {
-                        if let Some(markdown) = &tab.markdown {
-                            markdown.update(cx, |view, cx| view.set_text(&text, cx));
-                        }
-                        tab.saved = text.clone();
-                        tab.content = Content::Ready;
-                        tab.restored = false;
-                        tab.text = Some(text.clone().into());
-                        let focused = window.focused(cx);
-                        tab.editor.update(cx, |state, cx| {
-                            let cursor = state.cursor_position();
-                            let scroll = state.scroll_offset();
-                            state.set_value(text.clone(), window, cx);
-                            state.set_tab_size(indentation(&text, cx), cx);
-                            if reload {
-                                state.set_cursor_position(cursor, window, cx);
-                                state.set_scroll_offset(scroll, cx);
-                            } else {
-                                let goto = tab.goto.take().unwrap_or_default();
-                                state.set_cursor_position(goto, window, cx);
-                                if let Some(to) = tab.select_to.take() {
-                                    commands::select(state, goto, to, cx);
-                                }
-                            }
-                        });
-                        if !reload {
-                            let line = tab.editor.read(cx).cursor_position().line;
-                            reveal_centered(&tab.editor, line, true, cx);
-                        }
-                        // Its other views get the same text, keeping their cursor.
-                        for view in this.tabs.iter_mut().filter(|tab| tab.view && tab.path == path) {
-                            view.content = Content::Ready;
-                            let goto = view.goto.take();
-                            view.editor.update(cx, |state, cx| {
-                                let cursor = goto.unwrap_or_else(|| state.cursor_position());
-                                let scroll = state.scroll_offset();
-                                state.set_value(text.clone(), window, cx);
-                                state.set_tab_size(indentation(&text, cx), cx);
-                                state.set_cursor_position(cursor, window, cx);
-                                if goto.is_none() {
-                                    state.set_scroll_offset(scroll, cx);
-                                }
-                            });
-                        }
-                        this.load_blame(path.clone(), cx);
-                        this.refresh_debug_marks(cx);
-                        // Setting the text moves focus to the editor: it goes back to
-                        // where it was, or where it belongs if this is the active tab.
-                        let grab = this
-                            .tabs
-                            .iter()
-                            .find(|tab| tab.path == path && tab.is_file())
-                            .is_some_and(|tab| tab.grab_focus);
-                        if !reload && grab && this.active.is_some_and(|ix| this.tabs[ix].path == path) {
-                            this.focus_active(window, cx);
-                        } else if let Some(focused) = focused {
-                            focused.focus(window, cx);
-                        }
-                    }
-                    // A reopened file that's gone doesn't deserve a tab (while
-                    // offline there's no telling: it's reread on reconnect).
-                    Err(_) if tab.restored && this.client.as_ref().is_some_and(|client| client.is_connected()) => {
-                        if let Some(ix) = this.tabs.iter().position(|tab| tab.path == path && tab.is_file()) {
-                            this.forget(ix, cx);
-                        }
-                    }
-                    Err(_) if reload => {
-                        this.message = Some(format!("{name} no longer exists on disk").into());
-                    }
-                    Err(err) => tab.content = Content::Failed(err.into()),
-                }
-                cx.notify();
-            })
-            .ok();
+            this.update_in(cx, |this, window, cx| this.loaded(&path, reload, read, window, cx)).ok();
         })
         .detach();
+    }
+
+    /// What `load` read of a tab's file.
+    pub(super) fn loaded(&mut self, path: &Path, reload: bool, read: Result<Read, String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.path == *path && tab.is_file()) else {
+            return;
+        };
+        let name = file_name(path);
+        let result = match read {
+            Ok(Read::Image(image)) => {
+                tab.image = Some(image);
+                tab.content = Content::Ready;
+                tab.restored = false;
+                return cx.notify();
+            }
+            Ok(Read::Text(text)) => Ok(text),
+            Err(err) => Err(err),
+        };
+        match result {
+            // Back to what it was: what's unsaved is unsaved changes again.
+            Ok(text) if reload && text == tab.saved => {
+                if tab.on_disk.take().is_some() {
+                    self.message = None;
+                }
+            }
+            // Saving would overwrite what changed there: it asks first.
+            Ok(text) if reload && tab.dirty => {
+                tab.on_disk = Some(text);
+                self.message = Some(format!("{name} changed on disk; your unsaved changes are kept").into());
+            }
+            Ok(text) => {
+                if let Some(markdown) = &tab.markdown {
+                    markdown.update(cx, |view, cx| view.set_text(&text, cx));
+                }
+                tab.on_disk = None;
+                tab.saved = text.clone();
+                tab.content = Content::Ready;
+                tab.restored = false;
+                tab.text = Some(text.clone().into());
+                let focused = window.focused(cx);
+                tab.editor.update(cx, |state, cx| {
+                    let cursor = state.cursor_position();
+                    let scroll = state.scroll_offset();
+                    state.set_value(text.clone(), window, cx);
+                    state.set_tab_size(indentation(&text, cx), cx);
+                    if reload {
+                        state.set_cursor_position(cursor, window, cx);
+                        state.set_scroll_offset(scroll, cx);
+                    } else {
+                        let goto = tab.goto.take().unwrap_or_default();
+                        state.set_cursor_position(goto, window, cx);
+                        if let Some(to) = tab.select_to.take() {
+                            commands::select(state, goto, to, cx);
+                        }
+                    }
+                });
+                if !reload {
+                    let line = tab.editor.read(cx).cursor_position().line;
+                    reveal_centered(&tab.editor, line, true, cx);
+                }
+                // Its other views get the same text, keeping their cursor.
+                for view in self.tabs.iter_mut().filter(|tab| tab.view && tab.path == *path) {
+                    view.content = Content::Ready;
+                    let goto = view.goto.take();
+                    view.editor.update(cx, |state, cx| {
+                        let cursor = goto.unwrap_or_else(|| state.cursor_position());
+                        let scroll = state.scroll_offset();
+                        state.set_value(text.clone(), window, cx);
+                        state.set_tab_size(indentation(&text, cx), cx);
+                        state.set_cursor_position(cursor, window, cx);
+                        if goto.is_none() {
+                            state.set_scroll_offset(scroll, cx);
+                        }
+                    });
+                }
+                self.load_blame(path.to_path_buf(), cx);
+                self.refresh_debug_marks(cx);
+                // Setting the text moves focus to the editor: it goes back to
+                // where it was, or where it belongs if this is the active tab.
+                let grab = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.path == *path && tab.is_file())
+                    .is_some_and(|tab| tab.grab_focus);
+                if !reload && grab && self.active.is_some_and(|ix| self.tabs[ix].path == *path) {
+                    self.focus_active(window, cx);
+                } else if let Some(focused) = focused {
+                    focused.focus(window, cx);
+                }
+            }
+            // A reopened file that's gone doesn't deserve a tab (while
+            // offline there's no telling: it's reread on reconnect).
+            Err(_) if tab.restored && self.client.as_ref().is_some_and(|client| client.is_connected()) => {
+                if let Some(ix) = self.tabs.iter().position(|tab| tab.path == *path && tab.is_file()) {
+                    self.forget(ix, cx);
+                }
+            }
+            Err(_) if reload => {
+                self.message = Some(format!("{name} no longer exists on disk").into());
+            }
+            Err(err) => tab.content = Content::Failed(err.into()),
+        }
+        cx.notify();
     }
 
     pub(super) fn on_fs_changed(
@@ -354,7 +364,51 @@ impl Workspace {
         let Some(ix) = self.active_file() else {
             return;
         };
+        if self.tabs[ix].on_disk.is_some() {
+            return self.ask_overwrite(ix, window, cx);
+        }
         self.save_file(ix, window, cx);
+    }
+
+    /// The file changed on disk while its tab had unsaved changes: saving
+    /// overwrites that only if told to; or the tab reads it, dropping its
+    /// changes.
+    fn ask_overwrite(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (path, editor) = (self.tabs[ix].path.clone(), self.tabs[ix].editor.clone());
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("{} changed on disk", file_name(&path)),
+            Some("Another program changed it while you had unsaved changes here."),
+            &[PromptButton::new("Cancel"), PromptButton::new("Reload, Losing My Changes"), PromptButton::new("Overwrite")],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = answer.await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(ix) = this.tab_index(&editor).filter(|ix| this.tabs[*ix].is_file()) else {
+                    return;
+                };
+                match answer {
+                    // What's on disk was read already.
+                    Ok(1) => {
+                        let tab = &mut this.tabs[ix];
+                        let Some(text) = tab.on_disk.take() else {
+                            return;
+                        };
+                        tab.dirty = false;
+                        this.message = None;
+                        this.loaded(&path, true, Ok(Read::Text(text)), window, cx);
+                    }
+                    Ok(2) => {
+                        this.tabs[ix].on_disk = None;
+                        this.save_file(ix, window, cx);
+                    }
+                    _ => {}
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn auto_save_editor(&mut self, editor: &Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>) {
@@ -369,7 +423,8 @@ impl Workspace {
         let Some(ix) = self.tabs.iter().position(|file| file.path == tab.path && file.is_file()) else {
             return;
         };
-        if self.tabs[ix].dirty {
+        // Changed on disk too: only Cmd-S, which asks, saves it.
+        if self.tabs[ix].dirty && self.tabs[ix].on_disk.is_none() {
             self.save_file(ix, window, cx);
         }
     }
@@ -478,6 +533,10 @@ impl Workspace {
         if !matches!(tab.content, Content::Ready) || !tab.is_file() || tab.image.is_some() {
             return Task::ready(true);
         }
+        if tab.on_disk.is_some() {
+            self.refuse_overwrite(ix, cx);
+            return Task::ready(false);
+        }
         let path = tab.path.clone();
         let text = tab.editor.read(cx).text().to_string();
         let editor = tab.editor.clone();
@@ -490,21 +549,34 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let _guard = save_lock.lock().await;
             // Read the current buffer after previous writes finish. A tab
-            // closed meanwhile still has its captured text saved.
-            let text = this.update(cx, |this, cx| {
-                this.tabs.iter().find(|tab| tab.editor == editor && tab.path == path)
-                    .map(|tab| tab.editor.read(cx).text().to_string())
-            }).ok().flatten().unwrap_or(text);
+            // closed meanwhile still has its captured text saved. It's what's
+            // on disk from now on (unless the write fails): the change the
+            // write makes there isn't another program's.
+            let written = this.update(cx, |this, cx| {
+                let ix = this.tabs.iter().position(|tab| tab.editor == editor && tab.path == path)?;
+                if this.tabs[ix].on_disk.is_some() {
+                    this.refuse_overwrite(ix, cx);
+                    return Some(Err(()));
+                }
+                let tab = &mut this.tabs[ix];
+                let text = tab.editor.read(cx).text().to_string();
+                Some(Ok((std::mem::replace(&mut tab.saved, text.clone()), text)))
+            });
+            let (before, text) = match written {
+                Ok(Some(Ok((before, text)))) => (Some(before), text),
+                Ok(Some(Err(()))) => return false,
+                _ => (None, text),
+            };
             let result = client.request(Request::WriteFile {
                 path: path.clone(),
                 data: text.clone().into_bytes(),
             }).await;
             this.update(cx, |this, cx| {
                 let ok = result.is_ok();
+                let tab = this.tabs.iter_mut().find(|tab| tab.editor == editor && tab.path == path);
                 match result {
                     Ok(_) => {
-                        if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.editor == editor && tab.path == path) {
-                            tab.saved = text;
+                        if let Some(tab) = tab {
                             // The user may have kept typing while the write was in flight.
                             tab.dirty = tab.editor.read(cx).text().to_string() != tab.saved;
                             tab.confirm_close = false;
@@ -515,6 +587,12 @@ impl Workspace {
                         this.debugger.update(cx, |debugger, cx| debugger.file_saved(&path, cx));
                     }
                     Err(err) => {
+                        if let Some(tab) = tab
+                            && let Some(before) = before
+                            && tab.saved == text
+                        {
+                            tab.saved = before;
+                        }
                         this.message = Some(format!("Couldn't save: {err:#}").into());
                     }
                 }
@@ -523,5 +601,13 @@ impl Workspace {
             })
             .unwrap_or(false)
         })
+    }
+
+    /// The tab's file changed on disk since it was read: it isn't saved
+    /// over without asking (see `ask_overwrite`).
+    fn refuse_overwrite(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let name = file_name(&self.tabs[ix].path);
+        self.message = Some(format!("Not saved: {name} changed on disk; Save asks what to do").into());
+        cx.notify();
     }
 }
