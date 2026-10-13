@@ -181,7 +181,7 @@ pub fn connect_ssh(destination: &str, agents: &Path, step: &dyn Fn(&'static str)
     let reader = process.stdout.take().expect("stdout");
     let writer = process.stdin.take().expect("stdin");
     let client = Client::from_stream(Box::new(reader), Box::new(writer), Some(process), None, Some(destination.to_string()));
-    match smol::block_on(client.request(Request::Hello { protocol: PROTOCOL }))? {
+    match client.request_within(Request::Hello { protocol: PROTOCOL }, crate::ANSWER_TIMEOUT)? {
         #[cfg_attr(unix, allow(unused_variables))]
         Response::Hello { protocol, pid } if protocol == PROTOCOL => {
             #[cfg(windows)]
@@ -189,7 +189,7 @@ pub fn connect_ssh(destination: &str, agents: &Path, step: &dyn Fn(&'static str)
                 crate::wsl::hold(distro, pid)?;
             }
             // `ssh` runs the agent from the home folder: so does the path.
-            client.check_version(&local, || Some(std::path::Path::new("~").join(&remote)));
+            client.check_version(&local, || Some(std::path::Path::new("~").join(&remote)))?;
             Ok(client)
         }
         other => bail!("the agent on {destination} does not speak protocol {PROTOCOL}: {other:?}"),

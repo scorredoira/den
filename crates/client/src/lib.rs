@@ -79,6 +79,10 @@ struct Relays {
 /// Lines kept for a relay nobody follows yet.
 const EARLY_LINES: usize = 1000;
 
+/// How long connecting waits for each of the agent's answers: a hung agent,
+/// or an `ssh` stuck on the way, would otherwise keep it waiting forever.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct Client {
     process: Mutex<Option<std::process::Child>>,
     close_stream: Mutex<Option<CloseStream>>,
@@ -222,12 +226,12 @@ impl Client {
     pub fn connect_local(agent_bin: &Path) -> Result<Arc<Self>> {
         let socket = proto::socket_path()?;
         if let Ok(client) = Self::connect(&socket) {
-            match smol::block_on(client.request(Request::Hello { protocol: PROTOCOL }))? {
+            match client.request_within(Request::Hello { protocol: PROTOCOL }, ANSWER_TIMEOUT)? {
                 Response::Hello { protocol, .. } if protocol == PROTOCOL => {
                     client.check_version(agent_bin, || {
                         let state_dir = proto::state_dir().ok()?;
                         stable_copy(agent_bin, &state_dir).ok()
-                    });
+                    })?;
                     return Ok(client);
                 }
                 other => bail!("the agent at {} does not speak protocol {PROTOCOL}: {other:?}", socket.display()),
@@ -435,12 +439,14 @@ impl Client {
     /// Checks whether the connected agent is the `expected` binary (its fingerprint);
     /// one that doesn't know the request predates it, so it's also old.
     /// `replacement`: where the agent finds that binary, if it's old.
-    fn check_version(&self, expected: &Path, replacement: impl FnOnce() -> Option<PathBuf>) {
+    /// Fails only when the agent doesn't answer.
+    fn check_version(&self, expected: &Path, replacement: impl FnOnce() -> Option<PathBuf>) -> Result<()> {
         let Ok(bytes) = std::fs::read(expected) else {
-            return;
+            return Ok(());
         };
-        let current = match smol::block_on(self.request(Request::Version)) {
+        let current = match self.request_within(Request::Version, ANSWER_TIMEOUT) {
             Ok(Response::Text(id)) => id,
+            Err(err) if err.is::<NoAnswer>() => return Err(err),
             _ => String::new(),
         };
         let outdated = current != proto::build_id(&bytes);
@@ -448,6 +454,7 @@ impl Client {
         if outdated {
             *self.replacement.lock().unwrap() = replacement();
         }
+        Ok(())
     }
 
     /// The connected agent is from an older build: `restart` starts the new one.
@@ -510,6 +517,19 @@ impl Client {
             let _ = tx.try_send(result);
         });
         async move { rx.recv().await.map_err(|_| anyhow!("no response from the agent"))? }
+    }
+
+    /// Sends a request and blocks until the response, for at most `timeout`:
+    /// an agent that doesn't answer by then is disconnected.
+    fn request_within(&self, request: Request, timeout: Duration) -> Result<Response> {
+        let response = smol::block_on(smol::future::or(async { Some(self.request(request).await) }, async {
+            smol::Timer::after(timeout).await;
+            None
+        }));
+        response.unwrap_or_else(|| {
+            self.disconnect();
+            Err(NoAnswer.into())
+        })
     }
 
     /// Sends a request without waiting for a response.
@@ -652,6 +672,18 @@ impl Client {
     }
 }
 
+/// The agent didn't answer in time.
+#[derive(Debug)]
+struct NoAnswer;
+
+impl std::fmt::Display for NoAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the agent did not answer")
+    }
+}
+
+impl std::error::Error for NoAnswer {}
+
 /// A terminal's event for one more of its subscribers (`Event` isn't `Clone`).
 fn copy_term_event(event: &Event) -> Event {
     match event {
@@ -791,6 +823,16 @@ mod tests {
         // Next on the wire: no second `Watch`, and `Unwatch` only now.
         assert!(matches!(proto::read_frame::<ClientMessage>(&mut peer).unwrap(),
             Some(ClientMessage { request: Request::Unwatch { .. }, .. })));
+    }
+
+    #[test]
+    fn an_agent_that_does_not_answer_is_given_up_on() {
+        let (client, mut peer) = pair();
+        let result = client.request_within(Request::Hello { protocol: PROTOCOL }, Duration::from_millis(100));
+        assert!(result.unwrap_err().is::<NoAnswer>());
+        assert!(!client.is_connected());
+        assert!(proto::read_frame::<ClientMessage>(&mut peer).unwrap().is_some());
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0, "the agent must see EOF");
     }
 
     #[test]
