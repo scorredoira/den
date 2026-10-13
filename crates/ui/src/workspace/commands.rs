@@ -303,7 +303,6 @@ impl Workspace {
 /// What Claude Code is told an editor shows: its file, and its first
 /// selection or the cursor. A huge selection is cut.
 fn ide_selection(file: PathBuf, state: &EditorState) -> proto::IdeSelection {
-    const MAX_TEXT: usize = 1 << 20;
     let text = state.text();
     let (anchor, cursor) = state.selections().first().copied().unwrap_or_default();
     let (start, end) = (anchor.min(cursor), anchor.max(cursor));
@@ -311,8 +310,15 @@ fn ide_selection(file: PathBuf, state: &EditorState) -> proto::IdeSelection {
         let position = text.offset_to_position(offset);
         (position.line, position.character)
     };
-    let selected = text.slice(start..end.min(start + MAX_TEXT)).to_string();
+    let selected = text.slice(start..cut(text, start, end)).to_string();
     proto::IdeSelection { file, text: selected, start: point(start), end: point(end) }
+}
+
+/// Where the selected text from `start` to `end` is cut: after a megabyte,
+/// at the start of the character it falls in.
+fn cut(text: &input::Rope, start: usize, end: usize) -> usize {
+    const MAX_TEXT: usize = 1 << 20;
+    text.floor_char_boundary(end.min(start + MAX_TEXT))
 }
 
 /// Selects from `from` to `to`, with the cursor at `from` so that it's the
@@ -328,6 +334,16 @@ mod tests {
     use super::*;
     use crate::debug::WaitFor;
     use core::prelude::v1::test;
+
+    /// A huge selection is cut at a character, not inside one.
+    #[test]
+    fn a_huge_selection_is_cut_at_a_character() {
+        let text = input::Rope::from(format!("a{}", "ñ".repeat(1 << 20)).as_str());
+        let end = cut(&text, 0, text.len());
+        assert_eq!(end, (1 << 20) - 1);
+        assert!(text.is_char_boundary(end));
+        assert_eq!(cut(&text, 0, 3), 3);
+    }
 
     /// `den debug break` sets a breakpoint once, and `den debug state` shows
     /// it as the program names it: relative, 1-based. With no session there
