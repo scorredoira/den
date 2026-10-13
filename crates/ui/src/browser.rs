@@ -7,6 +7,7 @@ use anyhow::Result;
 
 /// The port of an `http(s)` URL of this machine: `localhost`, a subdomain of
 /// it (a server may put each of its sites on one), `127.0.0.1` or `[::1]`.
+#[cfg(any(target_os = "macos", test))]
 fn local_port(url: &str) -> Option<u16> {
     let (scheme, after) = url.split_once("://")?;
     let default = match scheme {
@@ -26,6 +27,7 @@ fn local_port(url: &str) -> Option<u16> {
 
 /// The first of `tabs` (window, tab, URL) showing the server listening on
 /// the port of `url`.
+#[cfg(any(target_os = "macos", test))]
 fn tab_of(url: &str, tabs: &str) -> Option<(u32, u32)> {
     let port = local_port(url)?;
     tabs.lines().find_map(|line| {
