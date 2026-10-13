@@ -156,11 +156,16 @@ fn is_chrome_default(profile: &Path) -> bool {
     default.is_some_and(|default| profile == default)
 }
 
+/// Windows' ERROR_SHARING_VIOLATION.
+const SHARING_VIOLATION: i32 = 32;
+
 /// The port and browser path Chrome wrote, once it wrote both lines.
 fn read_active_port(file: &Path) -> Result<Option<(u16, String)>> {
     let text = match fs::read_to_string(file) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // Windows: Chrome is writing it and lets no one read it meanwhile.
+        Err(err) if cfg!(windows) && err.raw_os_error() == Some(SHARING_VIOLATION) => return Ok(None),
         Err(err) => return Err(err).with_context(|| format!("read {}", file.display())),
     };
     let mut lines = text.lines();
