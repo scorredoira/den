@@ -17,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version", help="For example 0.1.1 or 0.2.0-beta.1")
     parser.add_argument("--dry-run", action="store_true", help="Validate and describe without changing anything")
+    parser.add_argument("--any-branch", action="store_true", help="Release from a branch other than master (a prerelease, say)")
     args = parser.parse_args()
     version = args.version.removeprefix("v")
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?", version):
@@ -26,6 +27,8 @@ def main():
     branch = git("branch", "--show-current")
     if not branch:
         parser.error("check out a branch before publishing")
+    if branch != "master" and not args.any_branch:
+        parser.error(f"releases are made from master, not {branch}; pass --any-branch to release from it anyway")
     tag = f"v{version}"
     if git("tag", "--list", tag) or git("ls-remote", "--tags", "origin", f"refs/tags/{tag}"):
         parser.error(f"{tag} already exists; choose a new version")
@@ -37,10 +40,20 @@ def main():
     print(f"Release {current} → {version}: commit Cargo.toml/Cargo.lock on {branch}, tag {tag}, push to origin.", flush=True)
     if args.dry_run:
         return
-    manifest.write_text(re.sub(r'^version = "[^"]+"', f'version = "{version}"', original, count=1, flags=re.M))
-    subprocess.run(["cargo", "update", "--workspace", "--offline"], cwd=ROOT, check=True)
-    subprocess.run(["git", "add", "Cargo.toml", "Cargo.lock"], cwd=ROOT, check=True)
-    subprocess.run(["git", "commit", "-m", f"Release {tag}"], cwd=ROOT, check=True)
+    lockfile = ROOT / "Cargo.lock"
+    original_lock = lockfile.read_text()
+    try:
+        manifest.write_text(re.sub(r'^version = "[^"]+"', f'version = "{version}"', original, count=1, flags=re.M))
+        subprocess.run(["cargo", "update", "--workspace", "--offline"], cwd=ROOT, check=True)
+        subprocess.run(["git", "add", "Cargo.toml", "Cargo.lock"], cwd=ROOT, check=True)
+        subprocess.run(["git", "commit", "-m", f"Release {tag}"], cwd=ROOT, check=True)
+    except BaseException:
+        # nothing was committed: the tree goes back to how it was
+        manifest.write_text(original)
+        lockfile.write_text(original_lock)
+        subprocess.run(["git", "reset", "-q", "--", "Cargo.toml", "Cargo.lock"], cwd=ROOT)
+        print("Release stopped before its commit; Cargo.toml and Cargo.lock are as they were.", file=sys.stderr)
+        raise
     subprocess.run(["git", "tag", "-a", tag, "-m", f"Den {tag}"], cwd=ROOT, check=True)
     subprocess.run(["git", "push", "--atomic", "origin", f"HEAD:refs/heads/{branch}", f"refs/tags/{tag}"], cwd=ROOT, check=True)
     print("GitHub Actions will test, package and publish all platforms. See the repository's Actions tab.")
@@ -50,4 +63,4 @@ if __name__ == "__main__":
     try:
         main()
     except subprocess.CalledProcessError as error:
-        sys.exit(f"Release stopped: {error}. Inspect git status and tags before retrying; nothing was reset.")
+        sys.exit(f"Release stopped: {error}. Inspect git status and tags before retrying; a release commit or tag already made was kept.")
