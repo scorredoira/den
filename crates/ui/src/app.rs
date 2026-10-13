@@ -980,16 +980,12 @@ impl Den {
         entries
     }
 
-    /// Every workspace in list order: by server; within each, by project
-    /// (a repo's checkout followed by its worktrees, or a folder), the
-    /// projects and the worktrees within them in the dragged order.
-    fn ordered_all<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
-        let config = Config::get(cx);
-        let mut entries: Vec<(usize, TaskKey, &TaskInfo)> = Vec::new();
-        for (ix, host) in self.hosts.iter().enumerate() {
+    /// Every workspace the list shows, by its server's index, in no order.
+    fn listed<'a, 'c>(&'a self, config: &'c Config) -> impl Iterator<Item = (usize, TaskKey, &'a TaskInfo)> + use<'a, 'c> {
+        self.hosts.iter().enumerate().flat_map(move |(ix, host)| {
             // A folder opened on its own that has since become a task shows once.
             let loose = host.loose.iter().filter(|loose| !host.tasks.iter().any(|task| task.path == loose.path));
-            for task in host.tasks.iter().chain(loose) {
+            host.tasks.iter().chain(loose).filter_map(move |task| {
                 let key = TaskKey {
                     host: host.name.clone(),
                     path: task.path.clone(),
@@ -1001,11 +997,17 @@ impl Den {
                     && self.active.as_ref() != Some(&key)
                     && !config.own_worktrees.contains(&key.config())
                     && self.workspace_agents(&key).is_empty();
-                if !hidden {
-                    entries.push((ix, key, task));
-                }
-            }
-        }
+                (!hidden).then_some((ix, key, task))
+            })
+        })
+    }
+
+    /// Every workspace in list order: by server; within each, by project
+    /// (a repo's checkout followed by its worktrees, or a folder), the
+    /// projects and the worktrees within them in the dragged order.
+    fn ordered_all<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
+        let config = Config::get(cx);
+        let mut entries: Vec<(usize, TaskKey, &TaskInfo)> = self.listed(config).collect();
         let position = |key: &TaskKey| {
             let key = key.config();
             config
@@ -1443,16 +1445,16 @@ impl Den {
     /// one in front), of the project's worktrees, and of the agents. Idle
     /// says nothing.
     fn task_badges(&self, cx: &App) -> TaskBadges {
-        let tasks = self.ordered_all(cx);
-        let most_urgent = |tasks: &mut dyn Iterator<Item = &(TaskKey, &TaskInfo)>| {
-            tasks
-                .map(|(key, task)| self.status(key, task, cx))
-                .filter(|(dot, color)| urgency(dot, *color, cx) > 0)
-                .max_by_key(|(dot, color)| urgency(dot, *color, cx))
-                .map(|(_, color)| color)
-        };
+        // Asked with every frame: the list isn't put in order, as each
+        // urgency has a color of its own, whichever comes first.
+        let workspaces = self
+            .listed(Config::get(cx))
+            .map(|(_, key, task)| self.status(&key, task, cx))
+            .filter(|(dot, color)| urgency(dot, *color, cx) > 0)
+            .max_by_key(|(dot, color)| urgency(dot, *color, cx))
+            .map(|(_, color)| color);
         TaskBadges {
-            workspaces: most_urgent(&mut tasks.iter()),
+            workspaces,
             agents: self.agents_badge(cx),
         }
     }
