@@ -2083,11 +2083,10 @@ fn segments_match(glob: &[&str], file: &[&str]) -> bool {
 fn segment_matches(glob: &str, name: &str) -> bool {
     match glob.split_once('*') {
         None => glob == name,
-        Some((before, after)) => {
-            name.len() >= before.len()
-                && name.starts_with(before)
-                && (0..=name.len() - before.len()).any(|at| segment_matches(after, &name[before.len() + at..]))
-        }
+        Some((before, after)) => name.strip_prefix(before).is_some_and(|rest| {
+            // Only where a character starts: `*` may stand for an `ñ`.
+            rest.char_indices().map(|(at, _)| at).chain([rest.len()]).any(|at| segment_matches(after, &rest[at..]))
+        }),
     }
 }
 
@@ -2187,6 +2186,8 @@ mod tests {
         assert!(!super::glob_matches("src/*.ts", "src/a/util.ts"));
         assert!(super::glob_matches("**/ui*.ts", "client/scl/uikit.ts"));
         assert!(!super::glob_matches("src/u*l.ts", "src/util.tsx"));
+        assert!(super::glob_matches("src/*.ts", "src/añadir.ts"));
+        assert!(!super::glob_matches("src/*ñ.ts", "src/añadir.ts"));
     }
 
     #[test]
