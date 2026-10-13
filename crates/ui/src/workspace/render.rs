@@ -104,16 +104,29 @@ impl Workspace {
                                         el.invisible().group_hover("tab", |s| s.visible())
                                     }),
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.close(ix, window, cx);
+                            .on_click(cx.listener({
+                                let editor = tab.editor.clone();
+                                move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(ix) = this.tab_index(&editor) {
+                                        this.close(ix, window, cx);
+                                    }
+                                }
                             })),
                     )
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        if event.click_count() >= 2 {
-                            this.tabs[ix].preview = false;
+                    // The tab clicked, wherever it is by then: one closed
+                    // since it was drawn (a file gone) moves the others.
+                    .on_click(cx.listener({
+                        let editor = tab.editor.clone();
+                        move |this, event: &ClickEvent, window, cx| {
+                            let Some(ix) = this.tab_index(&editor) else {
+                                return;
+                            };
+                            if event.click_count() >= 2 {
+                                this.tabs[ix].preview = false;
+                            }
+                            this.activate(ix, window, cx);
                         }
-                        this.activate(ix, window, cx);
                     }))
                     .context_menu(self.tab_menu(tab, split, cx.entity().downgrade()))
             }))
