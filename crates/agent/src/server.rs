@@ -1004,7 +1004,7 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Reply> {
             let entry = state.locked().term(term)?;
             let mut entry = entry.locked();
             // Both get the same size, or the program and the screen disagree.
-            let (cols, rows) = (cols.max(2), rows.max(1));
+            let (cols, rows) = term_size(cols, rows);
             entry.emulator.resize(TermSize::new(cols as usize, rows as usize));
             entry.pty.resize(cols, rows);
             now(Response::Ok)
@@ -1313,6 +1313,15 @@ fn bottom_lines<T: EventListener>(term: &Term<T>) -> Vec<String> {
     let skip = lines.len().saturating_sub(25);
     lines.drain(..skip);
     lines
+}
+
+/// The largest screen a terminal has: its emulator keeps a grid of that
+/// size, and history as wide.
+const MAX_TERM_SIZE: u16 = 1000;
+
+/// A terminal's size as asked for, within what one can be.
+fn term_size(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.clamp(2, MAX_TERM_SIZE), rows.clamp(1, MAX_TERM_SIZE))
 }
 
 fn gone(term: TermId) -> anyhow::Error {
@@ -1751,7 +1760,7 @@ fn create(
     cols: u16,
     rows: u16,
 ) -> Result<Response> {
-    let (cols, rows) = (cols.max(2), rows.max(1));
+    let (cols, rows) = term_size(cols, rows);
     // The id goes in the terminal's environment, so it's taken before starting it.
     let term = {
         let mut state = state.locked();
@@ -2142,6 +2151,24 @@ mod lock_tests {
         finished.recv_timeout(Duration::from_secs(2)).expect("the other terminal waited");
         drop(parsing);
         drop(busy);
+        state.locked().terms.clear();
+    }
+
+    #[test]
+    fn a_terminal_is_never_too_large() {
+        let state: Shared = Arc::default();
+        let cat = Some(vec!["/bin/cat".to_string()]);
+        let Ok(Response::TermCreated { term }) = create(&state, None, "a".into(), std::env::temp_dir(), cat, u16::MAX, u16::MAX) else {
+            panic!("no terminal");
+        };
+        let size = || {
+            let entry = state.locked().term(term).unwrap();
+            let entry = entry.locked();
+            (entry.emulator.columns(), entry.emulator.screen_lines())
+        };
+        assert_eq!(size(), (1000, 1000));
+        handle(&state, 0, Request::TermResize { term, cols: 0, rows: u16::MAX }).unwrap();
+        assert_eq!(size(), (2, 1000));
         state.locked().terms.clear();
     }
 
