@@ -20,7 +20,7 @@ fn add_tab(this: &mut Workspace, path: &str, text: &str, window: &mut Window, cx
     let mut tab = this.new_tab(PathBuf::from(path), false, window, cx);
     tab.content = Content::Ready;
     tab.saved = text.into();
-    tab.text = Some(text.to_string().into());
+    tab.text = Some(text.into());
     tab.editor.update(cx, |state, cx| state.set_value(text.to_string(), window, cx));
     let editor = tab.editor.clone();
     this.tabs.push(tab);
@@ -175,4 +175,23 @@ fn save_asks_whether_to_overwrite_or_reload(cx: &mut TestAppContext) {
         assert_eq!(this.tabs[0].saved, "theirs again");
         assert!(!this.tabs[0].dirty);
     });
+}
+
+/// An edit that keeps the text's length still makes it unsaved, undoing it
+/// makes it saved again, and the file's other view follows both.
+#[gpui_kit::test]
+fn edits_of_the_same_length_count(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        let editor = add_tab(this, "/files-test/a.txt", "one", window, cx);
+        this.editor_split = Some(Axis::Row);
+        let view = this.new_view(0, 1, true, window, cx);
+        let view = this.tabs[view].editor.clone();
+        type_in(this, &editor, "two", window, cx);
+        assert!(this.tabs[0].dirty);
+        assert_eq!(view.read(cx).value(), "two");
+        type_in(this, &view, "one", window, cx);
+        assert!(!this.tabs[0].dirty);
+        assert_eq!(editor.read(cx).value(), "one");
+    }));
 }

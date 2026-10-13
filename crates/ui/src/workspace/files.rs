@@ -204,7 +204,7 @@ impl Workspace {
                 tab.saved = text.clone();
                 tab.content = Content::Ready;
                 tab.restored = false;
-                tab.text = Some(text.clone().into());
+                tab.text = Some(text.as_str().into());
                 let focused = window.focused(cx);
                 tab.editor.update(cx, |state, cx| {
                     let cursor = state.cursor_position();
@@ -322,7 +322,11 @@ impl Workspace {
         self.revision += 1;
         self.touch_edit(ix);
         let path = self.tabs[ix].path.clone();
-        let text = editor.read(cx).value();
+        // The rope is shared, not copied: the text is made a string only
+        // for what needs one, once.
+        let text = editor.read(cx).text().clone();
+        let string = std::cell::OnceCell::new();
+        let string = || string.get_or_init(|| text.to_string()).as_str();
         if editor.read(cx).focus_handle(cx).is_focused(window) {
             self.ask_signature(editor, cx);
         }
@@ -333,14 +337,17 @@ impl Workspace {
                 continue;
             }
             other.editor.update(cx, |state, cx| {
-                if let Some((range, with)) = editing::difference(&state.value(), &text) {
+                if same_text(state.text(), &text) {
+                    return;
+                }
+                if let Some((range, with)) = editing::difference(&state.value(), string()) {
                     let selections = editing::shift(&state.selections(), &range, with.len());
                     state.edit(&[(range, with)], &selections, false, window, cx);
                 }
             });
         }
         if let Some(markdown) = &self.tabs[ix].markdown {
-            markdown.update(cx, |view, cx| view.set_text(&text, cx));
+            markdown.update(cx, |view, cx| view.set_text(string(), cx));
         }
         // Breakpoints move with the lines they're on, by where the text
         // changed: an edit of another view comes to the file's tab too.
@@ -348,8 +355,8 @@ impl Workspace {
             let before = self.tabs[ix].text.replace(text.clone());
             let marked = !self.debugger.read(cx).breakpoints.of(&path).is_empty();
             if marked
-                && let Some(before) = before
-                && let Some((range, with)) = editing::difference(&before, &text)
+                && let Some(before) = before.map(|before| before.to_string())
+                && let Some((range, with)) = editing::difference(&before, string())
             {
                 let edit = debug::LineEdit::new(&before, range, &with);
                 self.debugger.update(cx, |debugger, cx| debugger.shift_breakpoints(&path, edit, cx));
@@ -363,7 +370,7 @@ impl Workspace {
         let Some(file) = self.tabs.iter_mut().find(|tab| tab.path == path && tab.is_file()) else {
             return;
         };
-        let dirty = *text != file.saved;
+        let dirty = text.len() != file.saved.len() || text != file.saved.as_str();
         if dirty != file.dirty {
             file.dirty = dirty;
             file.confirm_close = false;

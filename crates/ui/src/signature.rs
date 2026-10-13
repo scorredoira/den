@@ -3,7 +3,7 @@
 //! `(` and `,`, and again on each change or move along the line while shown;
 //! it closes outside the call, on another line and with Escape.
 
-use gpui_kit::component::{ActiveTheme as _, ThemeStyled as _, input::{EditorState, Position}};
+use gpui_kit::component::{ActiveTheme as _, ThemeStyled as _, input::{EditorState, Position, Rope, RopeExt as _}};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::LspSignature;
 
@@ -12,11 +12,13 @@ pub struct SignatureHint {
     pub signature: LspSignature,
 }
 
-/// Whether typing just before `cursor` opens the hint.
-pub fn opens(text: &str, cursor: Position) -> bool {
-    let Some(line) = text.lines().nth(cursor.line as usize) else {
+/// Whether typing just before `cursor` opens the hint. Only its line is
+/// looked at: this is asked on every key.
+pub fn opens(text: &Rope, cursor: Position) -> bool {
+    if cursor.line as usize >= text.lines_len() {
         return false;
-    };
+    }
+    let line = text.slice_line(cursor.line as usize);
     let before = cursor.character.checked_sub(1).and_then(|ix| line.chars().nth(ix as usize));
     matches!(before, Some('(' | ','))
 }
@@ -66,13 +68,13 @@ pub fn render(hint: &SignatureHint, cx: &App) -> Option<AnyElement> {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::component::input::Position;
+    use gpui_kit::component::input::{Position, Rope};
 
     use super::opens;
 
     #[test]
     fn opens_after_paren_or_comma() {
-        let text = "a\n  getDB(x, ñ)";
+        let text = &Rope::from("a\n  getDB(x, ñ)");
         assert!(opens(text, Position::new(1, 8)));
         assert!(opens(text, Position::new(1, 10)));
         assert!(!opens(text, Position::new(1, 11)));

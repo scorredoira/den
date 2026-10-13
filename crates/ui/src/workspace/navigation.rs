@@ -315,10 +315,10 @@ impl Workspace {
         let state = editor.read(cx);
         let cursor = state.cursor_position();
         let shown = self.signature.as_ref().is_some_and(|hint| &hint.editor == editor);
-        let text = state.value();
-        if state.selections().len() != 1 || !(shown || signature::opens(&text, cursor)) {
+        if state.selections().len() != 1 || !(shown || signature::opens(state.text(), cursor)) {
             return;
         }
+        let text = state.text().to_string();
         let Some((client, root, path)) = self.completion_target(editor) else {
             return;
         };
@@ -326,7 +326,7 @@ impl Workspace {
         let request = Request::Lsp {
             root,
             path,
-            text: text.to_string(),
+            text,
             line: cursor.line,
             column: cursor.character,
             op: LspOp::SignatureHelp,

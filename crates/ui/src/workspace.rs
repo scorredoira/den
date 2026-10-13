@@ -203,7 +203,7 @@ struct FileTab {
     external: Option<edits::External>,
     /// The text as of its last change, once read: what an edit changed
     /// moves the breakpoints.
-    text: Option<SharedString>,
+    text: Option<input::Rope>,
     /// The preview it took the place of, still drawn while this one loads:
     /// the area doesn't go blank between one file and the next.
     stand_in: Option<Box<FileTab>>,
@@ -1620,6 +1620,11 @@ fn image_format(path: &Path) -> Option<ImageFormat> {
         "tif" | "tiff" => ImageFormat::Tiff,
         _ => return None,
     })
+}
+
+/// Whether two texts are the same, telling most apart by their length.
+fn same_text(a: &input::Rope, b: &input::Rope) -> bool {
+    a.len() == b.len() && a == b
 }
 
 /// What a file read: its text, or the image it is.
