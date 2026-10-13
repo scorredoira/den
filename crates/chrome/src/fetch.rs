@@ -4,7 +4,7 @@
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -146,12 +146,18 @@ fn percent_decode(text: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// The most a response may take, all of it, and its most bytes: the bridge
+/// waits for it, and a server that trickles or never ends must not keep it.
+const TOTAL_TIME: Duration = Duration::from_secs(30);
+const MAX_RESPONSE: usize = 64 << 20;
+
 fn http_get(url: &str) -> Result<String> {
     let rest = &url["http://".len()..];
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     let path = rest[authority_end..].split('#').next().unwrap_or("");
     let path = if path.is_empty() { "/" } else { path };
+    let deadline = Instant::now() + TOTAL_TIME;
     let address = address(url)?;
     let timeout = Duration::from_secs(10);
     let mut stream =
@@ -162,8 +168,7 @@ fn http_get(url: &str) -> Result<String> {
         "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept-Encoding: identity\r\nUser-Agent: den-chrome\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).context("send the request")?;
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).context("read the response")?;
+    let response = read_response(&mut stream, url, deadline)?;
 
     let head_end = find(&response, b"\r\n\r\n").context("a response without headers")?;
     let head = String::from_utf8_lossy(&response[..head_end]).to_string();
@@ -195,6 +200,38 @@ fn http_get(url: &str) -> Result<String> {
         body.to_vec()
     };
     String::from_utf8(body).context("the response is not UTF-8")
+}
+
+/// Reads until the server closes, failing past the deadline or `MAX_RESPONSE`.
+fn read_response(stream: &mut TcpStream, url: &str, deadline: Instant) -> Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!("{} took more than {} s", short(url), TOTAL_TIME.as_secs());
+        }
+        stream.set_read_timeout(Some(left)).context("set the read timeout")?;
+        let read = match stream.read(&mut buffer) {
+            // timed out: the deadline, checked above
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            read => read.context("read the response")?,
+        };
+        if read == 0 {
+            return Ok(response);
+        }
+        if response.len() + read > MAX_RESPONSE {
+            bail!("{} is bigger than {} MB", short(url), MAX_RESPONSE >> 20);
+        }
+        response.extend_from_slice(&buffer[..read]);
+    }
 }
 
 fn dechunk(mut body: &[u8]) -> Result<Vec<u8>> {
@@ -259,5 +296,25 @@ mod tests {
         assert_eq!(load("data:application/json;base64,eyJhIjoxfQ==").unwrap(), "{\"a\":1}");
         assert_eq!(load("data:application/json;charset=utf-8,%7B%22a%22%3A1%7D").unwrap(), "{\"a\":1}");
         assert!(load("https://example.com/a.map").is_err());
+    }
+
+    #[test]
+    fn a_trickling_response_ends_at_the_deadline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // a byte now and then, never the end
+            while stream.write_all(b"x").is_ok() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let started = Instant::now();
+        let result = read_response(&mut stream, "http://localhost/a.map", started + Duration::from_millis(300));
+        assert!(result.unwrap_err().to_string().contains("took more than"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(stream);
+        server.join().unwrap();
     }
 }
