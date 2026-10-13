@@ -46,6 +46,9 @@ const QUIET: Duration = Duration::from_millis(800);
 /// would mark the task as finished again after it was seen.
 const WORK_BURST: Duration = Duration::from_secs(1);
 
+/// After a connection can't be accepted, how long before trying again.
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+
 type ConnId = u64;
 
 /// What limits a slow connection is `MAX_PENDING_OUTPUT`: a burst of small
@@ -500,7 +503,12 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
                     }
                 });
             }
-            Err(err) => eprintln!("accept failed: {err:#}"),
+            Err(err) => {
+                // An error that lasts (out of descriptors) would otherwise
+                // keep the loop spinning, and fill the log.
+                eprintln!("accept failed: {err:#}");
+                std::thread::sleep(ACCEPT_RETRY);
+            }
         }
     }
 }

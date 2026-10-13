@@ -95,7 +95,12 @@ pub fn start(host: Arc<dyn Host>, handed: Option<(TcpListener, String)>) -> Resu
     std::fs::write(&ide.lock, serde_json::to_vec(&lock)?)?;
     let _ = IDE.set(ide.clone());
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else {
+                // An error that lasts (out of descriptors) mustn't keep it spinning.
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            };
             let ide = ide.clone();
             std::thread::spawn(move || {
                 if let Err(err) = ide.serve(stream) {
