@@ -182,7 +182,10 @@ pub struct TerminalArea {
     renaming: Option<Renaming>,
     /// For right-click menus.
     weak: WeakEntity<Self>,
-    _subscriptions: Vec<Subscription>,
+    /// What each terminal's view says, heard while it's here.
+    view_subscriptions: HashMap<TermId, Subscription>,
+    /// The notes getting the focus.
+    _notes_focus: Option<Subscription>,
 }
 
 impl EventEmitter<TerminalAreaEvent> for TerminalArea {}
@@ -212,7 +215,8 @@ impl TerminalArea {
             names: HashMap::new(),
             renaming: None,
             weak: cx.entity().downgrade(),
-            _subscriptions: Vec::new(),
+            view_subscriptions: HashMap::new(),
+            _notes_focus: None,
         }
     }
 
@@ -403,7 +407,7 @@ impl TerminalArea {
             }),
             TerminalViewEvent::OpenUrl(url) => this.open_url(url.clone(), cx),
         });
-        self._subscriptions.push(subscription);
+        self.view_subscriptions.insert(term, subscription);
         self.views.insert(term, view.clone());
         view
     }
@@ -704,7 +708,7 @@ impl TerminalArea {
                 this.select(Pane::Notes, cx);
             }
         });
-        self._subscriptions.push(subscription);
+        self._notes_focus = Some(subscription);
         self.notes = Some(notes);
     }
 
@@ -1018,6 +1022,7 @@ impl TerminalArea {
         let had_focus = self.focus_handle(pane, cx).is_some_and(|handle| handle.is_focused(window));
         if let Pane::Term(term) = pane {
             self.views.remove(&term);
+            self.view_subscriptions.remove(&term);
             self.names.remove(&term);
             if self.debug_term.take_if(|debug| *debug == term).is_some() {
                 cx.emit(TerminalAreaEvent::DebugTerminal(None));

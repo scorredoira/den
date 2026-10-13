@@ -324,6 +324,7 @@ mod tests {
                 assert_eq!(this.tabs.len(), 2);
                 assert!(this.move_to_pane(&notes, Pane::Term(3), DropPlacement::Left));
                 this.remove(Pane::Term(3), window, cx);
+                assert!(!this.view_subscriptions.contains_key(&3), "what it said goes with it");
                 assert_eq!(this.notes_split(), None);
                 assert_eq!(this.tabs.len(), 1);
             })
