@@ -1745,13 +1745,13 @@ fn breakpoint_edit_box(editor: &Entity<EditorState>, path: &Path, debugger: &Ent
     Some(anchored().position(origin).child(body).into_any_element())
 }
 
-/// At the end of the cursor's line, in gray: the commit that last changed it.
-/// Positioned from the editor's last layout; nothing if the line isn't visible.
 /// How a file's text indents: its own, else the settings'.
 fn indentation(text: &str, cx: &App) -> TabSize {
     editing::indentation(text).unwrap_or_else(|| Config::get(cx).tab())
 }
 
+/// At the end of the cursor's line, in gray: the commit that last changed it.
+/// Positioned from the editor's last layout; nothing if the line isn't visible.
 fn inline_blame(editor: &Entity<EditorState>, blame: &Blame, cx: &App) -> Option<AnyElement> {
     let state = editor.read(cx);
     if state.selections().len() != 1 {
@@ -1926,8 +1926,6 @@ fn line_styles(side: &diff::Side, marker: char, color: Hsla, skipped: Hsla) -> V
         .collect()
 }
 
-/// The name (letters, digits and `_`) at `column` of `line`, or just before
-/// it: a cursor at the end of a word counts too.
 /// The stop after `current` among `len`, going round (before it, `back`);
 /// from none of them, the first. `None` with nowhere else to go.
 fn next_stop(len: usize, current: Option<usize>, back: bool) -> Option<usize> {
@@ -1940,6 +1938,8 @@ fn next_stop(len: usize, current: Option<usize>, back: bool) -> Option<usize> {
     }
 }
 
+/// The name (letters, digits and `_`) at `column` of `line`, or just before
+/// it: a cursor at the end of a word counts too.
 fn word_at(text: &str, line: u32, column: u32) -> String {
     let Some(line) = text.lines().nth(line as usize) else {
         return String::new();

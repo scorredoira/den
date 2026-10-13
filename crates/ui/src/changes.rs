@@ -47,8 +47,6 @@ pub struct ChangesPanel {
     selected: Option<String>,
     loading: bool,
     error: Option<SharedString>,
-    /// Needs rereading when the panel becomes visible.
-    stale: bool,
     refresh: Option<Task<()>>,
     /// The rows, drawn only while on screen: a long history costs nothing
     /// while scrolling or while something else in the window moves.
@@ -79,7 +77,6 @@ impl ChangesPanel {
             selected: None,
             loading: false,
             error: None,
-            stale: true,
             refresh: None,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
             rows: Rc::new([]),
@@ -96,7 +93,6 @@ impl ChangesPanel {
     /// Something changed on disk: reread, after a short delay since changes
     /// arrive in bursts. Hidden too, for the count on its icon.
     pub fn mark_stale(&mut self, cx: &mut Context<Self>) {
-        self.stale = true;
         self.schedule(DEBOUNCE, cx);
     }
 
@@ -118,8 +114,8 @@ impl ChangesPanel {
         self.status.staged.iter().chain(&self.status.unstaged).any(|changed| changed.path == file)
     }
 
-    /// Showing the panel always rereads: while hidden, changes only mark it
-    /// stale.
+    /// Showing the panel rereads at once (hidden, it rereads too, a moment
+    /// after each change: see `mark_stale`).
     pub fn shown(&mut self, cx: &mut Context<Self>) {
         self.schedule(Duration::ZERO, cx);
     }
@@ -140,7 +136,6 @@ impl ChangesPanel {
             let response = client.request(Request::Git { path, op }).await;
             this.update(cx, |this, cx| {
                 this.loading = false;
-                this.stale = false;
                 this.error = None;
                 match response {
                     Ok(Response::GitStatus(status)) => this.status = status,
