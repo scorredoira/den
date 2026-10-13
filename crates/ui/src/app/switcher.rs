@@ -265,7 +265,7 @@ impl Den {
                 .gap_2()
                 .rounded(theme.radius)
                 .when(selected, |el| el.bg(theme.accent))
-                .child(svg().path(icon).size(px(14.)).flex_none().text_color(workspace_color(&key)))
+                .child(svg().path(icon).size(px(14.)).flex_none().text_color(theme.muted_foreground))
                 .child(div().flex_none().max_w(px(260.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_ui_small(cx).text_color(theme.muted_foreground).child(place))
                 .child(div().flex_1())

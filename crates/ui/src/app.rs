@@ -1488,7 +1488,6 @@ impl Render for Den {
             });
         }
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| self.title());
-        let color = self.active.as_ref().map(workspace_color);
         v_flex()
             .id("den")
             .key_context("Den")
@@ -1542,7 +1541,6 @@ impl Render for Den {
                             .gap_2()
                             .text_ui(cx)
                             .text_color(cx.theme().muted_foreground)
-                            .children(color.map(|color| div().flex_none().size(px(8.)).rounded_full().bg(color)))
                             .child(title),
                     )
                     .when(self.unkept(cx), |bar| {
@@ -1815,19 +1813,6 @@ fn column_label(task: &TaskInfo) -> SharedString {
         (Some(branch), false) => branch.clone().into(),
         _ => folder_name(&task.path).into(),
     }
-}
-
-/// A workspace's own color, to tell it at a glance: one of a few hues
-/// apart from the states' red and green, picked by its server and path, so
-/// it keeps it however the column is ordered.
-fn workspace_color(key: &TaskKey) -> Hsla {
-    const HUES: [f32; 6] = [215., 172., 265., 42., 330., 290.];
-    // FNV-1a: the same on every run and every Rust.
-    let hash = key.host.bytes().chain([0]).chain(key.path.as_os_str().as_encoded_bytes().iter().copied()).fold(
-        0xcbf29ce484222325u64,
-        |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3),
-    );
-    hsla(HUES[(hash % HUES.len() as u64) as usize] / 360., 0.6, 0.55, 1.)
 }
 
 fn kind_icon(task: &TaskInfo) -> &'static str {
