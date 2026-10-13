@@ -146,9 +146,9 @@ fn install(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Res
         .into_iter()
         .find(|path| path.is_file())
         .unwrap_or_else(|| agents.join(name));
-    let binary = std::fs::read(&local)
+    let id = crate::fingerprint(&local)
         .with_context(|| format!("missing the agent for the server: {}", local.display()))?;
-    let remote = format!("{REMOTE_DIR}/den-agent-{PROTOCOL}-{}", proto::build_id(&binary));
+    let remote = format!("{REMOTE_DIR}/den-agent-{PROTOCOL}-{id}");
     // Whether it's there and, if not, whether the server can unpack gzip.
     let present = run(
         destination,
@@ -158,6 +158,10 @@ fn install(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Res
     let present = present.trim();
     if present != "si" {
         step("uploading the agent…");
+        let binary = std::fs::read(&local).with_context(|| format!("could not read {}", local.display()))?;
+        if proto::build_id(&binary) != id {
+            bail!("the agent for the server changed while connecting: {}", local.display());
+        }
         let (unpack, payload) = if present == "gzip" {
             ("gzip -dc", gzip(&binary)?)
         } else {

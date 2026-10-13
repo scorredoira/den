@@ -144,7 +144,7 @@ const PARTIAL: &str = ".part";
 
 /// The copy of `agent_bin` in `dir`, made if it isn't there.
 fn copy_agent(agent_bin: &Path, dir: &Path) -> Result<PathBuf> {
-    let id = proto::build_id(&std::fs::read(agent_bin)?);
+    let id = fingerprint(agent_bin)?;
     let name = format!("den-agent-{PROTOCOL}-{id}{}", std::env::consts::EXE_SUFFIX);
     let copy = dir.join(&name);
     if !copy.exists() {
@@ -162,6 +162,25 @@ fn copy_agent(agent_bin: &Path, dir: &Path) -> Result<PathBuf> {
         }
     }
     Ok(copy)
+}
+
+/// A binary's fingerprint (`proto::build_id`), remembered while its size and
+/// modification time stay the same: every connection needs the agent's, and
+/// it's megabytes to read and hash.
+fn fingerprint(path: &Path) -> Result<String> {
+    /// By path: its size, modification time and fingerprint.
+    type Known = HashMap<PathBuf, (u64, std::time::SystemTime, String)>;
+    static KNOWN: std::sync::LazyLock<Mutex<Known>> = std::sync::LazyLock::new(Mutex::default);
+    let metadata = std::fs::metadata(path)?;
+    let stamp = (metadata.len(), metadata.modified()?);
+    if let Some((len, modified, id)) = KNOWN.lock().unwrap().get(path)
+        && (*len, *modified) == stamp
+    {
+        return Ok(id.clone());
+    }
+    let id = proto::build_id(&std::fs::read(path)?);
+    KNOWN.lock().unwrap().insert(path.to_path_buf(), (stamp.0, stamp.1, id.clone()));
+    Ok(id)
 }
 
 /// Deletes the copies of other builds, but not one another instance of the
@@ -489,7 +508,7 @@ impl Client {
     /// `replacement`: where the agent finds that binary, if it's old.
     /// Fails only when the agent doesn't answer.
     fn check_version(&self, expected: &Path, replacement: impl FnOnce() -> Option<PathBuf>) -> Result<()> {
-        let Ok(bytes) = std::fs::read(expected) else {
+        let Ok(expected) = fingerprint(expected) else {
             return Ok(());
         };
         let current = match self.request_within(Request::Version, ANSWER_TIMEOUT) {
@@ -497,7 +516,7 @@ impl Client {
             Err(err) if err.is::<NoAnswer>() => return Err(err),
             _ => String::new(),
         };
-        let outdated = current != proto::build_id(&bytes);
+        let outdated = current != expected;
         self.outdated.store(outdated, Ordering::Relaxed);
         if outdated {
             *self.replacement.lock().unwrap() = replacement();
