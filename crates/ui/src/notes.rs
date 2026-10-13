@@ -7,7 +7,7 @@
 //! their first line, and removing the worktree forgets them. `den notes`
 //! reads and writes them from a terminal.
 
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use gpui_kit::component::{
     ActiveTheme as _,
@@ -16,6 +16,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
+
+use crate::config::store::JsonFile;
 
 /// How long typing pauses before it's written.
 const SAVE_AFTER: Duration = Duration::from_millis(400);
@@ -27,32 +29,14 @@ struct Store(Option<HashMap<String, String>>);
 
 impl Global for Store {}
 
-fn path() -> Option<PathBuf> {
-    if cfg!(test) {
-        return None;
-    }
-    proto::config_dir().ok().map(|dir| dir.join("notes.json"))
-}
+static FILE: JsonFile = JsonFile::new("notes.json");
 
 fn all(cx: &mut App) -> &mut HashMap<String, String> {
-    cx.default_global::<Store>().0.get_or_insert_with(|| {
-        path()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    })
+    cx.default_global::<Store>().0.get_or_insert_with(|| FILE.load())
 }
 
 fn store(cx: &mut App) {
-    let Some(path) = path() else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(bytes) = serde_json::to_vec_pretty(all(cx)) {
-        let _ = std::fs::write(path, bytes);
-    }
+    FILE.save_later(all(cx));
 }
 
 /// Workspace `key`'s notes.

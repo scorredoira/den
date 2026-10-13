@@ -1,6 +1,8 @@
 //! UI configuration: `config.json` in den's config folder. It lives as a GPUI
 //! global and is saved on every change.
 
+pub mod store;
+
 use std::{
     collections::HashMap,
     hash::{DefaultHasher, Hash, Hasher},
@@ -15,6 +17,7 @@ use gpui_kit::{App, AppContext as _, Bounds, Entity, Global, Pixels, Styled, Win
 use serde::{Deserialize, Serialize};
 
 use crate::splits::{Axis, Tree};
+use store::JsonFile;
 
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1129,26 +1132,13 @@ impl Config {
         *area.slot(&mut self.font_sizes) = size.filter(|size| *size != area.default_size());
     }
 
-    /// None in tests: they never touch the real one.
-    fn path() -> Option<PathBuf> {
-        if cfg!(test) {
-            return None;
-        }
-        proto::config_dir().ok().map(|dir| dir.join("config.json"))
-    }
-
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Some(bytes) = FILE.read() else {
             return Self::default();
         };
         let (mut config, whole) = Self::parse(&bytes);
         if !whole {
-            // What couldn't be read is kept aside before the next save
-            // writes over it.
-            let _ = std::fs::write(path.with_extension("json.bad"), &bytes);
+            FILE.keep_aside(&bytes);
         }
         // no debug session outlives the app
         config.use_debug_layout(false);
@@ -1219,42 +1209,6 @@ impl Config {
         (serde_json::from_value(serde_json::Value::Object(read)).unwrap_or_default(), false)
     }
 
-    /// Saves it now (on quit: nothing would be left to write it later).
-    fn save(&self) {
-        if let Some(bytes) = self.to_save() {
-            write_config(bytes);
-        }
-    }
-
-    /// Saves it on a thread of its own: the disk never holds up the window.
-    fn save_later(&self) {
-        let Some(bytes) = self.to_save() else {
-            return;
-        };
-        static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(u64, Vec<u8>)>> = std::sync::OnceLock::new();
-        let writer = WRITER.get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel::<(u64, Vec<u8>)>();
-            std::thread::spawn(move || {
-                while let Ok(mut latest) = rx.recv() {
-                    // Only the newest of those waiting is written.
-                    while let Ok(newer) = rx.try_recv() {
-                        latest = newer;
-                    }
-                    write_generation(latest.0, latest.1);
-                }
-            });
-            tx
-        });
-        let _ = writer.send(bytes);
-    }
-
-    /// The config as it's written, numbered so an older one never replaces
-    /// a newer one.
-    fn to_save(&self) -> Option<(u64, Vec<u8>)> {
-        let bytes = serde_json::to_vec_pretty(self).ok()?;
-        Some((SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed), bytes))
-    }
-
     pub fn get(cx: &App) -> &Self {
         cx.global::<Self>()
     }
@@ -1263,7 +1217,7 @@ impl Config {
     pub fn update(cx: &mut App, change: impl FnOnce(&mut Self)) {
         let config = cx.global_mut::<Self>();
         change(config);
-        config.save_later();
+        FILE.save_later(config);
         // The panels drawn from cache read it too.
         cx.refresh_windows();
     }
@@ -1276,44 +1230,21 @@ impl Config {
         change(cx.global_mut::<Self>());
     }
 
-    /// Loads the config as a global and saves it on quit.
+    /// Loads the config as a global and saves it on quit, with every file
+    /// still to be written.
     pub fn init(cx: &mut App) {
         cx.set_global(Self::load());
         cx.on_app_quit(|cx| {
-            cx.global::<Self>().save();
-            async {}
+            FILE.save(cx.global::<Self>());
+            // Waited for after every quit handler ran: what they saved
+            // (the notes being typed) is written too.
+            async { store::flush_all() }
         })
         .detach();
     }
 }
 
-/// How many times the config was prepared for saving: each save's number.
-static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn write_config((generation, bytes): (u64, Vec<u8>)) {
-    write_generation(generation, bytes);
-}
-
-/// Writes `bytes` unless a newer save was written already.
-fn write_generation(generation: u64, bytes: Vec<u8>) {
-    static WRITTEN: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
-    let mut written = WRITTEN.lock().unwrap_or_else(|err| err.into_inner());
-    if written.is_some_and(|written| written > generation) {
-        return;
-    }
-    let Some(path) = Config::path() else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    // Whole or not at all: a crash halfway leaves the one before.
-    let temp = path.with_extension("json.tmp");
-    if std::fs::write(&temp, bytes).is_ok() && std::fs::rename(&temp, &path).is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    *written = Some(generation);
-}
+static FILE: JsonFile = JsonFile::new("config.json");
 
 /// Interface text at the size chosen in Settings.
 pub trait UiText: Styled + Sized {

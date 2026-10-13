@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for};
 
 use crate::{
-    config::{Config, Panel, UiText},
+    config::{Config, Panel, UiText, store::JsonFile},
     notes::NotesPanel,
     CloseTab, NewTerminal, SplitDown, SplitRight, agent, menu,
     splits::{Axis, Direction, Tree},
@@ -1079,7 +1079,7 @@ impl TerminalArea {
         };
         with_layouts(|layouts| {
             layouts.groups.insert(self.group.clone(), saved);
-            layouts.store_or_say();
+            layouts.store();
         });
     }
 
@@ -1634,7 +1634,7 @@ pub fn rename_saved_term(group: &str, term: TermId, name: Option<String>) {
             Some(name) => saved.names.insert(term, name),
             None => saved.names.remove(&term),
         };
-        layouts.store_or_say();
+        layouts.store();
     });
 }
 
@@ -1676,32 +1676,15 @@ impl SavedTab {
     }
 }
 
+static FILE: JsonFile = JsonFile::new("layout.json");
+
 impl SavedLayouts {
-    fn path() -> Result<PathBuf> {
-        Ok(proto::config_dir()?.join("layout.json"))
-    }
-
     fn load() -> Self {
-        Self::path()
-            .ok()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        FILE.load()
     }
 
-    fn store_or_say(&self) {
-        if let Err(err) = self.store() {
-            eprintln!("couldn't save terminal layout: {err:#}");
-        }
-    }
-
-    fn store(&self) -> Result<()> {
-        let path = Self::path()?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
-        Ok(())
+    fn store(&self) {
+        FILE.save_later(self);
     }
 }
 
