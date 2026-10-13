@@ -311,6 +311,32 @@ struct SymbolSearch {
     _subscription: Subscription,
 }
 
+/// What the language servers are asked about the code in front, as it's
+/// typed or with F12 and Shift-F12.
+struct Lsp {
+    /// The signature of the call being typed, and where it was last asked for.
+    signature: Option<SignatureHint>,
+    signature_at: Option<Position>,
+    signature_task: Task<()>,
+    /// The last F12 or Shift-F12, and the search for the word when there's
+    /// no language server: a new one drops them, so a slow answer doesn't
+    /// move the cursor or replace the References after a newer one.
+    request: Task<()>,
+    word_search: Task<()>,
+}
+
+impl Default for Lsp {
+    fn default() -> Self {
+        Self {
+            signature: None,
+            signature_at: None,
+            signature_task: Task::ready(()),
+            request: Task::ready(()),
+            word_search: Task::ready(()),
+        }
+    }
+}
+
 /// Places remembered for going back.
 const MAX_PLACES: usize = 100;
 
@@ -457,15 +483,7 @@ pub struct Workspace {
     message: Option<SharedString>,
     /// On a server, ports the task's terminals are listening on.
     ports: Vec<PortInfo>,
-    /// The signature of the call being typed, and where it was last asked for.
-    signature: Option<SignatureHint>,
-    signature_at: Option<Position>,
-    signature_task: Task<()>,
-    /// The last F12 or Shift-F12, and the search for the word when there's
-    /// no language server: a new one drops them, so a slow answer doesn't
-    /// move the cursor or replace the References after a newer one.
-    lsp_task: Task<()>,
-    word_task: Task<()>,
+    lsp: Lsp,
     debugger: Entity<Debugger>,
     /// Its parts with a panel or a tab of their own.
     debug_view: Entity<DebugView>,
@@ -674,11 +692,7 @@ impl Workspace {
             tab: (Config::get(cx).tab().tab_size, Config::get(cx).tab().hard_tabs),
             message,
             ports: Vec::new(),
-            signature: None,
-            signature_at: None,
-            signature_task: Task::ready(()),
-            lsp_task: Task::ready(()),
-            word_task: Task::ready(()),
+            lsp: Lsp::default(),
             debugger,
             debug_view,
             debug_hover,

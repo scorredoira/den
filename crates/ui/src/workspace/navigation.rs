@@ -314,7 +314,7 @@ impl Workspace {
     pub(super) fn ask_signature(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
         let state = editor.read(cx);
         let cursor = state.cursor_position();
-        let shown = self.signature.as_ref().is_some_and(|hint| &hint.editor == editor);
+        let shown = self.lsp.signature.as_ref().is_some_and(|hint| &hint.editor == editor);
         if state.selections().len() != 1 || !(shown || signature::opens(state.text(), cursor)) {
             return;
         }
@@ -322,7 +322,7 @@ impl Workspace {
         let Some((client, root, path)) = self.completion_target(editor) else {
             return;
         };
-        self.signature_at = Some(cursor);
+        self.lsp.signature_at = Some(cursor);
         let request = Request::Lsp {
             root,
             path,
@@ -332,11 +332,11 @@ impl Workspace {
             op: LspOp::SignatureHelp,
         };
         let editor = editor.clone();
-        self.signature_task = cx.spawn(async move |this, cx| {
+        self.lsp.signature_task = cx.spawn(async move |this, cx| {
             let response = client.request(request).await;
             this.update(cx, |this, cx| {
                 this.report_lsp(&editor, &response, cx);
-                this.signature = match response {
+                this.lsp.signature = match response {
                     Ok(Response::Signature(Some(signature))) => Some(SignatureHint { editor, signature }),
                     _ => None,
                 };
@@ -349,11 +349,11 @@ impl Workspace {
     /// The cursor moved while the signature is shown: along the line it's
     /// asked again (the parameter may be another); off it, it closes.
     pub(super) fn follow_signature(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
-        if !self.signature.as_ref().is_some_and(|hint| &hint.editor == editor) {
+        if !self.lsp.signature.as_ref().is_some_and(|hint| &hint.editor == editor) {
             return;
         }
         let cursor = editor.read(cx).cursor_position();
-        match self.signature_at {
+        match self.lsp.signature_at {
             Some(at) if at == cursor => {}
             Some(at) if at.line == cursor.line => self.ask_signature(editor, cx),
             _ => self.close_signature(),
@@ -361,9 +361,9 @@ impl Workspace {
     }
 
     pub(super) fn close_signature(&mut self) {
-        self.signature = None;
-        self.signature_at = None;
-        self.signature_task = Task::ready(());
+        self.lsp.signature = None;
+        self.lsp.signature_at = None;
+        self.lsp.signature_task = Task::ready(());
     }
 
     pub(super) fn ask_lsp(&mut self, op: LspOp, window: &mut Window, cx: &mut Context<Self>) {
@@ -400,8 +400,8 @@ impl Workspace {
             column: cursor.character,
             op,
         };
-        self.word_task = Task::ready(());
-        self.lsp_task = cx.spawn_in(window, async move |this, cx| {
+        self.lsp.word_search = Task::ready(());
+        self.lsp.request = cx.spawn_in(window, async move |this, cx| {
             let response = client.request(request).await;
             this.update_in(cx, |this, window, cx| {
                 this.report_lsp(&editor, &response, cx);
@@ -463,7 +463,7 @@ impl Workspace {
             exclude: Vec::new(),
             max_hits: 5_000,
         };
-        self.word_task = cx.spawn(async move |this, cx| {
+        self.lsp.word_search = cx.spawn(async move |this, cx| {
             let response = client.request(request).await;
             this.update(cx, |this, cx| {
                 let result = match response {

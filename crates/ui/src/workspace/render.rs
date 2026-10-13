@@ -497,7 +497,7 @@ impl Workspace {
                             .key_context("CodeEditor")
                             .size_full()
                             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                                if event.keystroke.key == "escape" && this.signature.is_some() {
+                                if event.keystroke.key == "escape" && this.lsp.signature.is_some() {
                                     this.close_signature();
                                     cx.notify();
                                 }
@@ -513,7 +513,8 @@ impl Workspace {
                             .children(self.test_lenses(&tab.editor, &tab.path, cx.entity().downgrade(), cx))
                             .children(breakpoint_edit_box(&tab.editor, &tab.path, &self.debugger, cx))
                             .children(
-                                self.signature
+                                self.lsp
+                                    .signature
                                     .as_ref()
                                     .filter(|hint| hint.editor == tab.editor)
                                     .and_then(|hint| signature::render(hint, cx)),
