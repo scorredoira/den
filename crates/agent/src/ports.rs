@@ -92,6 +92,7 @@ mod macos {
     }
 
     /// The group of the terminal whose shell is `pid` or one of its ancestors.
+    #[cfg(target_os = "macos")]
     pub(super) fn shell_group<T: Clone>(mut pid: u32, parents: &HashMap<u32, u32>, shells: &HashMap<u32, T>) -> Option<T> {
         for _ in 0..64 {
             if let Some(group) = shells.get(&pid) {

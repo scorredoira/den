@@ -69,8 +69,8 @@ pub fn destinations() -> Vec<String> {
 
 /// `wsl.exe -l -q` writes one per line, in UTF-16 if it predates `WSL_UTF8`.
 fn parse_list(bytes: &[u8]) -> Vec<String> {
-    let text = if bytes.len() % 2 == 0 && bytes.iter().skip(1).step_by(2).any(|&b| b == 0) {
-        let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+    let text = if bytes.len().is_multiple_of(2) && bytes.iter().skip(1).step_by(2).any(|&b| b == 0) {
+        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
         String::from_utf16_lossy(&units)
     } else {
         String::from_utf8_lossy(bytes).into_owned()

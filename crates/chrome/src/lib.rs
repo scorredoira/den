@@ -131,6 +131,7 @@ pub fn run(args: &[String]) -> Result<()> {
     bridge.wait()
 }
 
+#[cfg(unix)]
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(unix)]
