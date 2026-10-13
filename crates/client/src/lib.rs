@@ -473,16 +473,14 @@ impl Client {
         let Some(target) = ssh::LoopbackUrl::parse(url) else {
             return Ok(url.to_string());
         };
-        let mut forwards = self.forwards.lock().unwrap();
-        let local = match forwards.get(&target.port) {
-            Some(forward) => forward.port,
-            None => {
-                let forward = ssh::forward(destination, &target)?;
-                let port = forward.port;
-                forwards.insert(target.port, forward);
-                port
-            }
-        };
+        if let Some(forward) = self.forwards.lock().unwrap().get(&target.port) {
+            return Ok(target.with_port(forward.port));
+        }
+        // Not holding the lock while `ssh` runs: other URLs needn't wait.
+        let forward = ssh::forward(destination, &target)?;
+        // Another call may have forwarded it meanwhile: the first one stays,
+        // and dropping this one cancels it.
+        let local = self.forwards.lock().unwrap().entry(target.port).or_insert(forward).port;
         Ok(target.with_port(local))
     }
 

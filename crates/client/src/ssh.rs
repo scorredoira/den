@@ -288,15 +288,19 @@ fn port_free(port: u16) -> bool {
 #[cfg(unix)]
 pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
     check_destination(destination)?;
-    let add = |local: u16| -> Result<()> {
-        let output = Command::new("ssh")
+    // `-O forward` or `-O cancel` of the same forwarding.
+    let control = |operation: &str, local: u16| {
+        let mut command = Command::new("ssh");
+        command
             .args(OPTIONS)
-            .args(["-o", CONTROL_PATH, "-O", "forward", "-L"])
+            .args(["-o", CONTROL_PATH, "-O", operation, "-L"])
             .arg(format!("{local}:{}:{}", url.target_host(), url.port))
             .arg(destination)
-            .stdin(Stdio::null())
-            .output()
-            .context("could not run ssh")?;
+            .stdin(Stdio::null());
+        command
+    };
+    let add = |local: u16| -> Result<Forward> {
+        let output = control("forward", local).output().context("could not run ssh")?;
         if !output.status.success() {
             bail!(
                 "could not forward port {} of {destination}: {}",
@@ -304,20 +308,22 @@ pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        Ok(())
+        Ok(Forward { port: local, process: None, cancel: Some(control("cancel", local)) })
     };
-    if port_free(url.port) && add(url.port).is_ok() {
-        return Ok(Forward { port: url.port, process: None });
+    if port_free(url.port)
+        && let Ok(forward) = add(url.port)
+    {
+        return Ok(forward);
     }
-    let local = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port();
-    add(local)?;
-    Ok(Forward { port: local, process: None })
+    add(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port())
 }
 
-/// A Windows tunnel has its own SSH process, owned by the client connection.
+/// A port forwarded, until dropped. A Windows tunnel has its own SSH
+/// process; otherwise the master connection forwards it until `cancel`.
 pub(crate) struct Forward {
     pub port: u16,
     process: Option<std::process::Child>,
+    cancel: Option<Command>,
 }
 
 impl Drop for Forward {
@@ -325,6 +331,12 @@ impl Drop for Forward {
         if let Some(child) = self.process.as_mut() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        // Not waited for here: dropping a client mustn't wait for ssh.
+        if let Some(mut cancel) = self.cancel.take()
+            && let Ok(mut child) = cancel.stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        {
+            std::thread::spawn(move || child.wait());
         }
     }
 }
@@ -335,7 +347,7 @@ pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
     use std::{net::TcpStream, time::{Duration, Instant}};
     // WSL2 already forwards the distro's localhost.
     if crate::wsl::distro(destination).is_some() {
-        return Ok(Forward { port: url.port, process: None });
+        return Ok(Forward { port: url.port, process: None, cancel: None });
     }
     let port = if port_free(url.port) { url.port } else {
         TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?.port()
@@ -345,7 +357,7 @@ pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
         .arg(format!("127.0.0.1:{port}:{}:{}", url.target_host(), url.port))
         .arg(destination)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
-    let mut forward = Forward { port, process: Some(child) };
+    let mut forward = Forward { port, process: Some(child), cancel: None };
     let start = Instant::now();
     loop {
         if let Some(status) = forward.process.as_mut().unwrap().try_wait()? {
