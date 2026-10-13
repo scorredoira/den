@@ -63,6 +63,15 @@ fn ensure_master(destination: &str) -> Result<()> {
 #[cfg(windows)]
 fn ensure_master(_destination: &str) -> Result<()> { Ok(()) }
 
+/// A destination `ssh` would take for one of its options (`-oProxyCommand=…`),
+/// which run commands here, is refused.
+fn check_destination(destination: &str) -> Result<()> {
+    if destination.starts_with('-') {
+        bail!("{destination:?} is not an SSH destination");
+    }
+    Ok(())
+}
+
 fn ssh_command() -> Command {
     #[allow(unused_mut)]
     let mut command = Command::new("ssh");
@@ -169,6 +178,7 @@ fn gzip(bytes: &[u8]) -> Result<Vec<u8>> {
 /// `user@host`), installing it if needed. `step` is told what it's doing
 /// when it isn't just connecting (uploading the agent takes a while).
 pub fn connect_ssh(destination: &str, agents: &Path, step: &dyn Fn(&'static str)) -> Result<Arc<Client>> {
+    check_destination(destination)?;
     ensure_master(destination)?;
     let (remote, local) = install(destination, agents, step)?;
     let mut process = ssh(destination)
@@ -266,6 +276,7 @@ fn port_free(port: u16) -> bool {
 /// any free one otherwise.
 #[cfg(unix)]
 pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
+    check_destination(destination)?;
     let add = |local: u16| -> Result<()> {
         let output = Command::new("ssh")
             .args(OPTIONS)
@@ -309,6 +320,7 @@ impl Drop for Forward {
 
 #[cfg(windows)]
 pub(crate) fn forward(destination: &str, url: &LoopbackUrl) -> Result<Forward> {
+    check_destination(destination)?;
     use std::{net::TcpStream, time::{Duration, Instant}};
     // WSL2 already forwards the distro's localhost.
     if crate::wsl::distro(destination).is_some() {
@@ -354,6 +366,13 @@ mod tests {
             .unwrap();
         child.stdin.take().unwrap().write_all(&packed).unwrap();
         assert_eq!(child.wait_with_output().unwrap().stdout, binary);
+    }
+
+    #[test]
+    fn an_option_is_no_destination() {
+        assert!(super::check_destination("-oProxyCommand=touch /tmp/x").is_err());
+        assert!(super::check_destination("user@host").is_ok());
+        assert!(super::check_destination("wsl:Ubuntu").is_ok());
     }
 
     #[test]
