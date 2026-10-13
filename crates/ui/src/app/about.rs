@@ -168,7 +168,7 @@ impl Den {
             )
     }
 
-    /// Help → Keyboard Shortcuts: the guide, as a tab of the workspace, or
+    /// Help → Keyboard Shortcuts Guide: the guide, as a tab of the workspace, or
     /// in the window while none is open.
     pub(super) fn open_guide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = crate::guide::markdown(cx);

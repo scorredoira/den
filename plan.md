@@ -291,7 +291,7 @@ From here on den is developed inside den (Claude Code in a terminal of the `den/
 - Custom dialog when quitting with unsaved changes: a clickable list to go to each file, and Save All and Quit.
 - Cmd-E goes back to the previous task; the pickers (Cmd-P, Cmd-K, branches) close with a click outside.
 - LSP: F12 (with one target it jumps; with several, to the References panel) and Shift-F12 (References, with F4); without a server, Shift-F12 searches for the word. Servers: rust-analyzer, gopls, clangd, Pyright/pylsp and TypeScript (the project's or the global one; with TypeScript 7, `tsc --lsp --stdio`). Custom editor menu with Go to Definition and Find References.
-- Settings in a modal (Cmd-, or the gear) with search and an index: Appearance, Servers, Repos, Hidden Tasks and Keyboard Shortcuts (changed by recording the combination; a conflict is reported before anything is removed; in `config.json`, `keys`).
+- Settings in a modal (Cmd-, or the gear) with search and an index: Appearance, Servers, Repos, Hidden Tasks; Keyboard Shortcuts is the same modal with only the shortcuts, its own search, from the Den menu or the palette (changed by recording the combination; a conflict is reported before anything is removed; in `config.json`, `keys`).
 - Settings: folder browser through the agent for adding repos (remote too) and a finder for the `Host` entries in `~/.ssh/config` for adding servers.
 - Jump history: Ctrl-Opt-← goes back and Ctrl-Opt-→ goes forward. When jumping, the target line is centered if it wasn't visible.
 - Tasks turn red when Claude is waiting for a reply: the agent reads the bottom of the screen once it goes quiet, using herdr's Claude rules (`blocked.rs`).

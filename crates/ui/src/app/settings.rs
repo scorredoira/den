@@ -1,7 +1,8 @@
 //! Settings, in a modal (Cmd-, or the gear): they're app-wide, not per task.
 //! At the top a search box that searches everything; on the left an index of
 //! sections; on the right the chosen section, as its own page (while
-//! searching, every section with a match).
+//! searching, every section with a match). Keyboard Shortcuts is the same
+//! modal with only the shortcuts, so a search there finds nothing else.
 
 use gpui_kit::component::{input::InputEvent, kbd::Kbd, switch::Switch};
 
@@ -9,13 +10,15 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Workspaces", "Terminals", "Updates", "Keyboard Shortcuts"];
+const SECTIONS: [&str; 5] = ["Appearance", "Editor", "Workspaces", "Terminals", "Updates"];
 
 /// What − and + change the width under which diffs go to one column.
 const DIFF_WIDTH_STEP: f32 = 100.;
 
 pub(super) struct Settings {
     focus: FocusHandle,
+    /// Keyboard Shortcuts instead of Settings.
+    shortcuts: bool,
     search: Entity<InputState>,
     /// The extensions formatted on save, as typed.
     format_on_save: Entity<InputState>,
@@ -38,9 +41,25 @@ struct Conflict {
     other: &'static Shortcut,
 }
 
+impl Settings {
+    #[cfg(test)]
+    pub(super) fn shortcuts_only(&self) -> bool {
+        self.shortcuts
+    }
+}
+
 impl Den {
     /// Opens settings (or focuses them if already open).
     pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings_as(false, window, cx);
+    }
+
+    /// Opens Keyboard Shortcuts (or goes to it from Settings).
+    pub(super) fn open_keyboard_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings_as(true, window, cx);
+    }
+
+    fn open_settings_as(&mut self, shortcuts: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.new_task = None;
         self.confirm_remove = None;
         self.confirm_force_remove = None;
@@ -63,6 +82,7 @@ impl Den {
             });
             self.settings = Some(Settings {
                 focus: cx.focus_handle(),
+                shortcuts,
                 search,
                 format_on_save,
                 scroll: ScrollHandle::new(),
@@ -72,8 +92,17 @@ impl Den {
                 _subscriptions: [subscription, format_subscription],
             });
         }
-        if let Some(settings) = &self.settings {
-            settings.search.update(cx, |search, cx| search.focus(window, cx));
+        if let Some(settings) = &mut self.settings {
+            if settings.shortcuts != shortcuts {
+                settings.shortcuts = shortcuts;
+                settings.scroll.set_offset(point(px(0.), px(0.)));
+                settings.search.update(cx, |search, cx| search.set_value("", window, cx));
+            }
+            let placeholder = if shortcuts { "Search shortcuts by name or keys" } else { "Search settings" };
+            settings.search.update(cx, |search, cx| {
+                search.set_placeholder(placeholder, window, cx);
+                search.focus(window, cx);
+            });
         }
         cx.notify();
     }
@@ -152,13 +181,31 @@ impl Den {
         let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
 
         let searching = !query.is_empty();
+        if settings.shortcuts {
+            let rows = self.render_shortcuts(settings, &matches, cx);
+            let nothing = rows.is_empty();
+            let theme = cx.theme();
+            let content = v_flex()
+                .id("settings-sections")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .track_scroll(&settings.scroll)
+                .pb_8()
+                .gap_1()
+                .children(rows)
+                .when(nothing, |el| {
+                    el.child(div().pt_4().px_3().text_color(theme.muted_foreground).child("No shortcuts match your search."))
+                });
+            return self.settings_modal(settings, "Keyboard Shortcuts", content, cx).into_any_element();
+        }
         let sections: Vec<(AnyElement, bool)> = vec![
             self.render_appearance(&matches, cx),
             self.render_editor(settings, &matches, cx),
             self.render_workspaces(&matches, cx),
             self.render_terminals(&matches, cx),
             self.render_updates(&matches, cx),
-            self.render_shortcuts(settings, &matches, cx),
         ];
         let visible: Vec<bool> = sections.iter().map(|(_, visible)| *visible).collect();
         let nothing = !visible.iter().any(|visible| *visible);
@@ -192,7 +239,18 @@ impl Den {
                     .hover(|style| style.bg(theme.accent))
                     .child(*title)
                     .on_click(cx.listener(move |this, _, window, cx| this.go_to_section(ix, window, cx)))
-            }));
+            }))
+            .child(
+                div()
+                    .id("settings-index-shortcuts")
+                    .px_3()
+                    .py_1()
+                    .rounded(theme.radius)
+                    .text_color(theme.muted_foreground)
+                    .hover(|style| style.bg(theme.accent))
+                    .child("Keyboard Shortcuts →")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_keyboard_shortcuts(window, cx))),
+            );
 
         let content = v_flex()
             .id("settings-sections")
@@ -208,7 +266,13 @@ impl Den {
             .when(nothing, |el| {
                 el.child(div().pt_4().text_color(theme.muted_foreground).child("No settings match your search."))
             });
+        let body = h_flex().items_start().size_full().child(index).child(content);
+        self.settings_modal(settings, "Settings", body, cx).into_any_element()
+    }
 
+    /// The modal around a page: its title, the search and `body`.
+    fn settings_modal(&self, settings: &Settings, title: &'static str, body: impl IntoElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
         div()
             .absolute()
             .inset_0()
@@ -245,14 +309,14 @@ impl Den {
                             .px_4()
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(div().flex_1().font_semibold().child("Settings"))
+                            .child(div().flex_1().font_semibold().child(title))
                             .child(
                                 icon_button("settings-close", "icons/tab-close.svg", cx)
                                     .on_click(cx.listener(|this, _, window, cx| this.close_settings(window, cx))),
                             ),
                     )
                     .child(div().px_4().py_3().flex_none().child(Input::new(&settings.search)))
-                    .child(h_flex().items_start().flex_1().min_h_0().px_4().child(index).child(content)),
+                    .child(h_flex().items_start().flex_1().min_h_0().px_4().child(body)),
             )
     }
 
@@ -460,20 +524,18 @@ impl Den {
         Self::section(SECTIONS[4], rows, visible, cx)
     }
 
-    fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let title_matches = matches(SECTIONS[5]) || matches("keybindings");
+    fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let recording = settings.recording.as_ref().map(|(id, _)| *id);
         let mut rows = Vec::new();
         for shortcut in SHORTCUTS {
             let keys = shortcuts::keys(shortcut, cx);
             let keys_text = keys.as_ref().map(Kbd::format).unwrap_or_default();
-            if !title_matches && !matches(shortcut.label) && !matches(&keys_text) {
+            if !matches(shortcut.label) && !matches(&keys_text) {
                 continue;
             }
             rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
         }
-        let visible = title_matches || !rows.is_empty();
-        Self::section(SECTIONS[5], rows, visible, cx)
+        rows
     }
 
     fn shortcut_row(

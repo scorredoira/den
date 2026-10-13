@@ -44,7 +44,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
-            MenuItem::action("Keyboard Shortcuts", OpenShortcutsGuide),
+            MenuItem::action("Keyboard Shortcuts", OpenKeyboardShortcuts),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
@@ -179,7 +179,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PrevTab),
         ]),
-        Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", OpenShortcutsGuide)]),
+        Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts Guide", OpenShortcutsGuide)]),
     ]);
     if plain {
         menus = menus.into_iter().filter_map(plain_menu).collect();
@@ -190,6 +190,7 @@ pub fn set(cx: &mut App) {
                 "File" => menu.items.extend([
                     MenuItem::separator(),
                     MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::action("Keyboard Shortcuts", OpenKeyboardShortcuts),
                     MenuItem::separator(),
                     MenuItem::action("Exit", Quit),
                 ]),

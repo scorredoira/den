@@ -1,4 +1,4 @@
-//! Help → Keyboard Shortcuts: a guide in Markdown (`assets/docs/shortcuts.md`)
+//! Help → Keyboard Shortcuts Guide: a guide in Markdown (`assets/docs/shortcuts.md`)
 //! whose `{{…}}` are filled in with the keys as they are now, in this
 //! platform's form: `{{OpenFileFinder}}` a shortcut from Settings (changed
 //! or not), `{{Undo}}` one of the editor's own, `{{key:escape}}` a key, and

@@ -4,7 +4,7 @@ Den keeps a **workspace** for each folder you open: its files, its terminals and
 
 From any terminal, `den <folder or file>` opens it in Den.
 
-The shortcuts below are the current ones: change them in Settings → Keyboard Shortcuts. Those marked *(editor)* can't be changed.
+The shortcuts below are the current ones: change them in Keyboard Shortcuts (in the Den menu, or the command palette). Those marked *(editor)* can't be changed.
 
 ## Getting around
 
@@ -20,6 +20,8 @@ The shortcuts below are the current ones: change them in Settings → Keyboard S
 | {{OpenRemoteFolder}} | Open a folder on a server |
 | {{OpenRecent}} | Open a recent folder |
 | {{OpenSettings}} | Settings |
+| {{OpenKeyboardShortcuts}} | Keyboard Shortcuts: only the shortcuts, searched by name or keys, to change them |
+| {{OpenShortcutsGuide}} | This guide |
 
 ## Workspaces and worktrees
 

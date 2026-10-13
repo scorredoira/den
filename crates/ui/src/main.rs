@@ -80,6 +80,7 @@ actions!(
         About,
         CheckForUpdates,
         OpenShortcutsGuide,
+        OpenKeyboardShortcuts,
         Hide,
         HideOthers,
         ShowAll,

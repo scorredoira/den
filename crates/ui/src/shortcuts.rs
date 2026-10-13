@@ -36,6 +36,8 @@ shortcuts![
     (OpenCommandPalette, "Command Palette", "secondary-shift-p"),
     (ShowShortcuts, "Show Shortcuts", "f1"),
     (OpenSettings, "Settings", "secondary-,"),
+    (OpenKeyboardShortcuts, "Keyboard Shortcuts", ""),
+    (OpenShortcutsGuide, "Keyboard Shortcuts Guide", ""),
     (Quit, "Quit", "secondary-q"),
     (ReloadWindow, "Reload Window", ""),
     (Save, "Save", "secondary-s"),

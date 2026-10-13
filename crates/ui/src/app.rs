@@ -29,7 +29,7 @@ use crate::menu::PanelItems as _;
 use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
-    About, CheckForUpdates, NewTask, OpenCommandPalette, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
+    About, CheckForUpdates, NewTask, OpenCommandPalette, OpenKeyboardShortcuts, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
     AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ToggleTasks, ToggleTerminalMode,
     config::{self, Config, DiffLayout, HostConfig, Panel, Place, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
@@ -279,6 +279,7 @@ pub fn register_app_actions(cx: &mut App) {
     cx.on_action(|_: &About, cx| in_front(cx, |den, window, cx| den.open_about(window, cx)));
     cx.on_action(|_: &CheckForUpdates, cx| in_front(cx, |den, window, cx| den.check_for_updates(window, cx)));
     cx.on_action(|_: &OpenSettings, cx| in_front(cx, |den, window, cx| den.open_settings(window, cx)));
+    cx.on_action(|_: &OpenKeyboardShortcuts, cx| in_front(cx, |den, window, cx| den.open_keyboard_shortcuts(window, cx)));
     cx.on_action(|_: &OpenShortcutsGuide, cx| in_front(cx, |den, window, cx| den.open_guide(window, cx)));
 }
 
@@ -2188,6 +2189,30 @@ mod palette_tests {
         picker.update(cx, |_, cx| cx.emit(PickerEvent::Pick("Settings".into())));
         cx.run_until_parked();
         assert!(den.read_with(cx, |den, _| den.settings.is_some()));
+    }
+
+    /// Keyboard Shortcuts from the palette: the same modal, with only the
+    /// shortcuts; Settings' link goes there too.
+    #[gpui_kit::test]
+    fn the_palette_opens_keyboard_shortcuts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            super::register_app_actions(cx);
+        });
+        let (den, cx) = cx.add_window_view(|window, cx| Den::new(None, None, false, None, window, cx));
+        as_app_window(&den, cx);
+        cx.update(|window, cx| {
+            den.update(cx, |den, cx| {
+                den.focus_handle.focus(window, cx);
+                den.open_command_palette(window, cx);
+            })
+        });
+        cx.run_until_parked();
+        let picker = den.read_with(cx, |den, _| den.command_palette.as_ref().map(|(picker, _)| picker.clone()).unwrap());
+        picker.update(cx, |_, cx| cx.emit(PickerEvent::Pick("Keyboard Shortcuts".into())));
+        cx.run_until_parked();
+        assert!(den.read_with(cx, |den, _| den.settings.as_ref().is_some_and(|settings| settings.shortcuts_only())));
     }
 
     /// One picker at a time: the one drawn is the one with the focus.
