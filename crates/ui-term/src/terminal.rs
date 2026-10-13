@@ -401,6 +401,14 @@ impl Terminal {
         cx.notify();
     }
 
+    /// Whether there's text selected, without copying it.
+    pub fn has_selection(&self) -> bool {
+        self.term
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_empty() && selection.to_range(&self.term).is_some())
+    }
+
     pub fn selection_text(&self) -> Option<String> {
         self.term
             .selection
@@ -472,7 +480,9 @@ mod tests {
     fn select_all_takes_the_history_and_stops_at_the_last_text(cx: &mut TestAppContext) {
         let terminal = terminal(cx);
         terminal.update(cx, |terminal, cx| {
+            assert!(!terminal.has_selection());
             terminal.select_all(cx);
+            assert!(terminal.has_selection());
             assert_eq!(terminal.selection_text().as_deref(), Some("one\ntwo\nthree\nfour\n$ ls"));
         });
     }

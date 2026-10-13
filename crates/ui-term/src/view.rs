@@ -239,7 +239,7 @@ impl TerminalView {
     }
 
     pub fn has_selection(&self, cx: &App) -> bool {
-        self.terminal.read(cx).selection_text().is_some()
+        self.terminal.read(cx).has_selection()
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
