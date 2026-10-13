@@ -178,9 +178,6 @@ impl Cdp {
         method: &str,
         params: Value,
     ) -> Result<mpsc::Receiver<Result<Value, String>>> {
-        if self.closed.load(Ordering::SeqCst) {
-            bail!("{method}: the connection to Chrome is closed");
-        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let mut message = Map::new();
         message.insert("id".into(), json!(id));
@@ -191,6 +188,12 @@ impl Cdp {
         }
         let (sender, receiver) = mpsc::channel();
         self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, sender);
+        // Checked after inserting: once the reader has failed what was
+        // pending, nobody else would answer it.
+        if self.closed.load(Ordering::SeqCst) {
+            self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
+            bail!("{method}: the connection to Chrome is closed");
+        }
         let text = Value::Object(message).to_string();
         if self.trace {
             eprintln!("chrome -> {}", crate::fetch::short(&text));
