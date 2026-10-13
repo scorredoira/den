@@ -3,7 +3,7 @@ use std::{
     ops::{Range, RangeInclusive},
     path::PathBuf,
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use alacritty_terminal::{
@@ -51,6 +51,9 @@ const AUTOSCROLL_EVERY: Duration = Duration::from_millis(40);
 /// Wait after new output before finding the matches again.
 const FIND_AGAIN_AFTER: Duration = Duration::from_millis(150);
 
+/// Output that never pauses has its matches found again this often.
+const FIND_AGAIN_AT_MOST: Duration = Duration::from_secs(2);
+
 pub enum TerminalViewEvent {
     TitleChanged,
     Exited,
@@ -87,6 +90,8 @@ struct FindBar {
     anchor: Option<(i32, usize)>,
     /// Finding again after new output, once it calms down.
     again: Option<Task<()>>,
+    /// When the output not yet searched began.
+    output_since: Option<Instant>,
     _subscription: Subscription,
 }
 
@@ -579,6 +584,7 @@ impl TerminalView {
                 active: None,
                 anchor: None,
                 again: None,
+                output_since: None,
                 _subscription: subscription,
             });
         }
@@ -623,10 +629,16 @@ impl TerminalView {
     }
 
     /// New output: the matches again, keeping the active one, once the
-    /// output pauses (a flood would otherwise search on every batch).
+    /// output pauses (a flood would otherwise search on every batch); if it
+    /// doesn't, every `FIND_AGAIN_AT_MOST`.
     fn find_again_later(&mut self, cx: &mut Context<Self>) {
         let Some(bar) = &mut self.find else { return };
-        if bar.regex.is_none() || bar.again.is_some() {
+        if bar.regex.is_none() {
+            return;
+        }
+        let now = cx.background_executor().now();
+        let since = *bar.output_since.get_or_insert(now);
+        if bar.again.is_some() && now - since >= FIND_AGAIN_AT_MOST {
             return;
         }
         bar.again = Some(cx.spawn(async move |this, cx| {
@@ -638,6 +650,7 @@ impl TerminalView {
     fn find_again(&mut self, cx: &mut Context<Self>) {
         let Some(bar) = &mut self.find else { return };
         bar.again = None;
+        bar.output_since = None;
         let Some(regex) = &mut bar.regex else { return };
         let terminal = self.terminal.read(cx);
         let term = terminal.term();
@@ -961,6 +974,38 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_input("x");
         assert_eq!(backend.0.borrow().as_slice(), b"x");
+    }
+
+    /// New output is searched once it pauses; output that doesn't pause,
+    /// every so often, not with every batch.
+    #[gpui_kit::test]
+    fn matches_are_found_again_once_the_output_pauses(cx: &mut TestAppContext) {
+        let (terminal, _, sender) = terminal(cx, b"error 0\r\n");
+        let (view, cx) = cx.add_window_view(|window, cx| TerminalView::new(terminal, true, window, cx));
+        cx.update(|window, cx| view.read(cx).focus_handle.clone().focus(window, cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-f" } else { "ctrl-alt-f" });
+        cx.simulate_input("error");
+        cx.run_until_parked();
+        let found = |cx: &mut VisualTestContext| view.read_with(cx, |view, _| status(view).0);
+        assert_eq!(found(cx), 1);
+        let batch = |cx: &mut VisualTestContext| {
+            sender.try_send(crate::PtyEvent::Output(b"error\r\n".to_vec())).unwrap();
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+        };
+        for _ in 0..10 {
+            batch(cx);
+        }
+        assert_eq!(found(cx), 1, "not while it keeps coming");
+        for _ in 0..15 {
+            batch(cx);
+        }
+        assert!(found(cx) > 1, "though it doesn't pause");
+        cx.executor().advance_clock(FIND_AGAIN_AFTER);
+        cx.run_until_parked();
+        assert_eq!(found(cx), 26);
     }
 
     /// The terminal beside something else that waits for the mouse.
