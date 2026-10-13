@@ -17,27 +17,27 @@ A single native program that combines what herdr and an editor do today: tabbed 
 - F12 (go to definition) and Shift-F12 (references) via LSP.
 - Click on a `file:line` path inside a terminal: it opens in the viewer.
 - Hosts: local and any SSH server that has been added, transparently.
-- Platforms: macOS and Linux now; Windows later. The architecture is portable from the start, but for now it is only tested on the Mac (see Platforms).
+- Platforms: macOS, Linux and Windows. It's developed and used daily on the Mac; CI builds and tests all three on every push, and the desktop behavior on Linux and Windows is checked by hand (see Platforms).
 - A debugger for programs that speak Den's own line protocol (`docs/debugger.md`), reached through the agent like everything else.
 
 **Out:** serious editing (refactors, advanced multi-cursor), AI, extensions, collaboration, remote Windows servers (the remote agent only runs on Linux and macOS).
 
 ## Decisions
 
-Rust with GPUI across the whole app, developed directly on the Mac. macOS is GPUI's most mature backend (Metal) and the one used most; Linux (wgpu, Wayland and X11) shares all the Unix code with macOS and is considered supported without being tested on every change. Windows (GPUI's own backend) is prepared for in the architecture, with its hard parts left unimplemented until its phase.
+Rust with GPUI across the whole app, developed directly on the Mac. macOS is GPUI's most mature backend (Metal) and the one used most; Linux (wgpu, Wayland and X11) shares all the Unix code with macOS and is considered supported without being tested on every change. Windows (GPUI's own backend) was prepared for in the architecture from the start and filled in in its own phase (named pipes, ConPTY, OSC 7).
 
 | Piece | Choice | Why |
 | --- | --- | --- |
 | Language | Rust | One language for the app and the agent; acceptable rebuild times (target under 10 s) |
 | UI | `gpui-kit` (Apache-2.0): GPUI, gpui-component and the backends for all three platforms | Native on the GPU; the same foundation as Zed; a single dependency with a pinned version |
 | Viewer | gpui-component's `Editor` | Highlighting, line numbers, large files; light editing is enough. Its base crate, gpui-base, is copied in `vendor/` with a few public functions added (see `vendor/README.md`) |
-| Highlighting | tree-sitter, the one built into gpui-component | VS Code level; if it falls short, `highlights.scm` queries from Helix or Zed in our own `syntax` crate |
+| Highlighting | tree-sitter, the one built into gpui-component | VS Code level; where it fell short, its `highlights.scm` queries and colors were changed in the vendored copy (`vendor/README.md`) |
 | Terminal | `alacritty_terminal` (Apache-2.0) | Pure Rust, proven with GPUI inside Zed; no Zig to compile as with `libghostty-vt` |
 | Pty | `portable-pty` | The same one herdr uses; ConPTY on Windows |
 | Search | `grep` + `ignore` crates (ripgrep's) | Respects `.gitignore`, without depending on a binary |
 | Git | calls to `git` | Status, diffs, staging, commits, branches, history |
 | LSP | minimal custom client (JSON-RPC over the server's stdio) | `definition`, `references`, `completion` (with `completionItem/resolve`) and `signatureHelp` |
-| Agent concurrency | `std` threads and channels, no `tokio` | Dozens of terminals per machine: one thread per pty and per connection is enough and the code is simpler |
+| Agent concurrency | `std` threads and channels; `tokio` only in the client on Windows, for the named pipe's overlapped I/O (`client/src/windows_pipe.rs`) | Dozens of terminals per machine: one thread per pty and per connection is enough and the code is simpler |
 | SSH | the system `ssh` binary | Reuses `~/.ssh/config`, keys, agent and ProxyJump with no code of our own |
 
 The project is GPL-3.0. That way code can be copied from Zed (GPL-3.0) as well as herdr (Apache-2.0), keeping their copyright notices in each file. Individual files are copied and adapted; neither repo is forked. So far:
@@ -78,7 +78,7 @@ Local and remote use the same agent and the same protocol: only the transport ch
 
 A single byte stream with binary frames, the same locally and over SSH; the only thing that changes is how the stream is opened.
 
-- **Local transport:** the agent's Unix socket on macOS and Linux (in the app's state directory); a named pipe (`\\.\pipe\den-agent-<user>`) on Windows.
+- **Local transport:** the agent's Unix socket on macOS and Linux (in the app's state directory); a named pipe on Windows, `\\.\pipe\den-<id>`, where `<id>` is the `build_id` of the socket path it stands for, so each protocol version and state directory has its own.
 - **Remote transport:** `ssh <host> den-agent bridge`. The `bridge` starts the daemon if it isn't running and connects its stdin/stdout to the socket. The UI doesn't know whether it's talking to a local or a remote host.
 - **Frames:** `u32` length + body serialized with `serde` as MessagePack (`rmp-serde`). Each frame is a request with an `id`, a response to that `id`, or an event.
 - **Startup:** `Hello { protocol }`. Then `Version` returns the fingerprint of the agent's binary; if it isn't the one this app carries, the server shows "outdated agent · restart" (see Agent versions).
@@ -204,7 +204,7 @@ A host is a name from `~/.ssh/config` or `user@machine`, and the app does the re
 
 ## Platforms
 
-The desktop builds and tests run in GitHub Actions on macOS (Apple Silicon and Intel), Linux x86_64 and Windows x86_64. Linux shares the Unix transport with macOS; Windows uses per-user named pipes and ConPTY. Real desktop installation and GPU behavior still need manual smoke testing.
+The tests run in GitHub Actions on macOS (Apple Silicon and Intel), Linux x86_64 and Windows x86_64 on every push, and master's packages are built there for all four. Linux shares the Unix transport with macOS; Windows uses per-user named pipes and ConPTY. Real desktop installation and GPU behavior still need manual smoke testing.
 
 **Rules to keep it portable from now on:**
 
@@ -214,9 +214,9 @@ The desktop builds and tests run in GitHub Actions on macOS (Apple Silicon and I
 - Shortcuts use GPUI's `secondary` modifier: Cmd on Mac, Ctrl on Linux and Windows.
 - On Windows, whatever isn't done compiles and returns a clear error ("not implemented on Windows"), never a `panic!`. That way the app starts and you can see what's missing.
 
-| Topic | macOS (tested) | Linux (same code) | Windows (gap) |
+| Topic | macOS (used daily) | Linux (same code) | Windows |
 | --- | --- | --- | --- |
-| Rendering (GPUI) | Metal | wgpu, Wayland and X11 | GPUI's own backend; should just work |
+| Rendering (GPUI) | Metal | wgpu, Wayland and X11 | GPUI's own backend |
 | App modifier | Cmd | Ctrl | Ctrl |
 | App shortcuts inside the terminal | Cmd | not Ctrl plus a letter (see Shortcuts in terminals) | the same as Linux |
 | Transport to the local agent | Unix socket | Unix socket | Named pipe with owner-only permissions |
@@ -235,9 +235,10 @@ A Cargo workspace with small crates, so that a change in the UI rebuilds only th
 | Crate | What it contains | Depends on |
 | --- | --- | --- |
 | `proto` | Messages, frames and protocol version | `serde` |
-| `agent` | Daemon: terminals, files, search, git, LSP and tasks; `den-agent` binary with `daemon` and `bridge`, and `den` for terminals | `proto`, `portable-pty`, `alacritty_terminal` |
+| `agent` | Daemon: terminals, files, search, git, LSP and tasks; `den-agent` binary with `daemon` and `bridge`, and `den` for terminals | `proto`, `client`, `join`, `chrome`, `portable-pty`, `alacritty_terminal` |
 | `client` | Connection to hosts (socket or `ssh`), reconnection, agent upload | `proto` |
-| `syntax` | Only if gpui-component's highlighting falls short: our own grammars and queries, themes | `tree-sitter` |
+| `join` | `den debug join`: one debug session over several programs (`docs/debugger.md`) | `serde_json` |
+| `chrome` | `den chrome`: debugs a web app's pages in Chrome through the DevTools Protocol, with source maps (`docs/chrome.md`) | `serde_json`, `tungstenite` |
 | `ui-term` | Terminal view in GPUI | `gpui-kit`, `alacritty_terminal` |
 | `ui` | Window, tasks column, panels, viewer, settings; the app binary | all of the above, `gpui-kit` |
 
@@ -250,13 +251,18 @@ split-debuginfo = "unpacked" # the default on macOS
 
 [profile.dev.package."*"]
 opt-level = 2                # optimized dependencies, compiled once
+debug = 0                    # and without debug info
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"          # crash.rs needs the symbols
 
 ```
 
 - The agent for Linux x86_64 servers is built on the Mac, statically with musl, using `cargo zigbuild` (which uses `zig` as the linker); `./run` puts it next to the app.
 - `gpui-kit` pinned to an exact version (`=0.7.0`), which in turn pins GPUI, so the API doesn't change by surprise.
 - The tree-sitter grammars are dependencies: they're compiled once with `opt-level = 2` and never touched again.
-- Expected disk use on the Mac: 6–10 GB in `target/` plus ~1.5 GB for Rust; Xcode is already installed.
+- Expected disk use on the Mac: about 4 GB in `target/` for a debug build with the tests, a few more with a release build, plus ~1.5 GB for Rust; Xcode is already installed. Each version adds its own copy of Den's crates without removing the last, so `target/` grows with every release built until it's pruned (`docs/releasing.md`).
 - Target: a change in `ui` rebuilds in under 10 s on the Mac. Measured in phase 0: under 1 s.
 
 ## Phased plan
@@ -334,7 +340,7 @@ From here on den is developed inside den (Claude Code in a terminal of the `den/
 | The terminal snapshot doesn't reproduce some unusual mode (scroll regions, character sets) | Add it to `snapshot.rs`; there are tests that process the snapshot in a new emulator and compare |
 | Rebuilds exceed 10 s | Split `ui` into more crates; try the Cranelift backend |
 | Servers with an old glibc or without permission to execute in `~` | Static agent with musl; configurable install path |
-| Something Mac-specific leaks out of the `platform` module and breaks Linux or Windows unnoticed | Build for Linux now and then (`cargo check --target`) and review the `cfg`s when closing each phase |
+| Something Mac-specific leaks out of the `platform` module and breaks Linux or Windows unnoticed | CI builds and tests every platform on every push; review the `cfg`s when closing each phase |
 | ConPTY on Windows renders differently or drops sequences with full-screen programs | Found out in phase 7; the terminal view doesn't depend on the pty, so the fix stays in the agent |
 
 **Open questions:**
