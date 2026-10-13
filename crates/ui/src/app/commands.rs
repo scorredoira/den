@@ -137,7 +137,7 @@ impl Den {
             ["window", root, file @ ..] if file.len() <= 1 => {
                 let destination = self.host(&host).and_then(|host| host.destination.clone());
                 let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
-                cx.defer(move |cx| open_new_window(host, destination, root, file, cx));
+                cx.defer(move |cx| open_new_window(destination, root, file, cx));
                 Ok(String::new())
             }
             // `den <path>` and `den worktree` in a terminal of this window.

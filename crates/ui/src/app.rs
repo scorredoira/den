@@ -113,9 +113,18 @@ struct Host {
 impl Host {
     /// A server, not connected yet.
     fn remote(name: SharedString, destination: String) -> Self {
+        Self::connecting(name, Some(destination))
+    }
+
+    /// This machine, not connected yet.
+    fn local() -> Self {
+        Self::connecting(LOCAL.into(), None)
+    }
+
+    fn connecting(name: SharedString, destination: Option<String>) -> Self {
         Host {
             name,
-            destination: Some(destination),
+            destination,
             client: None,
             status: HostStatus::Connecting(CONNECTING),
             tasks: Vec::new(),
@@ -346,11 +355,16 @@ pub fn open_server_window(destination: String, path: Option<PathBuf>, cx: &mut A
     open_host_window(name, cx, |window, cx| Den::for_server(destination, path, window, cx));
 }
 
-/// `den -n <path>` from a terminal of `host`, or `den <path>` from one
-/// outside den: `root`, with `file` open in it, in a new window of its own
-/// as a plain editor (see `Den::plain`).
-pub fn open_new_window(_host: SharedString, destination: Option<String>, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
-    open_window_on(destination, file.unwrap_or(root), true, cx)
+/// `den -n <path>` from a terminal of this machine (`destination` none) or
+/// of a server, or `den <path>` from one outside den: `root`, with `file`
+/// open in it, in a new window of its own as a plain editor (see
+/// `Den::plain`).
+pub fn open_new_window(destination: Option<String>, root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
+    let plain_editor = |mut den: Den| {
+        den.plain = true;
+        den
+    };
+    open_window_on(destination, file.unwrap_or(root), plain_editor, cx)
 }
 
 /// A workspace's Open in New Window, asked from the window `except` it's
@@ -381,22 +395,18 @@ fn open_new_window_except(
         cx.activate(true);
         return;
     }
-    open_window_on(destination, file.unwrap_or(root), false, cx)
+    open_window_on(destination, file.unwrap_or(root), |den| den, cx)
 }
 
 /// A window of its own on `path`, on this machine (`destination` none) or
-/// a server; `plain`, only the files and the code.
-fn open_window_on(destination: Option<String>, path: PathBuf, plain: bool, cx: &mut App) {
-    let plain_editor = move |mut den: Den| {
-        den.plain = plain;
-        den
-    };
+/// a server, made what `kind` makes of it.
+fn open_window_on(destination: Option<String>, path: PathBuf, kind: impl FnOnce(Den) -> Den, cx: &mut App) {
     match destination {
         Some(destination) => {
             let name = server_name(&destination, cx);
-            open_host_window(name, cx, |window, cx| plain_editor(Den::for_server(destination, Some(path), window, cx)));
+            open_host_window(name, cx, |window, cx| kind(Den::for_server(destination, Some(path), window, cx)));
         }
-        None => open_host_window(LOCAL.into(), cx, |window, cx| plain_editor(Den::for_local(path, window, cx))),
+        None => open_host_window(LOCAL.into(), cx, |window, cx| kind(Den::for_local(path, window, cx))),
     }
 }
 
@@ -408,13 +418,7 @@ pub fn open_terminal_window(destination: Option<String>, root: PathBuf, cx: &mut
         den.terminal_mode.set(true);
         den
     };
-    match destination {
-        Some(destination) => {
-            let name = server_name(&destination, cx);
-            open_host_window(name, cx, |window, cx| in_terminal_mode(Den::for_server(destination, Some(root), window, cx)));
-        }
-        None => open_host_window(LOCAL.into(), cx, |window, cx| in_terminal_mode(Den::for_local(root, window, cx))),
-    }
+    open_window_on(destination, root, in_terminal_mode, cx)
 }
 
 /// Opens a window of `den -s` or `den -n`, on the server called `name`.
@@ -448,7 +452,6 @@ fn open_host_window(name: SharedString, cx: &mut App, build: impl FnOnce(&mut Wi
     cx.activate(true);
 }
 
-/// What a server is called: the name it was added with, if it was.
 /// Whether an agent's error says a path isn't there (ENOENT, or Windows'
 /// file or path not found), rather than that it couldn't answer or read it.
 fn not_found(err: &anyhow::Error) -> bool {
@@ -457,6 +460,7 @@ fn not_found(err: &anyhow::Error) -> bool {
     text.contains("(os error 2)") || text.contains("(os error 3)")
 }
 
+/// What a server is called: the name it was added with, if it was.
 fn server_name(destination: &str, cx: &App) -> SharedString {
     Config::get(cx)
         .hosts
@@ -798,18 +802,8 @@ impl Den {
     /// `den -n <path>` on this machine: like `for_server`, a window with only
     /// this machine that opens `path` once connected.
     pub fn for_local(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let host = Host {
-            name: LOCAL.into(),
-            destination: None,
-            client: None,
-            status: HostStatus::Connecting(CONNECTING),
-            tasks: Vec::new(),
-            loose: Vec::new(),
-            repos: Vec::new(),
-            generation: 0,
-        };
         let server = ServerWindow { name: LOCAL.into(), start: Some(Some(path)) };
-        let this = Self::with_hosts(vec![host], Some(server), None, window, cx);
+        let this = Self::with_hosts(vec![Host::local()], Some(server), None, window, cx);
         this.focus_handle.focus(window, cx);
         this
     }
@@ -823,8 +817,6 @@ impl Den {
         cx: &mut Context<Self>,
     ) -> Self {
         let local = Host {
-            name: LOCAL.into(),
-            destination: None,
             status: if client.is_some() {
                 HostStatus::Connected
             } else if cx.default_global::<Main>().agent_pending {
@@ -833,10 +825,7 @@ impl Den {
                 HostStatus::Failed("no agent".into())
             },
             client: client.clone(),
-            tasks: Vec::new(),
-            loose: Vec::new(),
-            repos: Vec::new(),
-            generation: 0,
+            ..Host::local()
         };
         let remotes: Vec<Host> = Config::get(cx)
             .hosts
@@ -1847,7 +1836,6 @@ fn row_label(task: &TaskInfo) -> SharedString {
     }
 }
 
-/// A workspace's icon: a folder, or a branch for a repo's worktree.
 /// A workspace's name in the column: a worktree goes by its branch, what
 /// its agent works on (its folder usually repeats the repo's name); a
 /// checkout by its folder.

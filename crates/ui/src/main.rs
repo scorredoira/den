@@ -252,13 +252,13 @@ fn main() {
         match (server.clone(), terminals.clone(), target.clone()) {
             (Some((name, path)), _, _) => app::open_server_window(name, path, cx),
             (None, Some(root), _) => app::open_terminal_window(None, root, cx),
-            (None, None, Some((root, file))) => app::open_new_window(app::LOCAL.into(), None, root, file, cx),
+            (None, None, Some((root, file))) => app::open_new_window(None, root, file, cx),
             (None, None, None) => app::open_window(root.clone(), None, true, cx),
         }
         cx.spawn(async move |cx| {
             while let Ok(path) = opened.recv().await {
                 let (root, file) = proto::open_target(&path);
-                cx.update(|cx| app::open_new_window(app::LOCAL.into(), None, root, file, cx));
+                cx.update(|cx| app::open_new_window(None, root, file, cx));
             }
         })
         .detach();
@@ -325,7 +325,7 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
                             }
                             [window, root, file @ ..] if window == "window" && file.len() <= 1 => {
                                 let (root, file) = (PathBuf::from(root), file.first().map(PathBuf::from));
-                                cx.update(|cx| app::open_new_window(app::LOCAL.into(), None, root, file, cx));
+                                cx.update(|cx| app::open_new_window(None, root, file, cx));
                                 Ok(String::new())
                             }
                             [flag, root] if flag == "-t" => {
