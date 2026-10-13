@@ -94,6 +94,8 @@ pub struct TerminalView {
     terminal: Entity<Terminal>,
     local: bool,
     hovered_link: Option<HoveredLink>,
+    /// The cell a link was last looked for at, with Cmd held.
+    hovered_cell: Option<AlacPoint>,
     last_mouse: Option<Point<Pixels>>,
     focus_handle: FocusHandle,
     marked_text: Option<String>,
@@ -142,6 +144,7 @@ impl TerminalView {
             terminal,
             local,
             hovered_link: None,
+            hovered_cell: None,
             last_mouse: None,
             focus_handle,
             marked_text: None,
@@ -504,11 +507,18 @@ impl TerminalView {
     }
 
     fn update_hovered_link(&mut self, cmd: bool, cx: &mut Context<Self>) {
-        let hovered = cmd
-            .then(|| self.last_mouse)
+        let point = cmd
+            .then_some(self.last_mouse)
             .flatten()
             .and_then(|position| self.point_at(position, cx))
-            .and_then(|(point, _)| self.link_at(point, cx));
+            .map(|(point, _)| point);
+        // Moving within a cell finds what it found there: looking means
+        // asking for the shell's folder and checking the path.
+        if point.is_some() && point == self.hovered_cell {
+            return;
+        }
+        self.hovered_cell = point;
+        let hovered = point.and_then(|point| self.link_at(point, cx));
         let changed = match (&self.hovered_link, &hovered) {
             (Some(a), Some(b)) => a.start != b.start || a.range != b.range,
             (None, None) => false,
@@ -887,9 +897,10 @@ mod tests {
     use super::*;
     use crate::backend::TerminalBackend;
 
-    /// A process that keeps what it's sent.
+    /// A process that keeps what it's sent, and counts how many times it's
+    /// asked for its folder.
     #[derive(Default)]
-    struct Backend(RefCell<Vec<u8>>);
+    struct Backend(RefCell<Vec<u8>>, StdCell<usize>);
 
     impl crate::TerminalBackend for Rc<Backend> {
         fn write(&self, bytes: Vec<u8>) {
@@ -898,6 +909,7 @@ mod tests {
         fn resize(&self, _: u16, _: u16) {}
         fn kill(&self) {}
         fn cwd(&self) -> Option<PathBuf> {
+            self.1.set(self.1.get() + 1);
             None
         }
         fn save_image(&self, _: &str, _: Vec<u8>) -> Pin<Box<dyn Future<Output = anyhow::Result<PathBuf>>>> {
@@ -1022,6 +1034,26 @@ mod tests {
         view.read_with(cx, |view, _| assert!(!view.selecting()));
         assert_eq!(releases.get(), 1);
         assert_eq!(selected(&view, cx).as_deref(), Some("four"));
+    }
+
+    /// With Cmd held, a link is looked for once per cell the mouse goes
+    /// over, not with every move within it.
+    #[gpui_kit::test]
+    fn links_are_looked_for_once_per_cell(cx: &mut TestAppContext) {
+        let (terminal, backend, _sender) = terminal(cx, b"see src/main.rs");
+        let (view, cx) = cx.add_window_view(|window, cx| TerminalView::new(terminal, true, window, cx));
+        cx.run_until_parked();
+        let cell = cells(&view, cx);
+        let cmd = Modifiers::command();
+        cx.simulate_mouse_move(cell(0, 5), None, cmd);
+        cx.simulate_mouse_move(cell(0, 5) + point(px(1.), px(1.)), None, cmd);
+        assert_eq!(backend.1.get(), 1);
+        cx.simulate_mouse_move(cell(0, 6), None, cmd);
+        assert_eq!(backend.1.get(), 2);
+        // Cmd let go and held again: looked for again.
+        cx.simulate_mouse_move(cell(0, 6), None, Modifiers::default());
+        cx.simulate_mouse_move(cell(0, 6), None, cmd);
+        assert_eq!(backend.1.get(), 3);
     }
 
     /// Shift-click extends the selection to where it's clicked.

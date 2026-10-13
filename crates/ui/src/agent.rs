@@ -1,12 +1,14 @@
 //! Terminals that live in the local agent.
 
 use std::{
+    cell::Cell,
     path::PathBuf,
     rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -47,7 +49,12 @@ struct AgentBackend {
     /// This terminal's subscription to the process's output (`Client::subscribe`).
     subscription: u64,
     cwd: Arc<Mutex<Option<PathBuf>>>,
+    /// When the agent was last asked for it.
+    cwd_asked: Cell<Option<Instant>>,
 }
+
+/// How long the directory last asked for is taken as the current one.
+const CWD_FRESH: Duration = Duration::from_millis(500);
 
 /// The terminal is gone (or moved to another connection): the output stops
 /// coming here, without touching another view of the same process.
@@ -105,8 +112,14 @@ impl TerminalBackend for AgentBackend {
         })
     }
 
-    /// Returns the last known directory and asks the agent for the current one.
+    /// Returns the last known directory and asks the agent for the current
+    /// one, unless it was just asked: Cmd held over the terminal asks as
+    /// the mouse moves.
     fn cwd(&self) -> Option<PathBuf> {
+        if self.cwd_asked.get().is_some_and(|asked| asked.elapsed() < CWD_FRESH) {
+            return self.cwd.lock().unwrap().clone();
+        }
+        self.cwd_asked.set(Some(Instant::now()));
         let cache = self.cwd.clone();
         self.client
             .request_with(Request::TermCwd { term: self.term }, move |response| {
@@ -180,6 +193,7 @@ fn join(client: Arc<Client>, term: TermId) -> impl std::future::Future<Output = 
         term,
         subscription,
         cwd: Arc::default(),
+        cwd_asked: Cell::default(),
     });
     let (response_tx, response) = smol::channel::bounded(1);
     client.request_with(Request::TermAttach { term }, move |response| {
