@@ -1425,6 +1425,10 @@ fn take_over(state: &Shared, handover: Handover) {
     eprintln!("took over the terminals of the agent before");
 }
 
+/// How long an agent of an earlier protocol may take to save its
+/// terminals and exit (it reads each one's command line).
+const OLDER_AGENT_SHUTDOWN: Duration = Duration::from_secs(10);
+
 /// Agents of earlier protocols still running (Den was updated to a newer
 /// one): their terminals are where the UI left them, so each is shut down,
 /// which saves them as for a restart, and the files they leave are returned
@@ -1439,7 +1443,16 @@ fn shut_down_older_agents() -> Vec<PathBuf> {
             let mut stream = platform::connect(&socket).ok()?;
             proto::write_frame(&mut stream, &ClientMessage { id: None, request: Request::Shutdown }).ok()?;
             // It saves its terminals and exits, which closes the connection.
-            let _ = std::io::copy(&mut stream, &mut std::io::sink());
+            // One that hangs instead is left alone, with them.
+            let (closed, done) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut stream, &mut std::io::sink());
+                let _ = closed.send(());
+            });
+            if done.recv_timeout(OLDER_AGENT_SHUTDOWN).is_err() {
+                eprintln!("the agent at {} didn't shut down: its terminals stay with it", socket.display());
+                return None;
+            }
             eprintln!("shut down the agent at {} to take its terminals", socket.display());
             Some(restart_file_of(&socket))
         })
