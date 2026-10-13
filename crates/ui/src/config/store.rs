@@ -19,21 +19,18 @@ pub struct JsonFile {
     name: &'static str,
     /// How many times it was prepared for saving: each save's number.
     saves: AtomicU64,
-    /// Held while writing: an older save never replaces a newer one, and a
-    /// flush waits for the write under way.
-    state: Mutex<State>,
+    /// The newest save the writer hasn't got to, by its number: only held
+    /// for a moment, so the window never waits for the disk.
+    waiting: Mutex<Option<(u64, Vec<u8>)>>,
+    /// The number of the last one written. Held while writing: an older
+    /// save never replaces a newer one, and a flush waits for the write
+    /// under way.
+    written: Mutex<Option<u64>>,
     /// Wakes the thread that writes the saves made later.
     writer: OnceLock<mpsc::Sender<()>>,
     /// The tests' folder: they never touch the real one.
     #[cfg(test)]
     dir: Mutex<Option<PathBuf>>,
-}
-
-struct State {
-    /// The newest save the writer hasn't got to, by its number.
-    waiting: Option<(u64, Vec<u8>)>,
-    /// The number of the last one written.
-    written: Option<u64>,
 }
 
 /// The files saved later, for the quit to finish writing them.
@@ -44,7 +41,8 @@ impl JsonFile {
         Self {
             name,
             saves: AtomicU64::new(0),
-            state: Mutex::new(State { waiting: None, written: None }),
+            waiting: Mutex::new(None),
+            written: Mutex::new(None),
             writer: OnceLock::new(),
             #[cfg(test)]
             dir: Mutex::new(None),
@@ -89,8 +87,7 @@ impl JsonFile {
     /// Saves `value` now (on quit: nothing would be left to write it later).
     pub fn save<T: Serialize>(&self, value: &T) {
         if let Some(save) = self.number(value) {
-            let mut state = self.lock();
-            self.write(&mut state, save);
+            self.write(&mut lock(&self.written), save);
         }
     }
 
@@ -100,9 +97,9 @@ impl JsonFile {
         let Some(save) = self.number(value) else {
             return;
         };
-        self.lock().waiting = Some(save);
+        *lock(&self.waiting) = Some(save);
         let writer = self.writer.get_or_init(|| {
-            LATER.lock().unwrap_or_else(|err| err.into_inner()).push(self);
+            lock(&LATER).push(self);
             let (tx, rx) = mpsc::channel::<()>();
             std::thread::spawn(move || {
                 while rx.recv().is_ok() {
@@ -116,9 +113,10 @@ impl JsonFile {
 
     /// Writes the save waiting, if there's one, once the one under way is.
     pub fn flush(&self) {
-        let mut state = self.lock();
-        if let Some(save) = state.waiting.take() {
-            self.write(&mut state, save);
+        let mut written = lock(&self.written);
+        let waiting = lock(&self.waiting).take();
+        if let Some(save) = waiting {
+            self.write(&mut written, save);
         }
     }
 
@@ -129,13 +127,9 @@ impl JsonFile {
         Some((self.saves.fetch_add(1, Ordering::Relaxed), bytes))
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|err| err.into_inner())
-    }
-
     /// Writes `bytes` unless a newer save was written already.
-    fn write(&self, state: &mut State, (generation, bytes): (u64, Vec<u8>)) {
-        if state.written.is_some_and(|written| written > generation) {
+    fn write(&self, written: &mut Option<u64>, (generation, bytes): (u64, Vec<u8>)) {
+        if written.is_some_and(|written| written > generation) {
             return;
         }
         if let Some(path) = self.path()
@@ -143,13 +137,17 @@ impl JsonFile {
         {
             eprintln!("couldn't save {}: {err:#}", path.display());
         }
-        state.written = Some(generation);
+        *written = Some(generation);
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 /// The saves made later are written (on quit, before the app goes).
 pub fn flush_all() {
-    let files = LATER.lock().unwrap_or_else(|err| err.into_inner()).clone();
+    let files = lock(&LATER).clone();
     for file in files {
         file.flush();
     }
@@ -206,7 +204,7 @@ mod tests {
         file.save_later(&"later");
         file.save(&"newer");
         flush_all();
-        file.write(&mut file.lock(), older);
+        file.write(&mut lock(&file.written), older);
         assert_eq!(file.load::<String>(), "newer");
         std::fs::remove_dir_all(dir).unwrap();
     }
