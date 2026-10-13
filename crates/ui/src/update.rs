@@ -21,6 +21,12 @@ use gpui_kit::{App, Global};
 
 pub const RELEASES: &str = "https://github.com/scorredoira/den/releases";
 
+/// The public half of the key the release workflow signs `SHA256SUMS`
+/// with. A checksum from the same place as the archive only tells a damaged
+/// download; the signature tells a release that wasn't made by that
+/// workflow, even if it reached the repository's releases.
+const RELEASE_KEY: &str = include_str!("../../../packaging/minisign.pub");
+
 /// The first check, once the app has settled.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
@@ -319,7 +325,11 @@ fn check_and_install(install: &Install) -> Result<Checked> {
         download(&format!("{RELEASES}/download/{tag}/{archive_name}"), &archive)?;
         let sums = work.join("SHA256SUMS");
         download(&format!("{RELEASES}/download/{tag}/SHA256SUMS"), &sums)?;
-        let expected = std::fs::read_to_string(&sums)?
+        let signature = work.join("SHA256SUMS.minisig");
+        download(&format!("{RELEASES}/download/{tag}/SHA256SUMS.minisig"), &signature)?;
+        let sums = std::fs::read(&sums)?;
+        verify_signature(RELEASE_KEY, &sums, &std::fs::read_to_string(&signature)?, &tag)?;
+        let expected = String::from_utf8(sums)?
             .lines()
             .find_map(|line| {
                 let (sum, name) = line.split_once(char::is_whitespace)?;
@@ -397,6 +407,19 @@ fn download(url: &str, to: &Path) -> Result<()> {
     run(Command::new("curl").args(["-fsSL", "-o"]).arg(to).arg(url)).with_context(|| format!("could not download {url}"))
 }
 
+/// Checks that `sums` is the `SHA256SUMS` signed for `tag` by `key`. The
+/// signed comment names the release, so the signed sums of another one
+/// can't be passed off as this one's.
+fn verify_signature(key: &str, sums: &[u8], signature: &str, tag: &str) -> Result<()> {
+    let key = minisign_verify::PublicKey::decode(key).context("the release key is not valid")?;
+    let signature = minisign_verify::Signature::decode(signature).context("the release's signature is not valid")?;
+    key.verify(sums, &signature, false).context("SHA256SUMS is not signed by Den's release key")?;
+    if signature.trusted_comment() != format!("den {tag} SHA256SUMS") {
+        bail!("SHA256SUMS is signed for another release: {}", signature.trusted_comment());
+    }
+    Ok(())
+}
+
 fn sha256(path: &Path) -> Result<String> {
     let output = Command::new("shasum")
         .args(["-a", "256"])
@@ -430,6 +453,31 @@ fn tempdir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key made for these tests only, and sums signed with it.
+    const TEST_KEY: &str = "untrusted comment: minisign public key 1D468AA41E9C978B
+RWSLl5wepIpGHfYQcqqq5qICb0We/Y11qdK9zOg1JzYGkU+XDgI/RiNj
+";
+    const SUMS: &str = "abc123  den-9.9.9-macos-aarch64.zip\n";
+    const SIGNATURE: &str = "untrusted comment: signature from minisign secret key
+RUSLl5wepIpGHbxfHbzwzFrPiGrXW43XYo3/APeIPXK+ce/H+pxVH810j1NUsKwdRbk/mZbm0O0pPVBIdUkw35NJT+MJwzhAQwE=
+trusted comment: den v9.9.9 SHA256SUMS
+xTXliG/BdamJkyXurYv5A7rPeoMf2alJJMKwXhqq+JPN9m6VZ4mFharriGWJsSiIJIr7F50b5ay16hRfK6bcCg==
+";
+
+    #[test]
+    fn only_signed_sums_of_that_release_are_trusted() {
+        verify_signature(TEST_KEY, SUMS.as_bytes(), SIGNATURE, "v9.9.9").unwrap();
+        let changed = SUMS.replace("abc123", "abc124");
+        assert!(verify_signature(TEST_KEY, changed.as_bytes(), SIGNATURE, "v9.9.9").is_err());
+        assert!(verify_signature(TEST_KEY, SUMS.as_bytes(), SIGNATURE, "v9.9.10").is_err());
+        assert!(verify_signature(RELEASE_KEY, SUMS.as_bytes(), SIGNATURE, "v9.9.9").is_err());
+    }
+
+    #[test]
+    fn the_release_key_is_valid() {
+        minisign_verify::PublicKey::decode(RELEASE_KEY).unwrap();
+    }
 
     #[test]
     fn only_a_later_release_is_newer() {

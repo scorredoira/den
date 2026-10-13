@@ -61,6 +61,24 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS
+      # The app installs an update only if its SHA256SUMS is signed with this
+      # key for that release (`verify_signature` in crates/ui/src/update.rs).
+      - name: Sign the checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if [[ -z "$MINISIGN_SECRET_KEY" ]]; then
+            echo "The MINISIGN_SECRET_KEY secret is not set: installed apps would refuse this release." >&2
+            exit 1
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          minisign -S -s "$key" -m dist/SHA256SUMS -t "den $RELEASE_TAG SHA256SUMS"
+          minisign -V -p packaging/minisign.pub -m dist/SHA256SUMS
       - name: Publish all packages together
         env:
           GH_TOKEN: ${{ github.token }}
