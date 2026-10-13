@@ -14,8 +14,15 @@ use tokio::{
     sync::watch,
 };
 use windows_sys::Win32::{
-    Foundation::LocalFree,
-    Security::{Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES},
+    Foundation::{CloseHandle, HANDLE, LocalFree},
+    Security::{
+        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, EqualSid, GetTokenInformation,
+        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    },
+    System::{
+        Pipes::GetNamedPipeServerProcessId,
+        Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
+    },
 };
 
 fn runtime() -> &'static Runtime {
@@ -79,6 +86,58 @@ impl Listener {
     }
 }
 
+/// Whether the process that created the pipe runs as the same user as this one.
+fn served_by_this_user(pipe: &NamedPipeClient) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    let mut pid = 0;
+    // SAFETY: a valid pipe handle and output storage; the process handle is
+    // closed before returning.
+    let server = unsafe {
+        if GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let user = token_user(process);
+        CloseHandle(process);
+        user?
+    };
+    // SAFETY: the pseudo-handle of this process needs no closing.
+    let ours = token_user(unsafe { GetCurrentProcess() })?;
+    // SAFETY: both buffers hold a `TOKEN_USER` whose SID points into them.
+    Ok(unsafe { EqualSid(sid(&server), sid(&ours)) } != 0)
+}
+
+/// The `TOKEN_USER` of a process (a valid handle with query access), in a
+/// buffer aligned for it; its SID points into the same buffer.
+fn token_user(process: HANDLE) -> io::Result<Vec<u64>> {
+    let mut token = std::ptr::null_mut();
+    // SAFETY: valid handles and output storage of the sizes given; the token
+    // is closed before returning.
+    unsafe {
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // The first call only says how big it is.
+        let mut size = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
+        let mut buffer = vec![0u64; (size as usize).div_ceil(8).max(1)];
+        let result = match GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), size, &mut size) {
+            0 => Err(io::Error::last_os_error()),
+            _ => Ok(buffer),
+        };
+        CloseHandle(token);
+        result
+    }
+}
+
+fn sid(token_user: &[u64]) -> *mut std::ffi::c_void {
+    // SAFETY: filled by `GetTokenInformation(TokenUser)`, and aligned for it.
+    unsafe { (*token_user.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+}
+
 enum Pipe {
     Client(NamedPipeClient),
     Server(NamedPipeServer),
@@ -102,7 +161,13 @@ impl Stream {
 
     pub fn connect(path: &Path) -> io::Result<Self> {
         let _enter = runtime().enter();
-        Ok(Self::new(Pipe::Client(ClientOptions::new().open(name(path))?)))
+        let pipe = ClientOptions::new().open(name(path))?;
+        // The name is predictable: another local user could have created the
+        // pipe first, to receive what the app sends to its agent.
+        if !served_by_this_user(&pipe)? {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the agent's pipe belongs to another user"));
+        }
+        Ok(Self::new(Pipe::Client(pipe)))
     }
 
     /// Wakes whoever waits on the pipe, then closes it: the other end sees EOF.

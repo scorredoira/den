@@ -12,4 +12,4 @@ flate2 = "1.1"
 
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Authorization"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading"] }
