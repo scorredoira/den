@@ -7,6 +7,7 @@ use gpui_kit::{Hsla, Rgba, rgb};
 /// Terminal colors: the 16 ANSI ones for the light or dark theme, and the
 /// text and background from the app theme.
 pub struct Palette {
+    dark: bool,
     ansi: [Hsla; 16],
     pub foreground: Hsla,
     pub background: Hsla,
@@ -28,12 +29,18 @@ impl Palette {
     pub fn new(dark: bool, foreground: Hsla, background: Hsla, selection: Hsla) -> Self {
         let table = if dark { DARK } else { LIGHT };
         Self {
+            dark,
             ansi: table.map(|hex| rgb(hex).into()),
             foreground,
             background,
             cursor: foreground,
             selection,
         }
+    }
+
+    /// Whether it's the one `new` makes of these: the theme didn't change.
+    pub fn is(&self, dark: bool, foreground: Hsla, background: Hsla, selection: Hsla) -> bool {
+        (self.dark, self.foreground, self.background, self.selection) == (dark, foreground, background, selection)
     }
 
     /// Resolves a cell color. `overrides` are the ones the application

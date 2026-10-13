@@ -162,12 +162,7 @@ impl Element for TerminalElement {
             family: theme.mono_font_family.clone(),
             ..Font::default()
         };
-        let palette = Rc::new(Palette::new(
-            theme.is_dark(),
-            theme.foreground,
-            theme.background,
-            theme.selection,
-        ));
+        let colors = (theme.is_dark(), theme.foreground, theme.background, theme.selection);
         let font_size = self.font_size;
         let grid = grid_size(bounds.size, &font, font_size, window);
         let GridSize {
@@ -179,9 +174,14 @@ impl Element for TerminalElement {
             origin: bounds.origin,
             size: grid,
         }));
-        self.terminal.update(cx, |terminal, _| {
+        // Made again only when the theme changes.
+        let palette = self.terminal.update(cx, |terminal, _| {
             terminal.resize(grid);
-            terminal.palette = Some(palette.clone());
+            let (dark, foreground, background, selection) = colors;
+            match &terminal.palette {
+                Some(palette) if palette.is(dark, foreground, background, selection) => palette.clone(),
+                _ => terminal.palette.insert(Rc::new(Palette::new(dark, foreground, background, selection))).clone(),
+            }
         });
 
         let terminal = self.terminal.read(cx);
@@ -195,6 +195,7 @@ impl Element for TerminalElement {
         let mut blocks: Vec<Block> = Vec::new();
         let mut cursor_cell: Option<(Cell, Hsla, Hsla)> = None;
         let cursor_point = content.cursor.point;
+        let mut next_match = 0;
 
         for indexed in content.display_iter {
             let cell = &*indexed;
@@ -219,7 +220,7 @@ impl Element for TerminalElement {
                 .selection
                 .is_some_and(|selection| selection.contains(indexed.point));
             // As the editor's: the matches a faint selection, the active one a full one.
-            let found = self.matches.iter().find(|(found, _)| found.contains(&indexed.point));
+            let found = match_at(&self.matches, &mut next_match, indexed.point);
             if selected || found.is_some_and(|(_, active)| *active) {
                 bg = palette.selection;
             } else if found.is_some() {
@@ -701,11 +702,37 @@ pub fn grid_point(
     )
 }
 
+/// The match `point` is in, if any. The cells are asked for in order, as
+/// the matches are: `next`, the first not yet passed, only moves on, so
+/// each match is looked at once a frame, not once a cell.
+fn match_at<'a>(
+    matches: &'a [(RangeInclusive<AlacPoint>, bool)],
+    next: &mut usize,
+    point: AlacPoint,
+) -> Option<&'a (RangeInclusive<AlacPoint>, bool)> {
+    while matches.get(*next).is_some_and(|(found, _)| *found.end() < point) {
+        *next += 1;
+    }
+    matches.get(*next).filter(|(found, _)| found.contains(&point))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AlacPoint, GridLayout, GridSize, Line, grid_point};
+    use super::{AlacPoint, GridLayout, GridSize, Line, grid_point, match_at};
     use alacritty_terminal::index::{Column, Side};
     use gpui_kit::{point, px};
+
+    #[test]
+    fn cells_in_order_find_their_matches() {
+        let at = |line, col| AlacPoint::new(Line(line), Column(col));
+        let matches = vec![(at(0, 2)..=at(0, 4), false), (at(0, 9)..=at(1, 1), true), (at(3, 0)..=at(3, 0), false)];
+        let mut next = 0;
+        let found: Vec<Option<bool>> = [at(0, 0), at(0, 2), at(0, 4), at(0, 5), at(0, 9), at(1, 0), at(1, 1), at(2, 5), at(3, 0), at(3, 1)]
+            .into_iter()
+            .map(|point| match_at(&matches, &mut next, point).map(|(_, active)| *active))
+            .collect();
+        assert_eq!(found, [None, Some(false), Some(false), None, Some(true), Some(true), Some(true), None, Some(false), None]);
+    }
 
     #[test]
     fn the_right_margin_selects_the_last_column_whole() {
