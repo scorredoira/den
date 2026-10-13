@@ -24,6 +24,7 @@ regex = "1"
 lsp-types = "0.97"
 tree-sitter-xml = "0.7"
 tree-sitter = "0.26"
+tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already GPUI's: Cmd-E asks AppKit whether its key is held down.

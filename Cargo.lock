@@ -7730,6 +7730,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smol",
+ "tempfile",
  "tree-sitter",
  "tree-sitter-xml",
  "ui-term",

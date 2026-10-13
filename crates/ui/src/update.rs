@@ -420,11 +420,11 @@ fn run(command: &mut Command) -> Result<()> {
     Ok(())
 }
 
+/// A new folder only this user can enter: under a shared `/tmp`, a folder
+/// with a name known in advance could be another user's, who could then swap
+/// the archive after its checksum or the `install.sh` that is run.
 fn tempdir() -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("den-update-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    Ok(tempfile::Builder::new().prefix("den-update-").tempdir()?.keep())
 }
 
 #[cfg(test)]
