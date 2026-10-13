@@ -1,5 +1,3 @@
-## Den 1.0
-
 A native IDE for working with coding agents. Every folder you open is a workspace with its files, its changes and its terminals; a git repo's worktrees are workspaces too, so several branches can be open side by side, each with its own Claude Code session.
 
 - **Workspaces on every machine:** this one, SSH servers and, on Windows, WSL distros. Terminals live in an agent next to the files: closing Den doesn't stop them, and they come back as they were.
