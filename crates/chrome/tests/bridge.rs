@@ -691,11 +691,20 @@ fn the_url_opens_on_run() -> Result<()> {
 
 // The server and the bridge start together, and the server listens later:
 // the page waits for it rather than showing Chrome's error.
+/// A free port below every system's ephemeral range: a port nobody listens
+/// on until the test does, which the other tests' servers and Chromes,
+/// bound to port 0 meanwhile, can't be given.
+fn unhanded_port() -> Result<u16> {
+    let start = 20000 + (std::process::id() % 10000) as u16;
+    (start..32768)
+        .chain(20000..start)
+        .find(|&port| TcpListener::bind(("127.0.0.1", port)).is_ok())
+        .context("no free port below 32768")
+}
+
 #[test]
 fn the_url_waits_for_its_server() -> Result<()> {
-    let reserved = TcpListener::bind("127.0.0.1:0").context("reserve a port")?;
-    let port = reserved.local_addr()?.port();
-    drop(reserved);
+    let port = unhanded_port()?;
     let profile = std::env::temp_dir().join(format!("den-chrome-test-{}-late", std::process::id()));
     let options = Options {
         port: 0,
