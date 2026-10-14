@@ -162,9 +162,6 @@ pub(crate) enum Mode {
     Editing,
     /// A debug session runs, whatever is in front.
     Debugging,
-    /// The History tab shows: without the terminals unless they were shown
-    /// there (`Config::history_terminals`).
-    History,
 }
 
 /// What shows around the code while editing, the same in every workspace.
@@ -307,38 +304,19 @@ impl Workspace {
             return;
         }
         self.debugging = debugging;
-        if self.change_mode(cx) {
+        if self.change_mode() {
             self.layout_changed(cx);
-        }
-    }
-
-    /// The mode follows what's drawn: the History tab came into sight or
-    /// left it. Remembered right after, not while drawing.
-    pub(super) fn sync_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.change_mode(cx) {
-            cx.defer_in(window, |this, _, cx| this.layout_changed(cx));
-        }
-    }
-
-    fn current_mode(&self) -> Mode {
-        if self.debugging {
-            Mode::Debugging
-        } else if self.history_visible() {
-            Mode::History
-        } else {
-            Mode::Editing
         }
     }
 
     /// Into the mode it's in now, if it wasn't: the panels of the one left
     /// are kept, and those of the next come back as it left them, or as it
-    /// starts (the History's terminals as they last were there). Whether it
-    /// changed.
-    fn change_mode(&mut self, cx: &App) -> bool {
+    /// starts. Whether it changed.
+    fn change_mode(&mut self) -> bool {
         if self.plain {
             return false;
         }
-        let mode = self.current_mode();
+        let mode = if self.debugging { Mode::Debugging } else { Mode::Editing };
         if mode == self.mode {
             return false;
         }
@@ -349,7 +327,6 @@ impl Workspace {
         let next = match mode {
             Mode::Editing => kept.unwrap_or(now),
             Mode::Debugging => kept.unwrap_or_else(Shown::debugging),
-            Mode::History => Shown { terminals: Config::get(cx).history_terminals, ..kept.unwrap_or(now) },
         };
         self.panels.show(next);
         if !next.terminals {
@@ -369,8 +346,8 @@ impl Workspace {
     }
 
     /// What showed editing in the workspace left shows here too: going from
-    /// one to another doesn't change what's around the code. Debugging or
-    /// in the History tab, it's what editing comes back to.
+    /// one to another doesn't change what's around the code. Debugging,
+    /// it's what editing comes back to.
     pub(crate) fn share_panels(&mut self, shared: SharedPanels, cx: &mut Context<Self>) {
         if self.mode != Mode::Editing {
             self.kept_shown.insert(Mode::Editing, shared.shown);
@@ -414,10 +391,6 @@ impl Workspace {
     pub(crate) fn layout_changed(&mut self, cx: &mut Context<Self>) {
         if self.plain {
             return cx.notify();
-        }
-        let terminals = self.panels.terminals;
-        if self.mode == Mode::History && Config::get(cx).history_terminals != terminals {
-            Config::update(cx, |config| config.history_terminals = terminals);
         }
         self.remember(cx);
         cx.notify();

@@ -745,7 +745,6 @@ impl Render for Workspace {
         }
         self.apply_word_wrap(window, cx);
         self.apply_tab(cx);
-        self.sync_mode(window, cx);
         // What the panels show follows what's drawn here, told to them right
         // after: told while drawing, the ones drawn from cache wouldn't see
         // it until something else redrew them.

@@ -251,40 +251,19 @@ fn the_debug_icon_toggles_its_tab(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Console, cx)));
 }
 
-/// The History tab in front hides the terminals, for the width; shown
-/// there, they show there the next time. Another tab in front, or the tab
-/// closed, brings the terminals back as editing had them.
+/// The History tab in front leaves the panels as they were: the terminals
+/// still show beside it.
 #[gpui_kit::test]
-fn the_history_has_the_width(cx: &mut TestAppContext) {
+fn the_history_keeps_the_panels(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     let editing = bounds(cx, "terminals");
     workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("terminals").is_none(), "the terminals hide");
-    assert!(bounds(cx, "commit-files").right() > editing.left(), "the history takes their width");
-    workspace.update_in(cx, |workspace, window, cx| workspace.activate(0, window, cx));
-    cx.run_until_parked();
-    assert_eq!(bounds(cx, "terminals"), editing, "back on another tab");
-    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("terminals").is_none());
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Terminals, cx));
-    cx.run_until_parked();
-    bounds(cx, "terminals");
-    assert!(cx.update(|_, cx| Config::get(cx).history_terminals), "remembered");
-    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_history(window, cx));
-    cx.run_until_parked();
+    assert_eq!(bounds(cx, "terminals"), editing);
     workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
-    cx.run_until_parked();
-    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
-    cx.run_until_parked();
-    bounds(cx, "terminals");
-    // Saved with the workspace: editing's, as it reopens editing.
-    let saved = workspace.read_with(cx, |workspace, cx| workspace.session(cx).shows);
-    assert_eq!(saved, Some(config::SavedPanels { terminals: false }));
     workspace.update_in(cx, |workspace, window, cx| workspace.toggle_history(window, cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("terminals").is_none(), "editing as it was left");
+    assert!(cx.debug_bounds("terminals").is_none(), "hidden in the history, hidden after it");
 }
 
 #[gpui_kit::test]
