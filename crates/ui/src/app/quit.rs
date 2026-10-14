@@ -108,10 +108,9 @@ impl Den {
     pub(super) fn go_to_unsaved(&mut self, key: TaskKey, file: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         // Not quitting after all, as with Cancel.
         self.cancel_quit(window, cx);
-        let path = key.path.join(&file);
         self.activate(key, window, cx);
         if let Some(workspace) = self.active_workspace() {
-            workspace.update(cx, |workspace, cx| workspace.open(path, true, window, cx));
+            workspace.update(cx, |workspace, cx| workspace.show_unsaved(&file, window, cx));
         }
     }
 

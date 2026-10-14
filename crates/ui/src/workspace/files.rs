@@ -283,7 +283,7 @@ impl Workspace {
         let paths: Vec<PathBuf> = self
             .tabs
             .iter()
-            .filter(|tab| tab.is_file() && matches!(tab.content, Content::Ready))
+            .filter(|tab| tab.is_file() && !tab.has_no_file() && matches!(tab.content, Content::Ready))
             .map(|tab| tab.path.clone())
             .collect();
         for path in paths {
@@ -418,6 +418,9 @@ impl Workspace {
         let Some(ix) = self.active_file() else {
             return;
         };
+        if self.tabs[ix].is_untitled() {
+            return self.save_untitled(ix, window, cx);
+        }
         if self.tabs[ix].on_disk.is_some() {
             return self.ask_overwrite(ix, "Cancel", window, cx);
         }
@@ -482,8 +485,8 @@ impl Workspace {
         let Some(ix) = self.tabs.iter().position(|file| file.path == tab.path && file.is_file()) else {
             return;
         };
-        // Changed on disk too: only Cmd-S, which asks, saves it.
-        if self.tabs[ix].dirty && self.tabs[ix].on_disk.is_none() {
+        // Changed on disk too, or untitled: only Cmd-S, which asks, saves it.
+        if self.tabs[ix].dirty && self.tabs[ix].on_disk.is_none() && !self.tabs[ix].is_untitled() {
             self.save_file(ix, window, cx);
         }
     }
@@ -588,6 +591,11 @@ impl Workspace {
             return Task::ready(true);
         }
         let tab = &self.tabs[ix];
+        if tab.is_untitled() {
+            self.message = Some(format!("Not saved: {} has no name yet; Save asks for one", file_name(&tab.path)).into());
+            cx.notify();
+            return Task::ready(false);
+        }
         // Image tabs have an empty text editor; saving it would erase the image.
         if !matches!(tab.content, Content::Ready) || !tab.is_file() || tab.image.is_some() {
             return Task::ready(true);

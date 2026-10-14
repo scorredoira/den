@@ -52,7 +52,7 @@ impl Workspace {
         self.mark_shown(ix);
         self.message = None;
         let tab = &self.tabs[ix];
-        let (path, doc) = (tab.path.clone(), tab.doc || tab.is_edit());
+        let (path, doc) = (tab.path.clone(), tab.doc || tab.has_no_file());
         // The history rereads what changed while it was out of sight.
         if matches!(tab.page, Some(pages::Page::History)) {
             self.history.update(cx, |history, cx| history.shown(cx));
@@ -287,19 +287,6 @@ impl Workspace {
     /// its diff and its side preview share one).
     pub(super) fn tab_index(&self, editor: &Entity<EditorState>) -> Option<usize> {
         self.tabs.iter().position(|tab| &tab.editor == editor)
-    }
-
-    /// Cmd-N: a new file in the folder of the file open, or the workspace's,
-    /// named in the files panel.
-    pub(super) fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self
-            .active_file()
-            .and_then(|ix| self.tabs[ix].path.parent())
-            .filter(|dir| dir.starts_with(&self.root))
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.clone());
-        self.show_panel(Panel::Files, cx);
-        self.file_tree.update(cx, |tree, cx| tree.new_file_in(dir, window, cx));
     }
 
     pub(super) fn reveal_in_tree(&mut self, path: &Path, cx: &mut Context<Self>) {

@@ -128,6 +128,8 @@ enum Done {
 }
 
 pub enum FileTreeEvent {
+    /// The name typed for an untitled tab's file.
+    SaveAs { path: PathBuf },
     /// Open a file; `pin` is false for the preview.
     Open { path: PathBuf, pin: bool },
     Renamed { from: PathBuf, to: PathBuf },
@@ -177,6 +179,9 @@ enum EditKind {
     Rename(PathBuf),
     NewFile { dir: PathBuf },
     NewFolder { dir: PathBuf },
+    /// The name of an untitled tab's file: nothing is made here, the
+    /// workspace writes it.
+    SaveAs { dir: PathBuf },
 }
 
 struct Edit {
@@ -340,7 +345,7 @@ impl FileTree {
         // A new item's name is typed where it will be once made: among its
         // folder's, in their order, moving as the name changes.
         let mut new = match &self.edit {
-            Some(Edit { kind: EditKind::NewFile { dir: target }, input, .. }) if target == dir => {
+            Some(Edit { kind: EditKind::NewFile { dir: target } | EditKind::SaveAs { dir: target }, input, .. }) if target == dir => {
                 Some(order(false, input.read(cx).value().trim()))
             }
             Some(Edit { kind: EditKind::NewFolder { dir: target }, input, .. }) if target == dir => {
@@ -651,18 +656,18 @@ impl FileTree {
         }
     }
 
-    /// The folder a new file's name is being typed in.
+    /// The folder an untitled tab's file name is being typed in.
     #[cfg(test)]
-    pub fn new_file_dir(&self) -> Option<&Path> {
+    pub fn save_as_dir(&self) -> Option<&Path> {
         match &self.edit {
-            Some(Edit { kind: EditKind::NewFile { dir }, .. }) => Some(dir),
+            Some(Edit { kind: EditKind::SaveAs { dir }, .. }) => Some(dir),
             _ => None,
         }
     }
 
-    /// Types a new file's name at the top of `dir`, its folders open.
-    pub fn new_file_in(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.start_edit(EditKind::NewFile { dir }, window, cx);
+    /// Types the name of an untitled tab's file in `dir`, as a new file's.
+    pub fn save_as_in(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_edit(EditKind::SaveAs { dir }, window, cx);
     }
 
     fn start_edit(&mut self, kind: EditKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -673,7 +678,7 @@ impl FileTree {
                 .unwrap_or_default(),
             _ => String::new(),
         };
-        if let EditKind::NewFile { dir } | EditKind::NewFolder { dir } = &kind {
+        if let EditKind::NewFile { dir } | EditKind::NewFolder { dir } | EditKind::SaveAs { dir } = &kind {
             let mut open = Some(dir.as_path());
             while let Some(d) = open
                 && d.starts_with(&self.root)
@@ -686,7 +691,7 @@ impl FileTree {
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| match event {
             InputEvent::Blur => this.cancel_edit(cx),
             // The new item's row follows its name to its place.
-            InputEvent::Change if matches!(this.edit.as_ref().map(|edit| &edit.kind), Some(EditKind::NewFile { .. } | EditKind::NewFolder { .. })) => {
+            InputEvent::Change if matches!(this.edit.as_ref().map(|edit| &edit.kind), Some(EditKind::NewFile { .. } | EditKind::NewFolder { .. } | EditKind::SaveAs { .. })) => {
                 this.rebuild(cx);
                 cx.notify();
             }
@@ -736,6 +741,10 @@ impl FileTree {
             }
             EditKind::NewFile { dir } => self.create(dir.join(&name), false, cx),
             EditKind::NewFolder { dir } => self.create(dir.join(&name), true, cx),
+            EditKind::SaveAs { dir } if self.entry(&dir.join(&name)).is_some() => {
+                cx.emit(FileTreeEvent::Error(format!("{name} already exists").into()))
+            }
+            EditKind::SaveAs { dir } => cx.emit(FileTreeEvent::SaveAs { path: dir.join(&name) }),
         }
     }
 
@@ -1333,7 +1342,7 @@ impl Render for FileTree {
                     let expanded = is_dir && path.as_ref().is_some_and(|path| view.read(cx).expanded.contains(path));
                     let input = editing.as_ref().and_then(|(kind, input)| match (kind, &path) {
                         (EditKind::Rename(target), Some(path)) if target == path => Some(input.clone()),
-                        (EditKind::NewFile { .. } | EditKind::NewFolder { .. }, None) => Some(input.clone()),
+                        (EditKind::NewFile { .. } | EditKind::NewFolder { .. } | EditKind::SaveAs { .. }, None) => Some(input.clone()),
                         _ => None,
                     });
                     let renaming = input.is_some();

@@ -67,6 +67,7 @@ mod files;
 mod navigation;
 mod render;
 mod tabs;
+mod untitled;
 #[cfg(test)]
 pub(crate) mod autosave_tests;
 #[cfg(test)]
@@ -555,6 +556,7 @@ impl Workspace {
                 &file_tree,
                 window,
                 |this, _, event: &FileTreeEvent, window, cx| match event {
+                    FileTreeEvent::SaveAs { path } => this.named_in_tree(path.clone(), window, cx),
                     FileTreeEvent::Open { path, pin } => this.open_with(path.clone(), *pin, *pin, window, cx),
                     FileTreeEvent::Renamed { from, to } => this.renamed(from, to, cx),
                     FileTreeEvent::Trashed { path } => this.trashed(path, window, cx),
@@ -826,7 +828,7 @@ impl Workspace {
             ..Session::default()
         };
         // A page is a doc that opens again; the shortcuts guide isn't.
-        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.is_edit() && (!tab.doc || tab.page.is_some())) {
+        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.has_no_file() && (!tab.doc || tab.page.is_some())) {
             if self.active == Some(ix) {
                 session.active = Some(session.tabs.len());
             }
@@ -1546,11 +1548,24 @@ impl Workspace {
 
     /// Files with unsaved changes, relative to the task's folder.
     pub fn unsaved(&self) -> Vec<PathBuf> {
-        self.tabs
-            .iter()
-            .filter(|tab| tab.dirty)
-            .map(|tab| tab.path.strip_prefix(&self.root).unwrap_or(&tab.path).to_path_buf())
-            .collect()
+        self.tabs.iter().filter(|tab| tab.dirty).map(|tab| self.unsaved_name(tab)).collect()
+    }
+
+    /// How `unsaved` names a tab: its file from the task's folder, or the
+    /// tab's name if it has no file.
+    fn unsaved_name(&self, tab: &FileTab) -> PathBuf {
+        match tab.has_no_file() {
+            true => PathBuf::from(file_name(&tab.path)),
+            false => tab.path.strip_prefix(&self.root).unwrap_or(&tab.path).to_path_buf(),
+        }
+    }
+
+    /// Goes to the tab of `file`, as `unsaved` names it.
+    pub fn show_unsaved(&mut self, file: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        match self.tabs.iter().position(|tab| tab.dirty && self.unsaved_name(tab) == file) {
+            Some(ix) => self.activate(ix, window, cx),
+            None => self.open(self.root.join(file), true, window, cx),
+        }
     }
 
     /// Focus on entering the task: the terminal if there is one, otherwise the
