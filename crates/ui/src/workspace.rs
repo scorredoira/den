@@ -442,6 +442,8 @@ pub struct Workspace {
     /// And those of each open file, which the root's may not report: git
     /// ignores it, or it's elsewhere.
     file_watches: HashMap<PathBuf, client::Watch>,
+    /// The window it's drawn in: what a save finds changed on disk asks there.
+    window: AnyWindowHandle,
     /// On this machine (not on a server).
     local: bool,
     changes: Entity<ChangesPanel>,
@@ -672,6 +674,7 @@ impl Workspace {
             client: agent,
             fs_watch,
             file_watches: HashMap::new(),
+            window: window.window_handle(),
             local,
             changes,
             history,

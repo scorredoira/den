@@ -454,8 +454,12 @@ impl Workspace {
                         let generation = this.begin_read(&path);
                         this.loaded(&path, true, generation, Ok(Read::Text(text)), window, cx);
                     }
+                    // What's on disk is what it saves over.
                     Ok(2) => {
-                        this.tabs[ix].on_disk = None;
+                        let tab = &mut this.tabs[ix];
+                        if let Some(text) = tab.on_disk.take() {
+                            tab.saved = text;
+                        }
                         this.save_file(ix, window, cx);
                     }
                     _ => {}
@@ -622,6 +626,28 @@ impl Workspace {
                 Ok(Some(Err(()))) => return false,
                 _ => (None, text),
             };
+            // What's on disk is checked as it saves: another program may have
+            // changed it before the watch said so.
+            if let Some(before) = &before
+                && let Ok(Response::Bytes(bytes)) = client.request(Request::ReadFile { path: path.clone() }).await
+                && let Ok(disk) = decode_text(bytes)
+                && disk != *before
+            {
+                let window = this.read_with(cx, |this, _| this.window).ok();
+                let changed = |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    let Some(tab) = this.tabs.iter_mut().find(|tab| tab.editor == editor && tab.path == path) else {
+                        return;
+                    };
+                    tab.saved = before.clone();
+                    let generation = this.begin_read(&path);
+                    this.loaded(&path, true, generation, Ok(Read::Text(disk)), window, cx);
+                };
+                if let Some(window) = window {
+                    let this = this.clone();
+                    window.update(cx, |_, window, cx| this.update(cx, |this, cx| changed(this, window, cx))).ok();
+                }
+                return false;
+            }
             let result = client.request(Request::WriteFile {
                 path: path.clone(),
                 data: text.clone().into_bytes(),

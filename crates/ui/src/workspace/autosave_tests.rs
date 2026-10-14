@@ -189,3 +189,46 @@ fn wait_for_save(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) {
         assert!(workspace.tabs[1].editor.read(cx).focus_handle(cx).is_focused(window));
     });
 }
+
+/// Changed on disk before the watch said so: saving finds it, doesn't write
+/// over it and asks; Overwrite writes. Run as the test above.
+#[gpui_kit::test]
+#[ignore]
+fn saving_checks_the_disk(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let executable = std::env::var_os("DEN_TEST_AGENT").expect("isolated test agent required");
+    let root = PathBuf::from(std::env::var_os("DEN_STATE_DIR").expect("isolated test state required"));
+    let client = Client::connect_local(Path::new(&executable)).unwrap();
+    let file = root.join("theirs.txt");
+    std::fs::write(&file, "original").unwrap();
+    let (workspace, cx) = workspace(cx);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        this.root = root.clone();
+        this.client = Some(client);
+        add_tab(this, file.clone(), window, cx);
+        let editor = this.tabs[0].editor.clone();
+        editor.update(cx, |state, cx| state.set_value("mine", window, cx));
+        this.on_edit(&editor, window, cx);
+        this.activate(0, window, cx);
+    }));
+    std::fs::write(&file, "theirs").unwrap();
+    cx.update(|window, cx| workspace.update(cx, |this, cx| this.save(&Save, window, cx)));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !cx.has_pending_prompt() {
+        cx.run_until_parked();
+        assert!(std::time::Instant::now() < deadline, "saving didn't ask");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "theirs");
+    cx.update(|_, cx| {
+        let tab = &workspace.read(cx).tabs[0];
+        assert_eq!((tab.saved.as_str(), tab.on_disk.as_deref(), tab.dirty), ("original", Some("theirs"), true));
+    });
+    cx.simulate_prompt_answer("Overwrite");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::fs::read_to_string(&file).unwrap() != "mine" {
+        cx.run_until_parked();
+        assert!(std::time::Instant::now() < deadline, "Overwrite didn't write");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
