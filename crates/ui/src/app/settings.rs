@@ -524,18 +524,25 @@ impl Den {
         Self::section(SECTIONS[4], rows, visible, cx)
     }
 
+    /// The shortcuts that match, under their sections.
     fn render_shortcuts(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let recording = settings.recording.as_ref().map(|(id, _)| *id);
-        let mut rows = Vec::new();
-        for shortcut in SHORTCUTS {
-            let keys = shortcuts::keys(shortcut, cx);
-            let keys_text = keys.as_ref().map(Kbd::format).unwrap_or_default();
-            if !matches(shortcut.label) && !matches(&keys_text) {
-                continue;
+        let mut sections = Vec::new();
+        for section in shortcuts::SECTIONS {
+            let mut rows = Vec::new();
+            for shortcut in SHORTCUTS.iter().filter(|shortcut| shortcut.section == *section) {
+                let keys = shortcuts::keys(shortcut, cx);
+                let keys_text = keys.as_ref().map(Kbd::format).unwrap_or_default();
+                if !matches(shortcut.label) && !matches(&keys_text) {
+                    continue;
+                }
+                rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
             }
-            rows.push(self.shortcut_row(shortcut, keys, recording, settings, cx));
+            if !rows.is_empty() {
+                sections.push(Self::section(section, rows, true, cx).0);
+            }
         }
-        rows
+        sections
     }
 
     fn shortcut_row(
