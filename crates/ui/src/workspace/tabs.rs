@@ -308,8 +308,8 @@ impl Workspace {
         if self.terminals.read(cx).contains_focus(window, cx) {
             self.terminals
                 .update(cx, |terminals, cx| terminals.close_focused(window, cx));
+            // The last one: the panel stays, saying Cmd-T opens another.
             if self.terminals.read(cx).is_empty() {
-                self.hide_panel(Panel::Terminals, cx);
                 self.focus_ide(window, cx);
             }
             return;
