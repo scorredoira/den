@@ -1105,8 +1105,11 @@ impl Render for HistoryView {
             .into_iter()
             .filter(|part| *part != HistoryPart::Files || !Config::get(cx).history_hide_files)
             .collect();
-        let top_state = self.top.state(viewport.width, &parts, cx).clone();
-        let mut columns = h_resizable("history-top").with_state(&top_state);
+        // No room for the diff's two sides: no room either for the parts
+        // side by side, and they go one under the other.
+        let stacked = self.commit.read(cx).cramped(cx);
+        let top_state = self.top.state(viewport.width, (&parts, stacked), cx).clone();
+        let mut columns = if stacked { v_resizable("history-top") } else { h_resizable("history-top") }.with_state(&top_state);
         for (ix, part) in parts.iter().copied().enumerate() {
             let (content, size) = match part {
                 HistoryPart::Commits => (self.render_commits(window, cx), None),
@@ -1116,7 +1119,8 @@ impl Render for HistoryView {
             let primary = cx.theme().primary;
             let column = div()
                 .size_full()
-                .when(ix > 0, |el| el.border_l_1())
+                .when(ix > 0 && !stacked, |el| el.border_l_1())
+                .when(ix > 0 && stacked, |el| el.border_t_1())
                 .border_color(cx.theme().border)
                 .child(content)
                 // dropped anywhere on the column, the dragged one takes its place
@@ -1128,13 +1132,17 @@ impl Render for HistoryView {
                     }
                 });
             let panel = resizable_panel().child(column);
+            // The saved sizes are widths: stacked, they share the height.
             columns = columns.child(match size {
-                Some(size) => panel.size(px(size)).size_range(px(120.)..px(2000.)),
-                None => panel,
+                Some(size) if !stacked => panel.size(px(size)).size_range(px(120.)..px(2000.)),
+                _ => panel.size_range(px(40.)..px(4000.)),
             });
         }
         let top = columns
             .on_resize(move |state, _, cx| {
+                if stacked {
+                    return;
+                }
                 let sizes: Vec<f32> = state.read(cx).sizes().iter().copied().map(f32::from).collect();
                 Config::update_quietly(cx, |config| {
                     for (part, size) in parts.iter().zip(sizes) {

@@ -1916,12 +1916,12 @@ fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut 
 }
 
 /// Keeps in `width` how wide the diff is, and redraws when that changes
-/// whether its sides fit.
+/// whether its two sides have room.
 pub(crate) fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
     let width = width.clone();
     canvas(
         move |bounds, window, cx| {
-            let fits = |width: Pixels| Config::get(cx).diff_side_by_side(width);
+            let fits = |width: Pixels| Config::get(cx).room_for_two_sides(width);
             if fits(width.replace(bounds.size.width)) != fits(bounds.size.width) {
                 window.refresh();
             }

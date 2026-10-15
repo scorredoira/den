@@ -160,6 +160,12 @@ impl CommitView {
         }
     }
 
+    /// No room for its two sides: unknown until it is painted.
+    pub fn cramped(&self, cx: &App) -> bool {
+        let width = self.width.get();
+        width > px(0.) && !Config::get(cx).room_for_two_sides(width)
+    }
+
     /// Scrolls to `file`'s changes.
     pub fn scroll_to(&self, file: &str) {
         let rows = if self.narrow.get() { &self.inline } else { &self.rows };

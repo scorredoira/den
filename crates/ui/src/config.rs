@@ -506,6 +506,12 @@ impl Config {
         self.side_by_side_width = width.filter(|width| *width != DEFAULT_SIDE_BY_SIDE_WIDTH);
     }
 
+    /// Whether a diff `width` wide has room for its two sides, whatever the
+    /// layout chosen.
+    pub fn room_for_two_sides(&self, width: Pixels) -> bool {
+        width >= px(self.side_by_side_width())
+    }
+
     /// Whether a diff `width` wide shows its two sides.
     pub fn diff_side_by_side(&self, width: Pixels) -> bool {
         self.diff_layout.side_by_side(width, self.side_by_side_width())
