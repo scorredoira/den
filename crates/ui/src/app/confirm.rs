@@ -91,17 +91,10 @@ impl Den {
         at_risk: Option<&AtRisk>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let detail = if key.host == LOCAL && self.task(key).is_some_and(|task| task.repo.join(".den/remove").is_file()) {
-            "The repo's .den/remove deletes it; depending on the repo, along with its uncommitted changes."
-        } else {
-            "With the repo's .den/remove if it has one; otherwise git worktree remove, which won't delete with uncommitted changes."
-        };
-        let (warning, action) = match at_risk {
-            None => (Some((false, "Looking for uncommitted changes and unmerged commits…".to_string())), "Delete"),
-            Some(at_risk) => match risk_text(at_risk) {
-                Some(text) => (Some((true, text)), "Delete Anyway"),
-                None => (None, "Delete"),
-            },
+        // Only what would be lost, and then how it goes; nothing to lose, just the question.
+        let (warning, detail, action) = match at_risk.and_then(risk_text) {
+            None => (None, None, "Delete"),
+            Some(text) => (Some((true, text)), Some(self.remove_detail(key)), "Delete Anyway"),
         };
         let key = key.clone();
         let title = format!("Delete {}?", self.label(&key));
@@ -114,7 +107,18 @@ impl Den {
         self.render_confirm(focus, title, warning, detail, action, true, confirm, cx)
     }
 
-    /// Git refused to delete it (`reason`, its words): with --force?
+    /// How Delete Worktree removes it: with the repo's script or to the Trash.
+    fn remove_detail(&self, key: &TaskKey) -> &'static str {
+        if key.host != LOCAL {
+            "With the repo's .den/remove if it has one; otherwise it goes to the Trash, uncommitted changes and all."
+        } else if self.task(key).is_some_and(|task| task.repo.join(".den/remove").is_file()) {
+            "The repo's .den/remove deletes it; depending on the repo, along with its uncommitted changes."
+        } else {
+            "It goes to the Trash, uncommitted changes and all."
+        }
+    }
+
+    /// The repo's script failed (`reason`, its words): to the Trash instead?
     pub(super) fn render_confirm_force_remove(
         &self,
         key: &TaskKey,
@@ -123,23 +127,23 @@ impl Den {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let key = key.clone();
-        let title = format!("Force delete {}?", self.label(&key));
-        let detail = "git worktree remove --force deletes it along with its uncommitted changes and untracked files, without the repo's .den/remove.";
+        let title = format!("Move {} to the Trash?", self.label(&key));
+        let detail = "It goes to the Trash, uncommitted changes and all, without the repo's .den/remove.";
         let confirm = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| this.remove_task(key.clone(), true, window, cx);
-        self.render_confirm(focus, title, Some((true, reason.to_string())), detail, "Force Delete", true, confirm, cx)
+        self.render_confirm(focus, title, Some((true, reason.to_string())), Some(detail), "Move to Trash", true, confirm, cx)
     }
 
     pub(super) fn render_confirm_restart(&self, name: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let name = name.clone();
         let title = format!("Restart the agent on {name}?");
         let detail = "A new version of the agent is available. Its terminals keep running through the restart, except on Windows or with an agent too old to hand them over: then they reopen in place, without their scrollback, and Claude Code resumes its conversation.";
-        self.render_confirm(focus, title, None, detail, "Restart", false, move |this, window, cx| this.restart_agent(name.clone(), window, cx), cx)
+        self.render_confirm(focus, title, None, Some(detail), "Restart", false, move |this, window, cx| this.restart_agent(name.clone(), window, cx), cx)
     }
 
     pub(super) fn render_confirm_update(&self, version: &SharedString, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let title = format!("Restart to update to Den {version}?");
         let detail = "Workspaces, open files and terminals reopen as they are, and whatever runs in the terminals keeps running. Unsaved files are asked about first.";
-        self.render_confirm(focus, title, None, detail, "Restart", false, |this, window, cx| this.restart_to_update(window, cx), cx)
+        self.render_confirm(focus, title, None, Some(detail), "Restart", false, |this, window, cx| this.restart_to_update(window, cx), cx)
     }
 
     fn restart_to_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -160,7 +164,7 @@ impl Den {
         focus: &FocusHandle,
         title: String,
         warning: Option<(bool, String)>,
-        detail: &'static str,
+        detail: Option<&'static str>,
         action: &'static str,
         destructive: bool,
         confirm: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + Clone + 'static,
@@ -215,7 +219,7 @@ impl Den {
                             .whitespace_normal()
                             .child(text)
                     }))
-                    .child(div().text_color(theme.muted_foreground).whitespace_normal().child(detail))
+                    .children(detail.map(|detail| div().text_color(theme.muted_foreground).whitespace_normal().child(detail)))
                     .child(
                         h_flex()
                             .gap_2()

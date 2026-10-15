@@ -85,8 +85,8 @@ pub enum Request {
     /// connected UIs open it (`den task` from a den terminal).
     TaskCreate { repo: PathBuf, name: String, open: bool },
     /// Removes the task (its worktree) with the repo's `.den/remove` if it
-    /// exists and, otherwise, with `git worktree remove` (which refuses if
-    /// there are uncommitted changes). Closes its terminals. May take a while.
+    /// exists and, otherwise, moving it to the Trash, uncommitted changes
+    /// and all. Closes its terminals. May take a while.
     TaskRemove { path: PathBuf },
     /// What the task at `path` has changed against its base branch (or, with
     /// `uncommitted`, only what isn't committed yet), not counting ignored files.
@@ -197,9 +197,8 @@ pub enum Request {
     /// The terminals running a coding agent right now. Responds `Agents`;
     /// `Event::Agents` says when they change.
     AgentList,
-    /// `TaskRemove` with `git worktree remove --force`, the repo's
-    /// `.den/remove` or not: what git refused to delete with uncommitted
-    /// changes, deleted along with them.
+    /// `TaskRemove` without the repo's `.den/remove`: to the Trash, for
+    /// when the script failed.
     TaskForceRemove { path: PathBuf },
     /// `ListDir` with what git ignores too (`target/`, `node_modules`…);
     /// never `.git`. Responds `Dir`.

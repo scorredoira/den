@@ -281,8 +281,8 @@ fn send_command(
     Ok(command)
 }
 
-/// Removes the task at `path` (with `force`, along with its uncommitted
-/// changes); its terminals close with it.
+/// Removes the task at `path` (with `force`, to the Trash without the
+/// repo's script); its terminals close with it.
 fn remove_task(state: &Shared, path: &Path, force: bool) -> Result<Response> {
     tasks::remove(path, force)?;
     // Its language servers too, which would go on indexing a folder that's gone.

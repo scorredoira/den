@@ -189,8 +189,8 @@ pub fn create(path: &Path, name: &str) -> Result<TaskInfo> {
 }
 
 /// Removes the task (the worktree) at `path`. Never the main checkout.
-/// With `force`, `git worktree remove --force` deletes it along with its
-/// uncommitted changes, without the repo's script.
+/// With the repo's script if it has one; otherwise, or with `force`, the
+/// folder goes to the Trash, uncommitted changes and all, and git forgets it.
 pub fn remove(path: &Path, force: bool) -> Result<()> {
     let repo = main_checkout(path)?;
     let task = worktrees(&repo)?
@@ -205,13 +205,8 @@ pub fn remove(path: &Path, force: bool) -> Result<()> {
     let output = if let Some(script) = script {
         run_script(&repo, &script, &[&name, &dunce::simplified(path).to_string_lossy()])?
     } else {
-        let force = if force { &["--force"][..] } else { &[] };
-        crate::platform::command("git")
-            .args(["worktree", "remove"])
-            .args(force)
-            .arg(dunce::simplified(path))
-            .current_dir(&repo)
-            .output()?
+        crate::fs::trash(path)?;
+        crate::platform::command("git").args(["worktree", "prune"]).current_dir(&repo).output()?
     };
     let log = output_log(&output);
     if !output.status.success() {
@@ -341,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn removes_with_git_and_refuses_dirty_and_main() {
+    fn removes_to_the_trash_but_never_the_main_checkout() {
         let repo = repo("remove");
         let task = create(&repo, "clean").unwrap();
         remove(&task.path, false).unwrap();
@@ -349,12 +344,10 @@ mod tests {
 
         let dirty = create(&repo, "dirty").unwrap();
         std::fs::write(dirty.path.join("change.txt"), "x").unwrap();
-        assert!(remove(&dirty.path, false).is_err());
-        assert!(dirty.path.exists());
-
-        // force deletes it, its changes too; never the main checkout
-        remove(&dirty.path, true).unwrap();
+        remove(&dirty.path, false).unwrap();
         assert!(!dirty.path.exists());
+        assert_eq!(worktrees(&repo).unwrap().len(), 1);
+
         assert!(remove(&repo, true).unwrap_err().to_string().contains("main checkout"));
 
         assert!(remove(&repo, false).unwrap_err().to_string().contains("main checkout"));
@@ -372,7 +365,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let err = remove(&task.path, false).unwrap_err().to_string();
         assert!(err.contains("still there") && err.contains("doing nothing with x in"), "{err}");
-        // force doesn't run the script: git removes it
+        // force doesn't run the script: it goes to the Trash
         remove(&task.path, true).unwrap();
         assert!(!task.path.exists());
     }
