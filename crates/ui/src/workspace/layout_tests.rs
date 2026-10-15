@@ -650,6 +650,30 @@ fn the_side_column_stays_from_workspace_to_workspace(cx: &mut TestAppContext) {
     assert_eq!(cx.update(|_, cx| Config::get(cx).layout.dock), Dock::Bottom);
 }
 
+/// The notes are each workspace's: shown in one, the next opens without
+/// them, and the first has them again on coming back.
+#[gpui_kit::test]
+fn the_notes_stay_in_their_workspace(cx: &mut TestAppContext) {
+    let (first, cx) = draw(cx, |_| {});
+    let second = first.update_in(cx, |_, window, cx| cx.new(|cx| Workspace::new(PathBuf::from("/other"), None, true, "other".into(), window, cx)));
+    first.update(cx, |workspace, cx| {
+        workspace.hide_panel(Panel::Terminals, cx);
+        workspace.show_panel(Panel::Notes, cx);
+    });
+    let left = first.read_with(cx, |workspace, _| workspace.editing_panels());
+    second.update(cx, |workspace, cx| workspace.share_panels(left, cx));
+    second.read_with(cx, |workspace, cx| {
+        assert!(!workspace.is_shown(Panel::Notes, cx));
+        assert!(!workspace.is_shown(Panel::Terminals, cx), "they were open for the notes");
+    });
+    second.update(cx, |workspace, cx| workspace.show_panel(Panel::Terminals, cx));
+    let left = second.read_with(cx, |workspace, _| workspace.editing_panels());
+    first.update(cx, |workspace, cx| workspace.share_panels(left, cx));
+    first.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Notes, cx)));
+    first.update(cx, |workspace, cx| workspace.hide_panel(Panel::Notes, cx));
+    first.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx), "shown in the other one"));
+}
+
 /// What a workspace shows is saved with what it has open: opened again, it
 /// shows as it did.
 #[gpui_kit::test]

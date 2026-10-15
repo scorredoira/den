@@ -172,6 +172,27 @@ pub(crate) struct SharedPanels {
     maximized: bool,
 }
 
+impl SharedPanels {
+    /// The notes are each workspace's: what shows in the one left, but the
+    /// notes in front only if they were in this one.
+    fn with_notes_of(mut self, own: SharedPanels) -> Self {
+        if self.shown.front == Some(Panel::Notes) {
+            self.shown.front = None;
+            if self.notes_alone {
+                self.shown.terminals = false;
+                self.maximized = false;
+            }
+            self.notes_alone = false;
+        }
+        if own.shown.front == Some(Panel::Notes) {
+            self.notes_alone = !self.shown.terminals;
+            self.shown.terminals = true;
+            self.shown.front = Some(Panel::Notes);
+        }
+        self
+    }
+}
+
 /// A side panel dragged by its header: onto another's header it goes above
 /// it, onto a place's icon into that place.
 #[derive(Clone)]
@@ -349,6 +370,7 @@ impl Workspace {
     /// one to another doesn't change what's around the code. Debugging,
     /// it's what editing comes back to.
     pub(crate) fn share_panels(&mut self, shared: SharedPanels, cx: &mut Context<Self>) {
+        let shared = shared.with_notes_of(self.editing_panels());
         if self.mode != Mode::Editing {
             self.kept_shown.insert(Mode::Editing, shared.shown);
             return;
