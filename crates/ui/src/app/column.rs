@@ -60,13 +60,13 @@ impl Den {
                     .activities(cx)
                     .into_iter()
                     .map(|(item, _, other)| match item {
-                        Item::Place(place) if Some(place) == here => (item, true, badge),
+                        _ if item.place(cx).is_some() && item.place(cx) == here => (item, true, badge),
                         _ => (item, false, other),
                     })
                     .collect();
                 let den = cx.entity().downgrade();
                 let click: OnActivity = Rc::new(move |item, window, cx| {
-                    if matches!(item, Item::Place(place) if Some(place) == here) {
+                    if item.place(cx).is_some() && item.place(cx) == here {
                         return;
                     }
                     den.update(cx, |den, cx| den.activate(key.clone(), window, cx)).ok();

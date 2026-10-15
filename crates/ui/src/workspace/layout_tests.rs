@@ -290,7 +290,7 @@ fn the_debugger_is_a_tab_of_the_terminals(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |layout| layout.dock = Dock::Bottom);
     assert!(cx.debug_bounds("console-tab").is_none());
     // No icon of its own on the activity bar, nor panels in the side column.
-    assert!(Config::default().layout.places.iter().flatten().all(|panel| config::Group::of(*panel).is_some()));
+    assert!(Config::default().layout.places.iter().flatten().flatten().all(|panel| config::Group::of(*panel).is_some()));
     // A session starts: the debugger's tab, in front.
     workspace.update(cx, |workspace, cx| workspace.reveal_debugger(cx));
     cx.run_until_parked();
@@ -1081,6 +1081,47 @@ fn what_needs_the_code_leaves_terminal_mode(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!mode.get());
     bounds(cx, "editor-body-0");
+}
+
+/// A panel's header dropped on another's joins its tabs, each with an icon
+/// that shows the column with it in front; dropped on a header's upper
+/// edge, it's a section of its own again.
+#[gpui_kit::test]
+fn panels_join_as_tabs(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |layout| layout.join(Panel::Changes, Panel::Files, None));
+    // The Changes' place went with it: its icon goes to the explorer, and
+    // it joined in front.
+    assert!(cx.debug_bounds("activity-Place(Place(Changes))").is_none());
+    bounds(cx, "stack-Changes");
+    assert!(cx.debug_bounds("stack-Files").is_none());
+    bounds(cx, "stack-Workspaces");
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::Changes, cx) && !workspace.is_shown(Panel::Files, cx));
+        assert!(workspace.shows(Item::Tab(Panel::Changes), cx) && !workspace.shows(Item::Tab(Panel::Files), cx));
+    });
+    // The files' icon brings them to the front; again, the column closes.
+    click(cx, "activity-Tab(Files)");
+    bounds(cx, "stack-Files");
+    click(cx, "activity-Tab(Files)");
+    assert!(cx.debug_bounds("side-column").is_none());
+    // The changes' opens it with them in front.
+    click(cx, "activity-Tab(Changes)");
+    bounds(cx, "stack-Changes");
+    // A tab clicked comes to the front.
+    click(cx, "tab-Files");
+    bounds(cx, "stack-Files");
+    // The outline's header on the workspaces': it joins them, in front.
+    let end = bounds(cx, "title-Workspaces").center();
+    drag_part(cx, "title-Outline", end);
+    bounds(cx, "tab-Outline");
+    bounds(cx, "stack-Outline");
+    assert!(cx.debug_bounds("stack-Workspaces").is_none());
+    // A tab on a header's upper edge: above it, alone.
+    let end = bounds(cx, "above-Files").center();
+    drag_part(cx, "tab-Outline", end);
+    assert!(cx.debug_bounds("tab-Outline").is_none());
+    assert!(bounds(cx, "stack-Workspaces").bottom() <= bounds(cx, "stack-Outline").top());
+    assert!(bounds(cx, "stack-Outline").bottom() <= bounds(cx, "title-Files").top());
 }
 
 /// Every icon drags along the bar, its right-click menu takes any off and

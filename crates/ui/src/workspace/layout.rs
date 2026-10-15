@@ -239,7 +239,10 @@ impl Workspace {
                         None => panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
                     }
             }
-            _ => self.in_side(panel, cx) && !Config::get(cx).layout.collapsed.contains(&panel),
+            _ => {
+                let layout = &Config::get(cx).layout;
+                self.in_side(panel, cx) && !layout.is_collapsed(panel) && layout.in_front(panel)
+            }
         }
     }
 
@@ -428,7 +431,10 @@ impl Workspace {
         let layout = &Config::get(cx).layout;
         let open: Vec<Panel> = self
             .side_place(cx)
-            .map(|place| layout.panels(place).into_iter().filter(|panel| !layout.collapsed.contains(panel)).collect())
+            .map(|place| {
+                let sections = layout.sections(place).into_iter().filter(|tabs| !layout.is_collapsed(tabs[0]));
+                sections.map(|tabs| layout.front_of(&tabs)).collect()
+            })
             .unwrap_or_default();
         if self.panels.seen == open {
             return;
@@ -440,8 +446,8 @@ impl Workspace {
         }
     }
 
-    /// Shows `panel`: where it is in the side column, unfolded and back if
-    /// it was hidden; focus doesn't move.
+    /// Shows `panel`: where it is in the side column, unfolded, in front of
+    /// its tabs and back if it was hidden; focus doesn't move.
     pub(crate) fn show_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         if self.plain {
             if matches!(panel, Panel::Files | Panel::Search) {
@@ -491,11 +497,12 @@ impl Workspace {
                 }
                 let layout = &Config::get(cx).layout;
                 let off = layout.place_of(panel).is_some_and(|place| layout.panels(place).is_empty());
-                if layout.collapsed.contains(&panel) || layout.hidden.contains(&panel) || off {
+                if layout.is_collapsed(panel) || layout.hidden.contains(&panel) || off || !layout.in_front(panel) {
                     Config::update(cx, |config| {
-                        config.layout.collapsed.retain(|other| *other != panel);
+                        config.layout.set_collapsed(panel, false);
                         config.layout.hidden.retain(|other| *other != panel);
                         config.layout.set_on_bar(crate::config::Icon::Place(panel), true);
+                        config.layout.bring_to_front(panel);
                     });
                 }
                 let Some(place) = Config::get(cx).layout.place_of(panel) else {
@@ -594,13 +601,21 @@ impl Workspace {
     }
 
     /// Brings a side panel to the place the column shows, from wherever it
-    /// is (or hidden), above `before` or last.
+    /// is (or hidden), a section of its own above `before`'s or last.
     pub(crate) fn bring_panel(&mut self, panel: Panel, before: Option<Panel>, cx: &mut Context<Self>) {
         // With every panel hidden there's no place showing: it shows in its own.
         let Some(place) = Config::get(cx).layout.current() else {
             return self.show_panel(panel, cx);
         };
         Config::update(cx, |config| config.layout.move_panel(panel, place, before));
+        self.show_panel(panel, cx);
+        cx.refresh_windows();
+    }
+
+    /// Puts a side panel among `with`'s tabs, before `before` or last, and
+    /// shows it there.
+    pub(crate) fn join_panel(&mut self, panel: Panel, with: Panel, before: Option<Panel>, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.layout.join(panel, with, before));
         self.show_panel(panel, cx);
         cx.refresh_windows();
     }
@@ -627,17 +642,31 @@ impl Workspace {
         self.layout_changed(cx);
     }
 
-    /// Folds a side panel to its header, or unfolds it.
+    /// Folds a side panel's section to its header, or unfolds it; in
+    /// Terminal Mode's column, the panel alone.
     fn toggle_collapsed(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        let terminal_mode = self.in_terminal_mode();
         Config::update(cx, |config| {
-            let collapsed = &mut config.layout.collapsed;
-            if collapsed.contains(&panel) {
-                collapsed.retain(|other| *other != panel);
+            let layout = &mut config.layout;
+            if !terminal_mode {
+                return layout.set_collapsed(panel, !layout.is_collapsed(panel));
+            }
+            if layout.collapsed.contains(&panel) {
+                layout.collapsed.retain(|other| *other != panel);
             } else {
-                collapsed.push(panel);
+                layout.collapsed.push(panel);
             }
         });
         cx.notify();
+    }
+
+    /// A tab clicked: in front of its section, unfolded.
+    fn front_tab(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        Config::update(cx, |config| {
+            config.layout.bring_to_front(panel);
+            config.layout.set_collapsed(panel, false);
+        });
+        self.layout_changed(cx);
     }
 
     /// The terminals on the right of the code, or under it: in every
@@ -794,9 +823,9 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, &panel)| {
-                let height = (open.contains(&panel) && Some(panel) != filler).then(|| layout.height(panel));
+                let height = (open.contains(&panel) && Some(panel) != filler).then(|| layout.heights.get(&panel).copied().unwrap_or(layout.height(panel)));
                 let below = filler_at.is_some_and(|at| ix > at);
-                self.render_section(panel, open.contains(&panel), height, below, ix > 0, window, cx)
+                self.render_section(&[panel], open.contains(&panel), height, below, ix > 0, window, cx)
             })
             .collect();
         let theme = cx.theme();
@@ -891,23 +920,25 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The side column: its place's panels, one above the other. One open
-    /// panel takes the height the others leave (see `Layout::filler`). A
-    /// place's icon dropped on it brings its panels.
+    /// The side column: its place's sections, one above the other, each a
+    /// panel or several as tabs. One open section takes the height the
+    /// others leave (see `Layout::filler`). A place's icon dropped on it
+    /// brings its panels.
     fn render_side(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let layout = Config::get(cx).layout.clone();
-        let panels = layout.current().map(|place| layout.panels(place)).unwrap_or_default();
-        let open: Vec<Panel> = panels.iter().copied().filter(|panel| !layout.collapsed.contains(panel)).collect();
-        let filler = Layout::filler(&open);
-        let filler_at = filler.and_then(|filler| panels.iter().position(|panel| *panel == filler));
+        let sections = layout.current().map(|place| layout.sections(place)).unwrap_or_default();
+        let open: Vec<Vec<Panel>> = sections.iter().filter(|tabs| !layout.is_collapsed(tabs[0])).cloned().collect();
+        let filler = Layout::filler(&open).map(|at| open[at][0]);
+        let filler_at = filler.and_then(|filler| sections.iter().position(|tabs| tabs[0] == filler));
         // The first one's header needs no line above it.
-        let sections: Vec<AnyElement> = panels
+        let sections: Vec<AnyElement> = sections
             .iter()
             .enumerate()
-            .map(|(ix, &panel)| {
-                let height = (!layout.collapsed.contains(&panel) && Some(panel) != filler).then(|| layout.height(panel));
+            .map(|(ix, tabs)| {
+                let open = !layout.is_collapsed(tabs[0]);
+                let height = (open && Some(tabs[0]) != filler).then(|| layout.height(tabs[0]));
                 let below = filler_at.is_some_and(|at| ix > at);
-                self.render_section(panel, open.contains(&panel), height, below, ix > 0, window, cx)
+                self.render_section(tabs, open, height, below, ix > 0, window, cx)
             })
             .collect();
         let theme = cx.theme();
@@ -933,14 +964,17 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A side panel: its header, which folds it, and while open its content;
-    /// `height` it has unless it takes what the others leave. One `below`
-    /// the panel that takes it is sized by its upper edge, as in VS Code:
-    /// the last one has no lower edge to drag.
+    /// A section of the side column: a panel, or several as tabs. Its
+    /// header folds it, and a tab clicked comes to the front; while open it
+    /// shows the panel in front, with `height` unless it takes what the
+    /// others leave. One `below` the section that takes it is sized by its
+    /// upper edge, as in VS Code: the last one has no lower edge to drag. A
+    /// panel dropped on the header joins its tabs (before the tab it's
+    /// dropped on); on its upper edge, it goes above it.
     #[allow(clippy::too_many_arguments)]
     fn render_section(
         &mut self,
-        panel: Panel,
+        tabs: &[Panel],
         open: bool,
         height: Option<f32>,
         below: bool,
@@ -952,6 +986,9 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         // Terminal Mode's column is its own: its panels only fold.
         let terminal_mode = self.in_terminal_mode();
+        let key = tabs[0];
+        let panel = Config::get(cx).layout.front_of(tabs);
+        let tabbed = tabs.len() > 1;
         let actions = match panel {
             Panel::Workspaces => {
                 let actions = self.workspaces.as_ref().and_then(|view| view.read(cx).actions.clone());
@@ -959,15 +996,69 @@ impl Workspace {
             }
             _ => None,
         };
-        // Folded, the workspaces say the most urgent of their agents on
-        // their header.
-        let dot = match panel {
-            Panel::Workspaces if !open => self.badges.workspaces,
+        // Out of sight, the workspaces say the most urgent of their agents
+        // on their header, or on their tab.
+        let dot = |tab: Panel| match tab {
+            Panel::Workspaces if !open || tab != panel => self.badges.workspaces,
             _ => None,
         };
+        let name = if tabbed {
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .gap_2()
+                .overflow_hidden()
+                .children(tabs.iter().map(|&tab| {
+                    let front = tab == panel;
+                    h_flex()
+                        .id(("side-tab", tab as usize))
+                        .when(cfg!(test), |el| el.debug_selector(move || format!("tab-{tab:?}")))
+                        .h_full()
+                        .min_w(px(24.))
+                        .gap_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .border_b_1()
+                        .border_color(if front && open { theme.primary } else { gpui::transparent_black() })
+                        .text_color(if front { theme.sidebar_foreground } else { theme.muted_foreground })
+                        .hover(|style| style.text_color(theme.sidebar_foreground))
+                        .child(div().overflow_hidden().text_ellipsis().child(title(tab).to_uppercase()))
+                        .children(dot(tab).map(|color| div().flex_none().size(px(7.)).rounded_full().bg(color)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if front {
+                                this.toggle_collapsed(tab, cx);
+                            } else {
+                                this.front_tab(tab, cx);
+                            }
+                        }))
+                        .on_drag(PanelDrag(tab), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
+                        .drag_over::<PanelDrag>(|style, _, _, cx| style.border_color(cx.theme().primary).text_color(cx.theme().primary))
+                        .on_drop(cx.listener(move |this, drag: &PanelDrag, _, cx| {
+                            cx.stop_propagation();
+                            this.join_panel(drag.0, tab, Some(tab), cx);
+                        }))
+                }))
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                // The files go by their folder, as in VS Code; as a tab, by
+                // their name.
+                .child(match panel {
+                    Panel::Files => folder_label(&self.root),
+                    _ => title(panel).to_uppercase(),
+                })
+                .into_any_element()
+        };
         let header = h_flex()
-            .id(("side-header", panel as usize))
-            .when(cfg!(test), |el| el.debug_selector(move || format!("title-{panel:?}")))
+            .id(("side-header", key as usize))
+            .when(cfg!(test), |el| el.debug_selector(move || format!("title-{key:?}")))
+            .relative()
             .h(px(HEADER_HEIGHT))
             .flex_none()
             .pl_1()
@@ -983,29 +1074,34 @@ impl Workspace {
                     .flex_none()
                     .text_color(theme.muted_foreground),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    // The files go by their folder, as in VS Code.
-                    .child(match panel {
-                        Panel::Files => folder_label(&self.root),
-                        _ => title(panel).to_uppercase(),
-                    }),
-            )
-            .children(dot.map(|color| div().flex_none().size(px(7.)).rounded_full().bg(color)))
+            .child(name)
+            .when(!tabbed, |el| el.children(dot(panel).map(|color| div().flex_none().size(px(7.)).rounded_full().bg(color))))
             .children(actions.map(|actions| div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(actions)))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapsed(panel, cx)))
-            .on_drag(PanelDrag(panel), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into())))
-            .drag_over::<PanelDrag>(|style, _, _, cx| style.border_t_2().border_color(cx.theme().primary))
-            .on_drop(cx.listener(move |this, drag: &PanelDrag, _, cx| {
-                cx.stop_propagation();
-                if !this.in_terminal_mode() {
-                    this.bring_panel(drag.0, Some(panel), cx);
-                }
-            }))
+            .when(!tabbed, |el| el.on_drag(PanelDrag(panel), |drag, _, _, cx| cx.new(|_| TabDragPreview(title(drag.0).into()))))
+            .when(!terminal_mode, |el| {
+                el.drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.15)))
+                    .on_drop(cx.listener(move |this, drag: &PanelDrag, _, cx| {
+                        cx.stop_propagation();
+                        this.join_panel(drag.0, panel, None, cx);
+                    }))
+                    // Its upper edge: above it.
+                    .child(
+                        div()
+                            .id(("side-above", key as usize))
+                            .when(cfg!(test), |el| el.debug_selector(move || format!("above-{key:?}")))
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h(px(5.))
+                            .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary))
+                            .on_drop(cx.listener(move |this, drag: &PanelDrag, _, cx| {
+                                cx.stop_propagation();
+                                this.bring_panel(drag.0, Some(key), cx);
+                            })),
+                    )
+            })
             .context_menu({
                 let workspace = workspace.clone();
                 move |menu, window, cx| {
@@ -1028,7 +1124,7 @@ impl Workspace {
                 }
             });
         let section = v_flex()
-            .id(("side-panel", panel as usize))
+            .id(("side-panel", key as usize))
             .when(cfg!(test), |el| el.debug_selector(move || format!("stack-{panel:?}")))
             .w_full()
             .child(header);
@@ -1051,7 +1147,7 @@ impl Workspace {
         let hide = workspace.clone();
         let hide_workspace = workspace.clone();
         let content = div()
-            .id(("side-content", panel as usize))
+            .id(("side-content", key as usize))
             .flex_1()
             .min_h_0()
             .pt_1()
@@ -1085,16 +1181,16 @@ impl Workspace {
                 .h(px(height.max(HEADER_HEIGHT + MIN_BODY)))
                 .child(
                     div()
-                        .id(("side-resize", panel as usize))
+                        .id(("side-resize", key as usize))
                         .h(px(4.))
                         .w_full()
                         .flex_none()
                         .when(below, |el| el.absolute().top_0().left_0())
                         .cursor_row_resize()
-                        .on_drag(ResizeSide(panel), |drag, _, _, cx| cx.new(|_| drag.clone())),
+                        .on_drag(ResizeSide(key), |drag, _, _, cx| cx.new(|_| drag.clone())),
                 )
                 .on_drag_move(cx.listener(move |_, event: &DragMoveEvent<ResizeSide>, _, cx| {
-                    if event.drag(cx).0 != panel {
+                    if event.drag(cx).0 != key {
                         return;
                     }
                     let edge = if below {
@@ -1104,7 +1200,11 @@ impl Workspace {
                     };
                     let height = f32::from(edge).max(HEADER_HEIGHT + MIN_BODY);
                     Config::update_quietly(cx, |config| {
-                        config.layout.heights.insert(panel, height);
+                        if terminal_mode {
+                            config.layout.heights.insert(panel, height);
+                        } else {
+                            config.layout.set_height(panel, height);
+                        }
                     });
                     cx.notify();
                 }))

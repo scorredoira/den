@@ -1,6 +1,7 @@
 //! The activity bar, on the window's left edge: an icon for each group of
 //! the side column and each panel with an icon of its own, which shows it
-//! or, if it's the one showing, closes the column; the History tab's, the
+//! or, if it's the one showing, closes the column; a place with tabs has
+//! one for each tab instead, which shows it with that tab in front; the History tab's, the
 //! debugger's and the notes', which show them or hide them; each where it
 //! was dragged, and on it unless taken off from its right-click menu. At
 //! the bottom, connecting to a server and Settings.
@@ -29,6 +30,8 @@ pub(crate) enum Badge {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Item {
     Place(Place),
+    /// A tab of the side column: its place, with it in front.
+    Tab(Panel),
     /// The History tab.
     History,
     /// The debugger's tab, among the terminals'.
@@ -42,6 +45,7 @@ impl Item {
     fn spot(self) -> Icon {
         match self {
             Item::Place(place) => Icon::Place(place.0),
+            Item::Tab(panel) => Icon::Place(panel),
             Item::History => Icon::History,
             Item::Debug => Icon::Debug,
             Item::Notes { .. } => Icon::Notes,
@@ -51,8 +55,10 @@ impl Item {
     /// What a place goes by: the panel it has alone, or else the group its
     /// panels stand for (see `Layout::kind`), or else its first panel.
     fn stands_for(self, cx: &App) -> Result<Panel, Group> {
-        let Item::Place(place) = self else {
-            return Ok(Panel::Notes);
+        let place = match self {
+            Item::Place(place) => place,
+            Item::Tab(panel) => return Ok(panel),
+            _ => return Ok(Panel::Notes),
         };
         let layout = &Config::get(cx).layout;
         match (&layout.panels(place)[..], layout.kind(place)) {
@@ -67,7 +73,7 @@ impl Item {
             Item::Notes { filled } => return notes_icon(filled),
             Item::History => return "icons/history.svg",
             Item::Debug => return icon(Panel::Console),
-            Item::Place(_) => {}
+            Item::Place(_) | Item::Tab(_) => {}
         }
         match self.stands_for(cx) {
             Ok(panel) => icon(panel),
@@ -82,7 +88,7 @@ impl Item {
             Item::Notes { .. } => return Some(Box::new(ToggleNotes)),
             Item::History => return Some(Box::new(ShowHistory)),
             Item::Debug => return Some(Box::new(ToggleDebugPanel)),
-            Item::Place(_) => {}
+            Item::Place(_) | Item::Tab(_) => {}
         }
         let action: Box<dyn Action> = match self.stands_for(cx) {
             Ok(Panel::Files) | Err(Group::Explorer) => Box::new(ShowFiles),
@@ -93,6 +99,15 @@ impl Item {
             _ => return None,
         };
         Some(action)
+    }
+
+    /// The place of the side column it shows, if it shows one.
+    pub(crate) fn place(self, cx: &App) -> Option<Place> {
+        match self {
+            Item::Place(place) => Some(place),
+            Item::Tab(panel) => Config::get(cx).layout.place_of(panel),
+            _ => None,
+        }
     }
 
     pub(crate) fn title(self, cx: &App) -> &'static str {
@@ -212,6 +227,14 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
                             .on_drop(move |drag: &PanelDrag, _, cx| {
                                 cx.stop_propagation();
                                 Config::update(cx, |config| config.layout.move_panel(drag.0, place, None));
+                                cx.refresh_windows();
+                            }),
+                        // On a tab's, among its tabs.
+                        Item::Tab(tab) => el
+                            .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
+                            .on_drop(move |drag: &PanelDrag, _, cx| {
+                                cx.stop_propagation();
+                                Config::update(cx, |config| config.layout.join(drag.0, tab, None));
                                 cx.refresh_windows();
                             }),
                         _ => el,
@@ -364,12 +387,13 @@ impl Workspace {
 
     /// The bar's icons.
     pub(crate) fn activities(&self, cx: &App) -> Vec<Activity> {
-        Config::get(cx)
-            .layout
+        let layout = &Config::get(cx).layout;
+        layout
             .bar()
             .into_iter()
             .map(|icon| {
                 let (item, badge) = match icon {
+                    Icon::Place(panel) if layout.is_tab(panel) => (Item::Tab(panel), self.tab_badge(panel, cx)),
                     Icon::Place(panel) => (Item::Place(Place(panel)), self.badge(Place(panel), cx)),
                     Icon::History => (Item::History, None),
                     Icon::Debug => (Item::Debug, None),
@@ -384,6 +408,7 @@ impl Workspace {
     pub(crate) fn shows(&self, item: Item, cx: &App) -> bool {
         match item {
             Item::Place(place) => self.side_place(cx) == Some(place),
+            Item::Tab(panel) => self.side_place(cx).is_some() && self.side_place(cx) == item.place(cx) && Config::get(cx).layout.in_front(panel),
             Item::History => self.history_visible(),
             Item::Debug => self.is_shown(Panel::Console, cx),
             Item::Notes { .. } => self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix)),
@@ -431,7 +456,28 @@ impl Workspace {
         })
     }
 
+    /// What goes on a tab's icon: its panel's news; on its place's first
+    /// one, also those of the panels that aren't tabs.
+    fn tab_badge(&self, panel: Panel, cx: &App) -> Option<Badge> {
+        let layout = &Config::get(cx).layout;
+        let place = layout.place_of(panel)?;
+        let hidden = !self.shows(Item::Tab(panel), cx);
+        let dot = |color: Option<Hsla>| color.filter(|_| hidden).map(Badge::Dot);
+        let first = layout.panels(place).into_iter().find(|other| layout.is_tab(*other)) == Some(panel);
+        let mut panels: Vec<Panel> = vec![panel];
+        if first {
+            panels.extend(layout.panels(place).into_iter().filter(|other| !layout.is_tab(*other)));
+        }
+        panels.into_iter().find_map(|panel| match panel {
+            Panel::Workspaces => dot(self.badges.workspaces),
+            Panel::Agents => dot(self.badges.agents),
+            Panel::Changes => Some(self.changes.read(cx).count()).filter(|count| *count > 0).map(Badge::Count),
+            _ => None,
+        })
+    }
+
     /// A place shows, or closes the side column if it's the one showing;
+    /// a tab's, its place with it in front;
     /// the History tab, the debugger and the notes show or hide. The search gets the focus,
     /// as its key does.
     pub(crate) fn click_activity(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
@@ -440,6 +486,9 @@ impl Workspace {
                 self.show_search(&ShowSearch, window, cx)
             }
             Item::Place(place) => self.click_place(place, cx),
+            Item::Tab(panel) if self.shows(item, cx) => self.hide_panel(panel, cx),
+            Item::Tab(Panel::Search) => self.show_search(&ShowSearch, window, cx),
+            Item::Tab(panel) => self.show_panel(panel, cx),
             Item::History => self.toggle_history(window, cx),
             Item::Debug => self.toggle_panel(Panel::Console, cx),
             Item::Notes { .. } => self.toggle_notes(&ToggleNotes, window, cx),

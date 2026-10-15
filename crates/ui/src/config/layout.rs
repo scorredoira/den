@@ -20,9 +20,14 @@ pub struct Layout {
     #[serde(deserialize_with = "lenient")]
     pub place: Place,
     /// The side column's places, an icon each on the activity bar in this
-    /// order: their panels, top to bottom. Every side panel is in one.
-    #[serde(deserialize_with = "known_places")]
-    pub places: Vec<Vec<Panel>>,
+    /// order: their sections, top to bottom, each a panel or several as
+    /// tabs. Every side panel is in one.
+    #[serde(serialize_with = "save_places", deserialize_with = "known_places")]
+    pub places: Vec<Vec<Vec<Panel>>>,
+    /// The tabs in front of their sections; a section without one shows
+    /// its first.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "known_panels")]
+    pub front: Vec<Panel>,
     /// The activity bar's icons in order: a place's (the next of `places`)
     /// or another's. Those missing go after the rest.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient")]
@@ -34,10 +39,10 @@ pub struct Layout {
     /// spot for when they're shown again.
     #[serde(deserialize_with = "known_panels")]
     pub hidden: Vec<Panel>,
-    /// The side panels folded to their header.
+    /// The sections folded to their header, each by one of its panels.
     #[serde(deserialize_with = "known_panels")]
     pub collapsed: Vec<Panel>,
-    /// The side panels' heights, as dragged.
+    /// The sections' heights, as dragged, each by one of its panels.
     #[serde(skip_serializing_if = "HashMap::is_empty", deserialize_with = "known_heights")]
     pub heights: HashMap<Panel, f32>,
     pub side_width: f32,
@@ -159,7 +164,8 @@ impl Default for Layout {
         Self {
             side: true,
             place: Place::default(),
-            places: Group::ALL.into_iter().map(|group| group.panels().to_vec()).collect(),
+            places: Group::ALL.into_iter().map(|group| group.panels().iter().map(|panel| vec![*panel]).collect()).collect(),
+            front: Vec::new(),
             bar: Vec::new(),
             off: Vec::new(),
             hidden: vec![Panel::Agents],
@@ -244,12 +250,38 @@ fn known_panels<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec
     Ok(names.into_iter().filter_map(|name| Panel::deserialize(name).ok()).collect())
 }
 
-fn known_places<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec<Panel>>, D::Error> {
+/// The places as written: a section of one panel by its name, tabs as a
+/// list of their names; any panel this version doesn't have left out.
+fn known_places<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec<Vec<Panel>>>, D::Error> {
     let places = Vec::<Vec<serde_json::Value>>::deserialize(deserializer)?;
+    let known = |names: Vec<serde_json::Value>| -> Vec<Panel> { names.into_iter().filter_map(|name| Panel::deserialize(name).ok()).collect() };
     Ok(places
         .into_iter()
-        .map(|names| names.into_iter().filter_map(|name| Panel::deserialize(name).ok()).collect())
+        .map(|sections| {
+            sections
+                .into_iter()
+                .map(|section| match section {
+                    serde_json::Value::Array(tabs) => known(tabs),
+                    name => known(vec![name]),
+                })
+                .filter(|tabs| !tabs.is_empty())
+                .collect()
+        })
         .collect())
+}
+
+fn save_places<S: serde::Serializer>(places: &[Vec<Vec<Panel>>], serializer: S) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    enum Section<'a> {
+        Alone(Panel),
+        Tabs(&'a [Panel]),
+    }
+    let places: Vec<Vec<Section>> = places
+        .iter()
+        .map(|sections| sections.iter().map(|tabs| if let [panel] = tabs[..] { Section::Alone(panel) } else { Section::Tabs(tabs) }).collect())
+        .collect();
+    places.serialize(serializer)
 }
 
 fn known_heights<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<HashMap<Panel, f32>, D::Error> {
@@ -268,6 +300,7 @@ impl Layout {
         self.side = from.side;
         self.place = from.place;
         self.places = from.places.clone();
+        self.front = from.front.clone();
         self.bar = from.bar.clone();
         self.off = from.off.clone();
         self.hidden = from.hidden.clone();
@@ -280,23 +313,28 @@ impl Layout {
     pub fn repair(&mut self) {
         let mut seen = Vec::new();
         for place in &mut self.places {
-            place.retain(|panel| {
-                let keep = Group::of(*panel).is_some() && !seen.contains(panel);
-                seen.push(*panel);
-                keep
-            });
+            for tabs in place.iter_mut() {
+                tabs.retain(|panel| {
+                    let keep = Group::of(*panel).is_some() && !seen.contains(panel);
+                    seen.push(*panel);
+                    keep
+                });
+            }
+            place.retain(|tabs| !tabs.is_empty());
         }
         for group in Group::ALL {
             for (ix, panel) in group.panels().iter().enumerate().filter(|(_, panel)| !seen.contains(panel)) {
                 // With those of its group, right after the one before it
                 // there (a new panel goes where it would in a new layout),
                 // or a place of its own.
-                match self.places.iter_mut().find(|place| place.iter().any(|other| group.panels().contains(other))) {
+                match self.places.iter_mut().find(|place| place.iter().flatten().any(|other| group.panels().contains(other))) {
                     Some(place) => {
-                        let at = ix.checked_sub(1).and_then(|before| place.iter().position(|other| *other == group.panels()[before]));
-                        place.insert(at.map_or(place.len(), |at| at + 1), *panel);
+                        let at = ix
+                            .checked_sub(1)
+                            .and_then(|before| place.iter().position(|tabs| tabs.contains(&group.panels()[before])));
+                        place.insert(at.map_or(place.len(), |at| at + 1), vec![*panel]);
                     }
-                    None => self.places.push(vec![*panel]),
+                    None => self.places.push(vec![vec![*panel]]),
                 }
             }
         }
@@ -305,59 +343,131 @@ impl Layout {
 
     /// Which of `places` has `panel`.
     fn index(&self, panel: Panel) -> Option<usize> {
-        self.places.iter().position(|place| place.contains(&panel))
+        self.places.iter().position(|place| place.iter().flatten().any(|other| *other == panel))
+    }
+
+    /// The section `panel` is in: its tabs, hidden or not.
+    fn section(&self, panel: Panel) -> &[Panel] {
+        self.places.iter().flatten().find(|tabs| tabs.contains(&panel)).map(|tabs| &tabs[..]).unwrap_or_default()
     }
 
     /// The place `panel` is in, as the first of its panels in sight names
     /// it.
     pub fn place_of(&self, panel: Panel) -> Option<Place> {
-        self.index(panel).map(|ix| self.name(&self.places[ix]))
+        self.index(panel).map(|ix| self.name(ix))
     }
 
-    fn name(&self, panels: &[Panel]) -> Place {
-        Place(panels.iter().copied().find(|panel| !self.hidden.contains(panel)).unwrap_or(panels[0]))
+    fn name(&self, ix: usize) -> Place {
+        let mut panels = self.places[ix].iter().flatten().copied();
+        let first = self.places[ix][0][0];
+        Place(panels.find(|panel| !self.hidden.contains(panel)).unwrap_or(first))
     }
 
-    /// What the side column shows in `place`, top to bottom: nothing if
-    /// its icon is off the bar.
+    /// What the side column shows in `place`, top to bottom and tab after
+    /// tab: nothing if its icon is off the bar.
     pub fn panels(&self, place: Place) -> Vec<Panel> {
+        self.sections(place).into_iter().flatten().collect()
+    }
+
+    /// What the side column shows in `place`: its sections, top to bottom,
+    /// each with its tabs in sight.
+    pub fn sections(&self, place: Place) -> Vec<Vec<Panel>> {
         let Some(ix) = self.index(place.0).filter(|ix| !self.is_off(*ix)) else {
             return Vec::new();
         };
-        self.places[ix].iter().copied().filter(|panel| !self.hidden.contains(panel)).collect()
+        self.places[ix]
+            .iter()
+            .map(|tabs| tabs.iter().copied().filter(|panel| !self.hidden.contains(panel)).collect::<Vec<_>>())
+            .filter(|tabs| !tabs.is_empty())
+            .collect()
+    }
+
+    /// Whether `panel` shares its section with another in sight: it's a
+    /// tab, with an icon of its own.
+    pub fn is_tab(&self, panel: Panel) -> bool {
+        !self.hidden.contains(&panel) && self.section(panel).iter().filter(|other| !self.hidden.contains(other)).count() > 1
+    }
+
+    /// Of a section's tabs in sight, the one in front.
+    pub fn front_of(&self, tabs: &[Panel]) -> Panel {
+        tabs.iter().copied().find(|panel| self.front.contains(panel)).unwrap_or(tabs[0])
+    }
+
+    /// Whether `panel` is in front of its section.
+    pub fn in_front(&self, panel: Panel) -> bool {
+        let tabs: Vec<Panel> = self.section(panel).iter().copied().filter(|other| !self.hidden.contains(other)).collect();
+        tabs.contains(&panel) && self.front_of(&tabs) == panel
+    }
+
+    /// Puts `panel` in front of its section.
+    pub fn bring_to_front(&mut self, panel: Panel) {
+        let tabs = self.section(panel).to_vec();
+        self.front.retain(|other| !tabs.contains(other));
+        if tabs.len() > 1 {
+            self.front.push(panel);
+        }
+    }
+
+    /// Whether `panel`'s section is folded to its header.
+    pub fn is_collapsed(&self, panel: Panel) -> bool {
+        self.section_or(panel).iter().any(|other| self.collapsed.contains(other))
+    }
+
+    /// Folds `panel`'s section, or unfolds it.
+    pub fn set_collapsed(&mut self, panel: Panel, collapsed: bool) {
+        let tabs = self.section_or(panel);
+        self.collapsed.retain(|other| !tabs.contains(other));
+        if collapsed {
+            self.collapsed.push(tabs[0]);
+        }
+    }
+
+    /// `panel`'s section, or the panel alone if it isn't in one (Terminal
+    /// Mode's).
+    fn section_or(&self, panel: Panel) -> Vec<Panel> {
+        let tabs = self.section(panel);
+        if tabs.is_empty() { vec![panel] } else { tabs.to_vec() }
     }
 
     /// Whether `places[ix]`'s icon is off the bar.
     fn is_off(&self, ix: usize) -> bool {
-        self.places[ix].iter().any(|panel| self.off.contains(&Icon::Place(*panel)))
+        self.places[ix].iter().flatten().any(|panel| self.off.contains(&Icon::Place(*panel)))
+    }
+
+    /// A place's icons: one, or one for each tab it has, which shows it
+    /// with that tab in front.
+    fn place_icons(&self, ix: usize) -> Vec<Icon> {
+        let tabs: Vec<Icon> = self.places[ix].iter().flatten().filter(|panel| self.is_tab(**panel)).map(|panel| Icon::Place(*panel)).collect();
+        if tabs.is_empty() { vec![Icon::Place(self.name(ix).0)] } else { tabs }
     }
 
     /// The bar's icons in order, and whether each is on it (its menu's
     /// checks): every place with a panel not hidden, and the others.
     pub fn icons(&self) -> Vec<(Icon, bool)> {
         let mut places = (0..self.places.len())
-            .filter(|ix| self.places[*ix].iter().any(|panel| !self.hidden.contains(panel)))
-            .map(|ix| (Icon::Place(self.name(&self.places[ix]).0), !self.is_off(ix)));
-        let mut icons = Vec::new();
-        for slot in &self.bar {
-            let icon = match slot {
-                Slot::Place => match places.next() {
-                    Some(place) => place,
-                    None => continue,
-                },
-                Slot::History => (Icon::History, true),
-                Slot::Debug => (Icon::Debug, true),
-                Slot::Notes => (Icon::Notes, true),
-            };
+            .filter(|ix| self.places[*ix].iter().flatten().any(|panel| !self.hidden.contains(panel)))
+            .map(|ix| self.place_icons(ix).into_iter().map(move |icon| (icon, !self.is_off(ix))).collect::<Vec<_>>());
+        let mut icons: Vec<(Icon, bool)> = Vec::new();
+        let push = |icons: &mut Vec<(Icon, bool)>, icon: (Icon, bool)| {
             if !icons.iter().any(|(other, _)| *other == icon.0) {
                 icons.push(icon);
             }
-        }
-        icons.extend(places);
-        for other in [Icon::History, Icon::Debug, Icon::Notes] {
-            if !icons.iter().any(|(icon, _)| *icon == other) {
-                icons.push((other, true));
+        };
+        for slot in &self.bar {
+            match slot {
+                Slot::Place => {
+                    for icon in places.next().unwrap_or_default() {
+                        push(&mut icons, icon);
+                    }
+                }
+                Slot::History => push(&mut icons, (Icon::History, true)),
+                Slot::Debug => push(&mut icons, (Icon::Debug, true)),
+                Slot::Notes => push(&mut icons, (Icon::Notes, true)),
             }
+        }
+        icons.extend(places.flatten());
+        for other in [Icon::History, Icon::Debug, Icon::Notes] {
+            push(&mut icons, (other, true));
         }
         for (icon, on) in &mut icons {
             if !matches!(icon, Icon::Place(_)) {
@@ -375,7 +485,7 @@ impl Layout {
     /// Puts `icon` on the bar or takes it off; a place's keeps its panels.
     pub fn set_on_bar(&mut self, icon: Icon, on: bool) {
         let icons: Vec<Icon> = match icon {
-            Icon::Place(panel) => self.index(panel).map(|ix| self.places[ix].iter().map(|panel| Icon::Place(*panel)).collect()).unwrap_or_default(),
+            Icon::Place(panel) => self.index(panel).map(|ix| self.places[ix].iter().flatten().map(|panel| Icon::Place(*panel)).collect()).unwrap_or_default(),
             _ => vec![icon],
         };
         self.off.retain(|other| !icons.contains(other));
@@ -384,30 +494,44 @@ impl Layout {
         }
     }
 
-    /// Puts `icon` before `before`, or last.
+    /// Puts `icon` before `before`, or last: a place's with the rest of its
+    /// place's.
     pub fn move_icon(&mut self, icon: Icon, before: Option<Icon>) {
-        if before == Some(icon) {
+        let place = |icon: &Icon| match icon {
+            Icon::Place(panel) => self.index(*panel),
+            _ => None,
+        };
+        let mut icons: Vec<Icon> = self.icons().into_iter().map(|(icon, _)| icon).collect();
+        if !icons.contains(&icon) {
             return;
         }
-        let mut icons: Vec<Icon> = self.icons().into_iter().map(|(icon, _)| icon).collect();
-        let Some(from) = icons.iter().position(|other| *other == icon) else {
-            return;
+        let moving: Vec<Icon> = match place(&icon) {
+            Some(ix) => icons.iter().filter(|other| place(other) == Some(ix)).copied().collect(),
+            None => vec![icon],
         };
-        icons.remove(from);
+        if before.is_some_and(|before| moving.contains(&before)) {
+            return;
+        }
+        icons.retain(|other| !moving.contains(other));
         let at = before.and_then(|before| icons.iter().position(|other| *other == before)).unwrap_or(icons.len());
-        icons.insert(at, icon);
+        icons.splice(at..at, moving);
         // The places in the bar's order; any not on it (all its panels
         // hidden) after them.
-        let mut places: Vec<Vec<Panel>> = icons
-            .iter()
-            .filter_map(|icon| match icon {
-                Icon::Place(panel) => self.index(*panel).map(|ix| self.places[ix].clone()),
-                _ => None,
-            })
-            .collect();
-        places.extend(self.places.iter().filter(|place| !places.contains(place)).cloned().collect::<Vec<_>>());
-        self.places = places;
-        self.bar = icons.into_iter().map(Icon::slot).collect();
+        let mut order: Vec<usize> = Vec::new();
+        let mut bar = Vec::new();
+        for icon in &icons {
+            match place(icon) {
+                Some(ix) if order.contains(&ix) => {}
+                Some(ix) => {
+                    order.push(ix);
+                    bar.push(Slot::Place);
+                }
+                None => bar.push(icon.slot()),
+            }
+        }
+        order.extend((0..self.places.len()).filter(|ix| !order.contains(ix)).collect::<Vec<_>>());
+        self.places = order.into_iter().map(|ix| self.places[ix].clone()).collect();
+        self.bar = bar;
     }
 
     /// The place the side column shows, or last showed; the first one, if
@@ -418,18 +542,58 @@ impl Layout {
 
     /// The activity bar's places: those with something to show.
     pub fn places(&self) -> Vec<Place> {
-        self.places.iter().map(|place| self.name(place)).filter(|place| !self.panels(*place).is_empty()).collect()
+        (0..self.places.len()).map(|ix| self.name(ix)).filter(|place| !self.panels(*place).is_empty()).collect()
     }
 
-    /// Puts `panel` in `place`, above `before` (or last, unless it's there
-    /// already: then it keeps its spot); a place left empty goes. The
-    /// column stays on the place it shows.
+    /// Takes `panel` out of its section, which keeps how it's folded and
+    /// sized if that went by it. A section or place left empty stays, for
+    /// `tidy`.
+    fn take(&mut self, panel: Panel) {
+        let Some(tabs) = self.places.iter_mut().flatten().find(|tabs| tabs.contains(&panel)) else {
+            return;
+        };
+        tabs.retain(|other| *other != panel);
+        let Some(next) = tabs.first().copied() else {
+            return;
+        };
+        if self.collapsed.contains(&panel) && !self.collapsed.contains(&next) {
+            self.collapsed.push(next);
+        }
+        if let Some(height) = self.heights.get(&panel).copied() {
+            self.heights.entry(next).or_insert(height);
+        }
+        self.front.retain(|other| *other != panel);
+    }
+
+    /// Drops the empty sections and places.
+    fn tidy(&mut self) {
+        for place in &mut self.places {
+            place.retain(|tabs| !tabs.is_empty());
+        }
+        self.places.retain(|place| !place.is_empty());
+    }
+
+    /// The panel naming the place showing is leaving it: one in sight that
+    /// stays names it, so the column doesn't follow the panel. With none,
+    /// the place goes from the bar, and the column follows.
+    fn keep_place(&mut self, panel: Panel) {
+        if self.place.0 == panel
+            && let Some(ix) = self.index(panel)
+            && let Some(other) = self.places[ix].iter().flatten().find(|other| **other != panel && !self.hidden.contains(other))
+        {
+            self.place = Place(*other);
+        }
+    }
+
+    /// Puts `panel` in `place`, a section of its own above `before`'s (or
+    /// last, unless it's there already: then it keeps its spot); a place
+    /// left empty goes. The column stays on the place it shows.
     pub fn move_panel(&mut self, panel: Panel, place: Place, before: Option<Panel>) {
-        if before == Some(panel) || self.index(place.0).is_none() {
+        if self.index(place.0).is_none() {
             return;
         }
         // The place may be named by the panel that moves.
-        let others: Vec<Panel> = self.index(place.0).map(|ix| self.places[ix].clone()).unwrap_or_default();
+        let others: Vec<Panel> = self.index(place.0).map(|ix| self.places[ix].iter().flatten().copied().collect()).unwrap_or_default();
         let Some(anchor) = others.iter().copied().find(|other| *other != panel) else {
             return;
         };
@@ -438,34 +602,55 @@ impl Layout {
             self.hidden.retain(|other| *other != panel);
             return;
         }
-        // The panel naming the place showing leaves: one in sight that
-        // stays names it, so the column doesn't follow the panel. With none,
-        // the place goes from the bar, and the column follows.
-        if self.place.0 == panel
-            && let Some(ix) = self.index(panel)
-            && let Some(other) = self.places[ix].iter().find(|other| **other != panel && !self.hidden.contains(other))
-        {
-            self.place = Place(*other);
-        }
-        for place in &mut self.places {
-            place.retain(|other| *other != panel);
-        }
+        // Above a section of its own tabs: above what's left of it.
+        let before = match before {
+            Some(before) => match self.section(before).iter().copied().find(|other| *other != panel) {
+                Some(other) => Some(other),
+                None => return,
+            },
+            None => None,
+        };
+        self.keep_place(panel);
+        self.take(panel);
         let ix = self.index(anchor).expect("it stays");
         let target = &mut self.places[ix];
-        let at = before.and_then(|before| target.iter().position(|other| *other == before)).unwrap_or(target.len());
-        target.insert(at, panel);
-        self.places.retain(|place| !place.is_empty());
+        let at = before.and_then(|before| target.iter().position(|tabs| tabs.contains(&before))).unwrap_or(target.len());
+        target.insert(at, vec![panel]);
+        self.tidy();
         self.hidden.retain(|other| *other != panel);
+        self.set_on_bar(Icon::Place(panel), true);
+    }
+
+    /// Puts `panel` among `with`'s tabs, before `before` (or last), and in
+    /// front; a place left empty goes. The column stays on the place it
+    /// shows.
+    pub fn join(&mut self, panel: Panel, with: Panel, before: Option<Panel>) {
+        if panel == with || self.index(with).is_none() {
+            return;
+        }
+        let before = before.filter(|before| *before != panel);
+        self.keep_place(panel);
+        self.take(panel);
+        // It goes as the section is.
+        self.collapsed.retain(|other| *other != panel);
+        self.heights.remove(&panel);
+        let tabs = self.places.iter_mut().flatten().find(|tabs| tabs.contains(&with)).expect("it stays");
+        let at = before.and_then(|before| tabs.iter().position(|other| *other == before)).unwrap_or(tabs.len());
+        tabs.insert(at, panel);
+        self.tidy();
+        self.hidden.retain(|other| *other != panel);
+        self.bring_to_front(panel);
         self.set_on_bar(Icon::Place(panel), true);
     }
 
     /// Gives `panel` a place of its own, right after the one it's in.
     pub fn own_place(&mut self, panel: Panel) {
-        let Some(ix) = self.index(panel).filter(|ix| self.places[*ix].len() > 1) else {
+        let Some(ix) = self.index(panel).filter(|ix| self.places[*ix].iter().flatten().count() > 1) else {
             return;
         };
-        self.places[ix].retain(|other| *other != panel);
-        self.places.insert(ix + 1, vec![panel]);
+        self.take(panel);
+        self.places.insert(ix + 1, vec![vec![panel]]);
+        self.tidy();
     }
 
     /// Puts `from`'s panels in `into`, after its own.
@@ -476,8 +661,8 @@ impl Layout {
         if from == into {
             return;
         }
-        let panels = std::mem::take(&mut self.places[from]);
-        self.places[into].extend(panels);
+        let sections = std::mem::take(&mut self.places[from]);
+        self.places[into].extend(sections);
         self.places.retain(|place| !place.is_empty());
     }
 
@@ -490,32 +675,43 @@ impl Layout {
         if before.and_then(|before| self.index(before.0)) == Some(from) {
             return;
         }
-        let panels = self.places.remove(from);
+        let sections = self.places.remove(from);
         let at = before.and_then(|before| self.index(before.0)).unwrap_or(self.places.len());
-        self.places.insert(at, panels);
+        self.places.insert(at, sections);
     }
 
     /// The group a place stands for, by the panels it has: its icon and
     /// title, unless it shows a single panel.
     pub fn kind(&self, place: Place) -> Option<Group> {
-        let panels = self.index(place.0).map(|ix| self.places[ix].clone()).unwrap_or_default();
+        let panels: Vec<Panel> = self.index(place.0).map(|ix| self.places[ix].iter().flatten().copied().collect()).unwrap_or_default();
         Group::ALL.into_iter().find(|group| panels.contains(&group.filler()))
             .or_else(|| Group::ALL.into_iter().find(|group| panels.iter().any(|panel| group.panels().contains(panel))))
     }
 
-    /// The panel that takes the height the others leave: the first group
-    /// filler among `open`, or the last.
-    pub fn filler(open: &[Panel]) -> Option<Panel> {
-        open.iter().copied().find(|panel| Group::ALL.iter().any(|group| group.filler() == *panel)).or(open.last().copied())
+    /// Of the sections open, the one that takes the height the others
+    /// leave: the first with a group filler among its tabs, or the last.
+    pub fn filler(open: &[Vec<Panel>]) -> Option<usize> {
+        open.iter()
+            .position(|tabs| tabs.iter().any(|panel| Group::ALL.iter().any(|group| group.filler() == *panel)))
+            .or(open.len().checked_sub(1))
     }
 
-    /// A side panel's height: as dragged, or its own.
+    /// The height of `panel`'s section: as dragged, or its first panel's
+    /// own.
     pub fn height(&self, panel: Panel) -> f32 {
-        self.heights.get(&panel).copied().unwrap_or(match panel {
+        let tabs = self.section_or(panel);
+        tabs.iter().find_map(|panel| self.heights.get(panel).copied()).unwrap_or(match tabs[0] {
             Panel::Workspaces | Panel::Changes => 240.,
             Panel::Agents => 110.,
             _ => 180.,
         })
+    }
+
+    /// Sizes `panel`'s section.
+    pub fn set_height(&mut self, panel: Panel, height: f32) {
+        let tabs = self.section_or(panel);
+        self.heights.retain(|other, _| !tabs.contains(other));
+        self.heights.insert(tabs[0], height);
     }
 }
 

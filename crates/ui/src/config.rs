@@ -950,6 +950,56 @@ mod layout_tests {
         assert_eq!(layout.panels(explorer)[0], Panel::Outline);
     }
 
+    /// Panels join as tabs of a section: the one joining in front, an icon
+    /// for each tab, which move together; out again above what's left.
+    #[test]
+    fn panels_join_as_tabs() {
+        use super::{Icon, Place};
+        let mut layout = Layout::default();
+        let explorer = Place(Panel::Workspaces);
+        layout.set_collapsed(Panel::Files, true);
+        layout.join(Panel::Changes, Panel::Files, None);
+        assert_eq!(layout.sections(explorer), [vec![Panel::Workspaces], vec![Panel::Files, Panel::Changes], vec![Panel::Outline]]);
+        assert!(layout.in_front(Panel::Changes) && !layout.in_front(Panel::Files));
+        assert!(layout.is_collapsed(Panel::Changes), "it goes as the section is");
+        // The Git place went with its only panel; the explorer has an icon
+        // for each tab, in its place on the bar.
+        assert_eq!(layout.bar()[..3], [Icon::Place(Panel::Files), Icon::Place(Panel::Changes), Icon::Place(Panel::Search)]);
+        layout.move_icon(Icon::Place(Panel::Changes), None);
+        assert_eq!(layout.places()[0], Place(Panel::Search));
+        assert_eq!(layout.bar()[layout.bar().len() - 2..], [Icon::Place(Panel::Files), Icon::Place(Panel::Changes)]);
+        // Before another tab.
+        layout.join(Panel::Outline, Panel::Files, Some(Panel::Files));
+        assert_eq!(layout.sections(explorer)[1], [Panel::Outline, Panel::Files, Panel::Changes]);
+        layout.bring_to_front(Panel::Files);
+        assert!(layout.in_front(Panel::Files) && !layout.in_front(Panel::Changes));
+        // A hidden tab leaves the others; with one left, it's a section like
+        // any other.
+        layout.hidden.extend([Panel::Outline, Panel::Changes]);
+        assert!(!layout.is_tab(Panel::Files));
+        assert_eq!(layout.sections(explorer)[1], [Panel::Files]);
+        layout.hidden.retain(|panel| *panel == Panel::Agents);
+        // The first tab out, above what's left: that keeps how it's folded.
+        layout.move_panel(Panel::Outline, explorer, Some(Panel::Outline));
+        assert_eq!(layout.sections(explorer)[1..3], [vec![Panel::Outline], vec![Panel::Files, Panel::Changes]]);
+        assert!(layout.is_collapsed(Panel::Changes));
+        layout.own_place(Panel::Changes);
+        assert_eq!(layout.sections(Place(Panel::Changes)), [vec![Panel::Changes]]);
+        assert!(!layout.is_tab(Panel::Files));
+    }
+
+    /// A section of one panel saves as its name, as before the tabs; tabs as
+    /// a list.
+    #[test]
+    fn tabs_save_as_a_list() {
+        let mut layout = Layout::default();
+        layout.join(Panel::Changes, Panel::Files, None);
+        let saved = serde_json::to_value(&layout).unwrap();
+        assert_eq!(saved["places"][0], serde_json::json!(["workspaces", "agents", ["files", "changes"], "outline"]));
+        let read: Layout = serde_json::from_value(saved).unwrap();
+        assert!(read == layout);
+    }
+
     #[test]
     fn the_debuggers_old_side_panels_load_as_gone() {
         let mut layout: Layout = serde_json::from_str(
@@ -957,7 +1007,7 @@ mod layout_tests {
         )
         .unwrap();
         layout.repair();
-        assert!(layout.places.iter().flatten().all(|panel| Group::of(*panel).is_some()));
+        assert!(layout.places.iter().flatten().flatten().all(|panel| Group::of(*panel).is_some()));
         assert_eq!(layout.hidden, [Panel::Agents]);
         assert!(layout.collapsed.is_empty());
         assert_eq!(layout.heights.len(), 1);
@@ -968,7 +1018,7 @@ mod layout_tests {
     fn a_layout_edited_by_hand_is_mended() {
         let mut layout: Layout = serde_json::from_str(r#"{"places": [["files", "files", "code"], []]}"#).unwrap();
         layout.repair();
-        assert_eq!(layout.places[0], [Panel::Files, Panel::Outline, Panel::Workspaces, Panel::Agents]);
+        assert_eq!(layout.places[0], [[Panel::Files], [Panel::Outline], [Panel::Workspaces], [Panel::Agents]]);
         assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some()).all(|panel| layout.place_of(*panel).is_some()));
         // The History and Commit Files panels of before the History tab are left out.
         let config: super::Config = serde_json::from_str(
@@ -978,7 +1028,7 @@ mod layout_tests {
         let mut layout = config.layout;
         layout.repair();
         assert_eq!(layout.place, super::Place::default());
-        assert_eq!(layout.places[1], [Panel::Changes]);
+        assert_eq!(layout.places[1], [[Panel::Changes]]);
         assert_eq!(layout.hidden, [Panel::Agents]);
         assert!(layout.collapsed.is_empty());
         assert_eq!(layout.heights.into_iter().collect::<Vec<_>>(), [(Panel::Changes, 200.)]);
