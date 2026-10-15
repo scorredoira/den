@@ -51,8 +51,10 @@ lto = "thin"
 strip = "debuginfo"
 
 # gpui-base with a few public additions for the editor (selections and
-# batch edits), and gpui-component with the completion menu drawn like VS
-# Code's; see vendor/README.md.
+# batch edits), gpui-component with the completion menu drawn like VS
+# Code's, and gpui-pre-macos with function keys sent as U+0010; see
+# vendor/README.md.
 [patch.crates-io]
 gpui-base = { path = "vendor/gpui-base" }
 gpui-component = { path = "vendor/gpui-component" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }

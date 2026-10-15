@@ -1,0 +1,92 @@
+diff -ruN -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-pre-macos-0.3.7/Cargo.toml vendor/gpui-pre-macos/Cargo.toml
+--- a/Cargo.toml	2006-07-24 03:21:28
++++ b/Cargo.toml	2026-10-15 06:52:43
+@@ -292,6 +292,12 @@
+ level = "allow"
+ priority = -1
+ 
++# (den) The crates.io build caps a dependency's lints; from a path, its
++# 1,200 uses of the deprecated `cocoa` API would each warn.
++[lints.rust.deprecated]
++level = "allow"
++priority = 0
++
+ [lints.rust.unexpected_cfgs]
+ level = "allow"
+ priority = 0
+diff -ruN -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-pre-macos-0.3.7/src/events.rs vendor/gpui-pre-macos/src/events.rs
+--- a/src/events.rs	2006-07-24 03:21:28
++++ b/src/events.rs	2026-10-15 06:51:26
+@@ -345,6 +345,13 @@
+             .to_string();
+         let mut key_char = None;
+         let first_char = characters.chars().next().map(|ch| ch as u16);
++        // (den) Some keyboards send their function keys as U+0010
++        // (NSFunctionKey's "look at the key code"): named by their key code,
++        // or the key had no name and its U+0010 (Ctrl-P) went to the input.
++        let first_char = match first_char {
++            Some(0x10) => function_key(native_event.keyCode()).or(first_char),
++            other => other,
++        };
+         let modifiers = native_event.modifierFlags();
+ 
+         let control = modifiers.contains(NSEventModifierFlags::NSControlKeyMask);
+@@ -494,6 +501,34 @@
+             key_char,
+         }
+     }
++}
++
++/// (den) The NSF*FunctionKey of a function key's virtual key code (`kVK_F1`…).
++fn function_key(code: u16) -> Option<u16> {
++    use cocoa::appkit::*;
++    Some(match code {
++        122 => NSF1FunctionKey,
++        120 => NSF2FunctionKey,
++        99 => NSF3FunctionKey,
++        118 => NSF4FunctionKey,
++        96 => NSF5FunctionKey,
++        97 => NSF6FunctionKey,
++        98 => NSF7FunctionKey,
++        100 => NSF8FunctionKey,
++        101 => NSF9FunctionKey,
++        109 => NSF10FunctionKey,
++        103 => NSF11FunctionKey,
++        111 => NSF12FunctionKey,
++        105 => NSF13FunctionKey,
++        107 => NSF14FunctionKey,
++        113 => NSF15FunctionKey,
++        106 => NSF16FunctionKey,
++        64 => NSF17FunctionKey,
++        79 => NSF18FunctionKey,
++        80 => NSF19FunctionKey,
++        90 => NSF20FunctionKey,
++        _ => return None,
++    })
+ }
+ 
+ fn always_use_command_layout() -> bool {
+diff -ruN -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-pre-macos-0.3.7/src/window.rs vendor/gpui-pre-macos/src/window.rs
+--- a/src/window.rs	2006-07-24 03:21:28
++++ b/src/window.rs	2026-10-15 07:00:25
+@@ -2705,12 +2705,19 @@
+                 })
+                 .unwrap_or(false);
+ 
++            // (den) A function key sent as U+0010 (see `parse_keystroke`): the
++            // input context takes it and never gives it back.
++            let sent_as_u10 = unsafe {
++                let characters: id = msg_send![native_event, charactersIgnoringModifiers];
++                characters.to_str().starts_with('\u{10}')
++            };
+             if is_composing
+                 || is_ime_printable_key
+                 || (key_down_event.keystroke.key_char.is_none()
+                     && !key_down_event.keystroke.modifiers.control
+                     && !key_down_event.keystroke.modifiers.function
+-                    && !key_down_event.keystroke.modifiers.platform)
++                    && !key_down_event.keystroke.modifiers.platform
++                    && !sent_as_u10)
+             {
+                 {
+                     let mut lock = window_state.as_ref().lock();

@@ -122,6 +122,24 @@ macOS shows it as the item's key equivalent (`set_key_equivalent` in
 `macos.rs`), Windows after a tab in the label (`windows.rs`); `fallback.rs`
 ignores it.
 
+## gpui-pre-macos 0.3.7
+
+A copy of the crates.io release (Apache-2.0, see
+`gpui-pre-macos/LICENSE-APACHE`), used through `[patch.crates-io]`.
+
+A fix marked `(den)` in `parse_keystroke` (`src/events.rs`): some keyboards
+send their function keys with U+0010 as the character (AppKit's
+NSFunctionKey, "look at the key code") instead of NSF14FunctionKey and the
+like. The release didn't know it: the key had no name, so no shortcut
+matched, and the U+0010 went to the focused input (Ctrl-P in a terminal).
+`function_key` names it by its key code (`kVK_F1` to `kVK_F20`).
+And in `handle_key_event` (`src/window.rs`) such a key doesn't go to the
+input context first, as other keys without text do: it kept it, and no
+shortcut saw it.
+
+Also `(den)` in its `Cargo.toml`: `deprecated` is allowed, as crates.io
+caps a dependency's lints and a path doesn't (its `cocoa` calls).
+
 ## Updating
 
 Copy the new release over each crate; drop `benches/`, `tests/` and their
@@ -131,6 +149,7 @@ reapply the changes from `patches/`, from the crate's folder:
 ```sh
 patch -p1 -d vendor/gpui-base < vendor/patches/gpui-base.patch
 patch -p1 -d vendor/gpui-component < vendor/patches/gpui-component.patch
+patch -p1 -d vendor/gpui-pre-macos < vendor/patches/gpui-pre-macos.patch
 ```
 
 Hunks that no longer apply are redone by hand, with the descriptions above.
