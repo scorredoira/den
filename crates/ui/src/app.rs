@@ -30,7 +30,7 @@ use proto::{Event, GitOp, Request, Response, TaskInfo};
 
 use crate::{
     About, CheckForUpdates, NewTask, OpenCommandPalette, OpenKeyboardShortcuts, OpenShortcutsGuide, OpenFolder, OpenRecent, OpenRemoteFolder, OpenSettings, OpenTaskPicker,
-    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ToggleTasks, ToggleTerminalMode,
+    AddServer, NextActiveTask, NextTask, PreviousTask, ResetLayout, ShowShortcuts, ToggleInactiveWorkspaces, ToggleTasks, ToggleTerminalMode,
     config::{self, Config, DiffLayout, HostConfig, Panel, Place, SavedTask, SavedWindow, TextArea, ThemeChoice, UiText},
     menu,
     folder_picker::{FolderPicker, FolderPickerEvent},
@@ -963,18 +963,6 @@ impl Den {
         cx.notify();
     }
 
-    /// Workspaces in list order, as Cmd-E and Cmd-K go through them: those
-    /// of the hidden projects left out, unless one is in front.
-    fn ordered<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
-        let mut entries = self.ordered_all(cx);
-        let active = self.active.as_ref().and_then(|key| Some(project_of(key, self.task(key)?)));
-        entries.retain(|(key, task)| {
-            let project = project_of(key, task);
-            active.as_ref() == Some(&project) || !self.is_hidden_project(&project, cx)
-        });
-        entries
-    }
-
     /// Every workspace the list shows, by its server's index, in no order.
     fn listed<'a, 'c>(&'a self, config: &'c Config) -> impl Iterator<Item = (usize, TaskKey, &'a TaskInfo)> + use<'a, 'c> {
         self.hosts.iter().enumerate().flat_map(move |(ix, host)| {
@@ -1000,7 +988,7 @@ impl Den {
     /// Every workspace in list order: by server; within each, by project
     /// (a repo's checkout followed by its worktrees, or a folder), the
     /// projects and the worktrees within them in the dragged order.
-    fn ordered_all<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
+    fn ordered<'a>(&'a self, cx: &App) -> Vec<(TaskKey, &'a TaskInfo)> {
         let config = Config::get(cx);
         let mut entries: Vec<(usize, TaskKey, &TaskInfo)> = self.listed(config).collect();
         let position = |key: &TaskKey| {
@@ -1039,39 +1027,14 @@ impl Den {
         Some(project_of(key, self.task(key)?))
     }
 
-    /// Hidden itself or with its server.
-    fn is_hidden_project(&self, project: &TaskKey, cx: &App) -> bool {
-        Config::get(cx).hidden_projects.contains(&project.config()) || is_hidden_host(&project.host, cx)
+    /// Whether the Workspaces panel lists `key`: with Hide Inactive
+    /// Workspaces, only those with a coding agent and the one in front.
+    fn is_listed(&self, key: &TaskKey, cx: &App) -> bool {
+        !Config::get(cx).hide_inactive_workspaces || self.active.as_ref() == Some(key) || !self.workspace_agents(key).is_empty()
     }
 
-    /// Hides `project` from the Workspaces panel, Cmd-E and Cmd-K, or shows it
-    /// again. Its agents still count in the dots.
-    fn set_project_hidden(&mut self, project: &TaskKey, hidden: bool, cx: &mut Context<Self>) {
-        let key = project.config();
-        Config::update(cx, |config| {
-            config.hidden_projects.retain(|other| *other != key);
-            if hidden {
-                config.hidden_projects.push(key);
-            }
-        });
-        cx.notify();
-    }
-
-    /// Hides a server and its projects from the Workspaces panel, Cmd-E and
-    /// Cmd-K, or shows them again. It stays connected: its agents still
-    /// count in the dots.
-    fn set_host_hidden(&mut self, host: &SharedString, hidden: bool, cx: &mut Context<Self>) {
-        Config::update(cx, |config| {
-            config.hidden_hosts.retain(|other| other != host.as_ref());
-            if hidden {
-                config.hidden_hosts.push(host.to_string());
-            }
-        });
-        cx.notify();
-    }
-
-    fn toggle_hidden_projects(&mut self, cx: &mut Context<Self>) {
-        Config::update(cx, |config| config.show_hidden_projects = !config.show_hidden_projects);
+    fn toggle_inactive_workspaces(&mut self, _: &ToggleInactiveWorkspaces, _: &mut Window, cx: &mut Context<Self>) {
+        Config::update(cx, |config| config.hide_inactive_workspaces = !config.hide_inactive_workspaces);
         cx.notify();
     }
 
@@ -1100,7 +1063,7 @@ impl Den {
     /// first workspace, if it has none).
     fn enter_project(&mut self, project: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
         let mine: Vec<TaskKey> = self
-            .ordered_all(cx)
+            .ordered(cx)
             .into_iter()
             .filter(|(key, task)| project_of(key, task) == project)
             .map(|(key, _)| key)
@@ -1436,8 +1399,8 @@ impl Den {
     }
 
     /// The tasks' state on the explorer's icon or the panels' headers: the
-    /// most urgent of the workspaces (those of hidden projects too, and the
-    /// one in front), of the project's worktrees, and of the agents. Idle
+    /// most urgent of the workspaces (the one in front too), of the
+    /// project's worktrees, and of the agents. Idle
     /// says nothing.
     fn task_badges(&self, cx: &App) -> TaskBadges {
         // Asked with every frame: the list isn't put in order, as each
@@ -1536,6 +1499,7 @@ impl Render for Den {
             .font_family(cx.theme().font_family.clone())
             .text_ui(cx)
             .on_action(cx.listener(Self::toggle_tasks))
+            .on_action(cx.listener(Self::toggle_inactive_workspaces))
             .on_action(cx.listener(Self::toggle_terminal_mode))
             .on_action(cx.listener(|this, _: &ResetLayout, _, cx| {
                 menu::reset_layout_now(cx);
@@ -1747,7 +1711,7 @@ fn add_menu_items(menu: PopupMenu, den: &WeakEntity<Den>) -> PopupMenu {
 fn column_menu(menu: PopupMenu, den: &WeakEntity<Den>, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     add_menu_items(menu, den)
         .separator()
-        .item(show_hidden_item(den, cx))
+        .item(inactive_item(den, cx))
         .panel_items(hide_panel(den, Panel::Workspaces), window, cx)
 }
 
@@ -1798,15 +1762,10 @@ fn hide_panel(den: &WeakEntity<Den>, panel: Panel) -> menu::PopupMenuItem {
     })
 }
 
-/// `host` is hidden with its projects (Hide Server).
-fn is_hidden_host(host: &SharedString, cx: &App) -> bool {
-    Config::get(cx).hidden_hosts.iter().any(|other| other == host.as_ref())
-}
-
-/// Show Hidden Projects, or Hide Hidden Projects while the Workspaces panel shows them.
-fn show_hidden_item(den: &WeakEntity<Den>, cx: &App) -> menu::PopupMenuItem {
-    let label = if Config::get(cx).show_hidden_projects { "Hide Hidden Projects" } else { "Show Hidden Projects" };
-    menu::item(label, den, |this, _, cx| this.toggle_hidden_projects(cx))
+/// Hide Inactive Workspaces, or Show Inactive Workspaces while they're hidden.
+fn inactive_item(den: &WeakEntity<Den>, cx: &App) -> menu::PopupMenuItem {
+    let label = if Config::get(cx).hide_inactive_workspaces { "Show Inactive Workspaces" } else { "Hide Inactive Workspaces" };
+    menu::item(label, den, |this, window, cx| this.toggle_inactive_workspaces(&ToggleInactiveWorkspaces, window, cx))
 }
 
 /// The project a workspace is of: its repo's checkout, or its folder.
@@ -2081,10 +2040,10 @@ mod palette_tests {
         assert_eq!(status(cx), "no agent");
     }
 
-    /// A hidden project is left out of Cmd-E and Cmd-K, unless it's in
-    /// front; entering a project goes to the worktree of it used last.
+    /// Hide Inactive Workspaces lists only those with an agent and the one
+    /// in front; entering a project goes to the worktree of it used last.
     #[gpui_kit::test]
-    fn hidden_projects_and_entering_one(cx: &mut TestAppContext) {
+    fn inactive_workspaces_and_entering_one(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
             cx.set_global(Config::default());
@@ -2102,13 +2061,15 @@ mod palette_tests {
             den.update(cx, |den, cx| {
                 den.hosts[0].tasks = vec![task("/den", "/den", true), task("/den", "/den-hide", false), task("/stride", "/stride", true)];
                 den.activate(key("/den-hide"), window, cx);
-                den.set_project_hidden(&key("/stride"), true, cx);
+                den.toggle_inactive_workspaces(&super::ToggleInactiveWorkspaces, window, cx);
             })
         });
-        let paths = |den: &Den, cx: &App| den.ordered(cx).into_iter().map(|(key, _)| key.path).collect::<Vec<_>>();
+        let listed = |den: &Den, cx: &App| {
+            den.ordered(cx).into_iter().map(|(key, _)| key).filter(|key| den.is_listed(key, cx)).map(|key| key.path).collect::<Vec<_>>()
+        };
         den.read_with(cx, |den, cx| {
-            assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
-            assert_eq!(den.ordered_all(cx).len(), 3);
+            assert_eq!(listed(den, cx), [std::path::PathBuf::from("/den-hide")]);
+            assert_eq!(den.ordered(cx).len(), 3, "Cmd-K still finds them all");
             assert!(den.is_repo(&key("/den")));
         });
         // A repo folds its worktrees away, and unfolds them again.
@@ -2120,27 +2081,18 @@ mod palette_tests {
                 assert!(Config::get(cx).folded_projects.is_empty());
             })
         });
-        // In front, it's gone through as any other.
+        // In front, it's listed.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/stride"), window, cx)));
         den.read_with(cx, |den, cx| {
             assert_eq!(den.active, Some(key("/stride")));
-            assert_eq!(paths(den, cx).len(), 3);
+            assert_eq!(listed(den, cx), [std::path::PathBuf::from("/stride")]);
         });
         // Back to den: its worktree, not its checkout.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/den"), window, cx)));
         den.read_with(cx, |den, _| assert_eq!(den.active, Some(key("/den-hide"))));
-        // A hidden server hides all its projects, but the one in front.
-        cx.update(|window, cx| {
-            den.update(cx, |den, cx| {
-                den.set_project_hidden(&key("/stride"), false, cx);
-                den.set_host_hidden(&super::LOCAL.into(), true, cx);
-                den.activate(key("/den-hide"), window, cx);
-            })
-        });
-        den.read_with(cx, |den, cx| {
-            assert_eq!(paths(den, cx), [std::path::PathBuf::from("/den"), "/den-hide".into()]);
-            assert!(den.is_hidden_project(&key("/den"), cx));
-        });
+        // Shown again, all of them.
+        cx.update(|window, cx| den.update(cx, |den, cx| den.toggle_inactive_workspaces(&super::ToggleInactiveWorkspaces, window, cx)));
+        den.read_with(cx, |den, cx| assert_eq!(listed(den, cx).len(), 3));
     }
 
     /// What shows around the code is the same in every workspace: going to

@@ -234,17 +234,10 @@ pub struct Config {
     /// A split terminal tab shows no title over each pane.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hide_pane_titles: bool,
-    /// Projects hidden from the Workspaces panel, Cmd-E and Cmd-K: a repo's
-    /// checkout or a folder (same keys as `order`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub hidden_projects: Vec<String>,
-    /// Servers hidden from the Workspaces panel, Cmd-E and Cmd-K, with all
-    /// their projects (by name, `local` too).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub hidden_hosts: Vec<String>,
-    /// The Workspaces panel shows the hidden ones too, dimmed.
+    /// The Workspaces panel lists only the workspaces with a coding agent,
+    /// and the one in front.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub show_hidden_projects: bool,
+    pub hide_inactive_workspaces: bool,
     /// Repos folded to their row in the Workspaces panel, their worktrees
     /// hidden (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]

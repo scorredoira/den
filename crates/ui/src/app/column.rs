@@ -126,12 +126,10 @@ impl Den {
         let keep = self.unkept(cx);
         let weak = cx.entity().downgrade();
         let menu_name = name.clone();
-        let hidden = is_hidden_host(&name, cx);
         v_flex()
             .px_3()
             .pt_2()
             .pb_1()
-            .when(hidden, |el| el.opacity(0.5))
             .child(
                 h_flex()
                     .id(SharedString::from(format!("host-{name}")))
@@ -182,12 +180,8 @@ impl Den {
                         .on_click(cx.listener(move |this, _, window, cx| this.ask_restart(restart.clone(), window, cx)))
                     })
                     .context_menu(move |menu, window, cx| {
-                        let host = menu_name.clone();
                         host_menu(menu, &menu_name, connected, keep, &weak)
-                            .item(menu::item(if hidden { "Show Server" } else { "Hide Server" }, &weak, move |this, _, cx| {
-                                this.set_host_hidden(&host, !hidden, cx)
-                            }))
-                            .item(show_hidden_item(&weak, cx))
+                            .item(inactive_item(&weak, cx))
                             .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
                     }),
             )
@@ -202,12 +196,11 @@ impl Den {
             .into_any_element()
     }
 
-    /// The projects, by server: a row each. Hidden ones only with Show
-    /// Hidden Projects, or while in front.
+    /// The projects, by server: a row each. With Hide Inactive Workspaces,
+    /// only the workspaces with a coding agent or in front, under their
+    /// project's row, and only the servers with any.
     pub(super) fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
-        let ordered = self.ordered_all(cx);
-        let show_hidden = Config::get(cx).show_hidden_projects;
-        let active = self.active_project();
+        let ordered = self.ordered(cx);
         let mut sections: Vec<AnyElement> = Vec::new();
         for host in &self.hosts {
             let entries: Vec<(TaskKey, &TaskInfo)> =
@@ -218,14 +211,14 @@ impl Den {
                     continue;
                 };
                 let project = project_of(key, task);
-                let hidden = self.is_hidden_project(&project, cx);
-                if hidden && !show_hidden && active.as_ref() != Some(&project) {
+                if !group.iter().any(|(key, _)| self.is_listed(key, cx)) {
                     continue;
                 }
-                projects.push(self.render_project(project, hidden, group, cx));
+                let group: Vec<(TaskKey, &TaskInfo)> =
+                    group.iter().filter(|(key, _)| *key == project || self.is_listed(key, cx)).cloned().collect();
+                projects.push(self.render_project(project, &group, cx));
             }
-            // A hidden server shows only for its project in front.
-            if is_hidden_host(&host.name, cx) && !show_hidden && projects.is_empty() {
+            if projects.is_empty() && Config::get(cx).hide_inactive_workspaces {
                 continue;
             }
             sections.push(self.render_host_header(host, cx));
@@ -275,11 +268,11 @@ impl Den {
             .into_any_element()
     }
 
-    /// A project's row, dimmed while hidden: a folder, or a repo's checkout
+    /// A project's row: a folder, or a repo's checkout
     /// with its worktrees under it, which its chevron folds away. A click
     /// enters the checkout; folded, the worktree of it used last, and its
     /// dot is the most urgent of all of them.
-    pub(super) fn render_project(&self, project: TaskKey, hidden: bool, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_project(&self, project: TaskKey, group: &[(TaskKey, &TaskInfo)], cx: &mut Context<Self>) -> AnyElement {
         let new_task = self
             .new_task
             .as_ref()
@@ -356,7 +349,6 @@ impl Den {
             .px_3()
             .gap_2()
             .text_ui(cx)
-            .when(hidden, |row| row.opacity(0.5))
             .when(active, |el| el.bg(selected_row(cx)))
             .when(!active, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
             // Its agents' state, and only the dot.
@@ -386,8 +378,7 @@ impl Den {
             .context_menu({
                 let project = project.clone();
                 move |menu, window, cx| {
-                    let (create, init, add, window_key, copy, finder, hide, close) = (
-                        project.clone(),
+                    let (create, init, add, window_key, copy, finder, close) = (
                         project.clone(),
                         project.clone(),
                         project.clone(),
@@ -441,16 +432,8 @@ impl Den {
                         menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path)).disabled(!local),
                     )
                     .separator()
-                    // Its own hiding: one hidden with its server shows with it.
-                    .item({
-                        let hidden = Config::get(cx).hidden_projects.contains(&hide.config());
-                        menu::item(if hidden { "Show Project" } else { "Hide Project" }, &weak, move |this, _, cx| {
-                            this.set_project_hidden(&hide, !hidden, cx)
-                        })
-                    })
                     .item(
                         menu::item("Remove from Workspaces", &weak, move |this, window, cx| {
-                            this.set_project_hidden(&close, false, cx);
                             if known {
                                 this.remove_folder(&close, close.path.clone(), window, cx)
                             } else {
@@ -460,7 +443,7 @@ impl Den {
                         .disabled(unsaved),
                     )
                     .separator()
-                    .item(show_hidden_item(&weak, cx))
+                    .item(inactive_item(&weak, cx))
                     .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
                 }
             });

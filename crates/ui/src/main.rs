@@ -114,6 +114,7 @@ actions!(
         NextActiveTask,
         NextTask,
         ToggleTasks,
+        ToggleInactiveWorkspaces,
         ToggleTerminalMode,
         OpenFolder,
         OpenRemoteFolder,

@@ -112,6 +112,7 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Toggle Side Panel", ToggleSidePanel),
             MenuItem::separator(),
             MenuItem::action("Toggle Workspaces", ToggleTasks),
+            MenuItem::action("Show or Hide Inactive Workspaces", ToggleInactiveWorkspaces),
             MenuItem::action("Toggle Terminals", ToggleTerminals),
             MenuItem::action("Maximize Terminals", MaximizeTerminals),
             MenuItem::action("Terminals Under the Code", MoveTerminals).checked(bottom),

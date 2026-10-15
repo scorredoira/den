@@ -451,7 +451,7 @@ impl Den {
         // The list as runs of the same repo, each its checkout first.
         let mut groups: Vec<Vec<TaskKey>> = Vec::new();
         let mut last: Option<(SharedString, PathBuf)> = None;
-        for (key, task) in self.ordered_all(cx) {
+        for (key, task) in self.ordered(cx) {
             let group = (key.host.clone(), task.repo.clone());
             if last.as_ref() != Some(&group) {
                 groups.push(Vec::new());

@@ -52,6 +52,7 @@ shortcuts![
         (NextActiveTask, "Next Workspace with an Agent", mac_or("cmd-e", "ctrl-alt-e")),
         (NextTask, "Next Workspace", "secondary-alt-shift-e"),
         (ToggleTasks, "Toggle Workspaces", "secondary-shift-b"),
+        (ToggleInactiveWorkspaces, "Show or Hide Inactive Workspaces", "secondary-alt-b"),
         (NewTask, "New Worktree", "secondary-shift-n"),
         (OpenFolder, "Open Folder", "secondary-o"),
         (OpenRemoteFolder, "Open Folder on Server", "secondary-alt-o"),
@@ -159,6 +160,7 @@ pub fn in_plain_editor(name: &str) -> bool {
             | "NextActiveTask"
             | "NextTask"
             | "ToggleTasks"
+            | "ToggleInactiveWorkspaces"
             | "OpenFolder"
             | "OpenRemoteFolder"
             | "OpenRecent"
