@@ -323,7 +323,7 @@ mod tests {
                     assert!(this.focus_handle.is_focused(window));
                 }
                 this.tabs[0].content = Content::Ready;
-                this.tabs[0].image = Some(Arc::new(Image::from_bytes(ImageFormat::Png, Vec::new())));
+                this.tabs[0].image = Some(Arc::new(RenderImage::new(Vec::new())));
                 this.start_tab_drag(&drag, window, cx);
                 assert!(this.focus_handle.is_focused(window));
             })

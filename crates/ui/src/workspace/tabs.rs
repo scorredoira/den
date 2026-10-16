@@ -15,6 +15,7 @@ impl Workspace {
         view.group = group;
         view.show_source = show_source;
         view.markdown = source.markdown.clone();
+        view.previewed = source.previewed.clone();
         view.image = source.image.clone();
         view.grab_focus = false;
         if matches!(source.content, Content::Ready) {
@@ -178,7 +179,11 @@ impl Workspace {
             view.blaming = blaming;
         }
         let was_active = self.active == Some(ix);
+        let image = self.tabs[ix].image.take();
         let next = self.remove_tab(ix);
+        if let Some(image) = image {
+            self.release_image(image, window, cx);
+        }
         self.message = None;
         match next {
             None => {
@@ -192,6 +197,14 @@ impl Workspace {
                 self.group = self.tabs[next].group;
                 cx.notify();
             }
+        }
+    }
+
+    /// Takes an image no tab shows any more off the GPU, where gpui keeps
+    /// it until the app quits otherwise.
+    pub(super) fn release_image(&self, image: Arc<RenderImage>, window: &mut Window, cx: &mut App) {
+        if !self.tabs.iter().any(|tab| tab.image.as_ref() == Some(&image)) {
+            cx.drop_image(image, Some(window));
         }
     }
 

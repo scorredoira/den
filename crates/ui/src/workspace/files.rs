@@ -72,6 +72,7 @@ impl Workspace {
         FileTab {
             path,
             image: None,
+            previewed: cx.new(markdown_images::PreviewImages::new),
             editor,
             markdown,
             show_source: false,
@@ -131,14 +132,19 @@ impl Workspace {
             .clone()
             .map(|client| client.request(Request::ReadFile { path: path.clone() }));
         let image_format = image_format(&path);
+        let renderer = cx.svg_renderer();
         let generation = self.begin_read(&path);
         self.watch_file(&path, window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let read = match read {
                 Some(read) => match read.await {
-                    Ok(Response::Bytes(bytes)) if let Some(format) = image_format => {
-                        Ok(Read::Image(Arc::new(Image::from_bytes(format, bytes))))
-                    }
+                    // Decoded here and held by its tab, which frees it when
+                    // it goes.
+                    Ok(Response::Bytes(bytes)) if let Some(format) = image_format => cx
+                        .background_spawn(async move { Image::from_bytes(format, bytes).to_image_data(renderer) })
+                        .await
+                        .map(Read::Image)
+                        .map_err(|err| format!("Couldn't open: {err:#}")),
                     Ok(Response::Bytes(bytes)) => decode_text(bytes).map(Read::Text),
                     Ok(other) => Err(format!("Unexpected response: {other:?}")),
                     Err(err) => Err(format!("Couldn't open: {err:#}")),
@@ -177,9 +183,12 @@ impl Workspace {
         let name = file_name(path);
         let result = match read {
             Ok(Read::Image(image)) => {
-                tab.image = Some(image);
+                let replaced = tab.image.replace(image);
                 tab.content = Content::Ready;
                 tab.restored = false;
+                if let Some(replaced) = replaced {
+                    self.release_image(replaced, window, cx);
+                }
                 return cx.notify();
             }
             Ok(Read::Text(text)) => Ok(text),

@@ -140,7 +140,10 @@ impl FileTab {
 struct FileTab {
     path: PathBuf,
     /// An image is shown instead of the text.
-    image: Option<Arc<Image>>,
+    image: Option<Arc<RenderImage>>,
+    /// The images its Markdown's previews loaded, shared with its other
+    /// views like `markdown`.
+    previewed: Entity<markdown_images::PreviewImages>,
     editor: Entity<EditorState>,
     /// Rendered view of a Markdown file.
     markdown: Option<Entity<TextViewState>>,
@@ -552,6 +555,14 @@ impl Workspace {
                 }
             }),
             cx.observe_self(|this, cx| this.remember(cx)),
+            // Its tabs' images go with it (see `release_image`).
+            cx.on_release(|this, cx| {
+                for tab in &this.tabs {
+                    if let Some(image) = &tab.image {
+                        cx.drop_image(image.clone(), None);
+                    }
+                }
+            }),
             cx.subscribe_in(
                 &file_tree,
                 window,
@@ -1705,7 +1716,7 @@ fn same_text(a: &input::Rope, b: &input::Rope) -> bool {
 /// What a file read: its text, or the image it is.
 enum Read {
     Text(String),
-    Image(Arc<Image>),
+    Image(Arc<RenderImage>),
 }
 
 fn decode_text(bytes: Vec<u8>) -> Result<String, String> {

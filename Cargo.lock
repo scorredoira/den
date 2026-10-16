@@ -7723,6 +7723,7 @@ version = "2.30.12"
 dependencies = [
  "anyhow",
  "client",
+ "data-url",
  "gpui-base",
  "gpui-kit",
  "lsp-types",

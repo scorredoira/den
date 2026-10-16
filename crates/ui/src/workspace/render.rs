@@ -397,7 +397,7 @@ impl Workspace {
                         .child(
                             TextView::new(markdown)
                                 .resolve_image_source(markdown_images::resolver(
-                                    self.client.clone(), self.root.clone(), tab.path.clone(),
+                                    self.client.clone(), self.root.clone(), tab.path.clone(), tab.previewed.clone(),
                                 ))
                                 .on_link_click({
                                     let workspace = cx.entity().downgrade();

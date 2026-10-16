@@ -229,3 +229,74 @@ fn edits_of_the_same_length_count(cx: &mut TestAppContext) {
         assert_eq!(editor.read(cx).value(), "one");
     }));
 }
+
+const PNG: [u8; 70] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63,
+    0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+];
+
+fn png(cx: &mut App) -> Arc<RenderImage> {
+    Image::from_bytes(ImageFormat::Png, PNG.to_vec()).to_image_data(cx.svg_renderer()).unwrap()
+}
+
+/// An image tab's picture stays on the GPU while a tab shows it, its other
+/// view too, and goes with the last one.
+#[gpui_kit::test]
+fn closing_an_image_frees_it_with_its_last_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    let image = cx.update(|_, cx| png(cx));
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        add_tab(this, "/files-test/a.png", "", window, cx);
+        this.tabs[0].image = Some(image.clone());
+        this.activate(0, window, cx);
+        this.split_editor(Axis::Row, window, cx);
+    }));
+    assert!(cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        window.has_image_atlas_entry(&image)
+    }));
+    cx.update(|window, cx| workspace.update(cx, |this, cx| this.close(1, window, cx)));
+    assert!(cx.update(|window, _| window.has_image_atlas_entry(&image)));
+    cx.update(|window, cx| workspace.update(cx, |this, cx| this.close(0, window, cx)));
+    assert!(!cx.update(|window, _| window.has_image_atlas_entry(&image)));
+}
+
+struct Holder(Option<Entity<Workspace>>);
+
+impl Render for Holder {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().children(self.0.clone())
+    }
+}
+
+/// A workspace that goes takes its tabs' images off the GPU.
+#[gpui_kit::test]
+fn closing_a_workspace_frees_its_images(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let (holder, cx) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(|cx| Workspace::new(PathBuf::from("/files-test"), None, true, "files-test".into(), window, cx));
+        Holder(Some(workspace))
+    });
+    let image = cx.update(|_, cx| png(cx));
+    cx.update(|window, cx| {
+        let workspace = holder.read(cx).0.clone().unwrap();
+        workspace.update(cx, |this, cx| {
+            add_tab(this, "/files-test/a.png", "", window, cx);
+            this.tabs[0].image = Some(image.clone());
+            this.activate(0, window, cx);
+        });
+        window.draw(cx).clear(cx);
+        assert!(window.has_image_atlas_entry(&image));
+    });
+    cx.update(|_, cx| holder.update(cx, |holder, cx| {
+        holder.0 = None;
+        cx.notify();
+    }));
+    cx.run_until_parked();
+    assert!(!cx.update(|window, _| window.has_image_atlas_entry(&image)));
+}
