@@ -263,6 +263,9 @@ pub struct Config {
     /// The History panel's commit files are folded to their header.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_files_folded: bool,
+    /// The History panel's commit files' height, as dragged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_files_height: Option<f32>,
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,

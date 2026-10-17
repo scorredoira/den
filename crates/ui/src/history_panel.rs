@@ -3,9 +3,9 @@
 //! it); or only those that changed a file or a folder. The commit picked
 //! shows in the code, in the preview tab: its message and its changes, of a
 //! file's or folder's history only that file's or folder's. Under the
-//! commits, folding to their header, the commit's files (not in a file's
-//! history: there is only the one). How the branches join is the Graph
-//! tab's (see `history`). It only reads, and the agent does all the reading.
+//! commits, sized by dragging the line between or folded to their header,
+//! the commit's files (not in a file's history: there is only the one).
+//! How the branches join is the Graph tab's (see `history`). It only reads, and the agent does all the reading.
 
 use std::{ops::Range, path::PathBuf, sync::Arc, time::Duration};
 
@@ -14,14 +14,15 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
+    resizable_panel,
     tooltip::Tooltip,
-    v_flex,
+    v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{ChangedFile, GitOp, GraphCommit, GraphScope, Request, Response};
 
 use crate::{
-    config::{Config, UiText as _},
+    config::{Config, Split, UiText as _},
     history::{SelectNext, SelectPrev, read_graph, ref_labels},
     menu,
 };
@@ -34,6 +35,9 @@ const DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// Delay after typing in the search before asking again.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// The commit files' height until dragged.
+const FILES_HEIGHT: f32 = 200.;
 
 pub enum HistoryPanelEvent {
     /// Show a commit in the preview tab (`pin`: a tab of its own), only
@@ -71,6 +75,8 @@ pub struct HistoryPanel {
     listing: u64,
     scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
+    /// The commits over their files, its line dragged to size them.
+    split: Split,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -104,6 +110,7 @@ impl HistoryPanel {
             listing: 0,
             scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            split: Split::new(cx),
             _subscriptions: subscriptions,
         }
     }
@@ -425,9 +432,7 @@ impl HistoryPanel {
             .child(if count > 0 { format!("FILES ({count})") } else { "FILES".to_string() })
             .on_click(|_, _, cx| Config::update(cx, |config| config.history_files_folded = !config.history_files_folded));
         v_flex()
-            .flex_none()
-            // Up to the commits' room, and only that of a header with none.
-            .when(!folded && count > 0, |el| el.max_h(relative(0.4)).h(px(24. * (count + 1) as f32 + 4.)))
+            .size_full()
             .child(header)
             .when(!folded, |el| {
                 el.child(
@@ -469,43 +474,56 @@ impl HistoryPanel {
 }
 
 impl Render for HistoryPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
         // Two lines, with room above and below to tell one commit from the next.
         let height = px((size * 4.).round());
         let count = self.commits.len();
         let bar = self.render_bar(cx).into_any_element();
         let files = self.has_files().then(|| self.render_files(cx).into_any_element());
+        let folded = Config::get(cx).history_files_folded;
         let theme = cx.theme();
         let empty = (count == 0 && !self.loading && self.error.is_none()).then_some("No commits");
-        v_flex()
+        let commits = div()
             .size_full()
-            .text_ui(cx)
-            .child(bar)
+            .key_context("History")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::select_prev))
+            .on_action(cx.listener(Self::select_next))
+            .when_some(empty, |el, empty| {
+                el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
+            })
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .key_context("History")
-                    .track_focus(&self.focus_handle)
-                    .on_action(cx.listener(Self::select_prev))
-                    .on_action(cx.listener(Self::select_next))
-                    .when_some(empty, |el, empty| {
-                        el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
+                uniform_list(
+                    "history-panel-commits",
+                    count,
+                    cx.processor(move |this, range: Range<usize>, window, cx| {
+                        let focused = this.focus_handle.is_focused(window);
+                        this.render_rows(range, height, focused, cx)
+                    }),
+                )
+                .track_scroll(&self.scroll)
+                .size_full(),
+            );
+        // Unfolded, the files take the height they were dragged to, under
+        // the line between them and the commits; folded, only their header.
+        let body = match files {
+            Some(files) if !folded => {
+                let height = Config::get(cx).history_files_height.unwrap_or(FILES_HEIGHT);
+                let state = self.split.state(window.viewport_size().height, (), cx).clone();
+                v_resizable("history-panel-split")
+                    .with_state(&state)
+                    .child(resizable_panel().size_range(px(60.)..px(4000.)).child(commits))
+                    .child(resizable_panel().size(px(height)).size_range(px(48.)..px(4000.)).child(files))
+                    .on_resize(|state, _, cx| {
+                        if let Some(files) = state.read(cx).sizes().get(1).copied() {
+                            Config::update_quietly(cx, |config| config.history_files_height = Some(f32::from(files)));
+                        }
                     })
-                    .child(
-                        uniform_list(
-                            "history-panel-commits",
-                            count,
-                            cx.processor(move |this, range: Range<usize>, window, cx| {
-                                let focused = this.focus_handle.is_focused(window);
-                                this.render_rows(range, height, focused, cx)
-                            }),
-                        )
-                        .track_scroll(&self.scroll)
-                        .size_full(),
-                    ),
-            )
-            .children(files)
+                    .into_any_element()
+            }
+            files => v_flex().size_full().child(div().flex_1().min_h_0().child(commits)).children(files).into_any_element(),
+        };
+        v_flex().size_full().text_ui(cx).child(bar).child(div().flex_1().min_h_0().child(body))
     }
 }
