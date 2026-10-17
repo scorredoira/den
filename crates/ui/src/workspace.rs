@@ -1692,6 +1692,12 @@ impl Workspace {
             HistoryPanelEvent::OpenCommitDiff { commit, short, file } => {
                 self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), true, window, cx);
             }
+            HistoryPanelEvent::OpenFileAt { commit, short, file } => {
+                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
+            }
+            HistoryPanelEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
+            HistoryPanelEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
+            HistoryPanelEvent::ShowHistory { file } => self.open_history(Some((file.clone(), false)), cx),
         }
     }
 

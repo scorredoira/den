@@ -47,6 +47,13 @@ pub enum HistoryPanelEvent {
     ShowFile { commit: String, short: String, only: Option<(String, bool)>, file: String },
     /// Show what `file` changed in a commit, in a tab of its own.
     OpenCommitDiff { commit: String, short: String, file: String },
+    /// Show `file` as it was in a commit.
+    OpenFileAt { commit: String, short: String, file: String },
+    OpenFile { file: String },
+    /// Select `file` in the Files panel.
+    RevealInTree { file: String },
+    /// The commits that changed `file`, here.
+    ShowHistory { file: String },
 }
 
 pub struct HistoryPanel {
@@ -313,6 +320,42 @@ impl HistoryPanel {
         }
     }
 
+    /// A file of the commit: its changes, the file as it was then or as it
+    /// is, its path, where it is and its own history.
+    fn file_menu(&self, file: &ChangedFile, cx: &mut Context<Self>) -> impl Fn(menu::PopupMenu, &mut Window, &mut Context<menu::PopupMenu>) -> menu::PopupMenu + 'static {
+        let view = cx.entity().downgrade();
+        let commit = self.selected_commit().map(|commit| (commit.hash.clone(), commit.short.clone())).unwrap_or_default();
+        let path = file.path.clone();
+        let absolute = self.root.join(&path).to_string_lossy().into_owned();
+        let deleted = file.status == 'D';
+        move |menu, _, _| {
+            let ((diff_hash, diff_short), (at_hash, at_short)) = (commit.clone(), commit.clone());
+            let (diff, at, open, history, copy, reveal) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
+            let absolute = absolute.clone();
+            menu.item(menu::item("Open Changes", &view, move |_, _, cx| {
+                cx.emit(HistoryPanelEvent::OpenCommitDiff { commit: diff_hash.clone(), short: diff_short.clone(), file: diff.clone() })
+            }))
+            .item(menu::item("Open File at This Commit", &view, move |_, _, cx| {
+                cx.emit(HistoryPanelEvent::OpenFileAt { commit: at_hash.clone(), short: at_short.clone(), file: at.clone() })
+            }))
+            .item(menu::item("Open File", &view, move |_, _, cx| cx.emit(HistoryPanelEvent::OpenFile { file: open.clone() })))
+            .item(menu::item("Show File History", &view, move |_, _, cx| {
+                cx.emit(HistoryPanelEvent::ShowHistory { file: history.clone() })
+            }))
+            .separator()
+            .item(menu::item("Copy Path", &view, move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(absolute.clone()))))
+            .item(menu::item("Copy Relative Path", &view, move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+            }))
+            .item(
+                menu::item("Reveal in File Tree", &view, move |_, _, cx| {
+                    cx.emit(HistoryPanelEvent::RevealInTree { file: reveal.clone() })
+                })
+                .disabled(deleted),
+            )
+        }
+    }
+
     /// The commits in `range`: the subject (after what points at the
     /// commit), and under it the author and the date; hovered, all of it.
     fn render_rows(&mut self, range: Range<usize>, height: Pixels, focused: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -469,6 +512,7 @@ impl HistoryPanel {
                 });
                 cx.notify();
             }))
+            .context_menu(self.file_menu(file, cx))
             .into_any_element()
     }
 }
