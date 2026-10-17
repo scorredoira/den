@@ -333,7 +333,9 @@ impl Workspace {
         self.file_tree
             .update(cx, |tree, cx| tree.invalidate(&paths, cx));
         self.changes.update(cx, |changes, cx| changes.mark_stale(cx));
-        let visible = self.history_visible();
+        let visible = self.graph_visible();
+        self.graph.update(cx, |graph, cx| graph.mark_stale(visible, cx));
+        let visible = self.is_shown(Panel::History, cx);
         self.history.update(cx, |history, cx| history.mark_stale(visible, cx));
         self.reload_changed(paths.clone(), window, cx);
         let diffs: Vec<usize> = (0..self.tabs.len())

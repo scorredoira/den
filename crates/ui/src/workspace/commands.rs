@@ -31,7 +31,7 @@ impl Workspace {
         self.show_panel(Panel::Changes, cx);
         if let Some(file) = file {
             self.terminals_maximized = false;
-            self.open_diff(DiffOf { file, commit: None, source: false }, true, window, cx);
+            self.open_diff(DiffOf { file, commit: None, source: false, only: None }, true, window, cx);
         }
         cx.notify();
     }

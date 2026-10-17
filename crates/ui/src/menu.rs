@@ -79,8 +79,8 @@ pub fn panels_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupM
             )
         })
         .item(
-            item("History", &weak, |this, window, cx| this.toggle_history(window, cx))
-                .checked(workspace.read(cx).history_visible()),
+            item("Graph", &weak, |this, window, cx| this.toggle_graph(window, cx))
+                .checked(workspace.read(cx).graph_visible()),
         )
         .separator()
         .item(reset_layout())

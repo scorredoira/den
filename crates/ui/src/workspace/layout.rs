@@ -43,6 +43,7 @@ pub(super) fn icon(panel: Panel) -> &'static str {
         Panel::Agents => "icons/bot.svg",
         Panel::Files => "icons/files.svg",
         Panel::Changes => "icons/git-branch.svg",
+        Panel::History => "icons/history.svg",
         Panel::Search => "icons/search.svg",
         Panel::References => "icons/references.svg",
         Panel::Outline => "icons/list-tree.svg",
@@ -72,6 +73,7 @@ pub(crate) fn title(panel: Panel) -> &'static str {
         Panel::Agents => "Agents",
         Panel::Files => "Files",
         Panel::Changes => "Changes",
+        Panel::History => "History",
         Panel::Search => "Search",
         Panel::References => "References",
         Panel::Outline => "Outline",
@@ -443,6 +445,9 @@ impl Workspace {
         self.panels.seen = open;
         if panels.contains(&Panel::Changes) {
             self.changes.update(cx, |changes, cx| changes.shown(cx));
+        }
+        if panels.contains(&Panel::History) {
+            self.history.update(cx, |history, cx| history.shown(cx));
         }
     }
 
@@ -1142,6 +1147,7 @@ impl Workspace {
             Panel::Search => Some(self.search.clone().cached(cached()).into_any_element()),
             Panel::References => Some(self.references.clone().cached(cached()).into_any_element()),
             Panel::Changes => Some(self.changes.clone().cached(cached()).into_any_element()),
+            Panel::History => Some(self.history.clone().cached(cached()).into_any_element()),
             _ => None,
         };
         let hide = workspace.clone();

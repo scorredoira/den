@@ -200,7 +200,8 @@ impl Default for TerminalModeLayout {
 pub enum Slot {
     /// The next place's.
     Place,
-    History,
+    #[serde(alias = "History")]
+    Graph,
     Debug,
     Notes,
 }
@@ -210,7 +211,9 @@ pub enum Slot {
 pub enum Icon {
     /// A place's, by a panel of it.
     Place(Panel),
-    History,
+    /// The Graph tab's (named History before the History panel).
+    #[serde(alias = "History")]
+    Graph,
     Debug,
     Notes,
 }
@@ -219,7 +222,7 @@ impl Icon {
     fn slot(self) -> Slot {
         match self {
             Icon::Place(_) => Slot::Place,
-            Icon::History => Slot::History,
+            Icon::Graph => Slot::Graph,
             Icon::Debug => Slot::Debug,
             Icon::Notes => Slot::Notes,
         }
@@ -243,8 +246,8 @@ pub(super) fn lenient<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + De
     Ok(T::deserialize(value).unwrap_or_default())
 }
 
-/// Panels by name, without those this version doesn't have: the History
-/// and Commit Files panels of before the History tab, or a newer den's.
+/// Panels by name, without those this version doesn't have: the Commit
+/// Files panel of before the Graph tab, or a newer den's.
 fn known_panels<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Panel>, D::Error> {
     let names = Vec::<serde_json::Value>::deserialize(deserializer)?;
     Ok(names.into_iter().filter_map(|name| Panel::deserialize(name).ok()).collect())
@@ -325,14 +328,20 @@ impl Layout {
         for group in Group::ALL {
             for (ix, panel) in group.panels().iter().enumerate().filter(|(_, panel)| !seen.contains(panel)) {
                 // With those of its group, right after the one before it
-                // there (a new panel goes where it would in a new layout),
-                // or a place of its own.
+                // there (a new panel goes where it would in a new layout:
+                // the tab after it, if it's a tab), or a place of its own.
                 match self.places.iter_mut().find(|place| place.iter().flatten().any(|other| group.panels().contains(other))) {
                     Some(place) => {
                         let at = ix
                             .checked_sub(1)
                             .and_then(|before| place.iter().position(|tabs| tabs.contains(&group.panels()[before])));
-                        place.insert(at.map_or(place.len(), |at| at + 1), vec![*panel]);
+                        match at {
+                            Some(at) if place[at].len() > 1 => {
+                                let before = place[at].iter().position(|tab| *tab == group.panels()[ix - 1]).unwrap_or(0);
+                                place[at].insert(before + 1, *panel);
+                            }
+                            _ => place.insert(at.map_or(place.len(), |at| at + 1), vec![*panel]),
+                        }
                     }
                     None => self.places.push(vec![vec![*panel]]),
                 }
@@ -460,13 +469,13 @@ impl Layout {
                         push(&mut icons, icon);
                     }
                 }
-                Slot::History => push(&mut icons, (Icon::History, true)),
+                Slot::Graph => push(&mut icons, (Icon::Graph, true)),
                 Slot::Debug => push(&mut icons, (Icon::Debug, true)),
                 Slot::Notes => push(&mut icons, (Icon::Notes, true)),
             }
         }
         icons.extend(places.flatten());
-        for other in [Icon::History, Icon::Debug, Icon::Notes] {
+        for other in [Icon::Graph, Icon::Debug, Icon::Notes] {
             push(&mut icons, (other, true));
         }
         for (icon, on) in &mut icons {
@@ -703,6 +712,8 @@ impl Layout {
         tabs.iter().find_map(|panel| self.heights.get(panel).copied()).unwrap_or(match tabs[0] {
             Panel::Workspaces | Panel::Changes => 240.,
             Panel::Agents => 110.,
+            // Elsewhere than where it fills: room for a dozen commits.
+            Panel::History => 400.,
             _ => 180.,
         })
     }
@@ -745,7 +756,7 @@ impl Group {
         match self {
             Group::Explorer => &[Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline],
             Group::Search => &[Panel::Search, Panel::References],
-            Group::Git => &[Panel::Changes],
+            Group::Git => &[Panel::Changes, Panel::History],
         }
     }
 
@@ -754,7 +765,7 @@ impl Group {
         match self {
             Group::Explorer => Panel::Files,
             Group::Search => Panel::Search,
-            Group::Git => Panel::Changes,
+            Group::Git => Panel::History,
         }
     }
 
@@ -782,6 +793,9 @@ pub enum Panel {
     Workspaces,
     Files,
     Changes,
+    /// The commits of the current branch, or those that changed a file or
+    /// a folder (see `history_panel`).
+    History,
     Search,
     References,
     /// The classes, functions, constants… of the file in front, without
@@ -800,7 +814,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 11] = [
+    pub const ALL: [Panel; 12] = [
         Panel::Workspaces,
         Panel::Agents,
         Panel::Files,
@@ -808,6 +822,7 @@ impl Panel {
         Panel::Search,
         Panel::References,
         Panel::Changes,
+        Panel::History,
         Panel::Code,
         Panel::Terminals,
         Panel::Console,

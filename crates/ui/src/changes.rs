@@ -1,5 +1,5 @@
 //! The Changes panel: what isn't committed yet, staged and unstaged (the
-//! history is a tab of the code, see `history`). It only reads: committing, staging, discarding and switching branches
+//! commits are the History panel's, see `history_panel`). It only reads: committing, staging, discarding and switching branches
 //! are done in a terminal. The branch is in the status bar. The agent does
 //! all the reading.
 
@@ -32,7 +32,7 @@ pub enum ChangesEvent {
     OpenFile { file: String },
     /// Select `file` in the Files panel.
     RevealInTree { file: String },
-    /// The History tab with the commits that changed `file`.
+    /// The History panel with the commits that changed `file`.
     ShowHistory { file: String },
 }
 
@@ -156,7 +156,7 @@ impl ChangesPanel {
 }
 
 /// A file row: status, name, folder, and lines added and removed.
-fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: &App) -> Stateful<Div> {
+pub(crate) fn file_row(id: ElementId, file: &ChangedFile, selected: bool, indent: f32, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
     // The whole path, its folder muted: in the list's order, the files of a
     // folder go together. Cut at the start, so the name always shows.

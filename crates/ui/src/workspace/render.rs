@@ -31,6 +31,10 @@ impl Workspace {
                     None => name,
                 };
                 let name = match &tab.diff {
+                    // A file's history: the file's name.
+                    Some(DiffOf { commit: Some((_, short)), file, only: Some((only, false)), .. }) if file.is_empty() => {
+                        format!("{} ({short})", only.rsplit('/').next().unwrap_or(only))
+                    }
                     Some(DiffOf { commit: Some((_, short)), file, .. }) if file.is_empty() => format!("Commit {short}"),
                     Some(DiffOf { commit: Some((_, short)), source: true, .. }) => format!("{name} @ {short}"),
                     Some(DiffOf { commit: Some((_, short)), .. }) => format!("{name} ({short})"),
@@ -274,8 +278,8 @@ impl Workspace {
             })
             .when(!whole_commit && !plain, |menu| {
                 let path = path.clone();
-                menu.item(menu::item("Show File History", &workspace, move |this, window, cx| {
-                    this.show_history(&path, false, window, cx)
+                menu.item(menu::item("Show File History", &workspace, move |this, _, cx| {
+                    this.show_history(&path, false, cx)
                 }))
             })
             .separator()
@@ -787,7 +791,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_side_panel))
             .on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.toggle_panel(Panel::Files, cx)))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.toggle_panel(Panel::Changes, cx)))
-            .on_action(cx.listener(|this, _: &ShowHistory, window, cx| this.toggle_history(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.toggle_panel(Panel::History, cx)))
+            .on_action(cx.listener(|this, _: &ShowGraph, window, cx| this.toggle_graph(window, cx)))
             .on_action(cx.listener(Self::show_search))
             .on_action(cx.listener(Self::open_file_finder))
             // F4 steps through the visible panel's results: References or Search.
@@ -833,9 +838,9 @@ impl Render for Workspace {
                     this.open_changes(&path, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &ShowFileHistory, window, cx| {
+            .on_action(cx.listener(|this, _: &ShowFileHistory, _, cx| {
                 if let Some((path, _)) = this.cursor_place(cx) {
-                    this.show_history(&path, false, window, cx);
+                    this.show_history(&path, false, cx);
                 }
             }))
             .on_action(cx.listener(Self::add_to_watch))

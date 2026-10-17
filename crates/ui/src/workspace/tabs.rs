@@ -54,9 +54,9 @@ impl Workspace {
         self.message = None;
         let tab = &self.tabs[ix];
         let (path, doc) = (tab.path.clone(), tab.doc || tab.has_no_file());
-        // The history rereads what changed while it was out of sight.
-        if matches!(tab.page, Some(pages::Page::History)) {
-            self.history.update(cx, |history, cx| history.shown(cx));
+        // The graph rereads what changed while it was out of sight.
+        if matches!(tab.page, Some(pages::Page::Graph)) {
+            self.graph.update(cx, |graph, cx| graph.shown(cx));
         }
         if focus {
             self.focus_active(window, cx);
@@ -273,7 +273,7 @@ impl Workspace {
     /// and `den diff` show them.
     pub(super) fn open_changes(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(file) = self.repo_path(path) {
-            self.open_diff(DiffOf { file, commit: None, source: false }, true, window, cx);
+            self.open_diff(DiffOf { file, commit: None, source: false, only: None }, true, window, cx);
         }
     }
 

@@ -245,21 +245,24 @@ pub struct Config {
     /// The worktrees made from the Workspaces panel (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub own_worktrees: Vec<String>,
-    /// The History tab's sizes, as dragged.
+    /// The Graph tab's sizes, as dragged.
     #[serde(deserialize_with = "lenient")]
     pub history: HistorySizes,
-    /// The History tab shows every branch, tag and remote, not only the
+    /// The Graph tab shows every branch, tag and remote, not only the
     /// current branch (as gitk does without `--all`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_all_branches: bool,
-    /// The History tab's columns, as dragged by their headers; those not
+    /// The Graph tab's columns, as dragged by their headers; those not
     /// in it go where they go by default.
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "known_history_parts")]
     pub history_order: Vec<HistoryPart>,
-    /// Files is off in the History tab: the selected commit's files don't
+    /// Files is off in the Graph tab: the selected commit's files don't
     /// show beside the commits, as they do by default.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_hide_files: bool,
+    /// The History panel's commit files are folded to their header.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub history_files_folded: bool,
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,
@@ -876,7 +879,7 @@ mod layout_tests {
         // Into another place, and hidden ones come back.
         let git = layout.place_of(Panel::Changes).unwrap();
         layout.move_panel(Panel::Agents, git, None);
-        assert_eq!(layout.panels(git), [Panel::Changes, Panel::Agents]);
+        assert_eq!(layout.panels(git), [Panel::Changes, Panel::History, Panel::Agents]);
         // A place of its own, right after; merged back.
         layout.own_place(Panel::Workspaces);
         let workspaces = Place(Panel::Workspaces);
@@ -903,17 +906,17 @@ mod layout_tests {
         use super::{Icon, Place};
         let mut layout = Layout::default();
         let places = [Icon::Place(Panel::Workspaces), Icon::Place(Panel::Search), Icon::Place(Panel::Changes)];
-        assert_eq!(layout.bar(), [&places[..], &[Icon::History, Icon::Debug, Icon::Notes]].concat());
+        assert_eq!(layout.bar(), [&places[..], &[Icon::Graph, Icon::Debug, Icon::Notes]].concat());
         layout.move_icon(Icon::Notes, Some(places[1]));
         layout.move_icon(places[0], None);
-        assert_eq!(layout.bar(), [Icon::Notes, places[1], places[2], Icon::History, Icon::Debug, places[0]]);
+        assert_eq!(layout.bar(), [Icon::Notes, places[1], places[2], Icon::Graph, Icon::Debug, places[0]]);
         layout.set_on_bar(places[1], false);
         assert!(layout.panels(Place(Panel::Search)).is_empty() && !layout.bar().contains(&places[1]));
         assert!(layout.icons().contains(&(places[1], false)));
         layout.set_on_bar(places[1], true);
         assert_eq!(layout.bar()[1], places[1]);
-        layout.set_on_bar(Icon::History, false);
-        assert!(!layout.bar().contains(&Icon::History));
+        layout.set_on_bar(Icon::Graph, false);
+        assert!(!layout.bar().contains(&Icon::Graph));
     }
 
     #[test]
@@ -1020,18 +1023,24 @@ mod layout_tests {
         layout.repair();
         assert_eq!(layout.places[0], [[Panel::Files], [Panel::Outline], [Panel::Workspaces], [Panel::Agents]]);
         assert!(Panel::ALL.iter().filter(|panel| Group::of(**panel).is_some()).all(|panel| layout.place_of(*panel).is_some()));
-        // The History and Commit Files panels of before the History tab are left out.
+        // The Commit Files panel of before the Graph tab is left out.
         let config: super::Config = serde_json::from_str(
-            r#"{"layout": {"place": "history", "places": [["files"], ["changes", "history", "commit"]], "hidden": ["agents", "commit"], "collapsed": ["history"], "heights": {"history": 100, "changes": 200}}}"#,
+            r#"{"layout": {"places": [["files"], ["changes", "history", "commit"]], "hidden": ["agents", "commit"], "heights": {"commit": 100, "changes": 200}}}"#,
         )
         .unwrap();
         let mut layout = config.layout;
         layout.repair();
-        assert_eq!(layout.place, super::Place::default());
-        assert_eq!(layout.places[1], [[Panel::Changes]]);
+        assert_eq!(layout.places[1], [[Panel::Changes], [Panel::History]]);
         assert_eq!(layout.hidden, [Panel::Agents]);
-        assert!(layout.collapsed.is_empty());
         assert_eq!(layout.heights.into_iter().collect::<Vec<_>>(), [(Panel::Changes, 200.)]);
+        // A panel new to a layout goes where it would in a new one: after the
+        // one before it, as a tab if that one is a tab.
+        let mut layout: Layout = serde_json::from_str(r#"{"places": [["workspaces", ["files", "changes"], "outline"]]}"#).unwrap();
+        layout.repair();
+        assert!(layout.places[0].contains(&vec![Panel::Files, Panel::Changes, Panel::History]), "{:?}", layout.places);
+        let mut layout: Layout = serde_json::from_str(r#"{"places": [["files"], ["changes"]]}"#).unwrap();
+        layout.repair();
+        assert_eq!(layout.places[1], [[Panel::Changes], [Panel::History]]);
         // One from before the places reads as a new one, the rest of the config intact.
         let config: super::Config = serde_json::from_str(r#"{"order": ["/a"], "layout": {"place": {"group": "explorer"}, "alone": ["files"]}}"#).unwrap();
         assert_eq!(config.order, ["/a"]);

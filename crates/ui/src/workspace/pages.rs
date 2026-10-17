@@ -1,5 +1,5 @@
 //! Tabs of the code that show a view of their own rather than a file: the
-//! history, and the notes out of their place, side by side
+//! graph, and the notes out of their place, side by side
 //! with the code in a split. Saved with what's open as a `den:` path no file
 //! has.
 
@@ -9,27 +9,27 @@ use super::*;
 #[derive(Clone)]
 pub(super) enum Page {
     /// The repo's history, as gitk shows it (one such tab too).
-    History,
+    Graph,
     /// The workspace's notes, out of the terminals' place.
     Notes,
 }
 
-/// The history's.
-const HISTORY: &str = "den:history";
+/// The graph's (named History before the History panel).
+const GRAPH: &str = "den:history";
 /// The notes'.
 const NOTES: &str = "den:notes";
 
 impl Page {
     pub(super) fn view(&self, workspace: &Workspace) -> AnyElement {
         match self {
-            Page::History => workspace.history.clone().into_any_element(),
+            Page::Graph => workspace.graph.clone().into_any_element(),
             Page::Notes => workspace.notes.clone().into_any_element(),
         }
     }
 
     pub(super) fn focus_handle(&self, workspace: &Workspace, cx: &App) -> FocusHandle {
         match self {
-            Page::History => workspace.history.read(cx).focus_handle(),
+            Page::Graph => workspace.graph.read(cx).focus_handle(),
             Page::Notes => workspace.notes.read(cx).focus_handle(cx),
         }
     }
@@ -37,7 +37,7 @@ impl Page {
     /// The tab's name.
     pub(super) fn title(&self) -> String {
         match self {
-            Page::History => "History".to_string(),
+            Page::Graph => "Graph".to_string(),
             Page::Notes => "Notes".to_string(),
         }
     }
@@ -45,7 +45,7 @@ impl Page {
     /// What's saved with the session to open it again.
     pub(super) fn saved_path(&self) -> PathBuf {
         match self {
-            Page::History => PathBuf::from(HISTORY),
+            Page::Graph => PathBuf::from(GRAPH),
             Page::Notes => PathBuf::from(NOTES),
         }
     }
@@ -80,29 +80,30 @@ impl Workspace {
         self.show_notes(window, cx);
     }
 
-    /// The tab the history is in, if it's open.
-    pub(crate) fn history_tab(&self) -> Option<usize> {
-        self.tabs.iter().position(|tab| matches!(tab.page, Some(Page::History)))
+    /// The tab the graph is in, if it's open.
+    pub(crate) fn graph_tab(&self) -> Option<usize> {
+        self.tabs.iter().position(|tab| matches!(tab.page, Some(Page::Graph)))
     }
 
-    /// Whether the history shows, in front of its group.
-    pub(crate) fn history_visible(&self) -> bool {
-        self.history_tab().is_some_and(|ix| self.shown_in(self.tabs[ix].group) == Some(ix))
+    /// Whether the graph shows, in front of its group.
+    pub(crate) fn graph_visible(&self) -> bool {
+        self.graph_tab().is_some_and(|ix| self.shown_in(self.tabs[ix].group) == Some(ix))
     }
 
-    /// Opens the History tab with the commits that changed `file` (relative;
-    /// `true`: a folder), or with all of them.
-    pub(crate) fn open_history(&mut self, file: Option<(String, bool)>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Shows the History panel with the commits that changed `file`
+    /// (relative; `true`: a folder), or with all of them; the newest shows
+    /// in the code.
+    pub(crate) fn open_history(&mut self, file: Option<(String, bool)>, cx: &mut Context<Self>) {
         self.history.update(cx, |history, cx| history.show_file(file, cx));
-        self.show_history_tab(window, cx);
+        self.show_panel(Panel::History, cx);
     }
 
-    /// The History tab in front, opened if it wasn't, with what it showed.
-    fn show_history_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ix = match self.history_tab() {
+    /// The Graph tab in front, opened if it wasn't, with what it showed.
+    fn show_graph_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = match self.graph_tab() {
             Some(ix) => ix,
             None => {
-                let tab = self.page_tab(Page::History, window, cx);
+                let tab = self.page_tab(Page::Graph, window, cx);
                 self.place_tab(tab, true)
             }
         };
@@ -110,11 +111,11 @@ impl Workspace {
         self.layout_changed(cx);
     }
 
-    /// Cmd-Shift-H: the History tab, closed if it's the one in front.
-    pub(crate) fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.history_tab() {
+    /// The Graph tab, closed if it's the one in front.
+    pub(crate) fn toggle_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.graph_tab() {
             Some(ix) if self.active == Some(ix) => self.close(ix, window, cx),
-            _ => self.show_history_tab(window, cx),
+            _ => self.show_graph_tab(window, cx),
         }
     }
 
@@ -131,7 +132,7 @@ impl Workspace {
     /// isn't one.
     pub(super) fn restore_page(&mut self, saved: &SavedTab, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let page = match saved.path.to_str() {
-            Some(HISTORY) => Page::History,
+            Some(GRAPH) => Page::Graph,
             Some(NOTES) => Page::Notes,
             _ => return false,
         };

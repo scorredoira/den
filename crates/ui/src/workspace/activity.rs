@@ -1,7 +1,7 @@
 //! The activity bar, on the window's left edge: an icon for each group of
 //! the side column and each panel with an icon of its own, which shows it
 //! or, if it's the one showing, closes the column; a place with tabs has
-//! one for each tab instead, which shows it with that tab in front; the History tab's, the
+//! one for each tab instead, which shows it with that tab in front; the Graph tab's, the
 //! debugger's and the notes', which show them or hide them; each where it
 //! was dragged, and on it unless taken off from its right-click menu. At
 //! the bottom, connecting to a server and Settings.
@@ -32,8 +32,8 @@ pub(crate) enum Item {
     Place(Place),
     /// A tab of the side column: its place, with it in front.
     Tab(Panel),
-    /// The History tab.
-    History,
+    /// The Graph tab.
+    Graph,
     /// The debugger's tab, among the terminals'.
     Debug,
     /// The notes, and whether they have something (a sticky note written on).
@@ -46,7 +46,7 @@ impl Item {
         match self {
             Item::Place(place) => Icon::Place(place.0),
             Item::Tab(panel) => Icon::Place(panel),
-            Item::History => Icon::History,
+            Item::Graph => Icon::Graph,
             Item::Debug => Icon::Debug,
             Item::Notes { .. } => Icon::Notes,
         }
@@ -71,7 +71,7 @@ impl Item {
     fn icon(self, cx: &App) -> &'static str {
         match self {
             Item::Notes { filled } => return notes_icon(filled),
-            Item::History => return "icons/history.svg",
+            Item::Graph => return "icons/git-graph.svg",
             Item::Debug => return icon(Panel::Console),
             Item::Place(_) | Item::Tab(_) => {}
         }
@@ -86,7 +86,7 @@ impl Item {
     fn action(self, cx: &App) -> Option<Box<dyn Action>> {
         match self {
             Item::Notes { .. } => return Some(Box::new(ToggleNotes)),
-            Item::History => return Some(Box::new(ShowHistory)),
+            Item::Graph => return Some(Box::new(ShowGraph)),
             Item::Debug => return Some(Box::new(ToggleDebugPanel)),
             Item::Place(_) | Item::Tab(_) => {}
         }
@@ -95,6 +95,7 @@ impl Item {
             Ok(Panel::Search) | Err(Group::Search) => Box::new(ShowSearch),
             Ok(Panel::References) => Box::new(ShowReferences),
             Ok(Panel::Changes) | Err(Group::Git) => Box::new(ShowChanges),
+            Ok(Panel::History) => Box::new(ShowHistory),
             Ok(Panel::Outline) => Box::new(ShowOutline),
             _ => return None,
         };
@@ -112,7 +113,7 @@ impl Item {
 
     pub(crate) fn title(self, cx: &App) -> &'static str {
         match self {
-            Item::History => return "History",
+            Item::Graph => return "Graph",
             Item::Debug => return title(Panel::Console),
             _ => {}
         }
@@ -136,7 +137,7 @@ fn move_icon(icon: Icon, before: Option<Icon>, cx: &mut App) {
 /// The bar's right-click menu: every panel, checked while it can be seen.
 /// A side panel checked shows in its place, whose icon comes back if it
 /// had gone; unchecked it's hidden, and the place's icon goes with its last
-/// one. The terminals show or hide; History, Debug and Notes are their
+/// one. The terminals show or hide; Graph, Debug and Notes are their
 /// icons, on the bar or off it. And Reset Layout.
 fn icons_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
     let Some(workspace) = crate::app::window_workspace(window, cx) else {
@@ -166,7 +167,7 @@ fn icons_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>)
     let menu = menu.item(
         menu::item(title(Panel::Terminals), &weak, |this, window, cx| this.toggle_from_menu(Panel::Terminals, window, cx)).checked(terminals),
     );
-    [(Icon::Debug, Item::Debug), (Icon::Notes, Item::Notes { filled: false }), (Icon::History, Item::History)]
+    [(Icon::Debug, Item::Debug), (Icon::Notes, Item::Notes { filled: false }), (Icon::Graph, Item::Graph)]
         .into_iter()
         .fold(menu, |menu, (icon, item)| {
             let on = bar.contains(&icon);
@@ -395,7 +396,7 @@ impl Workspace {
                 let (item, badge) = match icon {
                     Icon::Place(panel) if layout.is_tab(panel) => (Item::Tab(panel), self.tab_badge(panel, cx)),
                     Icon::Place(panel) => (Item::Place(Place(panel)), self.badge(Place(panel), cx)),
-                    Icon::History => (Item::History, None),
+                    Icon::Graph => (Item::Graph, None),
                     Icon::Debug => (Item::Debug, None),
                     Icon::Notes => (Item::Notes { filled: self.notes.read(cx).filled() }, None),
                 };
@@ -409,7 +410,7 @@ impl Workspace {
         match item {
             Item::Place(place) => self.side_place(cx) == Some(place),
             Item::Tab(panel) => self.side_place(cx).is_some() && self.side_place(cx) == item.place(cx) && Config::get(cx).layout.in_front(panel),
-            Item::History => self.history_visible(),
+            Item::Graph => self.graph_visible(),
             Item::Debug => self.is_shown(Panel::Console, cx),
             Item::Notes { .. } => self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix)),
         }
@@ -478,7 +479,7 @@ impl Workspace {
 
     /// A place shows, or closes the side column if it's the one showing;
     /// a tab's, its place with it in front;
-    /// the History tab, the debugger and the notes show or hide. The search gets the focus,
+    /// the Graph tab, the debugger and the notes show or hide. The search gets the focus,
     /// as its key does.
     pub(crate) fn click_activity(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
         match item {
@@ -489,7 +490,7 @@ impl Workspace {
             Item::Tab(panel) if self.shows(item, cx) => self.hide_panel(panel, cx),
             Item::Tab(Panel::Search) => self.show_search(&ShowSearch, window, cx),
             Item::Tab(panel) => self.show_panel(panel, cx),
-            Item::History => self.toggle_history(window, cx),
+            Item::Graph => self.toggle_graph(window, cx),
             Item::Debug => self.toggle_panel(Panel::Console, cx),
             Item::Notes { .. } => self.toggle_notes(&ToggleNotes, window, cx),
         }

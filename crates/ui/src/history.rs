@@ -1,12 +1,13 @@
-//! The History tab, as gitk lays it out: above, in three columns, the
+//! The Graph tab, as gitk lays it out: above, in three columns, the
 //! commits of the current branch (or, with All Branches, of every branch, tag
 //! and remote) with their graph, what points at them, their author and their
 //! date; the selected commit's message; and, if Files is on, its files, a
 //! click away from their changes. Under them every file's changes, as a
-//! commit's tab shows them; in a file's or folder's history, only its own. The columns are dragged by their headers to
+//! commit's tab shows them. The columns are dragged by their headers to
 //! reorder them; they, the rows and the author's and date's columns resize,
-//! and keep their sizes and order. It only reads, and the agent does all the
-//! reading.
+//! and keep their sizes and order. A file's or a folder's commits are the
+//! History panel's (see `history_panel`). It only reads, and the agent does
+//! all the reading.
 
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
@@ -75,8 +76,6 @@ pub struct HistoryView {
     root: PathBuf,
     commits: Vec<GraphCommit>,
     graph: Rc<Vec<GraphRow>>,
-    /// Only the history of this file or folder (`true`: a folder).
-    file: Option<(String, bool)>,
     /// There may be more commits than the ones read.
     more: bool,
     loading: bool,
@@ -142,7 +141,6 @@ impl HistoryView {
             root,
             commits: Vec::new(),
             graph: Rc::new(Vec::new()),
-            file: None,
             more: false,
             loading: false,
             error: None,
@@ -197,23 +195,10 @@ impl HistoryView {
         }
     }
 
-    /// Only the history of `file` (relative; `true`: a folder), or of everything.
-    pub fn show_file(&mut self, file: Option<(String, bool)>, cx: &mut Context<Self>) {
-        if self.file != file {
-            self.file = file;
-            self.commits.clear();
-            self.graph = Rc::new(Vec::new());
-            self.selected = None;
-            self.shown = None;
-        }
-        self.schedule(Duration::ZERO, cx);
-    }
-
     fn op(&self, skip: usize, limit: usize, cx: &App) -> GitOp {
         let query = self.query.read(cx).value().trim().to_string();
-        let file = self.file.as_ref().map(|(file, _)| file.clone());
         let all = Config::get(cx).history_all_branches;
-        GitOp::FindGraph { query, scope: self.scope, file, all, skip, limit }
+        GitOp::FindGraph { query, scope: self.scope, file: None, all, skip, limit }
     }
 
     /// Searches somewhere else, the placeholder saying where.
@@ -368,7 +353,6 @@ impl HistoryView {
         };
         let cached = self.text(&hash);
         let path = self.root.clone();
-        let only = self.file.clone();
         self.reading = Some(cx.spawn(async move |this, cx| {
             let text = match cached {
                 Some(text) => text,
@@ -387,7 +371,7 @@ impl HistoryView {
             };
             let Ok(prepare) = this.update(cx, |this, cx| {
                 this.keep_text(hash.clone(), text.clone());
-                commit_view::prepare(text.to_string(), only, cx)
+                commit_view::prepare(text.to_string(), None, cx)
             }) else {
                 return;
             };
@@ -461,7 +445,7 @@ impl HistoryView {
 /// Reads the graph. An agent from before `FindGraph` (until it's restarted)
 /// only knows `Graph`, every branch's: the current branch is then picked out
 /// here; a search or a file's history are every branch's, as they were.
-async fn read_graph(client: &Client, path: PathBuf, op: GitOp) -> anyhow::Result<Response> {
+pub(crate) async fn read_graph(client: &Client, path: PathBuf, op: GitOp) -> anyhow::Result<Response> {
     let response = client.request(Request::Git { path: path.clone(), op: op.clone() }).await;
     match (response, op) {
         (Err(_), GitOp::FindGraph { query, scope: GraphScope::Message, file, all, skip, limit }) => {
@@ -668,7 +652,7 @@ fn graph_cell(row: &GraphRow, head: bool, cx: &App) -> impl IntoElement {
 
 /// What points at a commit, as labels: its branches, tags and remote
 /// branches, the checked-out one in bold.
-fn ref_labels(commit: &GraphCommit, cx: &App) -> Vec<AnyElement> {
+pub(crate) fn ref_labels(commit: &GraphCommit, cx: &App) -> Vec<AnyElement> {
     let theme = cx.theme();
     let head_branch = commit.refs.iter().position(|name| name == "HEAD").and_then(|ix| commit.refs.get(ix + 1));
     let detached = commit.refs.iter().any(|name| name == "HEAD") && !head_branch.is_some_and(|name| name.starts_with("refs/heads/"));
@@ -817,7 +801,6 @@ impl HistoryView {
             .collect()
     }
 
-    /// The search, and the file whose history it is, if it is one.
     /// Where the search looks, as gitk's "containing" / "touching paths" /
     /// "adding/removing string": one of three, the chosen one marked.
     fn render_scopes(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -870,26 +853,6 @@ impl HistoryView {
             .border_color(theme.border)
             .child(div().w(px(320.)).flex_none().child(Input::new(&self.query).small().cleanable(true)))
             .child(scopes)
-            .when_some(self.file.as_ref().map(|(file, _)| file.clone()), |el, file| {
-                el.child(
-                    h_flex()
-                        .min_w_0()
-                        .gap_1()
-                        .text_ui_small(cx)
-                        .text_color(theme.muted_foreground)
-                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("History of {file}")))
-                        .child(
-                            div()
-                                .id("history-all")
-                                .px_1()
-                                .rounded(theme.radius)
-                                .hover(|style| style.bg(theme.secondary_hover))
-                                .child("✕")
-                                .tooltip(|window, cx| Tooltip::new("Every File").build(window, cx))
-                                .on_click(cx.listener(|this, _, _, cx| this.show_file(None, cx))),
-                        ),
-                )
-            })
             .child(div().flex_1())
             .child(branches)
             .child(files)

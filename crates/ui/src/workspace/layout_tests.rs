@@ -166,22 +166,20 @@ fn the_menu_brings_a_panel_back_in_its_spot(cx: &mut TestAppContext) {
     assert!(bounds(cx, "stack-Workspaces").bottom() <= agents.top() && agents.bottom() <= bounds(cx, "stack-Files").top());
 }
 
-/// The history is a tab of the code, not a panel: opened again, it's the
-/// same tab, and it reopens with the workspace.
+/// The graph is a tab of the code, and it reopens with the workspace.
 #[gpui_kit::test]
-fn the_history_is_a_tab_that_reopens(cx: &mut TestAppContext) {
+fn the_graph_is_a_tab_that_reopens(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.restore(window, cx);
-        workspace.open_history(None, window, cx);
-        workspace.open_history(Some(("main.ts".into(), false)), window, cx);
+        workspace.toggle_graph(window, cx);
     });
     cx.run_until_parked();
     workspace.read_with(cx, |workspace, _| {
-        let tabs = workspace.tabs.iter().filter(|tab| matches!(tab.page, Some(pages::Page::History))).count();
+        let tabs = workspace.tabs.iter().filter(|tab| matches!(tab.page, Some(pages::Page::Graph))).count();
         assert_eq!(tabs, 1);
-        assert_eq!(workspace.active, workspace.history_tab());
-        assert!(workspace.history_visible());
+        assert_eq!(workspace.active, workspace.graph_tab());
+        assert!(workspace.graph_visible());
     });
     bounds(cx, "history-commits");
     // The commit's files beside the commits, until Files is turned off.
@@ -198,19 +196,19 @@ fn the_history_is_a_tab_that_reopens(cx: &mut TestAppContext) {
             workspace
         })
     });
-    again.read_with(cx, |workspace, _| assert!(workspace.history_tab().is_some()));
-    // Cmd-Shift-H closes it while it's in front.
-    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_history(window, cx));
-    assert!(workspace.read_with(cx, |workspace, _| workspace.history_tab().is_none()));
+    again.read_with(cx, |workspace, _| assert!(workspace.graph_tab().is_some()));
+    // Show Graph closes it while it's in front.
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_graph(window, cx));
+    assert!(workspace.read_with(cx, |workspace, _| workspace.graph_tab().is_none()));
 }
 
 /// Above the changes, three columns: the commits, the selected one's
 /// message and its files. A column's header dragged onto another swaps the
 /// two, and the order is kept.
 #[gpui_kit::test]
-fn the_history_s_columns_are_dragged_into_place(cx: &mut TestAppContext) {
+fn the_graph_s_columns_are_dragged_into_place(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_graph(window, cx));
     cx.run_until_parked();
     let (commits, message, files) = (bounds(cx, "history-commits"), bounds(cx, "commit-message"), bounds(cx, "commit-files"));
     assert!(commits.right() <= message.left() + px(1.) && message.right() <= files.left() + px(1.), "{commits:?} {message:?} {files:?}");
@@ -228,42 +226,88 @@ fn the_history_s_columns_are_dragged_into_place(cx: &mut TestAppContext) {
     assert!(files.right() <= bounds(cx, "commit-message").left() + px(1.) && commits.left() >= files.right(), "{files:?} {commits:?}");
 }
 
-/// The History tab has an icon on the activity bar, after the places': a
+/// The Graph tab has an icon on the activity bar, after the places': a
 /// click opens it, another closes it.
 #[gpui_kit::test]
-fn the_history_icon_toggles_its_tab(cx: &mut TestAppContext) {
+fn the_graph_icon_toggles_its_tab(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    assert!(bounds(cx, "activity-History").top() > bounds(cx, "activity-Place(Place(Changes))").top());
-    click(cx, "activity-History");
-    workspace.read_with(cx, |workspace, _| assert!(workspace.history_visible()));
+    assert!(bounds(cx, "activity-Graph").top() > bounds(cx, "activity-Place(Place(Changes))").top());
+    click(cx, "activity-Graph");
+    workspace.read_with(cx, |workspace, _| assert!(workspace.graph_visible()));
     bounds(cx, "history-commits");
-    click(cx, "activity-History");
-    workspace.read_with(cx, |workspace, _| assert!(workspace.history_tab().is_none()));
+    click(cx, "activity-Graph");
+    workspace.read_with(cx, |workspace, _| assert!(workspace.graph_tab().is_none()));
 }
 
 #[gpui_kit::test]
 fn the_debug_icon_toggles_its_tab(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    assert!(bounds(cx, "activity-Debug").top() > bounds(cx, "activity-History").top());
+    assert!(bounds(cx, "activity-Debug").top() > bounds(cx, "activity-Graph").top());
     click(cx, "activity-Debug");
     workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Console, cx)));
     click(cx, "activity-Debug");
     workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Console, cx)));
 }
 
-/// The History tab in front leaves the panels as they were: the terminals
+/// A file's history is the History panel's, beside the Changes, with the
+/// commit in the code.
+#[gpui_kit::test]
+fn a_file_s_history_shows_in_the_history_panel(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update(cx, |workspace, cx| workspace.open_history(Some(("main.ts".into(), false)), cx));
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.is_shown(Panel::History, cx));
+        assert!(workspace.graph_tab().is_none());
+    });
+    bounds(cx, "stack-History");
+}
+
+/// Going through a file's history shows each commit in the same preview
+/// tab, with only that file's changes; a double click keeps one in a tab.
+#[gpui_kit::test]
+fn a_file_s_commits_show_in_the_preview_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    let only = Some(("src/main.ts".to_string(), false));
+    let open = |commit: &str, pin: bool| crate::history_panel::HistoryPanelEvent::OpenCommit {
+        commit: commit.into(),
+        short: commit.into(),
+        only: only.clone(),
+        pin,
+    };
+    workspace.update_in(cx, |workspace, window, cx| {
+        let history = workspace.history.clone();
+        workspace.on_history_event(&history, &open("aaa", false), window, cx);
+        workspace.on_history_event(&history, &open("bbb", false), window, cx);
+    });
+    workspace.read_with(cx, |workspace, _| {
+        let commits: Vec<_> = workspace.tabs.iter().filter_map(|tab| tab.diff.as_ref()).collect();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].commit.as_ref().map(|(hash, _)| hash.as_str()), Some("bbb"));
+        assert_eq!(commits[0].only, only);
+        assert!(workspace.tabs.iter().any(|tab| tab.diff.is_some() && tab.preview));
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        let history = workspace.history.clone();
+        workspace.on_history_event(&history, &open("bbb", true), window, cx);
+        workspace.on_history_event(&history, &open("ccc", false), window, cx);
+    });
+    workspace.read_with(cx, |workspace, _| assert_eq!(workspace.tabs.iter().filter(|tab| tab.diff.is_some()).count(), 2));
+}
+
+/// The Graph tab in front leaves the panels as they were: the terminals
 /// still show beside it.
 #[gpui_kit::test]
-fn the_history_keeps_the_panels(cx: &mut TestAppContext) {
+fn the_graph_keeps_the_panels(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
     let editing = bounds(cx, "terminals");
-    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(None, window, cx));
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_graph(window, cx));
     cx.run_until_parked();
     assert_eq!(bounds(cx, "terminals"), editing);
     workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
-    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_history(window, cx));
+    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_graph(window, cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds("terminals").is_none(), "hidden in the history, hidden after it");
+    assert!(cx.debug_bounds("terminals").is_none(), "hidden in the graph, hidden after it");
 }
 
 #[gpui_kit::test]

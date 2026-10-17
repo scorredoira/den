@@ -151,7 +151,7 @@ impl Workspace {
                 && !of.source
             {
                 let show = show.clone();
-                let Ok(task) = this.update(cx, |_, cx| commit_view::prepare(show, None, cx)) else {
+                let Ok(task) = this.update(cx, |_, cx| commit_view::prepare(show, of.only.clone(), cx)) else {
                     return;
                 };
                 prepared = Some(task.await);
