@@ -3,7 +3,7 @@
 //! and remote) with their graph, what points at them, their author and their
 //! date; the selected commit's message; and, if Files is on, its files, a
 //! click away from their changes. Under them every file's changes, as a
-//! commit's tab shows them. The columns are dragged by their headers to
+//! commit's tab shows them; in a file's or folder's history, only its own. The columns are dragged by their headers to
 //! reorder them; they, the rows and the author's and date's columns resize,
 //! and keep their sizes and order. It only reads, and the agent does all the
 //! reading.
@@ -204,6 +204,7 @@ impl HistoryView {
             self.commits.clear();
             self.graph = Rc::new(Vec::new());
             self.selected = None;
+            self.shown = None;
         }
         self.schedule(Duration::ZERO, cx);
     }
@@ -367,6 +368,7 @@ impl HistoryView {
         };
         let cached = self.text(&hash);
         let path = self.root.clone();
+        let only = self.file.clone();
         self.reading = Some(cx.spawn(async move |this, cx| {
             let text = match cached {
                 Some(text) => text,
@@ -385,7 +387,7 @@ impl HistoryView {
             };
             let Ok(prepare) = this.update(cx, |this, cx| {
                 this.keep_text(hash.clone(), text.clone());
-                commit_view::prepare(text.to_string(), cx)
+                commit_view::prepare(text.to_string(), only, cx)
             }) else {
                 return;
             };

@@ -125,8 +125,9 @@ impl Prepared {
     }
 }
 
-/// Prepares `git show --format=fuller --patch` of a commit in the background.
-pub fn prepare(show: String, cx: &App) -> Task<Prepared> {
+/// Prepares `git show --format=fuller --patch` of a commit in the background:
+/// only `only`'s changes if given, a file or (`true`) a folder's files.
+pub fn prepare(show: String, only: Option<(String, bool)>, cx: &App) -> Task<Prepared> {
     let theme = cx.theme();
     let colors = Colors {
         removed: theme.danger.opacity(0.3),
@@ -134,7 +135,7 @@ pub fn prepare(show: String, cx: &App) -> Task<Prepared> {
         syntax: theme.highlight_theme.clone(),
     };
     cx.background_spawn(async move {
-        let (rows, header) = rows(&show, &colors);
+        let (rows, header) = rows(&show, only.as_ref(), &colors);
         let inline = inline(&rows);
         Prepared { rows, inline, header }
     })
@@ -220,7 +221,7 @@ fn inline(rows: &[Row]) -> Vec<Row> {
 }
 
 /// The rows, and how many of them are the message.
-fn rows(show: &str, colors: &Colors) -> (Vec<Row>, usize) {
+fn rows(show: &str, only: Option<&(String, bool)>, colors: &Colors) -> (Vec<Row>, usize) {
     let (header, patch) = match show.find("\ndiff --git ") {
         Some(at) => (&show[..at], &show[at + 1..]),
         None => (show, ""),
@@ -229,6 +230,9 @@ fn rows(show: &str, colors: &Colors) -> (Vec<Row>, usize) {
     let message = rows.len();
     for section in patch.split("\ndiff --git ").filter(|section| !section.trim().is_empty()) {
         let path = section_path(section);
+        if !only.is_none_or(|only| shows(only, &path)) {
+            continue;
+        }
         rows.push(Row::Blank);
         let Some(sides) = diff::split(section) else {
             rows.push(Row::File { path: path.clone().into(), added: 0, removed: 0 });
@@ -259,6 +263,15 @@ fn rows(show: &str, colors: &Colors) -> (Vec<Row>, usize) {
         }
     }
     (rows, message)
+}
+
+/// Whether `path` is `only`'s file, or in its folder.
+fn shows((only, folder): &(String, bool), path: &str) -> bool {
+    if *folder {
+        path.strip_prefix(only.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))
+    } else {
+        path == only
+    }
 }
 
 /// The message (its first line in bold), who wrote it and when.
@@ -466,7 +479,7 @@ impl Render for CommitView {
 
 #[cfg(test)]
 mod tests {
-    use super::{header_rows, section_path, Row};
+    use super::{header_rows, section_path, shows, Row};
 
     #[test]
     fn header_and_paths() {
@@ -479,5 +492,15 @@ mod tests {
         assert_eq!(section_path("a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n"), "x.rs");
         assert_eq!(section_path("a/gone.rs b/gone.rs\ndeleted file mode 100644\n--- a/gone.rs\n+++ /dev/null\n"), "gone.rs");
         assert_eq!(section_path("a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n"), "i.png");
+    }
+
+    #[test]
+    fn a_file_s_history_shows_only_its_changes() {
+        let file = ("src/main.rs".to_string(), false);
+        assert!(shows(&file, "src/main.rs"));
+        assert!(!shows(&file, "src/main.rs.orig"));
+        let folder = ("src".to_string(), true);
+        assert!(shows(&folder, "src/main.rs"));
+        assert!(!shows(&folder, "srcs/main.rs"));
     }
 }
