@@ -386,7 +386,7 @@ pub struct HistorySizes {
 
 impl Default for HistorySizes {
     fn default() -> Self {
-        Self { commits: 345., message: 450., files: 450., author: 340., date: 185. }
+        Self { commits: 345., message: 380., files: 280., author: 340., date: 185. }
     }
 }
 

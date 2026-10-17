@@ -8,7 +8,7 @@
 //! and keep their sizes and order. It only reads, and the agent does all the
 //! reading.
 
-use std::{ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use client::Client;
 use gpui_kit::component::{
@@ -48,6 +48,14 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// The width of a lane of the graph.
 const LANE: f32 = 14.;
+
+/// The room the commits keep for their subject, author and date, in widths
+/// of the interface's font. Short of it, the author's and then the date's
+/// columns give up theirs down to their own, and short of all three, the
+/// columns go one under the other.
+const SUBJECT_ROOM: f32 = 28.;
+const AUTHOR_ROOM: f32 = 9.;
+const DATE_ROOM: f32 = 7.;
 
 /// Commits whose text is kept, to go back to them at once.
 const MAX_TEXTS: usize = 64;
@@ -103,6 +111,9 @@ pub struct HistoryView {
     rows: Split,
     top: Split,
     columns: Split,
+    /// How wide the tab and its commits are, as last painted.
+    width: Rc<Cell<Pixels>>,
+    commits_width: Rc<Cell<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -154,6 +165,8 @@ impl HistoryView {
             rows: Split::new(cx),
             top: Split::new(cx),
             columns: Split::new(cx),
+            width: Rc::default(),
+            commits_width: Rc::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -887,10 +900,14 @@ impl HistoryView {
     /// The commits: their columns' titles, which resize them, and the rows.
     fn render_commits(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let sizes = Config::get(cx).history;
-        let state = self.columns.state(window.viewport_size().width, (), cx).clone();
+        let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
+        let (author, date) = fit_columns(f32::from(self.commits_width.get()), sizes.author, sizes.date, size);
+        // Squeezed, they start again from their room whenever it changes.
+        let squeezed = (author != sizes.author || date != sizes.date).then(|| f32::from(self.commits_width.get()).to_bits());
+        let state = self.columns.state(window.viewport_size().width, squeezed, cx).clone();
         let widths = match state.read(cx).sizes().as_slice() {
             [_, author, date] => (*author, *date),
-            _ => (px(sizes.author), px(sizes.date)),
+            _ => (px(author), px(date)),
         };
         let theme = cx.theme();
         let title = |text: &'static str| div().px_2().h_full().flex().items_center().overflow_hidden().whitespace_nowrap().child(text);
@@ -903,8 +920,8 @@ impl HistoryView {
                     .when(cfg!(test), |el| el.debug_selector(|| "history-header-Commits".into()))
                     .on_drag(PartDrag(HistoryPart::Commits), drag_preview),
             ))
-            .child(resizable_panel().size(px(sizes.author)).size_range(px(60.)..px(1000.)).child(title("Author")))
-            .child(resizable_panel().size(px(sizes.date)).size_range(px(60.)..px(600.)).child(title("Date")))
+            .child(resizable_panel().size(px(author)).size_range(px(60.)..px(1000.)).child(title("Author")))
+            .child(resizable_panel().size(px(date)).size_range(px(60.)..px(600.)).child(title("Date")))
             .on_resize(|state, _, cx| {
                 if let [_, author, date] = state.read(cx).sizes().as_slice() {
                     let (author, date) = (f32::from(*author), f32::from(*date));
@@ -914,12 +931,13 @@ impl HistoryView {
                     });
                 }
             });
-        let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
         let height = px((size * 1.75).round());
         let count = self.commits.len();
         let empty = (count == 0 && !self.loading && self.error.is_none()).then_some("No commits");
         v_flex()
             .size_full()
+            .relative()
+            .child(measure(&self.commits_width))
             .child(
                 div()
                     .flex_none()
@@ -1105,9 +1123,20 @@ impl Render for HistoryView {
             .into_iter()
             .filter(|part| *part != HistoryPart::Files || !Config::get(cx).history_hide_files)
             .collect();
-        // No room for the diff's two sides: no room either for the parts
-        // side by side, and they go one under the other.
-        let stacked = self.commit.read(cx).cramped(cx);
+        // No room for the diff's two sides, or for the commits beside the
+        // others: they go one under the other.
+        let others: f32 = parts
+            .iter()
+            .map(|part| match part {
+                HistoryPart::Commits => 0.,
+                HistoryPart::Message => sizes.message,
+                HistoryPart::Files => sizes.files,
+            })
+            .sum();
+        let font = Config::get(cx).font_size(crate::config::TextArea::Interface);
+        let width = f32::from(self.width.get());
+        let stacked = self.commit.read(cx).cramped(cx)
+            || (width > 0. && width - others < (SUBJECT_ROOM + AUTHOR_ROOM + DATE_ROOM) * font);
         let top_state = self.top.state(viewport.width, (&parts, stacked), cx).clone();
         let mut columns = if stacked { v_resizable("history-top") } else { h_resizable("history-top") }.with_state(&top_state);
         for (ix, part) in parts.iter().copied().enumerate() {
@@ -1158,8 +1187,10 @@ impl Render for HistoryView {
         let theme = cx.theme();
         v_flex()
             .size_full()
+            .relative()
             .bg(theme.background)
             .text_ui(cx)
+            .child(measure(&self.width))
             .child(bar)
             .child(
                 div().flex_1().min_h_0().child(
@@ -1175,6 +1206,39 @@ impl Render for HistoryView {
                 ),
             )
     }
+}
+
+/// The author's and date's widths in commits `width` wide, at `font`: they
+/// give up theirs, the author's first, before the subject's room.
+fn fit_columns(width: f32, author: f32, date: f32, font: f32) -> (f32, f32) {
+    if width <= 0. {
+        return (author, date);
+    }
+    let mut short = author + date + SUBJECT_ROOM * font - width;
+    let mut give = |own: f32, room: f32| {
+        let given = short.clamp(0., (own - room * font).max(0.));
+        short -= given;
+        own - given
+    };
+    let author = give(author, AUTHOR_ROOM);
+    let date = give(date, DATE_ROOM);
+    (author, date)
+}
+
+/// Keeps in `width` how wide the element it's in is, and redraws when it
+/// changes.
+fn measure(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
+    let width = width.clone();
+    canvas(
+        move |bounds, window, _| {
+            if width.replace(bounds.size.width) != bounds.size.width {
+                window.refresh();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
 }
 
 /// A column dragged by its header onto another: the two swap.
@@ -1220,6 +1284,17 @@ fn files_item(view: &WeakEntity<HistoryView>, cx: &App) -> menu::PopupMenuItem {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[test]
+    fn the_author_and_then_the_date_give_their_room_to_the_subject() {
+        // Font 10: the subject keeps 280, the author 90, the date 70.
+        assert_eq!(fit_columns(1000., 300., 150., 10.), (300., 150.));
+        assert_eq!(fit_columns(600., 300., 150., 10.), (170., 150.));
+        assert_eq!(fit_columns(400., 300., 150., 10.), (90., 70.));
+        assert_eq!(fit_columns(100., 300., 150., 10.), (90., 70.));
+        // Already narrower than their room, they keep what they have.
+        assert_eq!(fit_columns(300., 60., 60., 10.), (60., 60.));
+    }
 
     fn commit(hash: &str, parents: &[&str]) -> GraphCommit {
         GraphCommit {
