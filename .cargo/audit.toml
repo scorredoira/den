@@ -9,4 +9,7 @@ ignore = [
     "RUSTSEC-2025-0134", # rustls-pemfile: gpui-kit-assets' reqwest
     "RUSTSEC-2026-0206", # rustybuzz: gpui-pre's usvg
     "RUSTSEC-2026-0192", # ttf-parser: gpui-pre's fonts
+    "RUSTSEC-2026-0370", # zvariant: gpui-pre-linux's accesskit_unix
+    "RUSTSEC-2026-0371", # zbus_names: gpui-pre-linux's accesskit_unix
+    "RUSTSEC-2026-0372", # zvariant_derive: gpui-pre-linux's accesskit_unix
 ]
