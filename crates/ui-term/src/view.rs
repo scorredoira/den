@@ -1146,10 +1146,11 @@ mod tests {
     /// which takes the click as it opens; and forgets it elsewhere.
     #[gpui_kit::test]
     fn right_click_remembers_the_link_under_it(cx: &mut TestAppContext) {
-        let (terminal, _, sender) = terminal(cx, b"see /tmp here");
+        // On a server: the path needn't exist here, on any system.
+        let (terminal, _, sender) = terminal(cx, b"see /tmp/a.rs here");
         std::mem::forget(sender);
         let (pane, cx) = cx.add_window_view(|window, cx| WithMenu {
-            terminal: cx.new(|cx| TerminalView::new(terminal, true, window, cx)),
+            terminal: cx.new(|cx| TerminalView::new(terminal, false, window, cx)),
         });
         cx.run_until_parked();
         let view = pane.read_with(cx, |pane, _| pane.terminal.clone());
@@ -1161,7 +1162,7 @@ mod tests {
         assert_eq!(
             link(cx),
             Some(Link::Path {
-                path: PathBuf::from("/tmp"),
+                path: PathBuf::from("/tmp/a.rs"),
                 line: None,
                 column: None
             })
