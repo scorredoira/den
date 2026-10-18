@@ -27,7 +27,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::TermId;
 use serde::{Deserialize, Serialize};
-use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for};
+use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for, links::Link};
 
 use crate::{
     config::{Config, Panel, UiText, store::JsonFile},
@@ -949,11 +949,35 @@ impl TerminalArea {
         .item(menu::item("Close Split", &area, |this, window, cx| this.unsplit_notes(window, cx)).action(Box::new(CloseTab)))
     }
 
+    /// What the menu offers on a path or a URL that was right-clicked.
+    fn link_items(&self, menu: PopupMenu, view: Entity<TerminalView>, link: Link, cx: &App) -> PopupMenu {
+        let area = self.weak.clone();
+        let (open, copy_label, copy) = match &link {
+            Link::Url(url) => ("Open Link", "Copy Link", url.clone()),
+            Link::Path { path, .. } => ("Open", "Copy Path", path.to_string_lossy().into_owned()),
+        };
+        let reveal = match &link {
+            Link::Path { path, .. } => Some((path.clone(), view.read(cx).is_local())),
+            Link::Url(_) => None,
+        };
+        menu.item(menu::item(open, &area, move |_, _, cx| {
+            view.update(cx, |view, cx| view.open_link(link.clone(), cx))
+        }))
+        .when_some(reveal, |menu, (path, local)| {
+            menu.item(menu::item("Reveal in Finder", &area, move |_, _, cx| cx.reveal_path(&path)).disabled(!local))
+        })
+        .item(menu::item(copy_label, &area, move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+        }))
+        .separator()
+    }
+
     fn pane_menu(&self, term: TermId, menu: PopupMenu, cx: &App) -> PopupMenu {
         let area = self.weak.clone();
         let view = self.views.get(&term).cloned();
         let has_selection = view.as_ref().is_some_and(|view| view.read(cx).has_selection(cx));
         let copy_view = view.clone();
+        let unwrap_view = view.clone();
         let paste_view = view.clone();
         let select_view = view.clone();
         let clear_view = view.clone();
@@ -962,7 +986,9 @@ impl TerminalArea {
             Some(view) => menu.action_context(view.focus_handle(cx)),
             None => menu,
         };
-        menu.item(
+        let link = view.as_ref().and_then(|view| Some((view.clone(), view.read(cx).context_link()?.clone())));
+        menu.when_some(link, |menu, (view, link)| self.link_items(menu, view, link, cx))
+            .item(
             menu::item("Copy", &area, move |_, _, cx| {
                 let text = copy_view
                     .as_ref()
@@ -973,6 +999,18 @@ impl TerminalArea {
             })
             .disabled(!has_selection)
             .action(Box::new(ui_term::Copy)),
+        )
+        // Without the breaks and the indentation Claude Code puts to fit the width.
+        .item(
+            menu::item("Copy Unwrapped", &area, move |_, _, cx| {
+                let text = unwrap_view
+                    .as_ref()
+                    .and_then(|view| view.read(cx).terminal().read(cx).selection_text_unwrapped());
+                if let Some(text) = text {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            })
+            .disabled(!has_selection),
         )
         .item(
             menu::item("Paste", &area, move |_, _, cx| {

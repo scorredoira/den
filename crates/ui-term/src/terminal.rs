@@ -14,6 +14,7 @@ use gpui_kit::*;
 use crate::{
     backend::{PtyEvent, TerminalBackend},
     colors::Palette,
+    unwrap::{Row, unwrap},
 };
 
 /// Maximum bytes processed in one go before repainting.
@@ -417,31 +418,78 @@ impl Terminal {
         self.term.selection_to_string()
     }
 
-    /// Text of the logical line containing `line`: rows the terminal wrapped
-    /// because they didn't fit are joined. Returns the text (one char per
-    /// column) and the first row.
-    pub fn logical_line(&self, line: Line) -> (String, Line) {
+    /// The selection without the indentation and the line breaks a program
+    /// put to fit the width, as [`unwrap`](crate::unwrap::unwrap) says.
+    pub fn selection_text_unwrapped(&self) -> Option<String> {
+        let selection = self.term.selection.as_ref().filter(|selection| !selection.is_empty())?;
+        let range = selection.to_range(&self.term)?;
+        if range.is_block {
+            return self.selection_text();
+        }
         let grid = self.term.grid();
         let cols = grid.columns();
-        let wraps = |line: Line| grid[line][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        let rows: Vec<Row> = (range.start.line.0..=range.end.line.0)
+            .map(|line| {
+                let row = &grid[Line(line)];
+                let end = (0..cols).rev().find(|&col| !row[Column(col)].c.is_whitespace()).map_or(0, |col| col + 1);
+                let from = if line == range.start.line.0 { range.start.column.0 } else { 0 };
+                let to = if line == range.end.line.0 { (range.end.column.0 + 1).min(end) } else { end };
+                let text = (from..to.max(from))
+                    .map(|col| &row[Column(col)])
+                    .filter(|cell| !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER))
+                    .map(|cell| cell.c)
+                    .collect();
+                let wraps = line < range.end.line.0 && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+                Row { text, end, wraps }
+            })
+            .collect();
+        Some(unwrap(&rows, cols))
+    }
+
+    /// Text of the logical line containing `line`, and the cell each char
+    /// comes from: rows the terminal wrapped because they didn't fit are
+    /// joined.
+    ///
+    /// With `at_edge`, a row whose text reaches the last column also goes on
+    /// into the next one, after its indentation: an application that breaks
+    /// a long word itself (Claude Code with a path or a URL) leaves it so,
+    /// without the wrap mark.
+    pub fn logical_line(&self, line: Line, at_edge: bool) -> (String, Vec<AlacPoint>) {
+        let grid = self.term.grid();
+        let cols = grid.columns();
+        let blank = |line: Line, col: usize| grid[line][Column(col)].c.is_whitespace();
+        // The column the row after `line` goes on from, if `line` goes on into it.
+        let goes_on = |line: Line| {
+            if line >= grid.bottommost_line() {
+                None
+            } else if grid[line][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+                Some(0)
+            } else if at_edge && !blank(line, cols - 1) {
+                (0..cols).find(|&col| !blank(line + 1i32, col))
+            } else {
+                None
+            }
+        };
         if line < grid.topmost_line() || line > grid.bottommost_line() {
-            return (String::new(), line);
+            return (String::new(), Vec::new());
         }
         let mut start = line;
-        while start > grid.topmost_line() && wraps(start - 1) {
+        while start > grid.topmost_line() && goes_on(start - 1).is_some() {
             start -= 1;
         }
-        let mut text = String::new();
-        let mut current = start;
+        let (mut text, mut cells) = (String::new(), Vec::new());
+        let (mut current, mut from) = (start, 0);
         loop {
-            let row = &grid[current];
-            text.extend((0..cols).map(|col| row[Column(col)].c));
-            if current >= grid.bottommost_line() || !wraps(current) {
-                break;
+            for col in from..cols {
+                text.push(grid[current][Column(col)].c);
+                cells.push(AlacPoint::new(current, Column(col)));
             }
-            current += 1;
+            match goes_on(current) {
+                Some(next) => (current, from) = (current + 1i32, next),
+                None => break,
+            }
         }
-        (text, start)
+        (text, cells)
     }
 
     pub fn columns(&self) -> usize {
@@ -487,6 +535,27 @@ mod tests {
         });
     }
 
+    /// A word an application broke at the edge goes on in the next row,
+    /// after its indentation; a row that doesn't reach the edge ends its line.
+    #[gpui_kit::test]
+    fn rows_broken_at_the_edge_join_when_asked(cx: &mut TestAppContext) {
+        let (_, output) = smol::channel::unbounded();
+        let text = b"see /Users/me/proj/s\r\n  rc/main.rs (2KB)\r\nshort\r\nnext";
+        let terminal = cx.new(|cx| Terminal::new(Rc::new(Backend), output, 20, 4, text, cx));
+        terminal.update(cx, |terminal, _| {
+            let line = |line, at_edge| {
+                let (text, cells) = terminal.logical_line(Line(line), at_edge);
+                (text.trim_end().to_string(), cells[0].line.0)
+            };
+            assert_eq!(line(1, true), ("see /Users/me/proj/src/main.rs (2KB)".into(), 0));
+            assert_eq!(line(1, false), ("  rc/main.rs (2KB)".into(), 1));
+            assert_eq!(line(2, true), ("short".into(), 2));
+            let (text, cells) = terminal.logical_line(Line(0), true);
+            let r = text.find("rc/").unwrap();
+            assert_eq!(cells[r], AlacPoint::new(Line(1), Column(2)));
+        });
+    }
+
     #[gpui_kit::test]
     fn clear_without_the_agent_clears_here(cx: &mut TestAppContext) {
         let terminal = terminal(cx);
@@ -500,3 +569,4 @@ mod tests {
         });
     }
 }
+

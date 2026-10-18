@@ -10,6 +10,7 @@ mod keys;
 pub mod links;
 mod platform;
 mod terminal;
+mod unwrap;
 mod view;
 
 use gpui_kit::{App, KeyBinding, actions};

@@ -53,6 +53,8 @@ Cmd-E goes straight into the next one with a coding agent, in the panel's order,
 
 Cmd-D splits a terminal down and Cmd-Alt-D to the right (Ctrl-Alt-D and Ctrl-Shift-5 on Linux and Windows), and Cmd-Alt-arrows move between the panes. Ctrl-Tab goes round what's in sight, the code (each half, if split) and then each terminal pane, and Ctrl-Shift-Tab goes back (F8 and Shift-F8 on Linux and Windows, where Ctrl-Tab switches workspace). Drag a terminal tab to the left, right, top or bottom edge of another terminal to split the area. In a split, drag a pane's title back to the tab bar to separate it again. Escape cancels the drag; sessions and their history stay open. Double-click a terminal tab, or Rename Tab in its right-click, to give it a name instead of its terminal's title: Enter keeps it, Escape leaves it as it was, and an empty name brings the title back. In a split each terminal has its own name: double-click its pane's title, or Rename in its right-click; the tab then says the workspace's folder, or a name of its own. Names stay when Den reopens.
 
+Cmd-click a path (`file:line` too) or a URL in a terminal to open it; right-click it to open it, reveal it in the Finder or copy it. A path or URL that Claude Code broke across rows to fit, indented or not, is still one. Copy Unwrapped, in the right-click menu, copies the selection without what Claude Code puts to fit the width: the indentation and the breaks in the middle of a paragraph; lists, headings, blank lines and short lines stay.
+
 ## Layout
 
 The window has a place for each thing. On the left, the activity bar and the side column; the code in the middle, always; the terminals on its right or, with View > Terminals Under the Code (Cmd-Alt-J, or the terminals' bar right-click), under it.

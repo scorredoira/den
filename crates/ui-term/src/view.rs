@@ -72,10 +72,8 @@ pub enum TerminalViewEvent {
 /// Link under the mouse with Cmd held: it's underlined and a click opens it.
 struct HoveredLink {
     link: Link,
-    /// First row of the logical line and the columns the link spans in it.
-    start: Line,
-    range: Range<usize>,
-    cols: usize,
+    /// The cells it spans.
+    cells: Vec<AlacPoint>,
 }
 
 /// The find bar, while it's open.
@@ -101,6 +99,8 @@ pub struct TerminalView {
     hovered_link: Option<HoveredLink>,
     /// The cell a link was last looked for at, with Cmd held.
     hovered_cell: Option<AlacPoint>,
+    /// The link the last right-click landed on, for the menu it opens.
+    context_link: Option<Link>,
     last_mouse: Option<Point<Pixels>>,
     focus_handle: FocusHandle,
     marked_text: Option<String>,
@@ -150,6 +150,7 @@ impl TerminalView {
             local,
             hovered_link: None,
             hovered_cell: None,
+            context_link: None,
             last_mouse: None,
             focus_handle,
             marked_text: None,
@@ -313,6 +314,16 @@ impl TerminalView {
         };
         self.terminal
             .update(cx, |terminal, cx| terminal.start_selection(point, side, ty, cx));
+    }
+
+    /// The right button opens the pane's menu, which offers what to do with
+    /// the link under it.
+    fn right_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.button != MouseButton::Right {
+            return;
+        }
+        let point = self.point_at(event.position, cx).map(|(point, _)| point);
+        self.context_link = point.and_then(|point| self.link_at(point, cx)).map(|hovered| hovered.link);
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -496,18 +507,21 @@ impl TerminalView {
     }
 
     /// Link (path or URL) at a point, looking at the whole logical line.
+    /// First as if the rows whose text reaches the edge went on in the next
+    /// one; if that finds nothing, only across the rows the terminal wrapped.
     fn link_at(&self, point: AlacPoint, cx: &App) -> Option<HoveredLink> {
         let terminal = self.terminal.read(cx);
-        let (text, start) = terminal.logical_line(point.line);
-        let cols = terminal.columns();
-        let offset = (point.line.0 - start.0) as usize * cols + point.column.0;
         let cwd = terminal.cwd();
-        let (link, range) = link_at(&text, offset, cwd.as_deref(), self.local)?;
-        Some(HoveredLink {
-            link,
-            start,
-            range,
-            cols,
+        let joined = terminal.logical_line(point.line, true);
+        let wrapped = terminal.logical_line(point.line, false);
+        let lines = if joined == wrapped { vec![joined] } else { vec![joined, wrapped] };
+        lines.into_iter().find_map(|(text, cells)| {
+            let offset = cells.iter().position(|cell| *cell == point)?;
+            let (link, range) = link_at(&text, offset, cwd.as_deref(), self.local)?;
+            Some(HoveredLink {
+                link,
+                cells: cells[range].to_vec(),
+            })
         })
     }
 
@@ -525,7 +539,7 @@ impl TerminalView {
         self.hovered_cell = point;
         let hovered = point.and_then(|point| self.link_at(point, cx));
         let changed = match (&self.hovered_link, &hovered) {
-            (Some(a), Some(b)) => a.start != b.start || a.range != b.range,
+            (Some(a), Some(b)) => a.cells != b.cells,
             (None, None) => false,
             _ => true,
         };
@@ -541,18 +555,27 @@ impl TerminalView {
             return Vec::new();
         };
         let mut cells: Vec<(Line, Range<usize>)> = Vec::new();
-        for offset in hovered.range.clone() {
-            let line = hovered.start + (offset / hovered.cols) as i32;
-            let col = offset % hovered.cols;
+        for cell in &hovered.cells {
+            let col = cell.column.0;
             match cells.last_mut() {
-                Some((last, cols)) if *last == line => cols.end = col + 1,
-                _ => cells.push((line, col..col + 1)),
+                Some((line, cols)) if *line == cell.line => cols.end = col + 1,
+                _ => cells.push((cell.line, col..col + 1)),
             }
         }
         cells
     }
 
-    fn open_link(&mut self, link: Link, cx: &mut Context<Self>) {
+    /// The link the last right-click landed on.
+    pub fn context_link(&self) -> Option<&Link> {
+        self.context_link.as_ref()
+    }
+
+    /// The terminal is on this machine: its paths are on this disk.
+    pub fn is_local(&self) -> bool {
+        self.local
+    }
+
+    pub fn open_link(&mut self, link: Link, cx: &mut Context<Self>) {
         match link {
             Link::Url(url) if self.local => cx.open_url(&url),
             Link::Url(url) => cx.emit(TerminalViewEvent::OpenUrl(url)),
@@ -863,6 +886,8 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &SendInterrupt, _, cx| this.send(b"\x03", cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
+            // Before the pane's menu, which takes the click as it opens.
+            .capture_any_mouse_down(cx.listener(Self::right_mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::mouse_up))
@@ -1099,6 +1124,51 @@ mod tests {
         cx.simulate_mouse_move(cell(0, 6), None, Modifiers::default());
         cx.simulate_mouse_move(cell(0, 6), None, cmd);
         assert_eq!(backend.1.get(), 3);
+    }
+
+    /// The terminal inside a pane with a right-click menu, as in the app.
+    struct WithMenu {
+        terminal: Entity<TerminalView>,
+    }
+
+    impl Render for WithMenu {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::component::menu::ContextMenuExt as _;
+            div()
+                .id("pane")
+                .size_full()
+                .child(self.terminal.clone())
+                .context_menu(|menu, _, _| menu)
+        }
+    }
+
+    /// A right-click remembers the link it landed on, for the pane's menu,
+    /// which takes the click as it opens; and forgets it elsewhere.
+    #[gpui_kit::test]
+    fn right_click_remembers_the_link_under_it(cx: &mut TestAppContext) {
+        let (terminal, _, sender) = terminal(cx, b"see /tmp here");
+        std::mem::forget(sender);
+        let (pane, cx) = cx.add_window_view(|window, cx| WithMenu {
+            terminal: cx.new(|cx| TerminalView::new(terminal, true, window, cx)),
+        });
+        cx.run_until_parked();
+        let view = pane.read_with(cx, |pane, _| pane.terminal.clone());
+        let cell = cells(&view, cx);
+        let none = Modifiers::default();
+        let link = |cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.context_link().cloned());
+        cx.simulate_mouse_down(cell(0, 6), MouseButton::Right, none);
+        cx.simulate_mouse_up(cell(0, 6), MouseButton::Right, none);
+        assert_eq!(
+            link(cx),
+            Some(Link::Path {
+                path: PathBuf::from("/tmp"),
+                line: None,
+                column: None
+            })
+        );
+        cx.simulate_mouse_down(cell(0, 1), MouseButton::Right, none);
+        cx.simulate_mouse_up(cell(0, 1), MouseButton::Right, none);
+        assert_eq!(link(cx), None);
     }
 
     /// Shift-click extends the selection to where it's clicked.
