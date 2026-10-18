@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "2.30.16"
+version = "2.30.17"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "chrome"
-version = "2.30.16"
+version = "2.30.17"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "2.30.16"
+version = "2.30.17"
 dependencies = [
  "anyhow",
  "flate2",
@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "join"
-version = "2.30.16"
+version = "2.30.17"
 dependencies = [
  "anyhow",
  "libc",
@@ -5399,7 +5399,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "2.30.16"
+version = "2.30.17"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -7719,7 +7719,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "2.30.16"
+version = "2.30.17"
 dependencies = [
  "anyhow",
  "client",
@@ -7743,7 +7743,7 @@ dependencies = [
 
 [[package]]
 name = "ui-term"
-version = "2.30.16"
+version = "2.30.17"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
