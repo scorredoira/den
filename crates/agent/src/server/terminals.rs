@@ -50,9 +50,11 @@ pub(super) struct AgentTerm {
     /// and up to which output it was checked.
     pub(super) blocked: bool,
     pub(super) checked: Instant,
-    /// Its foreground process when last looked at, and the coding agent it
-    /// is (`claude`, `codex`…), if one, with its command line.
+    /// Its foreground process when last looked at, with its executable (an
+    /// `exec` keeps the pid), and the coding agent it is (`claude`,
+    /// `codex`…), if one, with its command line.
     pub(super) foreground: Option<u32>,
+    pub(super) foreground_executable: Option<PathBuf>,
     pub(super) agent: Option<String>,
     pub(super) agent_args: Option<String>,
 }
@@ -194,6 +196,7 @@ pub(super) fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (
         blocked: false,
         checked: Instant::now(),
         foreground: None,
+        foreground_executable: None,
         agent: None,
         agent_args: None,
     }));

@@ -175,6 +175,34 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
+/// Executable of a process, via `proc_pidpath`: it changes on `exec`.
+#[cfg(target_os = "macos")]
+pub fn process_executable(pid: u32) -> Option<PathBuf> {
+    use std::{
+        ffi::{c_int, c_void},
+        os::unix::ffi::OsStrExt as _,
+    };
+
+    unsafe extern "C" {
+        fn proc_pidpath(pid: c_int, buffer: *mut c_void, size: u32) -> c_int;
+    }
+    // PROC_PIDPATHINFO_MAXSIZE
+    let mut buffer = [0u8; 4096];
+    let size = unsafe { proc_pidpath(pid as c_int, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    (size > 0).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&buffer[..size as usize])))
+}
+
+/// Executable of a process: it changes on `exec`.
+#[cfg(target_os = "linux")]
+pub fn process_executable(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn process_executable(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
 /// Windows directories are tracked from OSC 7 by `shell_cwd`, rather than
 /// reading another process's undocumented memory layout.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -481,6 +509,30 @@ mod tests {
         std::fs::write(repo.join(".den/create"), "").unwrap();
         assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".den/create")));
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A wrapper that execs the agent keeps its pid: its executable is what
+    /// changes (`python3 claude-soonest` → `claude`).
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn exec_changes_the_executable() {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "read line; exec sleep 5"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let name = |pid| super::process_executable(pid).and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()));
+        let before = name(child.id());
+        child.stdin.as_mut().unwrap().write_all(b"\n").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while name(child.id()).as_deref() != Some("sleep") && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(before.is_some_and(|before| before != "sleep"));
+        assert_eq!(name(child.id()).as_deref(), Some("sleep"));
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

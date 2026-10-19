@@ -121,8 +121,12 @@ impl State {
         for (term, entry) in &self.terms {
             let mut entry = entry.locked();
             let foreground = entry.pty.foreground_pid();
-            if foreground != entry.foreground {
+            // A wrapper that execs the agent (`python3 claude-soonest` →
+            // `claude`) keeps its pid: only its executable says it changed.
+            let executable = foreground.and_then(platform::process_executable);
+            if foreground != entry.foreground || executable != entry.foreground_executable {
                 entry.foreground = foreground;
+                entry.foreground_executable = executable;
                 changed.push((*term, foreground));
             }
         }
