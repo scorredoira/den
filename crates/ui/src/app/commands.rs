@@ -259,9 +259,10 @@ impl Den {
                 .ok();
             }
             this.update_in(cx, |this, window, cx| {
-                this.open_from_terminal(host, root, file, window, cx);
-                window.activate_window();
-                cx.activate(true);
+                if this.open_from_terminal(host, root, file, window, cx) {
+                    window.activate_window();
+                    cx.activate(true);
+                }
             })
             .map_err(|_| "den's window is closed".to_string())?;
             Ok(String::new())

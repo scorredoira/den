@@ -389,8 +389,9 @@ fn open_new_window_except(
     if let Some((handle, den)) = open {
         handle
             .update(cx, |_, window, cx| {
-                den.update(cx, |den, cx| den.open_from_terminal(host, root, file, window, cx));
-                window.activate_window();
+                if den.update(cx, |den, cx| den.open_from_terminal(host, root, file, window, cx)) {
+                    window.activate_window();
+                }
             })
             .ok();
         cx.activate(true);
@@ -518,8 +519,9 @@ pub fn handle_open(root: PathBuf, file: Option<PathBuf>, cx: &mut App) {
         Some((handle, den)) => {
             handle
                 .update(cx, |_, window, cx| {
-                    den.update(cx, |den, cx| den.open_from_terminal(LOCAL.into(), root, file, window, cx));
-                    window.activate_window();
+                    if den.update(cx, |den, cx| den.open_from_terminal(LOCAL.into(), root, file, window, cx)) {
+                        window.activate_window();
+                    }
                 })
                 .ok();
         }

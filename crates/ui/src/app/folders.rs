@@ -11,7 +11,8 @@ impl Den {
 
     /// `den <path>`: `root` as a workspace (the worktree containing it, if
     /// any), with `file` open in it. A server not yet connected enters it on
-    /// connecting.
+    /// connecting. False if it opens in a window of its own instead, which
+    /// comes to the front: the caller mustn't bring this one over it.
     pub(super) fn open_from_terminal(
         &mut self,
         host: SharedString,
@@ -19,24 +20,25 @@ impl Den {
         file: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let path = self.workspace_containing(&host, &root);
         // Not a workspace yet: a window of its own, so none is added.
         if self.server.is_none() && self.client(&host).is_some() && self.task(&TaskKey { host: host.clone(), path: path.clone() }).is_none() {
             let destination = self.host(&host).and_then(|host| host.destination.clone());
             cx.defer(move |cx| open_new_window(destination, root, file, cx));
-            return;
+            return false;
         }
         self.open_file = file;
         if self.client(&host).is_none() {
             self.pending_last = Some(TaskKey { host, path });
-            return;
+            return true;
         }
         self.open_path(host, path, window, cx);
         // Already open: the file goes in it now.
         if let (Some(file), Some(workspace)) = (self.open_file.take(), self.active_workspace()) {
             workspace.update(cx, |workspace, cx| workspace.open(file, true, window, cx));
         }
+        true
     }
 
     /// `den -s`: opens `path` on the window's server (a file in its repo),
@@ -61,7 +63,9 @@ impl Den {
                 _ => None,
             };
             this.update_in(cx, |this, window, cx| match target {
-                Some((root, file)) => this.open_from_terminal(name, root, file, window, cx),
+                Some((root, file)) => {
+                    this.open_from_terminal(name, root, file, window, cx);
+                }
                 None => this.open_folder_picker_at(name, path, window, cx),
             })
             .ok();

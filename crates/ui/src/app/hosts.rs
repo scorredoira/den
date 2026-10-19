@@ -253,9 +253,10 @@ impl Den {
                     Event::Open { root, file } => {
                         if cx.update(|_, cx| opens_from_host(&name, &this, cx)).unwrap_or(false) {
                             this.update_in(cx, |this, window, cx| {
-                                this.open_from_terminal(name.clone(), root, file, window, cx);
-                                window.activate_window();
-                                cx.activate(true);
+                                if this.open_from_terminal(name.clone(), root, file, window, cx) {
+                                    window.activate_window();
+                                    cx.activate(true);
+                                }
                             })
                             .ok();
                         }
