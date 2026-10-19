@@ -4,13 +4,20 @@
 //! a file's name opens that file's diff in its own tab. Text is selected
 //! with the mouse in one column at a time, and Cmd-C copies it.
 
-use std::{cell::Cell, ops::Range, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ops::Range,
+    rc::Rc,
+    sync::Arc,
+};
 
 use gpui_kit::component::{
     ActiveTheme as _, StyledExt as _, h_flex,
     highlighter::{HighlightTheme, SyntaxHighlighter},
     input::{Copy, Rope},
 };
+use gpui_base::AutoScroll;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -40,12 +47,17 @@ pub struct CommitView {
     selection: Option<Selection>,
     /// The button is down since a press on a line: moving extends the selection.
     selecting: bool,
+    /// Scrolls while the pointer selects beyond the top or the bottom.
+    auto_scroll: AutoScroll,
+    /// The text of each line drawn last, to tell the byte under the pointer.
+    layouts: Rc<RefCell<HashMap<(usize, Column), TextLayout>>>,
+    row_height: Cell<Pixels>,
     focus_handle: FocusHandle,
 }
 
 /// The text of a line a selection is in: the old side or the new one (also
 /// the one column's).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Column {
     Old,
     New,
@@ -255,6 +267,9 @@ impl CommitView {
             narrow: Cell::new(false),
             selection: None,
             selecting: false,
+            auto_scroll: AutoScroll::default(),
+            layouts: Rc::default(),
+            row_height: Cell::new(px(0.)),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -305,15 +320,60 @@ impl CommitView {
         cx.notify();
     }
 
-    /// The pointer is over row `ix`'s line at `byte` with the button down.
-    fn drag(&mut self, column: Column, ix: usize, byte: usize, cx: &mut Context<Self>) {
-        let Some(selection) = self.selection.as_mut().filter(|selection| self.selecting && selection.column == column) else {
+    /// The pointer moved with the button down, anywhere in the window: the
+    /// selection goes to the line under it, and beyond the top or the
+    /// bottom the rows scroll toward it.
+    fn drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if !self.selecting {
             return;
+        }
+        self.extend_to(position, cx);
+        let bounds = self.scroll.0.borrow().base_handle.bounds();
+        self.auto_scroll.last_drag_position = Some(position);
+        self.auto_scroll.set(AutoScroll::compute_delta(position.y, bounds), cx, |delta, this, cx| {
+            let handle = this.scroll.0.borrow().base_handle.clone();
+            let offset = handle.offset();
+            handle.set_offset(point(offset.x, (offset.y - delta).clamp(-handle.max_offset().y, px(0.))));
+            if let Some(position) = this.auto_scroll.last_drag_position {
+                this.extend_to(position, cx);
+            }
+            cx.notify();
+        });
+    }
+
+    /// Ends the selection at the line `position` is over, or at the first or
+    /// last one in sight if it is above or below them.
+    fn extend_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let narrow = self.narrow.get();
+        let Some(selection) = self.selection.as_mut().filter(|selection| selection.narrow == narrow) else {
+            return;
+        };
+        let rows = if narrow { self.inline.len() } else { self.rows.len() };
+        let height = self.row_height.get();
+        let handle = self.scroll.0.borrow().base_handle.clone();
+        let bounds = handle.bounds();
+        if rows == 0 || height <= px(0.) || bounds.size.height <= px(0.) {
+            return;
+        }
+        let y = position.y.clamp(bounds.top(), bounds.bottom() - px(1.));
+        let ix = (((y - bounds.top() - handle.offset().y) / height).floor().max(0.) as usize).min(rows - 1);
+        // a line not drawn yet, just scrolled into sight: from its start
+        // going up, to its end going down
+        let byte = match self.layouts.borrow().get(&(ix, selection.column)) {
+            Some(layout) => byte_at(layout, position),
+            None if position.y < bounds.top() => 0,
+            None => usize::MAX,
         };
         if selection.head != (ix, byte) {
             selection.head = (ix, byte);
             cx.notify();
         }
+    }
+
+    /// The button went up, anywhere.
+    fn release(&mut self) {
+        self.selecting = false;
+        self.auto_scroll.stop();
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -323,6 +383,30 @@ impl CommitView {
         let rows = if selection.narrow { &self.inline } else { &self.rows };
         cx.write_to_clipboard(ClipboardItem::new_string(selected_text(rows, &selection)));
     }
+}
+
+/// Follows a selection's drag over the whole window, not only over the
+/// lines: it goes on beyond the view's top or bottom.
+fn follow_drag(view: WeakEntity<CommitView>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, _| {
+            let drag = view.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                if phase.bubble() && event.pressed_button == Some(MouseButton::Left) {
+                    drag.update(cx, |this, cx| this.drag(event.position, cx)).ok();
+                }
+            });
+            let release = view.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase.bubble() && event.button == MouseButton::Left {
+                    release.update(cx, |this, _| this.release()).ok();
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_full()
 }
 
 /// The rows in one column, as VS Code's inline diff: in each block of
@@ -519,10 +603,14 @@ impl Render for CommitView {
         let gutter = px(size * 0.62 * (digits + 2) as f32);
         let (removed, added) = (theme.danger.opacity(0.14), theme.success.opacity(0.14));
         let selection = self.selection.filter(|selection| selection.narrow == narrow);
+        self.row_height.set(height);
+        let layouts = self.layouts.clone();
         let list = uniform_list("commit-view", rows.len(), move |range, _, cx| {
             let theme = cx.theme();
+            layouts.borrow_mut().clear();
             // A line's text, with what's selected of it, which a press
-            // starts selecting and a move with the button down extends.
+            // starts selecting (a move with the button down extends it: see
+            // `drag`).
             let text = |half: &Half, ix: usize, column: Column| {
                 let selected = selection
                     .filter(|selection| selection.column == column && half.kind != Kind::Gap)
@@ -536,8 +624,8 @@ impl Render for CommitView {
                 };
                 let text = StyledText::new(half.text.clone()).with_highlights(highlights);
                 let layout = text.layout().clone();
-                let (press, drag) = (view.clone(), view.clone());
-                let drag_layout = layout.clone();
+                layouts.borrow_mut().insert((ix, column), layout.clone());
+                let press = view.clone();
                 div()
                     .flex_1()
                     .h_full()
@@ -550,12 +638,6 @@ impl Render for CommitView {
                         cx.stop_propagation();
                         let byte = byte_at(&layout, event.position);
                         press.update(cx, |this, cx| this.press(column, ix, byte, event, window, cx)).ok();
-                    })
-                    .on_mouse_move(move |event, _, cx| {
-                        if event.pressed_button == Some(MouseButton::Left) {
-                            let byte = byte_at(&drag_layout, event.position);
-                            drag.update(cx, |this, cx| this.drag(column, ix, byte, cx)).ok();
-                        }
                     })
                     .child(text)
             };
@@ -654,9 +736,8 @@ impl Render for CommitView {
                     }
                 }),
             )
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.selecting = false))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.selecting = false))
             .child(measure_width(&self.width))
+            .child(follow_drag(cx.entity().downgrade()))
             .child(list)
     }
 }
