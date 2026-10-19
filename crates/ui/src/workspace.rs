@@ -41,7 +41,7 @@ use crate::{
     debug::{self, DebugEvent, DebugView, Debugger, EditKind},
     notes::NotesPanel,
     DebugContinue, DebugPause, DebugRestart, DebugStop, RunToCursor, SetNextStatement, StepInto, StepOut, StepOver,
-    AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel, ToggleNotes, NotesToEditorTab, NotesToTerminals,
+    AddConditionalBreakpoint, AddLogpoint, AddToWatch, EvaluateInConsole, ToggleBreakpoint, ToggleDebugPanel, ToggleNotes,
     diff,
     picker::{Picker, PickerEvent},
     search::{SearchEvent, SearchPanel},
@@ -537,7 +537,6 @@ impl Workspace {
         let debug_hover = cx.new(|cx| debug::hover::HoverCard::new(debugger.clone(), cx));
         let debug_view = layout::debug_view(&debugger, cx);
         let notes = cx.new(|cx| NotesPanel::new(session_key.clone(), window, cx));
-        terminals.update(cx, |terminals, cx| terminals.set_notes(notes.clone(), window, cx));
         // The tests' Run and Debug come from the launch file.
         debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
         let subscriptions = vec![
@@ -607,13 +606,8 @@ impl Workspace {
                         this.message = Some(message.clone());
                         cx.notify();
                     }
-                    TerminalAreaEvent::ShowPanel(Some(Panel::Notes)) => this.show_notes(window, cx),
-                    TerminalAreaEvent::NotesMoved => cx.notify(),
                     TerminalAreaEvent::ShowPanel(Some(panel)) => this.show_panel(*panel, cx),
-                    TerminalAreaEvent::ToEditorTab(Panel::Notes) => this.notes_to_tab(window, cx),
-                    TerminalAreaEvent::ToEditorTab(_) => {}
                     TerminalAreaEvent::ShowPanel(None) => this.show_panel(Panel::Terminals, cx),
-                    TerminalAreaEvent::ClosePanel(Panel::Notes) => this.toggle_notes(&ToggleNotes, window, cx),
                     TerminalAreaEvent::ClosePanel(panel) => this.hide_panel(*panel, cx),
                     // In Terminal Mode, the code isn't there to take it.
                     TerminalAreaEvent::FocusLeft if this.is_shown(Panel::Code, cx) => this.focus_ide(window, cx),
@@ -1612,48 +1606,13 @@ impl Workspace {
         self.notes.clone()
     }
 
-    /// The notes where they are (their tab of the code, their split of the
-    /// terminals, or in front of these), with the focus to write in them.
-    pub(crate) fn show_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.notes_tab() {
-            Some(ix) => self.activate_with(ix, false, window, cx),
-            None if self.terminals.read(cx).notes_split().is_some() => {
-                self.show_panel(Panel::Terminals, cx);
-                self.terminals.update(cx, |terminals, cx| terminals.reveal_notes(cx));
-            }
-            None => self.show_panel(Panel::Notes, cx),
-        }
-        self.notes.update(cx, |notes, cx| notes.focus(window, cx));
-    }
-
-    /// Cmd-Alt-N: the notes, to write in them; written in, back to the code
-    /// (and the terminals, where they were).
-    fn toggle_notes(&mut self, _: &ToggleNotes, window: &mut Window, cx: &mut Context<Self>) {
-        let in_front = match self.notes_tab() {
-            Some(ix) => self.active == Some(ix),
-            None => self.is_shown(Panel::Notes, cx),
-        };
-        if !in_front {
+    /// Cmd-Alt-N, or their icon: the notes, to write in them; written in,
+    /// back to the code.
+    pub(crate) fn toggle_notes(&mut self, _: &ToggleNotes, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_shown(Panel::Notes, cx) {
             return self.show_notes(window, cx);
         }
-        match self.notes_tab() {
-            None => self.hide_panel(Panel::Notes, cx),
-            // In a tab of the code: the tab shown before it comes back in
-            // front; with none, the tab closes and they're the terminals'.
-            Some(ix) => {
-                let group = self.tabs[ix].group;
-                let before = (0..self.tabs.len())
-                    .filter(|other| *other != ix && self.tabs[*other].group == group)
-                    .max_by_key(|other| self.tabs[*other].shown);
-                match before {
-                    Some(before) => self.activate_with(before, false, window, cx),
-                    None => {
-                        self.close(ix, window, cx);
-                        self.hide_panel(Panel::Notes, cx);
-                    }
-                }
-            }
-        }
+        self.hide_notes(window, cx);
         self.focus_ide(window, cx);
     }
 

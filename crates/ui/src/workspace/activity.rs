@@ -412,7 +412,7 @@ impl Workspace {
             Item::Tab(panel) => self.side_place(cx).is_some() && self.side_place(cx) == item.place(cx) && Config::get(cx).layout.in_front(panel),
             Item::Graph => self.graph_visible(),
             Item::Debug => self.is_shown(Panel::Console, cx),
-            Item::Notes { .. } => self.is_shown(Panel::Notes, cx) || self.notes_tab().is_some_and(|ix| self.active == Some(ix)),
+            Item::Notes { .. } => self.is_shown(Panel::Notes, cx),
         }
     }
 

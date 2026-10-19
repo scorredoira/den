@@ -169,8 +169,6 @@ pub fn in_plain_editor(name: &str) -> bool {
             | "AddServer"
             | "ResetLayout"
             | "ToggleNotes"
-            | "NotesToEditorTab"
-            | "NotesToTerminals"
             | "DebugContinue"
             | "DebugStop"
             | "DebugRestart"

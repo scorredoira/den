@@ -566,110 +566,53 @@ fn a_layout_without_the_tree_loads() {
     );
 }
 
-/// The notes are a tab at the far end of the terminals': the activity bar
-/// brings them in front of the terminals and back. Open in Editor Tab takes
-/// them to the code, and closing that tab brings them back to the terminals.
-#[gpui_kit::test]
-fn the_notes_are_a_tab_of_the_terminals(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    bounds(cx, "notes-tab");
-    assert!(cx.debug_bounds("notes").is_none(), "behind their tab");
-    click(cx, "activity-Notes");
-    let notes = bounds(cx, "notes");
-    assert!(notes.left() >= bounds(cx, "editor-body-0").right(), "{notes:?}");
-    click(cx, "activity-Notes");
-    assert!(cx.debug_bounds("notes").is_none());
-    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
-
-    // Show Notes, in the terminals' right-click menus.
-    workspace.update(cx, |workspace, cx| {
-        workspace.terminals.update(cx, |_, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(Panel::Notes))))
-    });
-    cx.run_until_parked();
-    bounds(cx, "notes");
-    click(cx, "activity-Notes");
-
-    workspace.update_in(cx, |workspace, window, cx| workspace.notes_to_tab(window, cx));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("notes-tab").is_none());
-    let notes = bounds(cx, "notes");
-    assert!(notes.right() <= bounds(cx, "editor-body-0").right() + px(1.), "{notes:?}");
-    workspace.update_in(cx, |workspace, window, cx| {
-        let ix = workspace.notes_tab().expect("their tab");
-        workspace.close(ix, window, cx);
-    });
-    cx.run_until_parked();
-    bounds(cx, "notes-tab");
-}
-
-/// The notes' right-click menu offers to move them from where they are:
-/// Open in Editor Tab from the terminals', Move to Terminals from the code.
-#[gpui_kit::test]
-fn the_notes_menu_follows_where_they_are(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    let place = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| {
-        workspace.read_with(cx, |workspace, cx| workspace.notes.read(cx).place())
-    };
-    assert!(place(&workspace, cx) == crate::notes::Place::Tab);
-    click(cx, "notes-tab");
-    cx.dispatch_action(crate::NotesToEditorTab);
-    cx.run_until_parked();
-    workspace.read_with(cx, |workspace, _| assert!(workspace.notes_tab().is_some()));
-    assert!(place(&workspace, cx) == crate::notes::Place::Editor);
-    cx.dispatch_action(crate::NotesToTerminals);
-    cx.run_until_parked();
-    workspace.read_with(cx, |workspace, _| assert!(workspace.notes_tab().is_none()));
-    assert!(place(&workspace, cx) == crate::notes::Place::Tab);
-}
-
-/// With the terminals closed, the notes' icon opens them with the notes in
-/// front, and closes them again on the next click.
-#[gpui_kit::test]
-fn the_notes_icon_toggles_them(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
-    cx.run_until_parked();
-    click(cx, "activity-Notes");
-    bounds(cx, "notes");
-    click(cx, "activity-Notes");
-    assert!(cx.debug_bounds("notes").is_none());
-    workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
-}
-
-/// The notes' tab in the terminals' bar shows them and, clicked again, the
-/// terminals; opened for the notes alone, these close again.
-#[gpui_kit::test]
-fn the_notes_tab_toggles_them(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    click(cx, "notes-tab");
-    bounds(cx, "notes");
-    click(cx, "notes-tab");
-    assert!(cx.debug_bounds("notes").is_none());
-    workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
-    click(cx, "notes-tab");
-    bounds(cx, "notes");
-
-    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
-    cx.run_until_parked();
-    click(cx, "activity-Notes");
-    click(cx, "notes-tab");
-    assert!(cx.debug_bounds("notes").is_none());
-    workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
-}
-
-/// In a tab of the code, the notes' icon brings them in front and, on the
-/// next click, the tab that was in front before.
+/// The notes are a tab of the code, never among the terminals: their icon
+/// opens it in front and, on the next click, brings back the tab that was
+/// in front before; the terminals stay as they were.
 #[gpui_kit::test]
 fn the_notes_icon_toggles_their_tab(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    workspace.update_in(cx, |workspace, window, cx| workspace.notes_to_tab(window, cx));
-    cx.run_until_parked();
+    assert!(cx.debug_bounds("notes-tab").is_none(), "no tab among the terminals'");
     click(cx, "activity-Notes");
-    workspace.read_with(cx, |workspace, _| assert_eq!(workspace.active, Some(0), "the file again"));
+    let notes = bounds(cx, "notes");
+    assert!(notes.right() <= bounds(cx, "editor-body-0").right() + px(1.), "{notes:?}");
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.active, workspace.notes_tab());
+        assert!(workspace.is_shown(Panel::Notes, cx));
+        assert!(workspace.is_shown(Panel::Terminals, cx));
+    });
+    click(cx, "activity-Notes");
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.active, Some(0), "the file again");
+        assert!(!workspace.is_shown(Panel::Notes, cx));
+    });
     assert!(cx.debug_bounds("notes").is_none());
     click(cx, "activity-Notes");
     bounds(cx, "notes");
-    workspace.read_with(cx, |workspace, _| assert_eq!(workspace.active, workspace.notes_tab()));
+}
+
+/// With the terminals closed, the notes open without them.
+#[gpui_kit::test]
+fn the_notes_open_without_the_terminals(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update(cx, |workspace, cx| workspace.hide_panel(Panel::Terminals, cx));
+    cx.run_until_parked();
+    click(cx, "activity-Notes");
+    bounds(cx, "notes");
+    workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
+}
+
+/// `den panel show notes` opens their tab, and `hide` the one before.
+#[gpui_kit::test]
+fn den_panel_shows_and_hides_the_notes(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update_in(cx, |workspace, window, cx| workspace.set_panel(Panel::Notes, true, window, cx));
+    cx.run_until_parked();
+    bounds(cx, "notes");
+    workspace.update_in(cx, |workspace, window, cx| workspace.set_panel(Panel::Notes, false, window, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("notes").is_none());
+    workspace.read_with(cx, |workspace, _| assert_eq!(workspace.active, Some(0)));
 }
 
 /// The side column is the same in every workspace: going from one to
@@ -692,30 +635,6 @@ fn the_side_column_stays_from_workspace_to_workspace(cx: &mut TestAppContext) {
     // Where the terminals go is every workspace's.
     first.update(cx, |workspace, cx| workspace.set_dock(Dock::Bottom, cx));
     assert_eq!(cx.update(|_, cx| Config::get(cx).layout.dock), Dock::Bottom);
-}
-
-/// The notes are each workspace's: shown in one, the next opens without
-/// them, and the first has them again on coming back.
-#[gpui_kit::test]
-fn the_notes_stay_in_their_workspace(cx: &mut TestAppContext) {
-    let (first, cx) = draw(cx, |_| {});
-    let second = first.update_in(cx, |_, window, cx| cx.new(|cx| Workspace::new(PathBuf::from("/other"), None, true, "other".into(), window, cx)));
-    first.update(cx, |workspace, cx| {
-        workspace.hide_panel(Panel::Terminals, cx);
-        workspace.show_panel(Panel::Notes, cx);
-    });
-    let left = first.read_with(cx, |workspace, _| workspace.editing_panels());
-    second.update(cx, |workspace, cx| workspace.share_panels(left, cx));
-    second.read_with(cx, |workspace, cx| {
-        assert!(!workspace.is_shown(Panel::Notes, cx));
-        assert!(!workspace.is_shown(Panel::Terminals, cx), "they were open for the notes");
-    });
-    second.update(cx, |workspace, cx| workspace.show_panel(Panel::Terminals, cx));
-    let left = second.read_with(cx, |workspace, _| workspace.editing_panels());
-    first.update(cx, |workspace, cx| workspace.share_panels(left, cx));
-    first.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Notes, cx)));
-    first.update(cx, |workspace, cx| workspace.hide_panel(Panel::Notes, cx));
-    first.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx), "shown in the other one"));
 }
 
 /// What a workspace shows is saved with what it has open: opened again, it

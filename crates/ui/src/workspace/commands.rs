@@ -156,11 +156,12 @@ impl Workspace {
     }
 
     /// `den panel show|hide`.
-    pub fn set_panel(&mut self, panel: Panel, show: bool, cx: &mut Context<Self>) {
-        if show {
-            self.show_panel(panel, cx);
-        } else {
-            self.hide_panel(panel, cx);
+    pub fn set_panel(&mut self, panel: Panel, show: bool, window: &mut Window, cx: &mut Context<Self>) {
+        match (panel, show) {
+            (Panel::Notes, true) => self.show_notes(window, cx),
+            (Panel::Notes, false) => self.hide_notes(window, cx),
+            (_, true) => self.show_panel(panel, cx),
+            (_, false) => self.hide_panel(panel, cx),
         }
     }
 

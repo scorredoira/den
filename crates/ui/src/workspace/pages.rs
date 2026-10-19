@@ -1,6 +1,5 @@
 //! Tabs of the code that show a view of their own rather than a file: the
-//! graph, and the notes out of their place, side by side
-//! with the code in a split. Saved with what's open as a `den:` path no file
+//! graph, and the notes. Saved with what's open as a `den:` path no file
 //! has.
 
 use super::*;
@@ -10,7 +9,7 @@ use super::*;
 pub(super) enum Page {
     /// The repo's history, as gitk shows it (one such tab too).
     Graph,
-    /// The workspace's notes, out of the terminals' place.
+    /// The workspace's notes.
     Notes,
 }
 
@@ -57,27 +56,46 @@ impl Workspace {
         self.tabs.iter().position(|tab| matches!(tab.page, Some(Page::Notes)))
     }
 
-    /// Open in Editor Tab: the notes leave the terminals' place for a tab of
-    /// the code, in the group with the focus, to write at length.
-    pub(crate) fn notes_to_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.notes_tab() {
-            return self.activate_with(ix, true, window, cx);
-        }
-        self.hide_panel(Panel::Notes, cx);
-        self.terminals.update(cx, |terminals, cx| terminals.unsplit_notes(window, cx));
-        let tab = self.page_tab(Page::Notes, window, cx);
-        let ix = self.place_tab(tab, true);
-        self.activate_with(ix, true, window, cx);
-        self.layout_changed(cx);
+    /// Whether the notes are the tab in front, where the focus is.
+    pub(crate) fn notes_in_front(&self) -> bool {
+        self.notes_tab().is_some_and(|ix| self.active == Some(ix))
     }
 
-    /// Move to Terminals: their tab closes and they're a tab of the
-    /// terminals' again, in front.
-    pub(crate) fn notes_to_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.notes_tab() {
-            self.close(ix, window, cx);
+    /// The notes' tab in front (opened in the group with the focus if they
+    /// had none), with the focus to write in them.
+    pub(crate) fn show_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.in_terminal_mode() {
+            self.leave_terminal_mode(cx);
         }
-        self.show_notes(window, cx);
+        let ix = match self.notes_tab() {
+            Some(ix) => ix,
+            None => {
+                let tab = self.page_tab(Page::Notes, window, cx);
+                self.place_tab(tab, true)
+            }
+        };
+        self.activate_with(ix, true, window, cx);
+        self.layout_changed(cx);
+        self.notes.update(cx, |notes, cx| notes.focus(window, cx));
+    }
+
+    /// The notes out of sight: the tab shown before theirs comes back in
+    /// front; with none, theirs closes.
+    pub(crate) fn hide_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.notes_tab() else {
+            return;
+        };
+        let group = self.tabs[ix].group;
+        if self.shown_in(group) != Some(ix) {
+            return;
+        }
+        let before = (0..self.tabs.len())
+            .filter(|other| *other != ix && self.tabs[*other].group == group)
+            .max_by_key(|other| self.tabs[*other].shown);
+        match before {
+            Some(before) => self.activate_with(before, false, window, cx),
+            None => self.close(ix, window, cx),
+        }
     }
 
     /// The tab the graph is in, if it's open.

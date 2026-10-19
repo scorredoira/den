@@ -138,8 +138,6 @@ actions!(
         SetNextStatement,
         ToggleDebugPanel,
         ToggleNotes,
-        NotesToEditorTab,
-        NotesToTerminals,
         ResetLayout,
         DiffLayoutAutomatic,
         DiffLayoutSideBySide,

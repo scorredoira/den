@@ -5,8 +5,8 @@ use crate::drag_drop::{DropPlacement, TabDragPreview};
 #[derive(Clone, Copy)]
 pub(super) enum Source {
     Tab(usize),
-    /// A pane by its title, or the notes by their tab.
-    Pane(Pane),
+    /// A pane by its title.
+    Pane(TermId),
 }
 
 #[derive(Clone)]
@@ -27,17 +27,9 @@ impl TerminalArea {
         })
     }
 
-    /// The notes dragged by their tab, out of any split.
-    fn notes_from_tab(&self, drag: &TerminalDrag) -> bool {
-        drag.area == self.weak && matches!(drag.source, Source::Pane(Pane::Notes)) && self.notes_split().is_none()
-    }
-
-    fn can_drop_on(&self, drag: &TerminalDrag, target: Pane) -> bool {
+    fn can_drop_on(&self, drag: &TerminalDrag, target: TermId) -> bool {
         if !self.tabs.iter().any(|tab| tab.contains(target)) {
             return false;
-        }
-        if self.notes_from_tab(drag) {
-            return true;
         }
         let Some(source) = self.source_index(drag) else { return false };
         match drag.source {
@@ -52,10 +44,6 @@ impl TerminalArea {
             area.update(cx, |this, cx| {
                 this.terminal_drop = None;
                 this.drag_origin = this.tabs.get(this.active).map(|tab| tab.id);
-                // The notes leave the front for the terminals they go beside.
-                if this.notes_from_tab(drag) && this.panel_showing().is_some() {
-                    cx.emit(TerminalAreaEvent::ShowPanel(None));
-                }
                 // Reveal a destination when dragging the currently visible tab.
                 // A pane drag keeps its siblings visible for rearranging in place.
                 if let Source::Tab(_) = drag.source
@@ -72,7 +60,7 @@ impl TerminalArea {
         })
     }
 
-    pub(super) fn track_drop(&mut self, pane: Pane, event: &DragMoveEvent<TerminalDrag>, cx: &mut Context<Self>) {
+    pub(super) fn track_drop(&mut self, pane: TermId, event: &DragMoveEvent<TerminalDrag>, cx: &mut Context<Self>) {
         let next = self
             .can_drop_on(event.drag(cx), pane)
             .then(|| DropPlacement::at(event.bounds, event.event.position, true))
@@ -86,13 +74,7 @@ impl TerminalArea {
     }
 
     /// Detach layout data while keeping each terminal view and backend alive.
-    /// A tab left with only the notes goes: they're their tab again. Unless
-    /// the source goes back beside them (`into`, where it's dropped): then
-    /// the tab stays for it.
-    fn take_source(&mut self, drag: &TerminalDrag, into: Option<Pane>) -> Option<TerminalTab> {
-        if self.notes_from_tab(drag) {
-            return Some(TerminalTab { id: self.next_tab_id(), tree: Tree::Leaf(Pane::Notes), active: Pane::Notes, name: None });
-        }
+    fn take_source(&mut self, drag: &TerminalDrag) -> Option<TerminalTab> {
         let ix = self.source_index(drag)?;
         match drag.source {
             Source::Tab(_) => Some(self.tabs.remove(ix)),
@@ -105,9 +87,6 @@ impl TerminalArea {
                             tab.active = tree.leaves()[0];
                         }
                         tab.tree = tree;
-                        if tab.notes_only() && into != Some(Pane::Notes) {
-                            self.tabs.remove(ix);
-                        }
                         Some(TerminalTab { id: self.next_tab_id(), tree: Tree::Leaf(pane), active: pane, name: None })
                     }
                 }
@@ -115,25 +94,20 @@ impl TerminalArea {
         }
     }
 
-    fn move_to_pane(&mut self, drag: &TerminalDrag, target: Pane, placement: DropPlacement) -> bool {
+    fn move_to_pane(&mut self, drag: &TerminalDrag, target: TermId, placement: DropPlacement) -> bool {
         let Some((axis, side)) = placement.split() else { return false };
         if !self.can_drop_on(drag, target) {
             return false;
         }
-        let source = self.take_source(drag, Some(target)).expect("validated source");
-        let Some(ix) = self.tabs.iter().position(|tab| tab.contains(target)) else {
-            // Nothing left to go beside: the source is a tab of its own.
-            self.tabs.push(source);
-            self.active = self.tabs.len() - 1;
-            return true;
-        };
+        let source = self.take_source(drag).expect("validated source");
+        let ix = self.tabs.iter().position(|tab| tab.contains(target)).expect("the target isn't the source");
         self.tabs[ix].tree.insert(target, &source.tree, axis, side == 0);
         self.tabs[ix].active = source.active;
         self.active = ix;
         true
     }
 
-    pub(super) fn drop_on_pane(&mut self, drag: &TerminalDrag, target: Pane, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn drop_on_pane(&mut self, drag: &TerminalDrag, target: TermId, window: &mut Window, cx: &mut Context<Self>) {
         let placement = self.terminal_drop.filter(|(pane, _)| *pane == target).map(|(_, placement)| placement);
         if placement.is_some_and(|placement| self.move_to_pane(drag, target, placement)) {
             self.finish_drop(window, cx);
@@ -142,22 +116,15 @@ impl TerminalArea {
         }
     }
 
-    /// The notes dropped on the bar leave their split: they're their tab again.
     fn move_to_bar(&mut self, drag: &TerminalDrag, before: Option<usize>) -> bool {
         let Some(source_ix) = self.source_index(drag) else { return false };
-        if matches!(drag.source, Source::Pane(Pane::Notes)) {
-            let active = self.tabs[source_ix].id;
-            self.take_source(drag, None);
-            self.active = self.tabs.iter().position(|tab| tab.id == active).unwrap_or(self.active.min(self.tabs.len().saturating_sub(1)));
-            return true;
-        }
         let source_id = self.tabs[source_ix].id;
         // Dropping a whole tab on itself leaves its position intact.
         if before == Some(source_id) && matches!(drag.source, Source::Tab(_)) {
             self.active = source_ix;
             return true;
         }
-        let source = self.take_source(drag, None).expect("validated source");
+        let source = self.take_source(drag).expect("validated source");
         let ix = before.and_then(|id| self.tabs.iter().position(|tab| tab.id == id)).unwrap_or(self.tabs.len());
         self.tabs.insert(ix, source);
         self.active = ix;
@@ -174,7 +141,6 @@ impl TerminalArea {
         self.terminal_drop = None;
         self.drag_origin = None;
         self.focus(window, cx);
-        cx.emit(TerminalAreaEvent::NotesMoved);
         self.save();
         cx.notify();
     }
@@ -239,7 +205,7 @@ mod tests {
             let terminal = cx.new(|cx| Terminal::new(Rc::new(Backend { _output: sender }), receiver, 80, 24, b"preserved output", cx));
             area.add_view(term, terminal, window, cx);
             let id = area.next_tab_id();
-            area.tabs.push(TerminalTab { id, tree: Tree::Leaf(Pane::Term(term)), active: Pane::Term(term), name: None });
+            area.tabs.push(TerminalTab { id, tree: Tree::Leaf(term), active: term, name: None });
         }
         area
     }
@@ -258,135 +224,40 @@ mod tests {
                 let first = this.views[&1].clone();
                 let terminal = first.read(cx).terminal().clone();
                 for placement in [DropPlacement::Left, DropPlacement::Right, DropPlacement::Top, DropPlacement::Bottom] {
-                    let source = drag(this, Source::Pane(Pane::Term(1)));
-                    assert!(this.move_to_pane(&source, Pane::Term(2), placement));
+                    let source = drag(this, Source::Pane(1));
+                    assert!(this.move_to_pane(&source, 2, placement));
                     assert_eq!(this.tabs.len(), 2);
-                    assert_eq!(this.tabs[this.active].active, Pane::Term(1));
+                    assert_eq!(this.tabs[this.active].active, 1);
                     let (axis, side) = placement.split().unwrap();
                     let leaves: Vec<TermId> = if side == 0 { vec![1, 2] } else { vec![2, 1] };
-                    assert_eq!(this.tabs[this.active].tree, Tree::Split { axis, children: leaves.into_iter().map(|term| Tree::Leaf(Pane::Term(term))).collect() });
+                    assert_eq!(this.tabs[this.active].tree, Tree::Split { axis, children: leaves.into_iter().map(Tree::Leaf).collect() });
                     assert!(this.move_to_bar(&source, None));
                     assert_eq!(this.tabs.len(), 3);
                     assert!(this.tabs.iter().all(|tab| matches!(tab.tree, Tree::Leaf(_))));
-                    assert_eq!(this.tabs[this.active].tree, Tree::Leaf(Pane::Term(1)));
+                    assert_eq!(this.tabs[this.active].tree, Tree::Leaf(1));
                     assert_eq!(this.views[&1], first);
                     assert_eq!(first.read(cx).terminal(), &terminal);
                 }
                 // A whole tab carries its nested layout with it.
-                let source = drag(this, Source::Pane(Pane::Term(1)));
-                this.move_to_pane(&source, Pane::Term(2), DropPlacement::Right);
+                let source = drag(this, Source::Pane(1));
+                this.move_to_pane(&source, 2, DropPlacement::Right);
                 let nested = this.tabs[this.active].tree.clone();
                 let source = drag(this, Source::Tab(this.tabs[this.active].id));
-                assert!(this.move_to_pane(&source, Pane::Term(3), DropPlacement::Bottom));
+                assert!(this.move_to_pane(&source, 3, DropPlacement::Bottom));
                 assert_eq!(this.tabs.len(), 1);
-                assert_eq!(this.tabs[0].tree, Tree::Split { axis: Axis::Column, children: vec![Tree::Leaf(Pane::Term(3)), nested] });
-                let encoded = serde_json::to_vec(&SavedLayout { tabs: vec![SavedTab::Tree(this.tabs[0].tree.clone())], ..Default::default() }).unwrap();
+                assert_eq!(this.tabs[0].tree, Tree::Split { axis: Axis::Column, children: vec![Tree::Leaf(3), nested] });
+                let encoded = serde_json::to_vec(&SavedLayout { tabs: vec![SavedTab::of(&this.tabs[0])], ..Default::default() }).unwrap();
                 let restored: SavedLayout = serde_json::from_slice(&encoded).unwrap();
                 assert_eq!(restored.tabs.into_iter().next().unwrap().into_tab(), Some((this.tabs[0].tree.clone(), None)));
                 // Rearranging a pane in the same tab removes its old empty branch.
-                let source = drag(this, Source::Pane(Pane::Term(1)));
-                assert!(this.move_to_pane(&source, Pane::Term(3), DropPlacement::Left));
+                let source = drag(this, Source::Pane(1));
+                assert!(this.move_to_pane(&source, 3, DropPlacement::Left));
                 assert_eq!(this.tabs[0].terms(), vec![1, 3, 2]);
                 let mut terms = this.tabs[0].terms();
                 terms.sort();
                 assert_eq!(terms, vec![1, 2, 3]);
             })
         });
-    }
-
-    /// The notes go beside a terminal from their tab, and back to it from
-    /// the bar or when the terminals beside them close.
-    #[gpui_kit::test]
-    fn the_notes_split_like_a_terminal(cx: &mut TestAppContext) {
-        init(cx);
-        let cx = cx.add_empty_window();
-        let area = cx.new_window_entity(area);
-        cx.update(|window, cx| {
-            area.update(cx, |this, cx| {
-                let notes = drag(this, Source::Pane(Pane::Notes));
-                assert!(!this.move_to_bar(&notes, None), "from their tab, the bar is where they are");
-                assert!(this.move_to_pane(&notes, Pane::Term(2), DropPlacement::Bottom));
-                assert_eq!(this.notes_split(), Some(1));
-                assert_eq!(this.tabs[1].tree, Tree::Split { axis: Axis::Column, children: vec![Tree::Leaf(Pane::Term(2)), Tree::Leaf(Pane::Notes)] });
-                assert_eq!(this.tabs[1].active, Pane::Notes);
-                let encoded = serde_json::to_string(&SavedLayout { tabs: vec![SavedTab::Tree(this.tabs[1].tree.clone())], ..Default::default() }).unwrap();
-                let restored: SavedLayout = serde_json::from_str(&encoded).unwrap();
-                assert_eq!(restored.tabs.into_iter().next().unwrap().into_tab(), Some((this.tabs[1].tree.clone(), None)));
-                // In a split, onto the bar: their tab again.
-                assert!(this.move_to_bar(&notes, None));
-                assert_eq!(this.notes_split(), None);
-                assert_eq!(this.tabs.len(), 3);
-                assert_eq!(this.tabs[this.active].tree, Tree::Leaf(Pane::Term(2)));
-                // A terminal leaving them alone, moved or exited: the tab goes.
-                assert!(this.move_to_pane(&notes, Pane::Term(2), DropPlacement::Right));
-                assert!(this.move_to_pane(&drag(this, Source::Pane(Pane::Term(2))), Pane::Term(1), DropPlacement::Right));
-                assert_eq!(this.notes_split(), None);
-                assert_eq!(this.tabs.len(), 2);
-                assert!(this.move_to_pane(&notes, Pane::Term(3), DropPlacement::Left));
-                this.remove(Pane::Term(3), window, cx);
-                assert!(!this.view_subscriptions.contains_key(&3), "what it said goes with it");
-                assert_eq!(this.notes_split(), None);
-                assert_eq!(this.tabs.len(), 1);
-            })
-        });
-    }
-
-    /// The one terminal beside the notes, dropped on their other side, goes
-    /// there: the tab stays, though for a moment only the notes were in it.
-    #[gpui_kit::test]
-    fn a_terminal_moves_around_the_notes_it_is_alone_with(cx: &mut TestAppContext) {
-        init(cx);
-        let cx = cx.add_empty_window();
-        let area = cx.new_window_entity(area);
-        cx.update(|_, cx| {
-            area.update(cx, |this, _| {
-                let notes = drag(this, Source::Pane(Pane::Notes));
-                assert!(this.move_to_pane(&notes, Pane::Term(1), DropPlacement::Right));
-                let tab = this.tabs[this.active].id;
-                let term = drag(this, Source::Pane(Pane::Term(1)));
-                assert!(this.move_to_pane(&term, Pane::Notes, DropPlacement::Right));
-                assert_eq!(this.tabs.len(), 3);
-                assert_eq!(this.tabs[this.active].id, tab);
-                assert_eq!(this.tabs[this.active].tree, Tree::Split { axis: Axis::Row, children: vec![Tree::Leaf(Pane::Notes), Tree::Leaf(Pane::Term(1))] });
-                assert_eq!(this.tabs[this.active].active, Pane::Term(1));
-            })
-        });
-    }
-
-    /// Dragged by their tab onto a terminal's edge, the notes show beside it.
-    #[gpui_kit::test]
-    fn the_notes_tab_drags_onto_a_terminal(cx: &mut TestAppContext) {
-        init(cx);
-        let (area, cx) = cx.add_window_view(|window, cx| {
-            let mut area = area(window, cx);
-            let notes = cx.new(|cx| NotesPanel::new("notes-drag-test".into(), window, cx));
-            area.set_notes(notes.clone(), window, cx);
-            area.panel_tabs = vec![PanelTab {
-                panel: Panel::Notes,
-                view: notes.into(),
-                icon: "icons/sticky-note.svg",
-                title: "Notes",
-                showing: false,
-                closable: false,
-                dot: None,
-            }];
-            area
-        });
-        let start = cx.debug_bounds("notes-tab").unwrap().center();
-        let body = cx.debug_bounds("terminal-pane-1").unwrap();
-        let end = point(body.right() - px(10.), body.center().y);
-        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        cx.simulate_mouse_move(start - point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
-        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-        cx.update(|_, cx| assert_eq!(area.read(cx).terminal_drop, Some((Pane::Term(1), DropPlacement::Right))));
-        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-        cx.update(|_, cx| {
-            let area = area.read(cx);
-            assert_eq!(area.tabs[area.active].tree.leaves(), vec![Pane::Term(1), Pane::Notes]);
-        });
-        let notes = cx.debug_bounds("terminal-pane-notes").unwrap();
-        assert!(notes.left() >= cx.debug_bounds("terminal-pane-1").unwrap().right() - px(1.), "{notes:?}");
-        cx.debug_bounds("terminal-pane-handle-notes").unwrap();
     }
 
     /// A double click types the tab's name in its place: Enter gives it,
@@ -434,7 +305,7 @@ mod tests {
         let (area, cx) = cx.add_window_view(area);
         area.update(cx, |area, cx| {
             let source = drag(area, Source::Tab(2));
-            assert!(area.move_to_pane(&source, Pane::Term(1), DropPlacement::Right));
+            assert!(area.move_to_pane(&source, 1, DropPlacement::Right));
             cx.notify();
         });
         cx.run_until_parked();
@@ -446,7 +317,7 @@ mod tests {
         cx.update(|_, cx| {
             let area = area.read(cx);
             assert_eq!(area.names.get(&2), Some(&"server".to_string()));
-            assert_eq!(area.title(Pane::Term(2), cx), "server");
+            assert_eq!(area.title(2, cx), "server");
             assert_eq!(area.tab_title(&area.tabs[0], cx), "terminal-drag-test");
         });
 
@@ -458,17 +329,17 @@ mod tests {
         cx.update(|_, cx| {
             let area = area.read(cx);
             assert_eq!(area.tab_title(&area.tabs[0], cx), "both");
-            assert_eq!(area.title(Pane::Term(2), cx), "server");
+            assert_eq!(area.title(2, cx), "server");
         });
     }
 
-    /// Layouts saved before the notes could split still read.
+    /// Layouts saved as columns of terminals, before the splits, still read.
     #[test]
     fn old_layouts_read() {
         let saved: SavedLayout = serde_json::from_str(r#"{"tabs":[{"Split":{"axis":"Row","children":[{"Leaf":1},{"Leaf":2}]}},[3,4]]}"#).unwrap();
         let trees: Vec<_> = saved.tabs.into_iter().filter_map(SavedTab::into_tab).map(|(tree, _)| tree).collect();
-        assert_eq!(trees[0].leaves(), vec![Pane::Term(1), Pane::Term(2)]);
-        assert_eq!(trees[1].leaves(), vec![Pane::Term(3), Pane::Term(4)]);
+        assert_eq!(trees[0].leaves(), vec![1, 2]);
+        assert_eq!(trees[1].leaves(), vec![3, 4]);
     }
 
     #[gpui_kit::test]
@@ -481,11 +352,11 @@ mod tests {
             area.update(cx, |this, _| {
                 let source = drag(this, Source::Tab(1));
                 let original: Vec<_> = this.tabs.iter().map(|tab| tab.tree.clone()).collect();
-                assert!(!this.move_to_pane(&source, Pane::Term(1), DropPlacement::Right));
-                assert!(!this.move_to_pane(&source, Pane::Term(99), DropPlacement::Right));
-                assert!(!this.move_to_pane(&source, Pane::Term(2), DropPlacement::Center));
+                assert!(!this.move_to_pane(&source, 1, DropPlacement::Right));
+                assert!(!this.move_to_pane(&source, 99, DropPlacement::Right));
+                assert!(!this.move_to_pane(&source, 2, DropPlacement::Center));
                 let foreign = TerminalDrag { area: other.downgrade(), ..source.clone() };
-                assert!(!this.move_to_pane(&foreign, Pane::Term(2), DropPlacement::Right));
+                assert!(!this.move_to_pane(&foreign, 2, DropPlacement::Right));
                 assert!(!this.move_to_bar(&foreign, None));
                 let stale = drag(this, Source::Tab(99));
                 assert!(!this.move_to_bar(&stale, None));
@@ -532,7 +403,7 @@ mod tests {
             cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
             cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
             cx.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
-            cx.update(|_, cx| assert_eq!(area.read(cx).terminal_drop, Some((Pane::Term(2), DropPlacement::Right))));
+            cx.update(|_, cx| assert_eq!(area.read(cx).terminal_drop, Some((2, DropPlacement::Right))));
             if cancel_with_escape {
                 cx.simulate_keystrokes("escape");
             } else {
@@ -563,7 +434,7 @@ mod tests {
         cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         cx.update(|_, cx| {
             assert!(cx.has_active_drag());
-            assert_eq!(area.read(cx).terminal_drop, Some((Pane::Term(2), DropPlacement::Right)));
+            assert_eq!(area.read(cx).terminal_drop, Some((2, DropPlacement::Right)));
         });
         cx.simulate_keystrokes("escape");
         cx.update(|_, cx| {
@@ -593,7 +464,7 @@ mod tests {
         cx.update(|window, cx| {
             let area = area.read(cx);
             assert_eq!(area.tabs.len(), 3);
-            assert_eq!(area.tabs[area.active].tree, Tree::Leaf(Pane::Term(1)));
+            assert_eq!(area.tabs[area.active].tree, Tree::Leaf(1));
             assert!(area.tabs.iter().all(|tab| matches!(tab.tree, Tree::Leaf(_))));
             assert!(area.views[&1].read(cx).focus_handle(cx).is_focused(window));
         });

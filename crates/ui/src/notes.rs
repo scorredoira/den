@@ -1,11 +1,9 @@
-//! The Notes panel: what's next in a workspace, as plain Markdown that Den
-//! keeps (in `notes.json` in its config folder, by workspace), never in the
-//! repo. They're a tab at the far end of the terminals' bar, a pane split
-//! beside a terminal (their tab dragged onto it), or a tab of the code (Open
-//! in Editor Tab), shown by the activity bar or Cmd-Alt-N; their
-//! icon is a sticky note written on while they have something. Cmd-E's notice shows
-//! their first line, and removing the worktree forgets them. `den notes`
-//! reads and writes them from a terminal.
+//! The notes: what's next in a workspace, as plain Markdown that Den keeps
+//! (in `notes.json` in its config folder, by workspace), never in the repo.
+//! They're a tab of the code of their own, which their icon on the activity
+//! bar or Cmd-Alt-N opens; the icon is a sticky note written on while they
+//! have something. Cmd-E's notice shows their first line, and removing the
+//! worktree forgets them. `den notes` reads and writes them from a terminal.
 
 use std::{collections::HashMap, time::Duration};
 
@@ -74,21 +72,8 @@ pub fn forget(key: &str, cx: &mut App) {
     set(key, String::new(), cx);
 }
 
-/// Where the notes are: what their right-click menu offers to do with them.
-#[derive(Clone, Copy, PartialEq, Default)]
-pub enum Place {
-    /// Their tab at the end of the terminals' bar.
-    #[default]
-    Tab,
-    /// A pane split beside a terminal.
-    Split,
-    /// A tab of the code.
-    Editor,
-}
-
 pub struct NotesPanel {
     key: String,
-    place: Place,
     editor: Entity<EditorState>,
     /// Whether it has something, as last written.
     filled: bool,
@@ -123,7 +108,7 @@ impl NotesPanel {
                 async {}
             }),
         ];
-        Self { key, place: Place::default(), editor, filled, save: None, _subscriptions: subscriptions }
+        Self { key, editor, filled, save: None, _subscriptions: subscriptions }
     }
 
     /// Whether it has something: its tab and icon say so.
@@ -137,19 +122,6 @@ impl NotesPanel {
         self.filled = !text.trim().is_empty();
         self.editor.update(cx, |editor, cx| editor.set_value(text, window, cx));
         cx.notify();
-    }
-
-    #[cfg(test)]
-    pub fn place(&self) -> Place {
-        self.place
-    }
-
-    /// They moved: their menu follows.
-    pub fn set_place(&mut self, place: Place, cx: &mut Context<Self>) {
-        if place != self.place {
-            self.place = place;
-            cx.notify();
-        }
     }
 
     pub fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -184,38 +156,25 @@ impl NotesPanel {
 
 impl Render for NotesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let place = self.place;
         v_flex()
             .size_full()
             .when(cfg!(test), |el| el.debug_selector(|| "notes".into()))
             .pl_3()
             .pt_2()
             .bg(cx.theme().background)
-            .child(Editor::new(&self.editor).bordered(false).h_full().context_menu(move |menu, _, _| notes_menu(menu, place)))
+            .child(Editor::new(&self.editor).bordered(false).h_full().context_menu(|menu, _, _| notes_menu(menu)))
     }
 }
 
-/// The text's right-click menu: editing, and where they go from `place`.
-/// It's built while the editor is mid-update and can't read whether it
-/// has text selected: Cut and Copy are always enabled.
-fn notes_menu(menu: NativeMenu, place: Place) -> NativeMenu {
-    let menu = menu
-        .menu("Cut", Box::new(input::Cut))
+/// The text's right-click menu. It's built while the editor is mid-update
+/// and can't read whether it has text selected: Cut and Copy are always
+/// enabled.
+fn notes_menu(menu: NativeMenu) -> NativeMenu {
+    menu.menu("Cut", Box::new(input::Cut))
         .menu("Copy", Box::new(input::Copy))
         .menu("Paste", Box::new(input::Paste))
         .separator()
         .menu("Select All", Box::new(input::SelectAll))
-        .separator();
-    match place {
-        Place::Tab => menu.menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab)),
-        Place::Split => menu
-            .menu("Split Right", Box::new(crate::SplitRight))
-            .menu("Split Down", Box::new(crate::SplitDown))
-            .separator()
-            .menu("Open in Editor Tab", Box::new(crate::NotesToEditorTab))
-            .menu("Close Split", Box::new(crate::CloseTab)),
-        Place::Editor => menu.menu("Move to Terminals", Box::new(crate::NotesToTerminals)),
-    }
 }
 
 #[cfg(test)]

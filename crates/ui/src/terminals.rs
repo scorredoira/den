@@ -31,7 +31,6 @@ use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for, links::Link};
 
 use crate::{
     config::{Config, Panel, UiText, store::JsonFile},
-    notes::NotesPanel,
     CloseTab, NewTerminal, SplitDown, SplitRight, agent, menu,
     splits::{Axis, Direction, Tree},
 };
@@ -50,10 +49,6 @@ pub enum TerminalAreaEvent {
     ShowPanel(Option<Panel>),
     /// A panel's tab closed.
     ClosePanel(Panel),
-    /// Open in Editor Tab, from a panel tab's menu (the notes').
-    ToEditorTab(Panel),
-    /// The notes went into a split or out of one: their tab goes or comes back.
-    NotesMoved,
     /// The debugger's terminal, drawn in its console: a new one, or (`None`)
     /// it's gone.
     DebugTerminal(Option<Entity<TerminalView>>),
@@ -70,33 +65,13 @@ pub struct PanelTab {
     pub title: &'static str,
     /// The one showing, rather than the terminals.
     pub showing: bool,
-    /// With a close button, or always there.
-    pub closable: bool,
     /// A dot of this color on it: the debugger's state.
     pub dot: Option<Hsla>,
 }
 
 impl PanelTab {
-    fn key(&self) -> (Panel, EntityId, &'static str, bool, bool, Option<Hsla>) {
-        (self.panel, self.view.entity_id(), self.icon, self.showing, self.closable, self.dot)
-    }
-}
-
-/// What a split's leaf shows: a terminal, or the workspace's notes (in one
-/// split at most, dragged there from their tab like a terminal).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(untagged)]
-enum Pane {
-    Term(TermId),
-    Notes,
-}
-
-impl Pane {
-    fn term(self) -> Option<TermId> {
-        match self {
-            Pane::Term(term) => Some(term),
-            Pane::Notes => None,
-        }
+    fn key(&self) -> (Panel, EntityId, &'static str, bool, Option<Hsla>) {
+        (self.panel, self.view.entity_id(), self.icon, self.showing, self.dot)
     }
 }
 
@@ -118,9 +93,9 @@ enum Named {
 
 struct TerminalTab {
     id: usize,
-    tree: Tree<Pane>,
+    tree: Tree,
     /// The tab's pane that last had focus.
-    active: Pane,
+    active: TermId,
     /// The name given to it when split (Rename Tab), rather than the
     /// workspace's folder; one pane alone is named itself.
     name: Option<String>,
@@ -128,16 +103,11 @@ struct TerminalTab {
 
 impl TerminalTab {
     fn terms(&self) -> Vec<TermId> {
-        self.tree.leaves().into_iter().filter_map(Pane::term).collect()
+        self.tree.leaves()
     }
 
-    fn contains(&self, pane: Pane) -> bool {
-        self.tree.leaves().contains(&pane)
-    }
-
-    /// Only the notes are left: the tab goes, and they're their tab again.
-    fn notes_only(&self) -> bool {
-        self.tree == Tree::Leaf(Pane::Notes)
+    fn contains(&self, term: TermId) -> bool {
+        self.tree.leaves().contains(&term)
     }
 }
 
@@ -151,7 +121,7 @@ enum Place {
 
 /// What `restore` brings back: the tabs with their names, the terminals'
 /// names, and the terminals attached.
-type Restored = (Vec<(Tree<Pane>, Option<String>)>, HashMap<TermId, String>, Vec<(TermId, Entity<Terminal>)>);
+type Restored = (Vec<(Tree, Option<String>)>, HashMap<TermId, String>, Vec<(TermId, Entity<Terminal>)>);
 
 pub struct TerminalArea {
     client: Option<Arc<Client>>,
@@ -162,7 +132,7 @@ pub struct TerminalArea {
     views: HashMap<TermId, Entity<TerminalView>>,
     active: usize,
     next_id: usize,
-    terminal_drop: Option<(Pane, DropPlacement)>,
+    terminal_drop: Option<(TermId, DropPlacement)>,
     drag_origin: Option<usize>,
     /// Size of the terminal area at the last paint, so each shell is created
     /// at its final size (otherwise it redraws the prompt when resized).
@@ -174,8 +144,6 @@ pub struct TerminalArea {
     /// The terminal the debugger runs its command in: in `views`, but in no
     /// tab, as the debugger's console draws it.
     debug_term: Option<TermId>,
-    /// The workspace's notes, for a split to show them.
-    notes: Option<Entity<NotesPanel>>,
     /// The names given to terminals, rather than their programs' titles.
     names: HashMap<TermId, String>,
     /// The name being typed, in its place.
@@ -184,8 +152,6 @@ pub struct TerminalArea {
     weak: WeakEntity<Self>,
     /// What each terminal's view says, heard while it's here.
     view_subscriptions: HashMap<TermId, Subscription>,
-    /// The notes getting the focus.
-    _notes_focus: Option<Subscription>,
 }
 
 impl EventEmitter<TerminalAreaEvent> for TerminalArea {}
@@ -211,12 +177,10 @@ impl TerminalArea {
             local,
             panel_tabs: Vec::new(),
             debug_term: None,
-            notes: None,
             names: HashMap::new(),
             renaming: None,
             weak: cx.entity().downgrade(),
             view_subscriptions: HashMap::new(),
-            _notes_focus: None,
         }
     }
 
@@ -240,13 +204,13 @@ impl TerminalArea {
                 let debug = debug_term.filter(|term| alive.remove(term));
                 let saved = with_layouts(|layouts| layouts.groups.get(&group).cloned()).unwrap_or_default();
                 let mut names = saved.names;
-                let tabs: Vec<(Tree<Pane>, Option<String>)> = saved
+                let tabs: Vec<(Tree, Option<String>)> = saved
                     .tabs
                     .into_iter()
                     .filter_map(SavedTab::into_tab)
                     // A tab of one terminal named before names were theirs.
                     .map(|(tree, name)| match (&tree, name) {
-                        (Tree::Leaf(Pane::Term(term)), Some(name)) => {
+                        (Tree::Leaf(term), Some(name)) => {
                             names.entry(*term).or_insert(name);
                             (tree, None)
                         }
@@ -254,14 +218,14 @@ impl TerminalArea {
                     })
                     .collect();
                 let mut tabs = keep_terms(tabs, &alive);
-                let placed: HashSet<TermId> = tabs.iter().flat_map(|(tree, _)| tree.leaves()).filter_map(Pane::term).collect();
+                let placed: HashSet<TermId> = tabs.iter().flat_map(|(tree, _)| tree.leaves()).collect();
                 // Those still alive but not saved, each in its own tab.
                 let mut orphans: Vec<TermId> = alive.difference(&placed).copied().collect();
                 orphans.sort();
-                tabs.extend(orphans.into_iter().map(|term| (Tree::Leaf(Pane::Term(term)), None)));
+                tabs.extend(orphans.into_iter().map(|term| (Tree::Leaf(term), None)));
 
                 let terms: Vec<TermId> =
-                    debug.into_iter().chain(tabs.iter().flat_map(|(tree, _)| tree.leaves()).filter_map(Pane::term)).collect();
+                    debug.into_iter().chain(tabs.iter().flat_map(|(tree, _)| tree.leaves())).collect();
                 // One that ended since it was listed is left out, not the rest.
                 let terminals: Vec<(TermId, Entity<Terminal>)> = agent::attach_all(&client, &terms, cx)
                     .await
@@ -344,7 +308,7 @@ impl TerminalArea {
                 .collect();
             this.update_in(cx, |this, window, cx| {
                 for term in gone {
-                    this.remove(Pane::Term(term), window, cx);
+                    this.remove(term, window, cx);
                 }
                 for (term, terminal) in added {
                     // Opened here while this attached it too: the duplicate is
@@ -354,7 +318,7 @@ impl TerminalArea {
                     }
                     this.add_view(term, terminal, window, cx);
                     let id = this.next_tab_id();
-                    this.tabs.push(TerminalTab { id, tree: Tree::Leaf(Pane::Term(term)), active: Pane::Term(term), name: None });
+                    this.tabs.push(TerminalTab { id, tree: Tree::Leaf(term), active: term, name: None });
                 }
                 this.save();
                 if this.tabs.is_empty() {
@@ -398,8 +362,8 @@ impl TerminalArea {
         let view = cx.new(|cx| TerminalView::new(terminal, local, window, cx));
         let subscription = cx.subscribe_in(&view, window, move |this, _, event, window, cx| match event {
             TerminalViewEvent::TitleChanged => cx.notify(),
-            TerminalViewEvent::Exited => this.remove(Pane::Term(term), window, cx),
-            TerminalViewEvent::Focused => this.select(Pane::Term(term), cx),
+            TerminalViewEvent::Exited => this.remove(term, window, cx),
+            TerminalViewEvent::Focused => this.select(term, cx),
             TerminalViewEvent::OpenPath { path, line, column } => cx.emit(TerminalAreaEvent::OpenPath {
                 path: path.clone(),
                 line: *line,
@@ -446,7 +410,7 @@ impl TerminalArea {
         });
         // A split opens where the terminal it splits is; a new tab, in the task's folder.
         let beside = match place {
-            Place::Split(_) => self.tabs.get(self.active).and_then(|tab| tab.active.term()),
+            Place::Split(_) => self.tabs.get(self.active).map(|tab| tab.active),
             Place::NewTab => None,
         };
         cx.spawn_in(window, async move |this, cx| {
@@ -478,15 +442,15 @@ impl TerminalArea {
                 match place {
                     Place::Split(axis) if !this.tabs.is_empty() => {
                         let tab = &mut this.tabs[this.active];
-                        tab.tree.split(tab.active, Pane::Term(term), axis);
-                        tab.active = Pane::Term(term);
+                        tab.tree.split(tab.active, term, axis);
+                        tab.active = term;
                     }
                     _ => {
                         let id = this.next_tab_id();
                         this.tabs.push(TerminalTab {
                             id,
-                            tree: Tree::Leaf(Pane::Term(term)),
-                            active: Pane::Term(term),
+                            tree: Tree::Leaf(term),
+                            active: term,
                             name: None,
                         });
                         this.active = this.tabs.len() - 1;
@@ -517,7 +481,7 @@ impl TerminalArea {
         if let Some(term) = term
             && self.type_line(term, &line, cx)
         {
-            self.select(Pane::Term(term), cx);
+            self.select(term, cx);
             return Task::ready(Some(term));
         }
         self.open_running(Place::NewTab, None, Some(line), false, window, cx)
@@ -598,7 +562,7 @@ impl TerminalArea {
         cx: &mut Context<Self>,
     ) -> Task<Option<TermId>> {
         if let Some(term) = beside.filter(|term| self.views.contains_key(term)) {
-            self.select(Pane::Term(term), cx);
+            self.select(term, cx);
         }
         let place = split.map_or(Place::NewTab, Place::Split);
         self.open_running(place, None, line, focus, window, cx)
@@ -606,7 +570,7 @@ impl TerminalArea {
 
     /// The terminals by tab, with their titles and whether each is the active one.
     pub fn list(&self, cx: &App) -> Vec<(TermId, String, bool)> {
-        let active = self.tabs.get(self.active).and_then(|tab| tab.active.term());
+        let active = self.tabs.get(self.active).map(|tab| tab.active);
         self.tabs
             .iter()
             .flat_map(TerminalTab::terms)
@@ -622,7 +586,7 @@ impl TerminalArea {
         let Some(view) = self.views.get(&term).cloned() else {
             return false;
         };
-        self.select(Pane::Term(term), cx);
+        self.select(term, cx);
         view.read(cx).focus_handle(cx).focus(window, cx);
         true
     }
@@ -685,10 +649,9 @@ impl TerminalArea {
         tab.tree.leaves().into_iter().filter_map(|pane| self.focus_handle(pane, cx)).collect()
     }
 
-    /// Whether any terminal, or the notes in a split, has focus.
+    /// Whether any terminal has focus.
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.views.values().any(|view| view.read(cx).focus_handle(cx).is_focused(window))
-            || (self.notes_split().is_some() && self.focus_handle(Pane::Notes, cx).is_some_and(|handle| handle.is_focused(window)))
     }
 
     /// Focuses the active pane; if there is none, opens a terminal.
@@ -699,64 +662,16 @@ impl TerminalArea {
         }
     }
 
-    fn focus_handle(&self, pane: Pane, cx: &App) -> Option<FocusHandle> {
-        match pane {
-            Pane::Term(term) => Some(self.views.get(&term)?.read(cx).focus_handle(cx)),
-            Pane::Notes => Some(self.notes.as_ref()?.read(cx).focus_handle(cx)),
-        }
+    fn focus_handle(&self, term: TermId, cx: &App) -> Option<FocusHandle> {
+        Some(self.views.get(&term)?.read(cx).focus_handle(cx))
     }
 
-    /// The workspace's notes, for a split to show them; they're selected
-    /// there when they get the focus.
-    pub fn set_notes(&mut self, notes: Entity<NotesPanel>, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = notes.read(cx).focus_handle(cx);
-        let subscription = cx.on_focus_in(&handle, window, |this, _, cx| {
-            if this.notes_split().is_some() {
-                this.select(Pane::Notes, cx);
-            }
-        });
-        self._notes_focus = Some(subscription);
-        self.notes = Some(notes);
-    }
-
-    /// The tab the notes are split into, if they are.
-    pub fn notes_split(&self) -> Option<usize> {
-        self.tabs.iter().position(|tab| tab.contains(Pane::Notes))
-    }
-
-    /// Whether the notes show in a split, rather than behind another tab or
-    /// a panel's.
-    pub fn notes_in_sight(&self) -> bool {
-        self.panel_showing().is_none() && self.notes_split() == Some(self.active)
-    }
-
-    /// The notes' split comes to the front, with them as its active pane.
-    pub fn reveal_notes(&mut self, cx: &mut Context<Self>) {
-        self.select(Pane::Notes, cx);
-    }
-
-    /// The notes leave their split: they're their tab again (or go to a
-    /// tab of the code).
-    pub fn unsplit_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.remove(Pane::Notes, window, cx);
-    }
-
-    /// Closes the active pane: a terminal, killing its process, or the
-    /// notes, back to their tab.
+    /// Closes the active terminal, killing its process.
     pub fn close_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pane) = self.tabs.get(self.active).map(|tab| tab.active) else {
+        let Some(term) = self.tabs.get(self.active).map(|tab| tab.active) else {
             return;
         };
-        self.close_pane(pane, window, cx);
-    }
-
-    /// Closes a pane: a terminal, killing its process, or the notes, back to
-    /// their tab.
-    fn close_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        match pane {
-            Pane::Term(term) => self.close_term(term, window, cx),
-            Pane::Notes => self.remove(pane, window, cx),
-        }
+        self.close_term(term, window, cx);
     }
 
     /// Closes a specific terminal and kills its process.
@@ -764,16 +679,16 @@ impl TerminalArea {
         if let Some(view) = self.views.get(&term) {
             view.read(cx).terminal().read(cx).kill();
         }
-        self.remove(Pane::Term(term), window, cx);
+        self.remove(term, window, cx);
     }
 
-    /// Closes a tab with all its terminals; the notes in it go back to their tab.
+    /// Closes a tab with all its terminals.
     fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix) else {
             return;
         };
-        for pane in tab.tree.leaves() {
-            self.close_pane(pane, window, cx);
+        for term in tab.tree.leaves() {
+            self.close_term(term, window, cx);
         }
     }
 
@@ -783,15 +698,15 @@ impl TerminalArea {
             return;
         }
         let had_focus = self.contains_focus(window, cx);
-        let others: Vec<Pane> = self
+        let others: Vec<TermId> = self
             .tabs
             .iter()
             .enumerate()
             .filter(|(other, _)| *other != ix)
             .flat_map(|(_, tab)| tab.tree.leaves())
             .collect();
-        for pane in others {
-            self.close_pane(pane, window, cx);
+        for term in others {
+            self.close_term(term, window, cx);
         }
         // The one left is the active one, focused if a closed one was.
         if had_focus {
@@ -809,7 +724,7 @@ impl TerminalArea {
             return;
         };
         let named = match tab.tree {
-            Tree::Leaf(Pane::Term(term)) => Named::Term(term),
+            Tree::Leaf(term) => Named::Term(term),
             _ => Named::Tab(id),
         };
         let title = self.tab_title(tab, cx);
@@ -819,7 +734,7 @@ impl TerminalArea {
     /// Types a terminal's name: in its pane's title, or in its tab when that
     /// doesn't show.
     fn start_term_rename(&mut self, term: TermId, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.title(Pane::Term(term), cx);
+        let title = self.title(term, cx);
         self.type_name(Named::Term(term), title, window, cx);
     }
 
@@ -885,7 +800,7 @@ impl TerminalArea {
         let renaming = self.renaming.as_ref()?;
         let here = match renaming.named {
             Named::Tab(id) => id == tab.id,
-            Named::Term(term) => tab.contains(Pane::Term(term)) && !self.pane_titles(tab, cx),
+            Named::Term(term) => tab.contains(term) && !self.pane_titles(tab, cx),
         };
         here.then(|| renaming.input.clone())
     }
@@ -916,37 +831,18 @@ impl TerminalArea {
         matches!(tab.tree, Tree::Split { .. }) && !Config::get(cx).hide_pane_titles
     }
 
-    /// What a pane's title and its tab's say.
-    fn title(&self, pane: Pane, cx: &App) -> String {
-        match pane {
-            Pane::Term(term) => match self.names.get(&term) {
-                Some(name) => name.clone(),
-                None => self.views.get(&term).map(|view| view.read(cx).title(cx)).unwrap_or_default(),
-            },
-            Pane::Notes => "Notes".to_string(),
+    /// What a terminal's title and its tab's say.
+    fn title(&self, term: TermId, cx: &App) -> String {
+        match self.names.get(&term) {
+            Some(name) => name.clone(),
+            None => self.views.get(&term).map(|view| view.read(cx).title(cx)).unwrap_or_default(),
         }
     }
 
-    /// Splits next to `pane` (the one that was clicked).
-    fn split_at(&mut self, pane: Pane, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
-        self.select(pane, cx);
+    /// Splits next to `term` (the one that was clicked).
+    fn split_at(&mut self, term: TermId, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        self.select(term, cx);
         self.split(axis, window, cx);
-    }
-
-    /// The notes' pane menu: a terminal beside them, or them out of the split.
-    fn notes_menu(&self, menu: PopupMenu) -> PopupMenu {
-        let area = self.weak.clone();
-        menu.item(
-            menu::item("Split Right", &area, |this, window, cx| this.split_at(Pane::Notes, Axis::Row, window, cx))
-                .action(Box::new(SplitRight)),
-        )
-        .item(
-            menu::item("Split Down", &area, |this, window, cx| this.split_at(Pane::Notes, Axis::Column, window, cx))
-                .action(Box::new(SplitDown)),
-        )
-        .separator()
-        .item(menu::item("Open in Editor Tab", &area, |_, _, cx| cx.emit(TerminalAreaEvent::ToEditorTab(Panel::Notes))))
-        .item(menu::item("Close Split", &area, |this, window, cx| this.unsplit_notes(window, cx)).action(Box::new(CloseTab)))
     }
 
     /// What the menu offers on a path or a URL that was right-clicked.
@@ -1034,13 +930,13 @@ impl TerminalArea {
         .separator()
         .item(
             menu::item("Split Right", &area, move |this, window, cx| {
-                this.split_at(Pane::Term(term), Axis::Row, window, cx)
+                this.split_at(term, Axis::Row, window, cx)
             })
             .action(Box::new(SplitRight)),
         )
         .item(
             menu::item("Split Down", &area, move |this, window, cx| {
-                this.split_at(Pane::Term(term), Axis::Column, window, cx)
+                this.split_at(term, Axis::Column, window, cx)
             })
             .action(Box::new(SplitDown)),
         )
@@ -1051,52 +947,45 @@ impl TerminalArea {
             menu::item("Close Terminal", &area, move |this, window, cx| this.close_term(term, window, cx))
                 .action(Box::new(CloseTab)),
         )
-        .separator()
-        .item(notes_item(&area))
     }
 
-    fn select(&mut self, pane: Pane, cx: &mut Context<Self>) {
-        if let Some(ix) = self.tabs.iter().position(|tab| tab.contains(pane)) {
+    fn select(&mut self, term: TermId, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tabs.iter().position(|tab| tab.contains(term)) {
             self.active = ix;
-            self.tabs[ix].active = pane;
+            self.tabs[ix].active = term;
             cx.notify();
         }
     }
 
-    fn remove(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        let had_focus = self.focus_handle(pane, cx).is_some_and(|handle| handle.is_focused(window));
-        if let Pane::Term(term) = pane {
-            self.views.remove(&term);
-            self.view_subscriptions.remove(&term);
-            self.names.remove(&term);
-            if self.debug_term.take_if(|debug| *debug == term).is_some() {
-                cx.emit(TerminalAreaEvent::DebugTerminal(None));
-                cx.notify();
-                return;
-            }
+    fn remove(&mut self, term: TermId, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = self.focus_handle(term, cx).is_some_and(|handle| handle.is_focused(window));
+        self.views.remove(&term);
+        self.view_subscriptions.remove(&term);
+        self.names.remove(&term);
+        if self.debug_term.take_if(|debug| *debug == term).is_some() {
+            cx.emit(TerminalAreaEvent::DebugTerminal(None));
+            cx.notify();
+            return;
         }
-        let Some(tab_ix) = self.tabs.iter().position(|tab| tab.contains(pane)) else {
+        let Some(tab_ix) = self.tabs.iter().position(|tab| tab.contains(term)) else {
             return;
         };
         let tab = self.tabs.remove(tab_ix);
-        match tab.tree.clone().remove(pane).map(|tree| TerminalTab { id: tab.id, tree, active: tab.active, name: tab.name.clone() }) {
-            Some(mut left) if !left.notes_only() => {
+        match tab.tree.clone().remove(term).map(|tree| TerminalTab { id: tab.id, tree, active: tab.active, name: tab.name.clone() }) {
+            Some(mut left) => {
                 // Focus moves to a neighbor of the one being closed.
-                if tab.active == pane {
+                if tab.active == term {
                     left.active = [Direction::Left, Direction::Up, Direction::Right, Direction::Down]
                         .into_iter()
-                        .find_map(|direction| tab.tree.neighbor(pane, direction))
+                        .find_map(|direction| tab.tree.neighbor(term, direction))
                         .unwrap_or(left.tree.leaves()[0]);
                 }
                 self.tabs.insert(tab_ix, left);
             }
-            _ => self.active = self.active.min(self.tabs.len().saturating_sub(1)),
+            None => self.active = self.active.min(self.tabs.len().saturating_sub(1)),
         }
         if had_focus && !self.focus_active(window, cx) {
             cx.emit(TerminalAreaEvent::FocusLeft);
-        }
-        if pane == Pane::Notes || tab.contains(Pane::Notes) {
-            cx.emit(TerminalAreaEvent::NotesMoved);
         }
         self.save();
         cx.notify();
@@ -1134,11 +1023,8 @@ impl TerminalArea {
     }
 
     fn render_tab_bar(&self, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        // The ones that close (the debugger's) after the terminals'; the
-        // ones always there (the notes') apart, at the far end.
-        let (closable, fixed): (Vec<_>, Vec<_>) = self.panel_tabs.iter().partition(|tab| tab.closable);
-        let closable: Vec<AnyElement> = closable.into_iter().map(|tab| self.render_panel_tab(tab, cx)).collect();
-        let fixed: Vec<AnyElement> = fixed.into_iter().map(|tab| self.render_panel_tab(tab, cx)).collect();
+        // The panels' (the debugger's) after the terminals'.
+        let panels: Vec<AnyElement> = self.panel_tabs.iter().map(|tab| self.render_panel_tab(tab, cx)).collect();
         let theme = cx.theme();
         h_flex()
             .id("terminal-tabs")
@@ -1231,7 +1117,6 @@ impl TerminalArea {
                     .context_menu({
                         let area = self.weak.clone();
                         let alone = self.tabs.len() == 1;
-                        let notes = tab.contains(Pane::Notes);
                         move |menu, window, cx| {
                             menu.item(
                                 menu::item("New Terminal", &area, |this, window, cx| this.new_terminal(window, cx))
@@ -1265,22 +1150,11 @@ impl TerminalArea {
                                     })
                                     .disabled(alone),
                                 )
-                                .separator()
-                                .map(|menu| match notes {
-                                    true => menu
-                                        .item(menu::item("Open Notes in Editor Tab", &area, |_, _, cx| {
-                                            cx.emit(TerminalAreaEvent::ToEditorTab(Panel::Notes))
-                                        }))
-                                        .item(menu::item("Close Notes Split", &area, |this, window, cx| {
-                                            this.unsplit_notes(window, cx)
-                                        })),
-                                    false => menu.item(notes_item(&area)),
-                                })
                                 .panel_items(hide_item(&area), window, cx)
                         }
                     })
             }))
-            .children(closable)
+            .children(panels)
             .child(
                 div()
                     .id("new-terminal")
@@ -1314,13 +1188,10 @@ impl TerminalArea {
                                 PopupMenuItem::new(if bottom { "Move to the Right" } else { "Move Under the Code" })
                                     .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::MoveTerminals), cx)),
                             )
-                            .separator()
-                            .item(notes_item(&area))
                             .panel_items(hide_item(&area), window, cx)
                         }
                     }),
             )
-            .children(fixed)
     }
 
     /// A panel's tab, after the terminals'.
@@ -1329,7 +1200,6 @@ impl TerminalArea {
         let (panel, showing) = (tab.panel, tab.showing);
         let name = match panel {
             Panel::Console => "console",
-            Panel::Notes => "notes",
             _ => tab.title,
         };
         let group = SharedString::from(format!("{name}-tab"));
@@ -1337,17 +1207,13 @@ impl TerminalArea {
             .id(SharedString::from(format!("{name}-tab")))
             .when(cfg!(test), |el| el.debug_selector(move || format!("{name}-tab")))
             .group(group.clone())
-            // The notes go beside a terminal like one: dragged onto it.
-            .when(panel == Panel::Notes, |el| self.draggable(el, Source::Pane(Pane::Notes), tab.title.into()))
             .h_full()
             .flex_none()
             .pl_3()
             .pr_1()
             .gap_1()
             .text_ui(cx)
-            // At the far end, the line on its left.
-            .when(tab.closable, |el| el.border_r_1())
-            .when(!tab.closable, |el| el.border_l_1())
+            .border_r_1()
             .border_color(theme.border)
             .when(showing, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
             .when(!showing, |el| el.bg(theme.tab).text_color(theme.tab_foreground))
@@ -1361,9 +1227,7 @@ impl TerminalArea {
                     .rounded_full()
                     .bg(color)
             }))
-            // The notes' tab, with no close button, takes the same room.
-            .when(!tab.closable, |el| el.pr_3())
-            .when(tab.closable, |el| el.child(
+            .child(
                 div()
                     .id(SharedString::from(format!("{name}-tab-close")))
                     .when(cfg!(test), |el| el.debug_selector(move || format!("{name}-tab-close")))
@@ -1385,28 +1249,13 @@ impl TerminalArea {
                         cx.stop_propagation();
                         cx.emit(TerminalAreaEvent::ClosePanel(panel));
                     })),
-            ))
-            // The notes' tab in front, clicked again, hides them: as their icon.
-            .on_click(cx.listener(move |_, _, _, cx| match panel == Panel::Notes && showing {
-                true => cx.emit(TerminalAreaEvent::ClosePanel(panel)),
-                false => cx.emit(TerminalAreaEvent::ShowPanel(Some(panel))),
-            }))
+            )
+            .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(panel)))))
             .context_menu({
-                let (area, closable) = (self.weak.clone(), tab.closable);
-                // The notes' tab stays: Hide Panel hides the terminals' place,
-                // and they can go to a tab of the code.
+                let area = self.weak.clone();
                 move |menu, window, cx| {
-                    let hide = match closable {
-                        true => menu::item("Hide Panel", &area, move |_, _, cx| cx.emit(TerminalAreaEvent::ClosePanel(panel))),
-                        false => hide_item(&area),
-                    };
-                    menu.when(panel == Panel::Notes, |menu| {
-                        menu.item(menu::item("Open in Editor Tab", &area, move |_, _, cx| {
-                            cx.emit(TerminalAreaEvent::ToEditorTab(panel))
-                        }))
-                        .separator()
-                    })
-                    .panel_items(hide, window, cx)
+                    let hide = menu::item("Hide Panel", &area, move |_, _, cx| cx.emit(TerminalAreaEvent::ClosePanel(panel)));
+                    menu.panel_items(hide, window, cx)
                 }
             })
             .into_any_element()
@@ -1414,26 +1263,17 @@ impl TerminalArea {
 
     /// Renders a branch of the tree; `path` makes each split's ids unique,
     /// `focused` is whether a pane here has the keyboard.
-    fn render_tree(&self, tab: &TerminalTab, tree: &Tree<Pane>, path: String, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_tree(&self, tab: &TerminalTab, tree: &Tree, path: String, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         match tree {
-            Tree::Leaf(pane) => {
-                let pane = *pane;
-                let body: AnyElement = match pane {
-                    Pane::Term(term) => match self.views.get(&term) {
-                        Some(view) => view.clone().into_any_element(),
-                        None => return div().into_any_element(),
-                    },
-                    Pane::Notes => match &self.notes {
-                        Some(notes) => notes.clone().into_any_element(),
-                        None => return div().into_any_element(),
-                    },
+            Tree::Leaf(term) => {
+                let term = *term;
+                let body: AnyElement = match self.views.get(&term) {
+                    Some(view) => view.clone().into_any_element(),
+                    None => return div().into_any_element(),
                 };
                 let split = self.pane_titles(tab, cx);
                 let theme = cx.theme();
-                let key = match pane {
-                    Pane::Term(term) => term.to_string(),
-                    Pane::Notes => "notes".to_string(),
-                };
+                let key = term.to_string();
                 let this = self.weak.clone();
                 v_flex()
                     .id(SharedString::from(format!("terminal-pane-{key}")))
@@ -1442,22 +1282,22 @@ impl TerminalArea {
                     .size_full()
                     .overflow_hidden()
                     .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<TerminalDrag>, _, cx| {
-                        this.track_drop(pane, event, cx);
+                        this.track_drop(term, event, cx);
                     }))
                     .on_drop(cx.listener(move |this, drag: &TerminalDrag, window, cx| {
-                        this.drop_on_pane(drag, pane, window, cx);
+                        this.drop_on_pane(drag, term, window, cx);
                     }))
                     .when(split, |el| {
                         // The tab's active pane: its title lit as the active
                         // tab, its hairline a shade darker while it has the
                         // keyboard. The rest muted, in the panels' grey.
-                        let active = pane == tab.active;
-                        let title = self.title(pane, cx);
+                        let active = term == tab.active;
+                        let title = self.title(term, cx);
                         let group = SharedString::from(format!("terminal-pane-title-{key}"));
                         let input = self
                             .renaming
                             .as_ref()
-                            .filter(|renaming| pane.term().is_some_and(|term| renaming.named == Named::Term(term)))
+                            .filter(|renaming| renaming.named == Named::Term(term))
                             .map(|renaming| renaming.input.clone());
                         let renaming = input.is_some();
                         let header = h_flex()
@@ -1515,10 +1355,10 @@ impl TerminalArea {
                                         )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             cx.stop_propagation();
-                                            this.close_pane(pane, window, cx);
+                                            this.close_term(term, window, cx);
                                         })),
                                 )
-                                .when_some(pane.term().filter(|_| !renaming), |el, term| {
+                                .when(!renaming, |el| {
                                     el.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                                         if event.click_count() >= 2 {
                                             this.start_term_rename(term, window, cx);
@@ -1526,37 +1366,20 @@ impl TerminalArea {
                                     }))
                                 });
                         // Its name's text is selected by dragging, not the pane.
-                        let handle = match renaming {
+                        el.child(match renaming {
                             true => header,
-                            false => self.draggable(header, Source::Pane(pane), title.into()),
-                        };
-                        // The notes' editor has its own right-click menu: theirs is on their title.
-                        el.child(match pane {
-                            Pane::Term(_) => handle.into_any_element(),
-                            Pane::Notes => {
-                                let this = this.clone();
-                                handle
-                                    .context_menu(move |menu, window, cx| match this.upgrade() {
-                                        Some(area) => area.read(cx).notes_menu(menu).panel_items(hide_item(&this), window, cx),
-                                        None => menu,
-                                    })
-                                    .into_any_element()
-                            }
+                            false => self.draggable(header, Source::Pane(term), title.into()),
                         })
                     })
                     .child(div().flex_1().min_h_0().w_full().child(body))
-                    .when_some(self.terminal_drop.filter(|(target, _)| *target == pane && cx.has_active_drag()), |el, (_, placement)| {
+                    .when_some(self.terminal_drop.filter(|(target, _)| *target == term && cx.has_active_drag()), |el, (_, placement)| {
                         el.child(placement.indicator(cx))
                     })
-                    .map(|el| match pane {
-                        Pane::Term(term) => el
-                            .context_menu(move |menu, window, cx| match this.upgrade() {
-                                Some(area) => area.read(cx).pane_menu(term, menu, cx).panel_items(hide_item(&this), window, cx),
-                                None => menu,
-                            })
-                            .into_any_element(),
-                        Pane::Notes => el.into_any_element(),
+                    .context_menu(move |menu, window, cx| match this.upgrade() {
+                        Some(area) => area.read(cx).pane_menu(term, menu, cx).panel_items(hide_item(&this), window, cx),
+                        None => menu,
                     })
+                    .into_any_element()
             }
             Tree::Split { axis, children } => {
                 let id = SharedString::from(format!("terminal-split-{}-{path}", tab.id));
@@ -1661,7 +1484,7 @@ pub fn saved_term_name(group: &str, term: TermId) -> Option<String> {
         let saved = layouts.groups.get(group)?;
         saved.names.get(&term).cloned().or_else(|| {
             saved.tabs.iter().find_map(|tab| match tab {
-                SavedTab::Named { tree, name } if *tree == Tree::Leaf(Pane::Term(term)) => Some(name.clone()),
+                SavedTab::Named { tree, name } if *tree == Tree::Leaf(Some(term)) => Some(name.clone()),
                 _ => None,
             })
         })
@@ -1675,7 +1498,7 @@ pub fn rename_saved_term(group: &str, term: TermId, name: Option<String>) {
         let saved = layouts.groups.entry(group.to_string()).or_default();
         for tab in &mut saved.tabs {
             if let SavedTab::Named { tree, .. } = tab
-                && *tree == Tree::Leaf(Pane::Term(term))
+                && *tree == Tree::Leaf(Some(term))
             {
                 *tab = SavedTab::Tree(tree.clone());
             }
@@ -1701,32 +1524,37 @@ pub fn forget_layout(group: &str) {
 #[serde(untagged)]
 enum SavedTab {
     /// One renamed.
-    Named { tree: Tree<Pane>, name: String },
-    Tree(Tree<Pane>),
+    Named { tree: Tree<Leaf>, name: String },
+    Tree(Tree<Leaf>),
     /// Old format: a column of terminals.
     Column(Vec<TermId>),
 }
 
+/// A saved split's leaf: a terminal, or (`null`) the notes, which could be
+/// split beside the terminals and no longer are.
+type Leaf = Option<TermId>;
+
 impl SavedTab {
     fn of(tab: &TerminalTab) -> Self {
+        let tree = tab.tree.clone().filter_map(&|term| Some(Some(term))).expect("every leaf kept");
         match &tab.name {
-            Some(name) => SavedTab::Named { tree: tab.tree.clone(), name: name.clone() },
-            None => SavedTab::Tree(tab.tree.clone()),
+            Some(name) => SavedTab::Named { tree, name: name.clone() },
+            None => SavedTab::Tree(tree),
         }
     }
 
-    /// Its tree, and its name if it was renamed.
-    fn into_tab(self) -> Option<(Tree<Pane>, Option<String>)> {
+    /// Its tree, and its name if it was renamed; none if it had only the notes.
+    fn into_tab(self) -> Option<(Tree, Option<String>)> {
         match self {
-            SavedTab::Named { tree, name } => Some((tree, Some(name))),
-            SavedTab::Tree(tree) => Some((tree, None)),
+            SavedTab::Named { tree, name } => Some((tree.filter_map(&|leaf| leaf)?, Some(name))),
+            SavedTab::Tree(tree) => Some((tree.filter_map(&|leaf| leaf)?, None)),
             SavedTab::Column(terms) => match terms.as_slice() {
                 [] => None,
-                [term] => Some((Tree::Leaf(Pane::Term(*term)), None)),
+                [term] => Some((Tree::Leaf(*term), None)),
                 _ => Some((
                     Tree::Split {
                         axis: Axis::Column,
-                        children: terms.into_iter().map(|term| Tree::Leaf(Pane::Term(term))).collect(),
+                        children: terms.into_iter().map(Tree::Leaf).collect(),
                     },
                     None,
                 )),
@@ -1747,13 +1575,9 @@ impl SavedLayouts {
     }
 }
 
-/// The tabs with only the terminals in `terms`: one left with none, or with
-/// only the notes, goes.
-fn keep_terms(tabs: Vec<(Tree<Pane>, Option<String>)>, terms: &HashSet<TermId>) -> Vec<(Tree<Pane>, Option<String>)> {
-    tabs.into_iter()
-        .filter_map(|(tree, name)| Some((tree.retain(&|pane| pane.term().is_none_or(|term| terms.contains(&term)))?, name)))
-        .filter(|(tree, _)| *tree != Tree::Leaf(Pane::Notes))
-        .collect()
+/// The tabs with only the terminals in `terms`: one left with none goes.
+fn keep_terms(tabs: Vec<(Tree, Option<String>)>, terms: &HashSet<TermId>) -> Vec<(Tree, Option<String>)> {
+    tabs.into_iter().filter_map(|(tree, name)| Some((tree.retain(&|term| terms.contains(&term))?, name))).collect()
 }
 
 /// Hide Panel: the terminals' place.
@@ -1761,16 +1585,10 @@ fn hide_item(area: &WeakEntity<TerminalArea>) -> menu::PopupMenuItem {
     menu::item("Hide Panel", area, |_, _, cx| cx.emit(TerminalAreaEvent::Hide))
 }
 
-/// The notes, a tab of this place (or of the code): in front, to write.
-fn notes_item(area: &WeakEntity<TerminalArea>) -> menu::PopupMenuItem {
-    menu::item("Show Notes", area, |_, _, cx| cx.emit(TerminalAreaEvent::ShowPanel(Some(Panel::Notes))))
-        .action(Box::new(crate::ToggleNotes))
-}
-
 /// A split tab's shape in miniature, its active pane filled: where the
 /// count of its panes was.
-fn layout_glyph(tree: &Tree<Pane>, active: Pane, lit: bool, cx: &App) -> AnyElement {
-    fn cell(tree: &Tree<Pane>, active: Pane, lit: bool, cx: &App) -> AnyElement {
+fn layout_glyph(tree: &Tree, active: TermId, lit: bool, cx: &App) -> AnyElement {
+    fn cell(tree: &Tree, active: TermId, lit: bool, cx: &App) -> AnyElement {
         let theme = cx.theme();
         match tree {
             Tree::Leaf(pane) => {
@@ -1804,17 +1622,23 @@ mod tests {
     use core::prelude::v1::test;
 
     /// A terminal that couldn't be attached leaves its tab, not the others:
-    /// a split keeps the rest, and one alone with the notes goes.
+    /// a split keeps the rest, and one left with none goes.
     #[test]
     fn restoring_leaves_out_only_the_terminals_not_attached() {
-        let leaf = |term| Tree::Leaf(Pane::Term(term));
+        let leaf = |term| Tree::Leaf(term);
         let split = |children| Tree::Split { axis: Axis::Row, children };
-        let tabs = vec![
-            (split(vec![leaf(1), leaf(2)]), Some("both".to_string())),
-            (leaf(3), None),
-            (split(vec![leaf(4), Tree::Leaf(Pane::Notes)]), None),
-        ];
+        let tabs = vec![(split(vec![leaf(1), leaf(2)]), Some("both".to_string())), (leaf(3), None), (leaf(4), None)];
         let attached: HashSet<TermId> = [1, 3].into_iter().collect();
         assert_eq!(keep_terms(tabs, &attached), vec![(leaf(1), Some("both".to_string())), (leaf(3), None)]);
+    }
+
+    /// Layouts saved with the notes split beside the terminals read without
+    /// them: a tab of the notes alone goes.
+    #[test]
+    fn layouts_with_the_notes_split_read() {
+        let saved: SavedLayout =
+            serde_json::from_str(r#"{"tabs":[{"Split":{"axis":"Row","children":[{"Leaf":1},{"Leaf":null}]}},{"Leaf":null},{"Leaf":2}]}"#).unwrap();
+        let tabs: Vec<_> = saved.tabs.into_iter().filter_map(SavedTab::into_tab).collect();
+        assert_eq!(tabs, vec![(Tree::Leaf(1), None), (Tree::Leaf(2), None)]);
     }
 }

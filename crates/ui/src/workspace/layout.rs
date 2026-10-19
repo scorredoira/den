@@ -90,16 +90,13 @@ const HEADER_HEIGHT: f32 = 26.;
 const MIN_BODY: f32 = 40.;
 
 /// What of a workspace shows besides the code (see `SavedPanels`), and
-/// what isn't saved: the notes, the debugger's console.
+/// what isn't saved: the debugger's console.
 pub(super) struct Panels {
     terminals: bool,
     /// The debugger, a tab after the terminals' once shown.
     console: bool,
-    /// The panel tab in front of the terminals, if one is: the debugger or
-    /// the notes (always a tab at the bar's far end).
+    /// The panel tab in front of the terminals, if one is: the debugger.
     front: Option<Panel>,
-    /// The terminals were opened for the notes: hiding these closes them.
-    notes_alone: bool,
     /// Search or References, whichever showed last: F4 steps through it.
     pub results: Panel,
     /// The side panels open in the column this workspace last drew: one
@@ -118,7 +115,6 @@ impl Panels {
             terminals: saved.terminals,
             console: false,
             front: None,
-            notes_alone: false,
             results: Panel::Search,
             seen: Vec::new(),
         }
@@ -138,7 +134,6 @@ impl Panels {
         self.terminals = shown.terminals;
         self.console = shown.console;
         self.front = shown.front;
-        self.notes_alone = false;
     }
 }
 
@@ -170,29 +165,7 @@ pub(crate) enum Mode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SharedPanels {
     shown: Shown,
-    notes_alone: bool,
     maximized: bool,
-}
-
-impl SharedPanels {
-    /// The notes are each workspace's: what shows in the one left, but the
-    /// notes in front only if they were in this one.
-    fn with_notes_of(mut self, own: SharedPanels) -> Self {
-        if self.shown.front == Some(Panel::Notes) {
-            self.shown.front = None;
-            if self.notes_alone {
-                self.shown.terminals = false;
-                self.maximized = false;
-            }
-            self.notes_alone = false;
-        }
-        if own.shown.front == Some(Panel::Notes) {
-            self.notes_alone = !self.shown.terminals;
-            self.shown.terminals = true;
-            self.shown.front = Some(Panel::Notes);
-        }
-        self
-    }
 }
 
 /// A side panel dragged by its header: onto another's header it goes above
@@ -232,15 +205,8 @@ impl Workspace {
             Panel::Workspaces | Panel::Agents if terminal_mode => {
                 Config::get(cx).terminal_mode.side && !Config::get(cx).layout.collapsed.contains(&panel)
             }
-            _ if terminal_mode && panel != Panel::Notes => false,
-            // In a tab of the code it's not among the terminals.
-            Panel::Notes => {
-                terminals
-                    && match self.terminals.read(cx).notes_split() {
-                        Some(_) => panels.front.is_none() && self.terminals.read(cx).notes_in_sight(),
-                        None => panels.front == Some(Panel::Notes) && self.notes_tab().is_none(),
-                    }
-            }
+            _ if terminal_mode => false,
+            Panel::Notes => self.notes_in_front(),
             _ => {
                 let layout = &Config::get(cx).layout;
                 self.in_side(panel, cx) && !layout.is_collapsed(panel) && layout.in_front(panel)
@@ -365,17 +331,16 @@ impl Workspace {
     /// (`share_panels`): now, or as editing left it.
     pub(crate) fn editing_panels(&self) -> SharedPanels {
         if self.mode == Mode::Editing {
-            return SharedPanels { shown: self.panels.shown(), notes_alone: self.panels.notes_alone, maximized: self.terminals_maximized };
+            return SharedPanels { shown: self.panels.shown(), maximized: self.terminals_maximized };
         }
         let shown = self.kept_shown.get(&Mode::Editing).copied().unwrap_or_else(|| self.panels.shown());
-        SharedPanels { shown, notes_alone: false, maximized: false }
+        SharedPanels { shown, maximized: false }
     }
 
     /// What showed editing in the workspace left shows here too: going from
     /// one to another doesn't change what's around the code. Debugging,
     /// it's what editing comes back to.
     pub(crate) fn share_panels(&mut self, shared: SharedPanels, cx: &mut Context<Self>) {
-        let shared = shared.with_notes_of(self.editing_panels());
         if self.mode != Mode::Editing {
             self.kept_shown.insert(Mode::Editing, shared.shown);
             return;
@@ -384,7 +349,6 @@ impl Workspace {
             return;
         }
         self.panels.show(shared.shown);
-        self.panels.notes_alone = shared.notes_alone;
         self.terminals_maximized = shared.maximized && shared.shown.terminals;
         self.layout_changed(cx);
     }
@@ -469,7 +433,7 @@ impl Workspace {
                     Config::update(cx, |config| config.layout.collapsed.retain(|other| *other != panel));
                     return self.set_terminal_side(true, cx);
                 }
-                Panel::Terminals | Panel::Console | Panel::Notes => {}
+                Panel::Terminals | Panel::Console => {}
                 _ => {
                     self.leave_terminal_mode(cx);
                 }
@@ -481,21 +445,16 @@ impl Workspace {
             Panel::Terminals => {
                 panels.terminals = true;
                 panels.front = None;
-                panels.notes_alone = false;
             }
             Panel::Console => {
                 panels.terminals = true;
                 panels.console = true;
                 panels.front = Some(Panel::Console);
-                panels.notes_alone = false;
                 // its targets and tests come from the launch file, which may have changed
                 self.debugger.update(cx, |debugger, cx| debugger.refresh_launches(cx));
             }
-            Panel::Notes => {
-                panels.notes_alone = !panels.terminals || (panels.front == Some(Panel::Notes) && panels.notes_alone);
-                panels.terminals = true;
-                panels.front = Some(Panel::Notes);
-            }
+            // A tab of the code, which `show_notes` opens.
+            Panel::Notes => return,
             _ => {
                 if matches!(panel, Panel::Search | Panel::References) {
                     panels.results = panel;
@@ -543,7 +502,6 @@ impl Workspace {
             Panel::Code => return,
             Panel::Terminals => {
                 panels.terminals = false;
-                panels.notes_alone = false;
                 self.terminals_maximized = false;
             }
             Panel::Console => {
@@ -552,17 +510,8 @@ impl Workspace {
                     panels.front = None;
                 }
             }
-            // The terminals show again, or close if they opened for the notes.
-            Panel::Notes => {
-                if panels.front == Some(Panel::Notes) {
-                    panels.front = None;
-                    if panels.notes_alone {
-                        panels.terminals = false;
-                        self.terminals_maximized = false;
-                    }
-                }
-                panels.notes_alone = false;
-            }
+            // A tab of the code, which `hide_notes` hides.
+            Panel::Notes => return,
             _ => {
                 if self.is_shown(panel, cx) || self.in_side(panel, cx) {
                     close_side(cx);
@@ -1219,9 +1168,7 @@ impl Workspace {
     }
 
     /// The tabs after the terminals': the debugger once shown, with its
-    /// state on it (yellow while stopped, green while running), and at the
-    /// far end the notes, always there unless in a tab of the code or split
-    /// beside a terminal.
+    /// state on it (yellow while stopped, green while running).
     pub(super) fn shape_terminals(&mut self, cx: &mut Context<Self>) {
         let mut tabs = Vec::new();
         if self.panels.console {
@@ -1237,25 +1184,7 @@ impl Workspace {
                 icon: icon(Panel::Console),
                 title: title(Panel::Console),
                 showing: self.panels.front == Some(Panel::Console),
-                closable: true,
                 dot,
-            });
-        }
-        let place = match (self.notes_tab(), self.terminals.read(cx).notes_split()) {
-            (Some(_), _) => crate::notes::Place::Editor,
-            (None, Some(_)) => crate::notes::Place::Split,
-            (None, None) => crate::notes::Place::Tab,
-        };
-        self.notes.update(cx, |notes, cx| notes.set_place(place, cx));
-        if place == crate::notes::Place::Tab {
-            tabs.push(PanelTab {
-                panel: Panel::Notes,
-                view: self.notes.clone().into(),
-                icon: notes_icon(self.notes.read(cx).filled()),
-                title: "Notes",
-                showing: self.panels.front == Some(Panel::Notes),
-                closable: false,
-                dot: None,
             });
         }
         self.terminals.update(cx, |terminals, cx| terminals.set_panel_tabs(tabs, cx));

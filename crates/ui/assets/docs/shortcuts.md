@@ -147,7 +147,7 @@ The activity bar, on the left, has an icon for each group of the side column: th
 | {{MaximizeTerminals}} | Terminals over the whole window, or back |
 | {{MoveTerminals}} | Terminals under the code, or back on its right |
 | {{ToggleTerminalMode}} | Terminal Mode: only the terminals, with the workspaces and the agents beside them; again, back |
-| {{ToggleNotes}} | The workspace's notes, a tab at the far end of the terminals', to write what's next in it; again, back to the terminals |
+| {{ToggleNotes}} | The workspace's notes, a tab of the code of their own, to write what's next in it; again, back to the tab in front before |
 | {{NewTerminal}} | New terminal |
 | {{SplitRight}} / {{SplitDown}} | Split the terminal to the right or down |
 | {{FocusPaneLeft}} {{FocusPaneRight}} {{FocusPaneUp}} {{FocusPaneDown}} | Move to the terminal on that side |

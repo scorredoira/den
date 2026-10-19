@@ -109,7 +109,7 @@ impl Den {
             }),
             ["panel", action @ ("show" | "hide"), name] => match parse_panel(name) {
                 Ok(panel) => here(self, *action == "show", window, cx).map(|(_, workspace)| {
-                    workspace.update(cx, |workspace, cx| workspace.set_panel(panel, *action == "show", cx));
+                    workspace.update(cx, |workspace, cx| workspace.set_panel(panel, *action == "show", window, cx));
                     String::new()
                 }),
                 Err(err) => Err(err),

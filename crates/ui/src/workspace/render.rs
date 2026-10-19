@@ -171,7 +171,6 @@ impl Workspace {
         let markdown = tab.markdown.is_some() && tab.is_file();
         let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
         let in_preview = tab.preview;
-        let notes = matches!(tab.page, Some(pages::Page::Notes));
         // The file's own changes, from its tab or a view of it.
         let changeable = !diff && !tab.doc && !self.plain;
         let plain = self.plain;
@@ -188,11 +187,7 @@ impl Workspace {
             let (close, others, moved, right, down, preview) =
                 (editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone(), editor.clone());
             let (to_the_right, saved, keep) = (editor.clone(), editor.clone(), editor.clone());
-            menu.when(notes, |menu| {
-                menu.item(menu::item("Move to Terminals", &workspace, |this, window, cx| this.notes_to_terminals(window, cx)))
-                    .separator()
-            })
-            .item(
+            menu.item(
                 menu::item("Close", &workspace, move |this, window, cx| {
                     if let Some(ix) = this.tab_index(&close) {
                         this.close(ix, window, cx);
@@ -848,8 +843,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::set_next_statement))
             .on_action(cx.listener(Self::toggle_debug_panel))
             .on_action(cx.listener(Self::toggle_notes))
-            .on_action(cx.listener(|this, _: &NotesToEditorTab, window, cx| this.notes_to_tab(window, cx)))
-            .on_action(cx.listener(|this, _: &NotesToTerminals, window, cx| this.notes_to_terminals(window, cx)))
             .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(|this, _: &DebugContinue, window, cx| {
                 this.debugger.update(cx, |debugger, cx| debugger.start_or_continue(window, cx))

@@ -73,10 +73,15 @@ impl<T: Copy + PartialEq> Tree<T> {
 
     /// Keeps the leaves that satisfy `keep`.
     pub fn retain(self, keep: &dyn Fn(T) -> bool) -> Option<Tree<T>> {
+        self.filter_map(&|leaf| keep(leaf).then_some(leaf))
+    }
+
+    /// Each leaf `f` gives one for, in its place; the rest go as `retain`'s.
+    pub fn filter_map<U: Copy + PartialEq>(self, f: &dyn Fn(T) -> Option<U>) -> Option<Tree<U>> {
         match self {
-            Tree::Leaf(term) => keep(term).then_some(Tree::Leaf(term)),
+            Tree::Leaf(leaf) => f(leaf).map(Tree::Leaf),
             Tree::Split { axis, children } => {
-                let mut children: Vec<Tree<T>> = children.into_iter().filter_map(|child| child.retain(keep)).collect();
+                let mut children: Vec<Tree<U>> = children.into_iter().filter_map(|child| child.filter_map(f)).collect();
                 match children.len() {
                     0 => None,
                     1 => children.pop(),
