@@ -1031,12 +1031,15 @@ impl Den {
 
     /// Whether the Workspaces panel lists `key`: with Hide Inactive
     /// Workspaces, only those with a coding agent, the one in front and
-    /// those always shown.
+    /// those always shown, or in a repo always shown (all its worktrees,
+    /// as many as Only My Worktrees leaves).
     fn is_listed(&self, key: &TaskKey, cx: &App) -> bool {
         let config = Config::get(cx);
+        let always_shown = |key: &TaskKey| config.always_shown_workspaces.contains(&key.config());
         !config.hide_inactive_workspaces
             || self.active.as_ref() == Some(key)
-            || config.always_shown_workspaces.contains(&key.config())
+            || always_shown(key)
+            || self.task(key).is_some_and(|task| always_shown(&project_of(key, task)))
             || !self.workspace_agents(key).is_empty()
     }
 
@@ -2112,10 +2115,13 @@ mod palette_tests {
             assert_eq!(listed(den, cx), [std::path::PathBuf::from("/stride")]);
         });
         // Always shown, it's listed without an agent or being in front.
+        // A repo always shown lists all its worktrees too, as many as Only
+        // My Worktrees leaves: not an agent's.
         cx.update(|_, cx| den.update(cx, |den, cx| den.toggle_always_shown(&key("/den"), cx)));
-        den.read_with(cx, |den, cx| {
-            assert_eq!(listed(den, cx), [std::path::PathBuf::from("/den"), std::path::PathBuf::from("/stride")]);
-        });
+        den.read_with(cx, |den, cx| assert_eq!(listed(den, cx), ["/den", "/den-hide", "/stride"].map(std::path::PathBuf::from)));
+        cx.update(|_, cx| Config::update(cx, |config| config.only_own_worktrees = true));
+        den.read_with(cx, |den, cx| assert_eq!(listed(den, cx), ["/den", "/stride"].map(std::path::PathBuf::from)));
+        cx.update(|_, cx| Config::update(cx, |config| config.only_own_worktrees = false));
         cx.update(|_, cx| den.update(cx, |den, cx| den.toggle_always_shown(&key("/den"), cx)));
         den.read_with(cx, |den, cx| assert_eq!(listed(den, cx), [std::path::PathBuf::from("/stride")]));
         // Back to den: its worktree, not its checkout.
