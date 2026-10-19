@@ -679,7 +679,8 @@ struct MacWindowState {
     close_callback: Option<Box<dyn FnOnce()>>,
     appearance_changed_callback: Option<Box<dyn FnMut()>>,
     input_handler: Option<PlatformInputHandler>,
-    last_key_equivalent: Option<KeyDownEvent>,
+    // (den) Keep the native timestamp so a later press isn't a duplicate.
+    last_key_equivalent: Option<(KeyDownEvent, f64)>,
     last_left_mouse_down_event: Option<Retained<Objc2Object>>,
     synthetic_drag_counter: usize,
     traffic_light_position: Option<Point<Pixels>>,
@@ -2634,6 +2635,26 @@ unsafe fn is_ime_input_source_active() -> bool {
     }
 }
 
+// (den) AppKit can deliver one press as both performKeyEquivalent: and
+// keyDown:. A handled equivalent has no keyDown:, so its saved value can
+// outlive the press. Only suppress the same native event, not the next press
+// of the same keys (including another auto-repeat).
+fn duplicate_key_down(
+    last_equivalent: &mut Option<(KeyDownEvent, f64)>,
+    event: &KeyDownEvent,
+    timestamp: f64,
+    key_equivalent: bool,
+) -> bool {
+    if key_equivalent {
+        *last_equivalent = Some((event.clone(), timestamp));
+        false
+    } else {
+        last_equivalent
+            .take()
+            .is_some_and(|(last, last_timestamp)| last == *event && last_timestamp == timestamp)
+    }
+}
+
 extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: bool) -> BOOL {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
@@ -2662,9 +2683,12 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
             // If that event isn't handled, it will then dispatch a "key down" event. GPUI
             // makes no distinction between these two types of events, so we need to ignore
             // the "key down" event if we've already just processed its "key equivalent" version.
-            if key_equivalent {
-                lock.last_key_equivalent = Some(key_down_event.clone());
-            } else if lock.last_key_equivalent.take().as_ref() == Some(&key_down_event) {
+            if duplicate_key_down(
+                &mut lock.last_key_equivalent,
+                &key_down_event,
+                unsafe { native_event.timestamp() },
+                key_equivalent,
+            ) {
                 return NO;
             }
 
@@ -3910,6 +3934,34 @@ extern "C" fn toggle_tab_bar(this: &Object, _sel: Sel, _id: id) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // (den) No AppKit window needed: exercise both native delivery paths.
+    #[test]
+    fn key_equivalents_only_suppress_the_same_native_press() {
+        for keys in ["shift-f12", "ctrl-f12", "cmd-j"] {
+            for is_held in [false, true] {
+                let event = KeyDownEvent {
+                    keystroke: Keystroke::parse(keys).unwrap(),
+                    is_held,
+                    prefer_character_input: false,
+                };
+                let mut last = None;
+                assert!(!duplicate_key_down(&mut last, &event, 1., true));
+                assert!(duplicate_key_down(&mut last, &event, 1., false));
+                assert!(last.is_none());
+
+                // A handled equivalent has no matching keyDown. The next
+                // physical press (or repeat) must still reach the shortcut.
+                assert!(!duplicate_key_down(&mut last, &event, 2., true));
+                assert!(
+                    !duplicate_key_down(&mut last, &event, 3., false),
+                    "{keys}, held={is_held}"
+                );
+                assert!(last.is_none());
+                assert!(!duplicate_key_down(&mut last, &event, 4., false));
+            }
+        }
+    }
 
     #[test]
     fn display_id_for_screen_returns_none_for_null_screen() {

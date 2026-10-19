@@ -1498,8 +1498,8 @@ impl Workspace {
         }
     }
 
-    /// Shows the terminals and focuses them; if they already have focus, hides
-    /// them and focus returns to the IDE.
+    /// Toggles terminal visibility regardless of focus, including just after
+    /// entering a workspace while its terminals are still being restored.
     fn toggle_terminals(&mut self, _: &ToggleTerminals, window: &mut Window, cx: &mut Context<Self>) {
         if self.plain {
             return;
@@ -1508,12 +1508,11 @@ impl Workspace {
         if self.leave_terminal_mode(cx) {
             return self.focus_ide(window, cx);
         }
-        let focused = self.terminals.read(cx).contains_focus(window, cx);
-        self.set_terminals_visible(!(self.is_shown(Panel::Terminals, cx) && focused), window, cx);
+        self.set_terminals_visible(!self.is_shown(Panel::Terminals, cx), window, cx);
     }
 
     /// Shows the terminals and focuses them, or hides them and focus returns to
-    /// the IDE. The activity bar's icon, which ignores where the focus is.
+    /// the IDE. Used by both the shortcut and the activity bar's icon.
     pub fn set_terminals_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         if visible {
             self.show_panel(Panel::Terminals, cx);

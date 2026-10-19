@@ -168,7 +168,7 @@ impl TerminalArea {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::Config;
     use core::prelude::v1::test;
@@ -198,7 +198,7 @@ mod tests {
         });
     }
 
-    fn area(window: &mut Window, cx: &mut Context<TerminalArea>) -> TerminalArea {
+    pub(crate) fn area(window: &mut Window, cx: &mut Context<TerminalArea>) -> TerminalArea {
         let mut area = TerminalArea::new("/terminal-drag-test".into(), None, true, cx);
         for term in 1..=3 {
             let (sender, receiver) = smol::channel::unbounded::<PtyEvent>();

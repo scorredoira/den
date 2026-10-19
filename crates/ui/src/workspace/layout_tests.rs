@@ -35,6 +35,51 @@ fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> 
 }
 
 #[gpui_kit::test]
+fn terminal_shortcut_toggles_on_first_press_after_workspace_entry(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update_in(cx, |workspace, window, cx| {
+        // On first entry, terminals restore asynchronously after focus has
+        // already gone to the editor. Restoring them must not steal focus.
+        workspace.focus(window, cx);
+        workspace.terminals = cx.new(|cx| crate::terminals::test_area(window, cx));
+        assert!(crate::shortcuts::set("FindReferences", "", cx).is_ok());
+        assert!(crate::shortcuts::set("ToggleTerminals", "shift-f12", cx).is_ok());
+        assert!(workspace.is_shown(Panel::Terminals, cx));
+        assert!(!workspace.terminals.read(cx).contains_focus(window, cx));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("shift-f12");
+    workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
+    cx.simulate_keystrokes("shift-f12");
+    workspace.update_in(cx, |workspace, window, cx| {
+        assert!(workspace.is_shown(Panel::Terminals, cx));
+        assert!(workspace.terminals.read(cx).contains_focus(window, cx));
+    });
+}
+
+#[gpui_kit::test]
+fn terminal_shortcut_survives_redraws_without_mouse_movement(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.terminals = cx.new(|cx| crate::terminals::test_area(window, cx));
+        assert!(crate::shortcuts::set("FindReferences", "", cx).is_ok());
+        assert!(crate::shortcuts::set("ToggleTerminals", "shift-f12", cx).is_ok());
+        workspace.set_terminals_visible(true, window, cx);
+    });
+    cx.run_until_parked();
+    for _ in 0..8 {
+        // Background updates redraw the workspace while the terminal is cached.
+        workspace.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        cx.simulate_keystrokes("shift-f12");
+        workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Terminals, cx)));
+        cx.simulate_keystrokes("shift-f12");
+        workspace.read_with(cx, |workspace, cx| assert!(workspace.is_shown(Panel::Terminals, cx)));
+    }
+}
+
+#[gpui_kit::test]
 fn the_side_column_the_code_and_the_terminals(cx: &mut TestAppContext) {
     let (_, cx) = draw(cx, |_| {});
     let side = bounds(cx, "side-column");

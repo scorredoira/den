@@ -143,7 +143,7 @@ The activity bar, on the left, has an icon for each group of the side column: th
 
 | Shortcut | Does |
 | --- | --- |
-| {{ToggleTerminals}} | Show or hide the terminals |
+| {{ToggleTerminals}} | Show or hide the terminals, regardless of where the keyboard focus is |
 | {{MaximizeTerminals}} | Terminals over the whole window, or back |
 | {{MoveTerminals}} | Terminals under the code, or back on its right |
 | {{ToggleTerminalMode}} | Terminal Mode: only the terminals, with the workspaces and the agents beside them; again, back |

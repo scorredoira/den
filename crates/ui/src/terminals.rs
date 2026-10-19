@@ -4,6 +4,9 @@
 
 mod drag;
 
+#[cfg(test)]
+pub(crate) use drag::tests::area as test_area;
+
 use drag::{Source, TerminalDrag};
 use crate::drag_drop::DropPlacement;
 use crate::menu::PanelItems as _;

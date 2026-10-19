@@ -143,6 +143,12 @@ And in `handle_key_event` (`src/window.rs`) such a key doesn't go to the
 input context first, as other keys without text do: it kept it, and no
 shortcut saw it.
 
+And `(den)` in `handle_key_event` (`src/window.rs`): duplicate key events
+are matched by their native timestamp as well as their keys. A handled
+`performKeyEquivalent:` has no following `keyDown:`, so remembering only
+the keys could discard a later press of the same shortcut. The regression
+test covers Shift-F12, Ctrl-F12 and Cmd-J, including auto-repeat.
+
 Also `(den)` in its `Cargo.toml`: `deprecated` is allowed, as crates.io
 caps a dependency's lints and a path doesn't (its `cocoa` calls).
 
