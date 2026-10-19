@@ -1,14 +1,15 @@
 //! A whole commit in one tab (VS Code's multi-diff): its message, author and
 //! date, and then each file's changes side by side, one after another, with
 //! the lines highlighted as the file's language. Read-only rows in one list;
-//! a file's name opens that file's diff in its own tab.
+//! a file's name opens that file's diff in its own tab. Text is selected
+//! with the mouse in one column at a time, and Cmd-C copies it.
 
 use std::{cell::Cell, ops::Range, rc::Rc, sync::Arc};
 
 use gpui_kit::component::{
     ActiveTheme as _, StyledExt as _, h_flex,
     highlighter::{HighlightTheme, SyntaxHighlighter},
-    input::Rope,
+    input::{Copy, Rope},
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
@@ -36,6 +37,100 @@ pub struct CommitView {
     width: Rc<Cell<Pixels>>,
     /// Drawn in one column last time: the rows a file's name is among.
     narrow: Cell<bool>,
+    selection: Option<Selection>,
+    /// The button is down since a press on a line: moving extends the selection.
+    selecting: bool,
+    focus_handle: FocusHandle,
+}
+
+/// The text of a line a selection is in: the old side or the new one (also
+/// the one column's).
+#[derive(Clone, Copy, PartialEq)]
+enum Column {
+    Old,
+    New,
+}
+
+/// Text selected in one column, from where it started to where it ends
+/// now, each a row and a byte of its line.
+#[derive(Clone, Copy, PartialEq)]
+struct Selection {
+    column: Column,
+    /// In the rows of one column, not of two.
+    narrow: bool,
+    anchor: (usize, usize),
+    head: (usize, usize),
+}
+
+impl Selection {
+    fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) }
+    }
+
+    /// The bytes of row `ix`'s line in it, `len` long.
+    fn bytes(&self, ix: usize, len: usize) -> Option<Range<usize>> {
+        let (start, end) = self.ordered();
+        if ix < start.0 || ix > end.0 {
+            return None;
+        }
+        let from = if ix == start.0 { start.1.min(len) } else { 0 };
+        let to = if ix == end.0 { end.1.min(len) } else { len };
+        (from < to).then_some(from..to)
+    }
+}
+
+/// The text of row `ix` in `column`: none in a gap, nor in a row that isn't
+/// a line.
+fn line(rows: &[Row], ix: usize, column: Column) -> Option<&Half> {
+    match (rows.get(ix)?, column) {
+        (Row::Line { old, .. }, Column::Old) => Some(old),
+        (Row::Line { new, .. }, Column::New) => Some(new),
+        (Row::Single { half, .. }, Column::New) => Some(half),
+        _ => None,
+    }
+    .filter(|half| half.kind != Kind::Gap)
+}
+
+/// The text selected, its lines one under the other.
+fn selected_text(rows: &[Row], selection: &Selection) -> String {
+    let (start, end) = selection.ordered();
+    (start.0..=end.0)
+        .filter_map(|ix| {
+            let half = line(rows, ix, selection.column)?;
+            let len = half.text.len();
+            let from = if ix == start.0 { start.1.min(len) } else { 0 };
+            let to = if ix == end.0 { end.1.min(len) } else { len };
+            Some(half.text.get(from..to.max(from)).unwrap_or(""))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The word at `byte` of `text`, or the run of other characters there.
+fn word_at(text: &str, byte: usize) -> Range<usize> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let byte = byte.min(text.len());
+    let Some(at) = text[byte..].chars().next().or_else(|| text[..byte].chars().next_back()) else {
+        return byte..byte;
+    };
+    let same = |c: char| match (is_word(at), at.is_whitespace()) {
+        (true, _) => is_word(c),
+        (_, true) => c.is_whitespace(),
+        _ => !is_word(c) && !c.is_whitespace(),
+    };
+    let start = text[..byte].char_indices().rev().take_while(|(_, c)| same(*c)).last().map_or(byte, |(ix, _)| ix);
+    let end = text[byte..].char_indices().find(|(_, c)| !same(*c)).map_or(text.len(), |(ix, _)| byte + ix);
+    start..end
+}
+
+/// The byte of a laid out line under `position`, the nearest between two
+/// characters.
+fn byte_at(layout: &TextLayout, position: Point<Pixels>) -> usize {
+    let Some(line) = layout.line_layout_for_index(0) else {
+        return 0;
+    };
+    let x = (position.x - layout.bounds().left()).max(px(0.));
+    line.closest_index_for_position(point(x, px(0.)), layout.line_height()).unwrap_or_else(|ix| ix)
 }
 
 impl EventEmitter<CommitViewEvent> for CommitView {}
@@ -151,13 +246,16 @@ struct Colors {
 impl CommitView {
     /// `width`: the room it has, if known, so its first frame already has
     /// one column or two.
-    pub fn new(prepared: Prepared, width: Pixels) -> Self {
+    pub fn new(prepared: Prepared, width: Pixels, cx: &mut Context<Self>) -> Self {
         Self {
             rows: Rc::new(prepared.rows),
             inline: Rc::new(prepared.inline),
             scroll: UniformListScrollHandle::new(),
             width: Rc::new(Cell::new(width)),
             narrow: Cell::new(false),
+            selection: None,
+            selecting: false,
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -181,7 +279,49 @@ impl CommitView {
         self.rows = Rc::new(prepared.rows);
         self.inline = Rc::new(prepared.inline);
         self.scroll = UniformListScrollHandle::new();
+        self.selection = None;
         cx.notify();
+    }
+
+    /// The button went down on row `ix`'s line at `byte`: a new selection
+    /// there (the word or the line on a second or third click), or with
+    /// Shift the one in this column taken there.
+    fn press(&mut self, column: Column, ix: usize, byte: usize, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        self.selecting = true;
+        let narrow = self.narrow.get();
+        if let Some(selection) = self.selection.as_mut().filter(|selection| event.modifiers.shift && selection.column == column && selection.narrow == narrow) {
+            selection.head = (ix, byte);
+        } else {
+            let rows = if narrow { &self.inline } else { &self.rows };
+            let text = line(rows, ix, column).map(|half| half.text.as_ref()).unwrap_or("");
+            let range = match event.click_count {
+                2 => word_at(text, byte),
+                3.. => 0..text.len(),
+                _ => byte..byte,
+            };
+            self.selection = Some(Selection { column, narrow, anchor: (ix, range.start), head: (ix, range.end) });
+        }
+        cx.notify();
+    }
+
+    /// The pointer is over row `ix`'s line at `byte` with the button down.
+    fn drag(&mut self, column: Column, ix: usize, byte: usize, cx: &mut Context<Self>) {
+        let Some(selection) = self.selection.as_mut().filter(|selection| self.selecting && selection.column == column) else {
+            return;
+        };
+        if selection.head != (ix, byte) {
+            selection.head = (ix, byte);
+            cx.notify();
+        }
+    }
+
+    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(selection) = self.selection.filter(|selection| selection.anchor != selection.head) else {
+            return;
+        };
+        let rows = if selection.narrow { &self.inline } else { &self.rows };
+        cx.write_to_clipboard(ClipboardItem::new_string(selected_text(rows, &selection)));
     }
 }
 
@@ -378,9 +518,48 @@ impl Render for CommitView {
             .len();
         let gutter = px(size * 0.62 * (digits + 2) as f32);
         let (removed, added) = (theme.danger.opacity(0.14), theme.success.opacity(0.14));
+        let selection = self.selection.filter(|selection| selection.narrow == narrow);
         let list = uniform_list("commit-view", rows.len(), move |range, _, cx| {
             let theme = cx.theme();
-            let half = |half: &Half, background: Hsla, marker: &str| {
+            // A line's text, with what's selected of it, which a press
+            // starts selecting and a move with the button down extends.
+            let text = |half: &Half, ix: usize, column: Column| {
+                let selected = selection
+                    .filter(|selection| selection.column == column && half.kind != Kind::Gap)
+                    .and_then(|selection| selection.bytes(ix, half.text.len()));
+                let highlights: Vec<_> = match selected {
+                    Some(selected) => {
+                        let style = HighlightStyle { background_color: Some(theme.selection), ..Default::default() };
+                        combine_highlights(half.highlights.clone(), [(selected, style)]).collect()
+                    }
+                    None => half.highlights.clone(),
+                };
+                let text = StyledText::new(half.text.clone()).with_highlights(highlights);
+                let layout = text.layout().clone();
+                let (press, drag) = (view.clone(), view.clone());
+                let drag_layout = layout.clone();
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .cursor_text()
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        cx.stop_propagation();
+                        let byte = byte_at(&layout, event.position);
+                        press.update(cx, |this, cx| this.press(column, ix, byte, event, window, cx)).ok();
+                    })
+                    .on_mouse_move(move |event, _, cx| {
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            let byte = byte_at(&drag_layout, event.position);
+                            drag.update(cx, |this, cx| this.drag(column, ix, byte, cx)).ok();
+                        }
+                    })
+                    .child(text)
+            };
+            let half = |half: &Half, background: Hsla, marker: &str, ix: usize, column: Column| {
                 let changed = half.kind == Kind::Changed;
                 h_flex()
                     .w_1_2()
@@ -397,13 +576,7 @@ impl Render for CommitView {
                             .text_color(theme.muted_foreground)
                             .child(half.number.map(|number| format!("{number}{}", if changed { marker } else { " " })).unwrap_or_default()),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .child(StyledText::new(half.text.clone()).with_highlights(half.highlights.clone())),
-                    )
+                    .child(text(half, ix, column))
             };
             range
                 .map(|ix| {
@@ -442,9 +615,9 @@ impl Render for CommitView {
                         Row::Line { old, new } => row
                             .font_family(theme.mono_font_family.clone())
                             .text_size(px(size))
-                            .child(half(old, removed, "−"))
+                            .child(half(old, removed, "−", ix, Column::Old))
                             .child(div().flex_none().w(px(1.)).h_full().bg(theme.border))
-                            .child(half(new, added, "+")),
+                            .child(half(new, added, "+", ix, Column::New)),
                         Row::Single { old, new, half } => {
                             let (background, marker) = match (old, new) {
                                 (Some(_), None) => (Some(removed), "−"),
@@ -458,13 +631,7 @@ impl Render for CommitView {
                                 .when_some(background, |el, background| el.bg(background))
                                 .child(column().child(number(old)))
                                 .child(column().child(format!("{}{marker}", number(new))))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .child(StyledText::new(half.text.clone()).with_highlights(half.highlights.clone())),
-                                )
+                                .child(text(half, ix, Column::New))
                         }
                     }
                     .into_any_element()
@@ -473,13 +640,30 @@ impl Render for CommitView {
         })
         .track_scroll(&self.scroll)
         .size_full();
-        div().size_full().relative().child(measure_width(&self.width)).child(list)
+        div()
+            .size_full()
+            .relative()
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::copy))
+            // a press anywhere but on a line's text leaves nothing selected
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.selection.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.selecting = false))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.selecting = false))
+            .child(measure_width(&self.width))
+            .child(list)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{header_rows, section_path, shows, Row};
+    use super::{header_rows, section_path, selected_text, shows, word_at, Column, Half, Kind, Row, Selection};
 
     #[test]
     fn header_and_paths() {
@@ -502,5 +686,34 @@ mod tests {
         let folder = ("src".to_string(), true);
         assert!(shows(&folder, "src/main.rs"));
         assert!(!shows(&folder, "srcs/main.rs"));
+    }
+
+    #[test]
+    fn copies_what_is_selected_of_one_column() {
+        let half = |kind: Kind, text: &str| Half { number: Some(1), kind, text: text.to_string().into(), highlights: Vec::new() };
+        let rows = vec![
+            Row::Line { old: half(Kind::Same, "let a = 1;"), new: half(Kind::Same, "let a = 1;") },
+            Row::Line { old: half(Kind::Changed, "let b = 2;"), new: half(Kind::Changed, "let b = 3;") },
+            Row::Line { old: half(Kind::Gap, ""), new: half(Kind::Changed, "let c = 4;") },
+            Row::Skip,
+            Row::Line { old: half(Kind::Same, "done()"), new: half(Kind::Same, "done()") },
+        ];
+        let selection = |column, anchor, head| Selection { column, narrow: false, anchor, head };
+        // from the middle of a line to the middle of another, backwards too
+        assert_eq!(selected_text(&rows, &selection(Column::New, (0, 4), (2, 5))), "a = 1;\nlet b = 3;\nlet c");
+        assert_eq!(selected_text(&rows, &selection(Column::New, (2, 5), (0, 4))), "a = 1;\nlet b = 3;\nlet c");
+        // the old side's gap and the folded lines are no lines of it
+        assert_eq!(selected_text(&rows, &selection(Column::Old, (1, 0), (4, 4))), "let b = 2;\ndone");
+        assert_eq!(selection(Column::Old, (1, 4), (4, 4)).bytes(2, 0), None);
+        assert_eq!(selection(Column::Old, (1, 4), (4, 4)).bytes(1, 10), Some(4..10));
+    }
+
+    #[test]
+    fn a_double_click_takes_a_word() {
+        assert_eq!(word_at("let some_name = 1;", 6), 4..13);
+        assert_eq!(word_at("a  b", 1), 1..3);
+        assert_eq!(word_at("x == y", 3), 2..4);
+        assert_eq!(word_at("end", 3), 0..3);
+        assert_eq!(word_at("", 0), 0..0);
     }
 }

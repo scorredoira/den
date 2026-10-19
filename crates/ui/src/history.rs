@@ -121,7 +121,7 @@ impl EventEmitter<HistoryEvent> for HistoryView {}
 impl HistoryView {
     pub fn new(root: PathBuf, client: Option<Arc<Client>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search hash, message or author"));
-        let commit = cx.new(|_| CommitView::new(commit_view::Prepared::default(), px(0.)));
+        let commit = cx.new(|cx| CommitView::new(commit_view::Prepared::default(), px(0.), cx));
         let subscriptions = vec![
             cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
                 if let InputEvent::Change = event {

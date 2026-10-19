@@ -172,7 +172,7 @@ impl Workspace {
                         return;
                     }
                     let width = this.group_width(this.tabs[ix].group);
-                    let view = cx.new(|_| CommitView::new(prepared, width));
+                    let view = cx.new(|cx| CommitView::new(prepared, width, cx));
                     // The tab's commit when clicked: it may show another one by then.
                     let subscription = cx.subscribe_in(&view, window, move |this, view, event: &CommitViewEvent, window, cx| {
                         let CommitViewEvent::OpenFile(file) = event;
