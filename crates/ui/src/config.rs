@@ -954,39 +954,31 @@ mod layout_tests {
         assert_eq!(layout.panels(explorer)[0], Panel::Outline);
     }
 
-    /// A tab's icon dropped on another of its section's goes before it,
-    /// the rest of the bar as it was.
+    /// An icon dragged goes where it's dropped, among a place's tab icons
+    /// too, and only it moves: the panels stay as they were.
     #[test]
-    fn tab_icon_moves_among_its_tabs() {
-        use super::{Icon, Place};
-        let mut layout = Layout::default();
-        layout.join(Panel::History, Panel::Changes, None);
-        let bar = layout.bar();
-        let at = bar.iter().position(|icon| *icon == Icon::Place(Panel::Changes)).unwrap();
-        assert_eq!(bar[at + 1], Icon::Place(Panel::History));
-        layout.move_icon(Icon::Place(Panel::History), Some(Icon::Place(Panel::Changes)));
-        assert_eq!(layout.sections(Place(Panel::History)), [vec![Panel::History, Panel::Changes]]);
-        let mut expected = bar.clone();
-        expected.swap(at, at + 1);
-        assert_eq!(layout.bar(), expected);
-    }
-
-    /// Dropped among another place's tab icons, a place of one panel joins
-    /// as a tab there; one of more goes before that place.
-    #[test]
-    fn place_icon_dropped_among_tabs() {
-        use super::{Icon, Place};
+    fn an_icon_moves_alone() {
+        use super::Icon;
         let mut layout = Layout::default();
         layout.join(Panel::Changes, Panel::Files, None);
+        layout.own_place(Panel::History);
+        let places = layout.places.clone();
         let (files, changes, history) = (Icon::Place(Panel::Files), Icon::Place(Panel::Changes), Icon::Place(Panel::History));
-        layout.move_icon(history, Some(Icon::Place(Panel::Search)));
-        assert_eq!(layout.bar()[..3], [files, changes, history]);
-        layout.move_icon(history, Some(changes));
-        assert_eq!(layout.bar()[..3], [files, history, changes]);
-        assert_eq!(layout.sections(Place(Panel::Files))[1], [Panel::Files, Panel::History, Panel::Changes]);
         let search = Icon::Place(Panel::Search);
-        layout.move_icon(search, Some(changes));
-        assert_eq!(layout.bar()[..4], [search, files, history, changes]);
+        assert_eq!(layout.bar()[..3], [files, changes, search]);
+        layout.move_icon(history, Some(changes));
+        assert_eq!(layout.bar()[..4], [files, history, changes, search]);
+        layout.move_icon(changes, Some(files));
+        assert_eq!(layout.bar()[..4], [changes, files, history, search]);
+        assert_eq!(layout.places, places);
+        // A tab's icon stays where it went as the place's icons change.
+        layout.join(Panel::Outline, Panel::Files, None);
+        assert_eq!(layout.bar()[..5], [changes, Icon::Place(Panel::Outline), files, history, search]);
+        layout.hidden.push(Panel::Changes);
+        layout.hidden.push(Panel::Outline);
+        assert_eq!(layout.bar()[..3], [Icon::Place(Panel::Workspaces), history, search]);
+        assert_eq!(layout.icon_panel(history), Some(Panel::History));
+        assert_eq!(layout.icon_panel(Icon::Place(Panel::Workspaces)), None);
     }
 
     /// Panels join as tabs of a section: the one joining in front, an icon
@@ -1005,8 +997,9 @@ mod layout_tests {
         // for each tab, in its place on the bar.
         assert_eq!(layout.bar()[..3], [Icon::Place(Panel::Files), Icon::Place(Panel::Changes), Icon::Place(Panel::Search)]);
         layout.move_icon(Icon::Place(Panel::Changes), None);
-        assert_eq!(layout.places()[0], Place(Panel::Search));
-        assert_eq!(layout.bar()[layout.bar().len() - 2..], [Icon::Place(Panel::Files), Icon::Place(Panel::Changes)]);
+        assert_eq!(layout.places()[0], explorer);
+        assert_eq!(layout.bar()[0], Icon::Place(Panel::Files));
+        assert_eq!(layout.bar().last(), Some(&Icon::Place(Panel::Changes)));
         // Before another tab.
         layout.join(Panel::Outline, Panel::Files, Some(Panel::Files));
         assert_eq!(layout.sections(explorer)[1], [Panel::Outline, Panel::Files, Panel::Changes]);

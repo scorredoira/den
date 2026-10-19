@@ -215,7 +215,8 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
                         let title = item.title(cx);
                         cx.new(|_| TabDragPreview(title.into()))
                     })
-                    .drag_over::<IconDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
+                    // A line above it where the dragged one lands.
+                    .drag_over::<IconDrag>(|style, _, _, cx| style.border_t_2().border_color(cx.theme().primary).rounded_none())
                     .on_drop(move |drag: &IconDrag, _, cx| {
                         cx.stop_propagation();
                         move_icon(drag.0, Some(item.spot()), cx);
@@ -261,6 +262,7 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
             div()
                 .flex_1()
                 .w_full()
+                .drag_over::<IconDrag>(|style, _, _, cx| style.border_t_2().border_color(cx.theme().primary))
                 .on_drop(|drag: &IconDrag, _, cx| move_icon(drag.0, None, cx))
                 .drag_over::<PanelDrag>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.25)))
                 .on_drop(|drag: &PanelDrag, _, cx| {
@@ -269,6 +271,7 @@ pub(crate) fn activity_bar(icons: Vec<Activity>, click: OnActivity, cx: &App) ->
                         config.layout.own_place(panel);
                         if let Some(place) = config.layout.place_of(panel) {
                             config.layout.move_place(place, None);
+                            config.layout.move_icon(Icon::Place(panel), None);
                             config.layout.side = true;
                             config.layout.place = place;
                         }

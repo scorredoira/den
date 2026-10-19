@@ -993,6 +993,17 @@ impl Workspace {
                             cx.stop_propagation();
                             this.join_panel(drag.0, tab, Some(tab), cx);
                         }))
+                        // An icon that brings one panel joins as a tab too.
+                        .drag_over::<IconDrag>(|style, drag, _, cx| match Config::get(cx).layout.icon_panel(drag.0) {
+                            Some(_) => style.border_color(cx.theme().primary).text_color(cx.theme().primary),
+                            None => style,
+                        })
+                        .on_drop(cx.listener(move |this, drag: &IconDrag, _, cx| {
+                            if let Some(panel) = Config::get(cx).layout.icon_panel(drag.0) {
+                                cx.stop_propagation();
+                                this.join_panel(panel, tab, Some(tab), cx);
+                            }
+                        }))
                 }))
                 .into_any_element()
         } else {
@@ -1038,6 +1049,17 @@ impl Workspace {
                     .on_drop(cx.listener(move |this, drag: &PanelDrag, _, cx| {
                         cx.stop_propagation();
                         this.join_panel(drag.0, panel, None, cx);
+                    }))
+                    // An icon that brings one panel: as a tab of it.
+                    .drag_over::<IconDrag>(|style, drag, _, cx| match Config::get(cx).layout.icon_panel(drag.0) {
+                        Some(_) => style.bg(cx.theme().primary.opacity(0.15)),
+                        None => style,
+                    })
+                    .on_drop(cx.listener(move |this, drag: &IconDrag, _, cx| {
+                        if let Some(dragged) = Config::get(cx).layout.icon_panel(drag.0) {
+                            cx.stop_propagation();
+                            this.join_panel(dragged, panel, None, cx);
+                        }
                     }))
                     // Its upper edge: above it.
                     .child(
