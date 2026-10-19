@@ -1640,22 +1640,6 @@ impl Workspace {
                 let of = DiffOf { only: only.clone(), ..DiffOf::commit(commit.clone(), short.clone(), String::new(), false) };
                 self.open_diff(of, *pin, window, cx);
             }
-            HistoryPanelEvent::ShowFile { commit, short, only, file } => {
-                let of = DiffOf { only: only.clone(), ..DiffOf::commit(commit.clone(), short.clone(), String::new(), false) };
-                self.open_diff(of.clone(), false, window, cx);
-                if let Some(view) = self.tabs.iter().find(|tab| tab.diff.as_ref() == Some(&of)).and_then(|tab| tab.commit.as_ref()) {
-                    view.read(cx).scroll_to(file);
-                }
-            }
-            HistoryPanelEvent::OpenCommitDiff { commit, short, file } => {
-                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), true, window, cx);
-            }
-            HistoryPanelEvent::OpenFileAt { commit, short, file } => {
-                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
-            }
-            HistoryPanelEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
-            HistoryPanelEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
-            HistoryPanelEvent::ShowHistory { file } => self.open_history(Some((file.clone(), false)), cx),
         }
     }
 
@@ -1670,6 +1654,24 @@ impl Workspace {
             }
             HistoryEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
             HistoryEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
+        }
+    }
+
+    /// What a commit's tab asks of one of its files.
+    pub(super) fn on_commit_event(&mut self, view: &Entity<CommitView>, event: &CommitViewEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The tab's commit when asked: it may show another one by then.
+        let commit = self.tabs.iter().find(|tab| tab.commit.as_ref() == Some(view)).and_then(|tab| tab.diff.as_ref()?.commit.clone());
+        match event {
+            CommitViewEvent::OpenFile(file) | CommitViewEvent::OpenFileAt(file) => {
+                if let Some((hash, short)) = commit {
+                    let source = matches!(event, CommitViewEvent::OpenFileAt(_));
+                    self.open_diff(DiffOf::commit(hash, short, file.clone(), source), true, window, cx);
+                }
+            }
+            CommitViewEvent::OpenSource(file) => self.open(self.root.join(file), true, window, cx),
+            CommitViewEvent::ShowHistory(file) => self.open_history(Some((file.clone(), false)), cx),
+            CommitViewEvent::RevealInTree(file) => self.reveal_in_tree(&self.root.join(file), cx),
+            CommitViewEvent::CopyPath(file) => cx.write_to_clipboard(ClipboardItem::new_string(self.root.join(file).to_string_lossy().into_owned())),
         }
     }
 

@@ -142,4 +142,44 @@ mod tests {
         cx.run_until_parked();
         cx.update(|_, cx| assert!(!GlobalState::is_in_deferred_context(cx), "dismissed, tooltips come back"));
     }
+
+    /// A row with a menu in an area with another (a file of a commit's
+    /// tab): only the row's menu opens.
+    struct Nested {
+        built: std::rc::Rc<std::cell::Cell<(usize, usize)>>,
+    }
+
+    impl Render for Nested {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let (outer, inner) = (self.built.clone(), self.built.clone());
+            div()
+                .id("area")
+                .size_full()
+                .context_menu(move |menu, _, _| {
+                    outer.set((outer.get().0 + 1, outer.get().1));
+                    menu.item(gpui_kit::component::menu::PopupMenuItem::new("Close"))
+                })
+                .child(div().id("row").w(px(200.)).h(px(24.)).context_menu(move |menu, _, _| {
+                    inner.set((inner.get().0, inner.get().1 + 1));
+                    menu.item(gpui_kit::component::menu::PopupMenuItem::new("Rename"))
+                }))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_innermost_menu_opens(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let built = std::rc::Rc::new(std::cell::Cell::new((0, 0)));
+        let (_, cx) = cx.add_window_view({
+            let built = built.clone();
+            move |_, _| Nested { built }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let press = point(px(10.), px(10.));
+        cx.simulate_mouse_down(press, MouseButton::Right, Default::default());
+        cx.simulate_mouse_up(press, MouseButton::Right, Default::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(built.get(), (0, 1), "only the row's menu is built");
+    }
 }

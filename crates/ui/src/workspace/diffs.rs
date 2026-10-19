@@ -173,18 +173,7 @@ impl Workspace {
                     }
                     let width = this.group_width(this.tabs[ix].group);
                     let view = cx.new(|cx| CommitView::new(prepared, width, cx));
-                    // The tab's commit when clicked: it may show another one by then.
-                    let subscription = cx.subscribe_in(&view, window, move |this, view, event: &CommitViewEvent, window, cx| {
-                        let CommitViewEvent::OpenFile(file) = event;
-                        let commit = this
-                            .tabs
-                            .iter()
-                            .find(|tab| tab.commit.as_ref() == Some(view))
-                            .and_then(|tab| tab.diff.as_ref()?.commit.clone());
-                        if let Some((hash, short)) = commit {
-                            this.open_diff(DiffOf::commit(hash, short, file.clone(), false), true, window, cx);
-                        }
-                    });
+                    let subscription = cx.subscribe_in(&view, window, Self::on_commit_event);
                     let tab = &mut this.tabs[ix];
                     tab.commit = Some(view);
                     tab._subscriptions.push(subscription);

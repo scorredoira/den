@@ -129,8 +129,10 @@ impl HistoryView {
                 }
             }),
             cx.subscribe(&commit, |this, _, event: &CommitViewEvent, cx| {
-                let CommitViewEvent::OpenFile(file) = event;
-                if let Some(commit) = this.shown_commit() {
+                // Only a file's name in the changes asks here: the band is the commit tab's.
+                if let CommitViewEvent::OpenFile(file) = event
+                    && let Some(commit) = this.shown_commit()
+                {
                     let (commit, short) = (commit.hash.clone(), commit.short.clone());
                     cx.emit(HistoryEvent::OpenCommitDiff { commit, short, file: file.clone() });
                 }

@@ -2127,7 +2127,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/menu/context_menu.rs vendor/gpui-component/src/menu/context_menu.rs
 --- a/src/menu/context_menu.rs	2006-07-24 03:21:28
-+++ b/src/menu/context_menu.rs	2026-10-13 09:32:24
++++ b/src/menu/context_menu.rs	2026-10-19 17:07:47
 @@ -128,6 +128,9 @@
      /// the previously rendered frame, where the menu's own element is not yet.
      trigger_focus_handle: Option<FocusHandle>,
@@ -2146,7 +2146,18 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              })),
          }
      }
-@@ -407,6 +411,11 @@
+@@ -374,10 +378,6 @@
+         window: &mut Window,
+         cx: &mut App,
+     ) {
+-        if let Some(element) = &mut request_layout.element {
+-            element.paint(window, cx);
+-        }
+-
+         // Take the builder before setting up element state to avoid borrow issues
+         let builder = self.menu.clone();
+ 
+@@ -407,6 +407,11 @@
                              }
                          });
  
@@ -2158,7 +2169,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                          {
                              let mut shared_state = shared_state.borrow_mut();
                              // Clear any existing menu view to allow immediate replacement
-@@ -415,6 +424,8 @@
+@@ -415,6 +420,8 @@
                              shared_state._subscription = None;
                              shared_state.position = event.position;
                              shared_state.open = true;
@@ -2167,7 +2178,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                          }
  
                          // Use defer to build the menu in the next frame, avoiding race conditions
-@@ -445,7 +456,9 @@
+@@ -445,7 +452,9 @@
                                      let shared_state = Rc::downgrade(&shared_state);
                                      move |_, _: &DismissEvent, window, _cx| {
                                          if let Some(shared_state) = shared_state.upgrade() {
@@ -2178,6 +2189,21 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                                              window.refresh();
                                          }
                                      }
+@@ -464,6 +473,14 @@
+                 });
+             },
+         );
++
++        // (den)
++        // Painted after its listener is added: those of the elements in it
++        // go after, and a press bubbles to them first, so the innermost
++        // menu opens and stops it (see above).
++        if let Some(element) = &mut request_layout.element {
++            element.paint(window, cx);
++        }
+     }
+ }
+ 
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/fallback.rs vendor/gpui-component/src/native_menu/fallback.rs
 --- a/src/native_menu/fallback.rs	2006-07-24 03:21:28
 +++ b/src/native_menu/fallback.rs	2026-10-13 09:32:24

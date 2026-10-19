@@ -119,7 +119,8 @@ And `(den)` so a tooltip never shows over an open menu: an open context menu
 holds a `DeferredPopover` in `src/menu/context_menu.rs`, as an open popover
 does, and `Tooltip` in `src/tooltip.rs` renders nothing while one is held.
 A right click also opens only the innermost context menu, not those of the
-elements around it.
+elements around it: a menu adds its listener before painting what's in it,
+whose listeners then run first and stop the press.
 
 And `(den)` for shortcuts in context menus: `NativeMenuItem::Item` has a `key`,
 which `NativeMenu::show` fills in (`resolve_keys` in `src/native_menu/mod.rs`)

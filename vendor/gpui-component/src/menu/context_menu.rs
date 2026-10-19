@@ -378,10 +378,6 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(element) = &mut request_layout.element {
-            element.paint(window, cx);
-        }
-
         // Take the builder before setting up element state to avoid borrow issues
         let builder = self.menu.clone();
 
@@ -477,6 +473,14 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                 });
             },
         );
+
+        // (den)
+        // Painted after its listener is added: those of the elements in it
+        // go after, and a press bubbles to them first, so the innermost
+        // menu opens and stops it (see above).
+        if let Some(element) = &mut request_layout.element {
+            element.paint(window, cx);
+        }
     }
 }
 
