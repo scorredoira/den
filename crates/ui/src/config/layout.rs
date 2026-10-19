@@ -504,8 +504,17 @@ impl Layout {
     }
 
     /// Puts `icon` before `before`, or last: a place's with the rest of its
-    /// place's.
+    /// place's. A tab's on another tab of its section goes before that one there.
     pub fn move_icon(&mut self, icon: Icon, before: Option<Icon>) {
+        if let (Icon::Place(panel), Some(Icon::Place(other))) = (icon, before)
+            && panel != other
+            && let Some(tabs) = self.places.iter_mut().flatten().find(|tabs| tabs.contains(&panel) && tabs.contains(&other))
+        {
+            tabs.retain(|tab| *tab != panel);
+            let at = tabs.iter().position(|tab| *tab == other).expect("it stays");
+            tabs.insert(at, panel);
+            return;
+        }
         let place = |icon: &Icon| match icon {
             Icon::Place(panel) => self.index(*panel),
             _ => None,

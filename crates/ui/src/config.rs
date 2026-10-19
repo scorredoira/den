@@ -956,6 +956,23 @@ mod layout_tests {
         assert_eq!(layout.panels(explorer)[0], Panel::Outline);
     }
 
+    /// A tab's icon dropped on another of its section's goes before it,
+    /// the rest of the bar as it was.
+    #[test]
+    fn tab_icon_moves_among_its_tabs() {
+        use super::{Icon, Place};
+        let mut layout = Layout::default();
+        layout.join(Panel::History, Panel::Changes, None);
+        let bar = layout.bar();
+        let at = bar.iter().position(|icon| *icon == Icon::Place(Panel::Changes)).unwrap();
+        assert_eq!(bar[at + 1], Icon::Place(Panel::History));
+        layout.move_icon(Icon::Place(Panel::History), Some(Icon::Place(Panel::Changes)));
+        assert_eq!(layout.sections(Place(Panel::History)), [vec![Panel::History, Panel::Changes]]);
+        let mut expected = bar.clone();
+        expected.swap(at, at + 1);
+        assert_eq!(layout.bar(), expected);
+    }
+
     /// Panels join as tabs of a section: the one joining in front, an icon
     /// for each tab, which move together; out again above what's left.
     #[test]
