@@ -101,6 +101,12 @@ VS Code's bracket pair colors (`bracket_depth` there, the
 `punctuation.bracket.1`–`3` colors, and Go's `highlights.scm` capturing its
 brackets).
 
+And `(den)` in `src/highlighter/highlighter.rs`: a language's queries are
+compiled once per process (`compiled`) and shared, not once per
+`SyntaxHighlighter`. TypeScript's took ~30 ms, paid by every editor opened
+and by both sides of every file of a commit shown, so a commit of 30 files
+took almost 2 s to show.
+
 And `(den)` for the find bar (Cmd-F) as VS Code's: `src/input/search.rs`
 floats at the editor's top right (placed in `render_editor` in
 `src/input/input.rs`), its left edge drags its width, and ↑↓ go through the

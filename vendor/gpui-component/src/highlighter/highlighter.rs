@@ -30,7 +30,7 @@ const INJECTION_PARSE_TIMEOUT: Duration = Duration::from_millis(20);
 #[allow(unused)]
 pub struct SyntaxHighlighter {
     language: SharedString,
-    query: Option<Query>,
+    query: Option<Arc<Query>>, // (den) shared: `compiled`
     /// The full injections query. This is used to build injection layers during parsing.
     injections_query: Option<Arc<Query>>,
 
@@ -365,6 +365,76 @@ impl<'a> sum_tree::Dimension<'a, HighlightSummary> for Range<usize> {
     }
 }
 
+/// (den) A language's queries, compiled: see `compiled`.
+struct Compiled {
+    query: Arc<Query>,
+    injections_query: Option<Arc<Query>>,
+    locals_pattern_index: usize,
+    highlights_pattern_index: usize,
+}
+
+/// (den) `language`'s queries, compiled the first time it is asked for.
+fn compiled(
+    language: &SharedString,
+    grammar: &tree_sitter::Language,
+    injections: &str,
+    locals: &str,
+    highlights: &str,
+) -> Result<Arc<Compiled>> {
+    static COMPILED: std::sync::LazyLock<std::sync::Mutex<HashMap<SharedString, Arc<Compiled>>>> =
+        std::sync::LazyLock::new(Default::default);
+    if let Some(compiled) = COMPILED.lock().unwrap().get(language) {
+        return Ok(compiled.clone());
+    }
+
+    // Concatenate the query strings, keeping track of the start offset of each section.
+    let mut query_source = String::new();
+    query_source.push_str(injections);
+    let locals_query_offset = query_source.len();
+    query_source.push_str(locals);
+    let highlights_query_offset = query_source.len();
+    query_source.push_str(highlights);
+
+    // Construct a single query by concatenating the three query strings, but record the
+    // range of pattern indices that belong to each individual string.
+    let mut query = Query::new(grammar, &query_source).context("new query")?;
+
+    let mut locals_pattern_index = 0;
+    let mut highlights_pattern_index = 0;
+    for i in 0..(query.pattern_count()) {
+        let pattern_offset = query.start_byte_for_pattern(i);
+        if pattern_offset < highlights_query_offset {
+            if pattern_offset < highlights_query_offset {
+                highlights_pattern_index += 1;
+            }
+            if pattern_offset < locals_query_offset {
+                locals_pattern_index += 1;
+            }
+        }
+    }
+
+    let injections_query = if !injections.is_empty() {
+        Query::new(grammar, injections).ok().map(Arc::new)
+    } else {
+        None
+    };
+
+    // Injection layers are computed separately during parsing, so do not
+    // emit injection captures from the main highlight query.
+    for pattern_index in 0..locals_pattern_index {
+        query.disable_pattern(pattern_index);
+    }
+
+    let compiled = Arc::new(Compiled {
+        query: Arc::new(query),
+        injections_query,
+        locals_pattern_index,
+        highlights_pattern_index,
+    });
+    COMPILED.lock().unwrap().insert(language.clone(), compiled.clone());
+    Ok(compiled)
+}
+
 impl SyntaxHighlighter {
     /// Create a new SyntaxHighlighter for the given language.
     pub fn new(lang: &str) -> Self {
@@ -426,43 +496,12 @@ impl SyntaxHighlighter {
             .set_language(&grammar)
             .context("parse set_language")?;
 
-        // Concatenate the query strings, keeping track of the start offset of each section.
-        let mut query_source = String::new();
-        query_source.push_str(&config.injections);
-        let locals_query_offset = query_source.len();
-        query_source.push_str(&config.locals);
-        let highlights_query_offset = query_source.len();
-        query_source.push_str(&config.highlights);
-
-        // Construct a single query by concatenating the three query strings, but record the
-        // range of pattern indices that belong to each individual string.
-        let mut query = Query::new(&grammar, &query_source).context("new query")?;
-
-        let mut locals_pattern_index = 0;
-        let mut highlights_pattern_index = 0;
-        for i in 0..(query.pattern_count()) {
-            let pattern_offset = query.start_byte_for_pattern(i);
-            if pattern_offset < highlights_query_offset {
-                if pattern_offset < highlights_query_offset {
-                    highlights_pattern_index += 1;
-                }
-                if pattern_offset < locals_query_offset {
-                    locals_pattern_index += 1;
-                }
-            }
-        }
-
-        let injections_query = if !config.injections.is_empty() {
-            Query::new(&grammar, &config.injections).ok().map(Arc::new)
-        } else {
-            None
-        };
-
-        // Injection layers are computed separately during parsing, so do not
-        // emit injection captures from the main highlight query.
-        for pattern_index in 0..locals_pattern_index {
-            query.disable_pattern(pattern_index);
-        }
+        // (den) Compiled once per language: a query takes tens of milliseconds
+        // (TypeScript's ~30), paid by every editor and every side of a diff.
+        let Compiled { query, injections_query, locals_pattern_index, highlights_pattern_index } =
+            &*compiled(&config.name, &grammar, &config.injections, &config.locals, &config.highlights)?;
+        let (query, injections_query) = (query.clone(), injections_query.clone());
+        let (locals_pattern_index, highlights_pattern_index) = (*locals_pattern_index, *highlights_pattern_index);
 
         // Find all of the highlighting patterns that are disabled for nodes that
         // have been identified as local variables.

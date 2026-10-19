@@ -1,6 +1,6 @@
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/Cargo.toml vendor/gpui-component/Cargo.toml
---- a/Cargo.toml	2026-10-13 09:11:25
-+++ b/Cargo.toml	2026-10-13 09:11:26
+--- a/Cargo.toml	2006-07-24 03:21:28
++++ b/Cargo.toml	2026-10-13 09:32:24
 @@ -232,38 +232,11 @@
      "dep:tree-sitter-zig",
  ]
@@ -42,8 +42,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  [dependencies.anyhow]
  version = "1"
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/highlighter.rs vendor/gpui-component/src/highlighter/highlighter.rs
---- a/src/highlighter/highlighter.rs	2026-10-13 09:11:26
-+++ b/src/highlighter/highlighter.rs	2026-10-13 09:11:26
+--- a/src/highlighter/highlighter.rs	2006-07-24 03:21:28
++++ b/src/highlighter/highlighter.rs	2026-10-19 11:40:31
 @@ -14,7 +14,7 @@
  };
  use sum_tree::Bias;
@@ -53,7 +53,144 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  };
  
  const MAX_INJECTION_RANGES: usize = 4096;
-@@ -1090,9 +1090,22 @@
+@@ -30,7 +30,7 @@
+ #[allow(unused)]
+ pub struct SyntaxHighlighter {
+     language: SharedString,
+-    query: Option<Query>,
++    query: Option<Arc<Query>>, // (den) shared: `compiled`
+     /// The full injections query. This is used to build injection layers during parsing.
+     injections_query: Option<Arc<Query>>,
+ 
+@@ -365,6 +365,76 @@
+     }
+ }
+ 
++/// (den) A language's queries, compiled: see `compiled`.
++struct Compiled {
++    query: Arc<Query>,
++    injections_query: Option<Arc<Query>>,
++    locals_pattern_index: usize,
++    highlights_pattern_index: usize,
++}
++
++/// (den) `language`'s queries, compiled the first time it is asked for.
++fn compiled(
++    language: &SharedString,
++    grammar: &tree_sitter::Language,
++    injections: &str,
++    locals: &str,
++    highlights: &str,
++) -> Result<Arc<Compiled>> {
++    static COMPILED: std::sync::LazyLock<std::sync::Mutex<HashMap<SharedString, Arc<Compiled>>>> =
++        std::sync::LazyLock::new(Default::default);
++    if let Some(compiled) = COMPILED.lock().unwrap().get(language) {
++        return Ok(compiled.clone());
++    }
++
++    // Concatenate the query strings, keeping track of the start offset of each section.
++    let mut query_source = String::new();
++    query_source.push_str(injections);
++    let locals_query_offset = query_source.len();
++    query_source.push_str(locals);
++    let highlights_query_offset = query_source.len();
++    query_source.push_str(highlights);
++
++    // Construct a single query by concatenating the three query strings, but record the
++    // range of pattern indices that belong to each individual string.
++    let mut query = Query::new(grammar, &query_source).context("new query")?;
++
++    let mut locals_pattern_index = 0;
++    let mut highlights_pattern_index = 0;
++    for i in 0..(query.pattern_count()) {
++        let pattern_offset = query.start_byte_for_pattern(i);
++        if pattern_offset < highlights_query_offset {
++            if pattern_offset < highlights_query_offset {
++                highlights_pattern_index += 1;
++            }
++            if pattern_offset < locals_query_offset {
++                locals_pattern_index += 1;
++            }
++        }
++    }
++
++    let injections_query = if !injections.is_empty() {
++        Query::new(grammar, injections).ok().map(Arc::new)
++    } else {
++        None
++    };
++
++    // Injection layers are computed separately during parsing, so do not
++    // emit injection captures from the main highlight query.
++    for pattern_index in 0..locals_pattern_index {
++        query.disable_pattern(pattern_index);
++    }
++
++    let compiled = Arc::new(Compiled {
++        query: Arc::new(query),
++        injections_query,
++        locals_pattern_index,
++        highlights_pattern_index,
++    });
++    COMPILED.lock().unwrap().insert(language.clone(), compiled.clone());
++    Ok(compiled)
++}
++
+ impl SyntaxHighlighter {
+     /// Create a new SyntaxHighlighter for the given language.
+     pub fn new(lang: &str) -> Self {
+@@ -426,44 +496,13 @@
+             .set_language(&grammar)
+             .context("parse set_language")?;
+ 
+-        // Concatenate the query strings, keeping track of the start offset of each section.
+-        let mut query_source = String::new();
+-        query_source.push_str(&config.injections);
+-        let locals_query_offset = query_source.len();
+-        query_source.push_str(&config.locals);
+-        let highlights_query_offset = query_source.len();
+-        query_source.push_str(&config.highlights);
++        // (den) Compiled once per language: a query takes tens of milliseconds
++        // (TypeScript's ~30), paid by every editor and every side of a diff.
++        let Compiled { query, injections_query, locals_pattern_index, highlights_pattern_index } =
++            &*compiled(&config.name, &grammar, &config.injections, &config.locals, &config.highlights)?;
++        let (query, injections_query) = (query.clone(), injections_query.clone());
++        let (locals_pattern_index, highlights_pattern_index) = (*locals_pattern_index, *highlights_pattern_index);
+ 
+-        // Construct a single query by concatenating the three query strings, but record the
+-        // range of pattern indices that belong to each individual string.
+-        let mut query = Query::new(&grammar, &query_source).context("new query")?;
+-
+-        let mut locals_pattern_index = 0;
+-        let mut highlights_pattern_index = 0;
+-        for i in 0..(query.pattern_count()) {
+-            let pattern_offset = query.start_byte_for_pattern(i);
+-            if pattern_offset < highlights_query_offset {
+-                if pattern_offset < highlights_query_offset {
+-                    highlights_pattern_index += 1;
+-                }
+-                if pattern_offset < locals_query_offset {
+-                    locals_pattern_index += 1;
+-                }
+-            }
+-        }
+-
+-        let injections_query = if !config.injections.is_empty() {
+-            Query::new(&grammar, &config.injections).ok().map(Arc::new)
+-        } else {
+-            None
+-        };
+-
+-        // Injection layers are computed separately during parsing, so do not
+-        // emit injection captures from the main highlight query.
+-        for pattern_index in 0..locals_pattern_index {
+-            query.disable_pattern(pattern_index);
+-        }
+-
+         // Find all of the highlighting patterns that are disabled for nodes that
+         // have been identified as local variables.
+         let non_local_variable_patterns = (0..query.pattern_count())
+@@ -1090,9 +1129,22 @@
                  let Some(highlight_name) = query.capture_names().get(cap.index as usize) else {
                      continue;
                  };
@@ -77,7 +214,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
                  // Merge near range and same highlight name
                  let last_item = highlights.last();
-@@ -1324,6 +1337,49 @@
+@@ -1324,6 +1376,49 @@
      if let Some(fade_out) = other.fade_out {
          style.fade_out = Some(fade_out);
      }
@@ -128,8 +265,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
  #[cfg(test)]
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/input_adapter.rs vendor/gpui-component/src/highlighter/input_adapter.rs
---- a/src/highlighter/input_adapter.rs	2026-10-13 09:11:26
-+++ b/src/highlighter/input_adapter.rs	2026-10-13 09:11:26
+--- a/src/highlighter/input_adapter.rs	2006-07-24 03:21:28
++++ b/src/highlighter/input_adapter.rs	2026-10-03 08:58:23
 @@ -234,29 +234,37 @@
      tree: &tree_sitter::Tree,
      byte_range: Range<usize>,
@@ -190,8 +327,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  }
 +
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/go/highlights.scm vendor/gpui-component/src/highlighter/languages/go/highlights.scm
---- a/src/highlighter/languages/go/highlights.scm	2026-10-13 09:11:26
-+++ b/src/highlighter/languages/go/highlights.scm	2026-10-13 09:11:26
+--- a/src/highlighter/languages/go/highlights.scm	2006-07-24 03:21:28
++++ b/src/highlighter/languages/go/highlights.scm	2026-10-03 17:22:26
 @@ -1,3 +1,9 @@
 +; (den) Parameters come first: the first capture of a node wins over the generic
 +; `(identifier) @variable` below.
@@ -271,8 +408,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +  "switch"
 +] @keyword.control
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/javascript/highlights.scm vendor/gpui-component/src/highlighter/languages/javascript/highlights.scm
---- a/src/highlighter/languages/javascript/highlights.scm	2026-10-13 09:11:26
-+++ b/src/highlighter/languages/javascript/highlights.scm	2026-10-13 09:11:26
+--- a/src/highlighter/languages/javascript/highlights.scm	2006-07-24 03:21:28
++++ b/src/highlighter/languages/javascript/highlights.scm	2026-10-03 17:22:26
 @@ -1,3 +1,9 @@
 +; (den) Parameters come first: the first capture of a node wins over the generic
 +; `(identifier) @variable` below.
@@ -354,8 +491,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 -] @keyword
 +] @keyword.control
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/json/highlights.scm vendor/gpui-component/src/highlighter/languages/json/highlights.scm
---- a/src/highlighter/languages/json/highlights.scm	2026-10-13 09:11:26
-+++ b/src/highlighter/languages/json/highlights.scm	2026-10-13 09:11:26
+--- a/src/highlighter/languages/json/highlights.scm	2006-07-24 03:21:28
++++ b/src/highlighter/languages/json/highlights.scm	2026-10-05 19:20:24
 @@ -1,11 +1,15 @@
  (comment) @comment
  
@@ -375,8 +512,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  [
    (true)
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/rust/highlights.scm vendor/gpui-component/src/highlighter/languages/rust/highlights.scm
---- a/src/highlighter/languages/rust/highlights.scm	2026-10-13 09:11:26
-+++ b/src/highlighter/languages/rust/highlights.scm	2026-10-13 09:11:26
+--- a/src/highlighter/languages/rust/highlights.scm	2006-07-24 03:21:28
++++ b/src/highlighter/languages/rust/highlights.scm	2026-10-13 09:32:24
 @@ -103,31 +103,32 @@
  
  "as" @keyword
@@ -445,8 +582,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  (escape_sequence) @escape
  
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/typescript/highlights.scm vendor/gpui-component/src/highlighter/languages/typescript/highlights.scm
---- a/src/highlighter/languages/typescript/highlights.scm	2026-10-13 09:11:26
-+++ b/src/highlighter/languages/typescript/highlights.scm	2026-10-13 09:11:26
+--- a/src/highlighter/languages/typescript/highlights.scm	2006-07-24 03:21:28
++++ b/src/highlighter/languages/typescript/highlights.scm	2026-10-13 09:32:24
 @@ -1,3 +1,10 @@
 +; (den) Parameters and namespaces come first: the first capture of a node wins
 +; over the generic `(identifier) @variable` below.
@@ -557,8 +694,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +  "yield"
 +] @keyword.control
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/registry.rs vendor/gpui-component/src/highlighter/registry.rs
---- a/src/highlighter/registry.rs	2026-10-13 09:11:26
-+++ b/src/highlighter/registry.rs	2026-10-13 09:11:26
+--- a/src/highlighter/registry.rs	2006-07-24 03:21:28
++++ b/src/highlighter/registry.rs	2026-10-13 09:32:24
 @@ -15,12 +15,14 @@
  
  use crate::{ActiveTheme, DEFAULT_THEME_COLORS, ThemeMode, highlighter::languages};
@@ -751,8 +888,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              "variant" => self.variant,
              _ => None,
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/wasm_stub.rs vendor/gpui-component/src/highlighter/wasm_stub.rs
---- a/src/highlighter/wasm_stub.rs	2026-10-13 09:11:26
-+++ b/src/highlighter/wasm_stub.rs	2026-10-13 09:11:26
+--- a/src/highlighter/wasm_stub.rs	2006-07-24 03:21:28
++++ b/src/highlighter/wasm_stub.rs	2026-10-13 09:32:24
 @@ -165,10 +165,20 @@
  #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, JsonSchema, Serialize, Deserialize)]
  pub struct SyntaxColors {
@@ -945,8 +1082,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              "variant",
          ];
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/input.rs vendor/gpui-component/src/input/input.rs
---- a/src/input/input.rs	2026-10-13 09:11:26
-+++ b/src/input/input.rs	2026-10-13 09:11:26
+--- a/src/input/input.rs	2006-07-24 03:21:28
++++ b/src/input/input.rs	2026-10-06 22:17:07
 @@ -506,11 +506,22 @@
          search_panel: Option<AnyElement>,
          _: &Window,
@@ -973,8 +1110,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      }
  }
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/mod.rs vendor/gpui-component/src/input/mod.rs
---- a/src/input/mod.rs	2026-10-13 09:11:26
-+++ b/src/input/mod.rs	2026-10-13 09:11:26
+--- a/src/input/mod.rs	2006-07-24 03:21:28
++++ b/src/input/mod.rs	2026-10-13 09:32:24
 @@ -6,6 +6,7 @@
      ActivateToken, InlineToken, InlineTokenClickEvent, InlineTokenContext, InlineTokenError,
      InlineTokenSpan, InputContent,
@@ -993,8 +1130,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      SelectToStartOfLine, Selection, ShowCharacterPalette, ShowDocumentHandler, TabSize,
      TextDecoration, TextDecorationCollection, TextareaState, ToggleCodeActions, Undo,
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/overlay.rs vendor/gpui-component/src/input/overlay.rs
---- a/src/input/overlay.rs	2026-10-13 09:11:26
-+++ b/src/input/overlay.rs	2026-10-13 09:11:26
+--- a/src/input/overlay.rs	2006-07-24 03:21:28
++++ b/src/input/overlay.rs	2026-10-13 09:32:24
 @@ -522,7 +522,7 @@
              state.update(cx, |state, cx| {
                  state.set_value("foo bar foo baz foo", window, cx);
@@ -1005,8 +1142,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                  assert_eq!(state.search_session().matcher.current_match_index(), 1);
                  state.close_search(cx);
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/popovers/completion_menu.rs vendor/gpui-component/src/input/popovers/completion_menu.rs
---- a/src/input/popovers/completion_menu.rs	2026-10-13 09:11:26
-+++ b/src/input/popovers/completion_menu.rs	2026-10-13 09:11:26
+--- a/src/input/popovers/completion_menu.rs	2006-07-24 03:21:28
++++ b/src/input/popovers/completion_menu.rs	2026-10-13 09:32:24
 @@ -2,38 +2,79 @@
  
  use gpui::{
@@ -1278,8 +1415,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              let longest_ix = items
                  .iter()
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/search.rs vendor/gpui-component/src/input/search.rs
---- a/src/input/search.rs	2026-10-13 09:11:26
-+++ b/src/input/search.rs	2026-10-13 09:11:26
+--- a/src/input/search.rs	2006-07-24 03:21:28
++++ b/src/input/search.rs	2026-10-13 09:32:24
 @@ -1,20 +1,22 @@
 +// (den) The find bar as VS Code's (see vendor/README.md); every change
 +// from 0.7.0 is in vendor/patches/gpui-component.patch.
@@ -1989,8 +2126,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          assert_eq!(matcher.current_match_index(), 0);
  
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/menu/context_menu.rs vendor/gpui-component/src/menu/context_menu.rs
---- a/src/menu/context_menu.rs	2026-10-13 09:11:26
-+++ b/src/menu/context_menu.rs	2026-10-13 09:11:26
+--- a/src/menu/context_menu.rs	2006-07-24 03:21:28
++++ b/src/menu/context_menu.rs	2026-10-13 09:32:24
 @@ -128,6 +128,9 @@
      /// the previously rendered frame, where the menu's own element is not yet.
      trigger_focus_handle: Option<FocusHandle>,
@@ -2042,8 +2179,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                                          }
                                      }
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/fallback.rs vendor/gpui-component/src/native_menu/fallback.rs
---- a/src/native_menu/fallback.rs	2026-10-13 09:11:26
-+++ b/src/native_menu/fallback.rs	2026-10-13 09:11:26
+--- a/src/native_menu/fallback.rs	2006-07-24 03:21:28
++++ b/src/native_menu/fallback.rs	2026-10-13 09:32:24
 @@ -81,6 +81,7 @@
                      checked,
                      icon: Some(icon),
@@ -2061,8 +2198,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                  NativeMenuItem::Item { action: None, .. } => menu,
                  NativeMenuItem::Submenu {
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/macos.rs vendor/gpui-component/src/native_menu/macos.rs
---- a/src/native_menu/macos.rs	2026-10-13 09:11:26
-+++ b/src/native_menu/macos.rs	2026-10-13 09:11:26
+--- a/src/native_menu/macos.rs	2006-07-24 03:21:28
++++ b/src/native_menu/macos.rs	2026-10-13 09:32:24
 @@ -2,11 +2,11 @@
  
  use std::{cell::Cell, sync::Arc};
@@ -2148,8 +2285,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
  fn ns_image_for_icon(
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/mod.rs vendor/gpui-component/src/native_menu/mod.rs
---- a/src/native_menu/mod.rs	2026-10-13 09:11:26
-+++ b/src/native_menu/mod.rs	2026-10-13 09:11:26
+--- a/src/native_menu/mod.rs	2006-07-24 03:21:28
++++ b/src/native_menu/mod.rs	2026-10-13 09:32:24
 @@ -30,7 +30,7 @@
  
  #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -2268,8 +2405,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          else {
              panic!("expected a disabled actionable item with an icon");
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/windows.rs vendor/gpui-component/src/native_menu/windows.rs
---- a/src/native_menu/windows.rs	2026-10-13 09:11:26
-+++ b/src/native_menu/windows.rs	2026-10-13 09:11:26
+--- a/src/native_menu/windows.rs	2006-07-24 03:21:28
++++ b/src/native_menu/windows.rs	2026-10-13 09:32:24
 @@ -218,6 +218,7 @@
                  checked,
                  icon,
@@ -2292,8 +2429,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                  // Actionable, enabled items get an id; others use 0.
                  let id = match action {
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/text/compat.rs vendor/gpui-component/src/text/compat.rs
---- a/src/text/compat.rs	2026-10-13 09:11:26
-+++ b/src/text/compat.rs	2026-10-13 09:11:26
+--- a/src/text/compat.rs	2006-07-24 03:21:28
++++ b/src/text/compat.rs	2026-10-03 08:58:23
 @@ -64,6 +64,14 @@
              stream_fade: None,
          }
@@ -2310,8 +2447,8 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      pub fn markdown(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
          let id = id.into();
 diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/tooltip.rs vendor/gpui-component/src/tooltip.rs
---- a/src/tooltip.rs	2026-10-13 09:11:26
-+++ b/src/tooltip.rs	2026-10-13 09:11:26
+--- a/src/tooltip.rs	2006-07-24 03:21:28
++++ b/src/tooltip.rs	2026-10-13 09:32:24
 @@ -91,6 +91,12 @@
  }
  impl Render for Tooltip {
