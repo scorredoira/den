@@ -505,6 +505,9 @@ impl Layout {
 
     /// Puts `icon` before `before`, or last: a place's with the rest of its
     /// place's. A tab's on another tab of its section goes before that one there.
+    /// Among another place's tabs' (on one but the first), a place of one
+    /// panel's joins as a tab before it, and any other place's goes before
+    /// that place: its icons stay together.
     pub fn move_icon(&mut self, icon: Icon, before: Option<Icon>) {
         if let (Icon::Place(panel), Some(Icon::Place(other))) = (icon, before)
             && panel != other
@@ -529,6 +532,19 @@ impl Layout {
         };
         if before.is_some_and(|before| moving.contains(&before)) {
             return;
+        }
+        let mut before = before;
+        if let Some(target @ Icon::Place(other)) = before
+            && let Some(ix) = place(&target)
+            && icons.iter().find(|icon| place(icon) == Some(ix)) != Some(&target)
+        {
+            if let Icon::Place(panel) = icon
+                && self.places[place(&icon).expect("a place's")].iter().flatten().count() == 1
+            {
+                self.join(panel, other, Some(other));
+                return;
+            }
+            before = icons.iter().find(|icon| place(icon) == Some(ix)).copied();
         }
         icons.retain(|other| !moving.contains(other));
         let at = before.and_then(|before| icons.iter().position(|other| *other == before)).unwrap_or(icons.len());

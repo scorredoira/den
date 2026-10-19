@@ -971,6 +971,24 @@ mod layout_tests {
         assert_eq!(layout.bar(), expected);
     }
 
+    /// Dropped among another place's tab icons, a place of one panel joins
+    /// as a tab there; one of more goes before that place.
+    #[test]
+    fn place_icon_dropped_among_tabs() {
+        use super::{Icon, Place};
+        let mut layout = Layout::default();
+        layout.join(Panel::Changes, Panel::Files, None);
+        let (files, changes, history) = (Icon::Place(Panel::Files), Icon::Place(Panel::Changes), Icon::Place(Panel::History));
+        layout.move_icon(history, Some(Icon::Place(Panel::Search)));
+        assert_eq!(layout.bar()[..3], [files, changes, history]);
+        layout.move_icon(history, Some(changes));
+        assert_eq!(layout.bar()[..3], [files, history, changes]);
+        assert_eq!(layout.sections(Place(Panel::Files))[1], [Panel::Files, Panel::History, Panel::Changes]);
+        let search = Icon::Place(Panel::Search);
+        layout.move_icon(search, Some(changes));
+        assert_eq!(layout.bar()[..4], [search, files, history, changes]);
+    }
+
     /// Panels join as tabs of a section: the one joining in front, an icon
     /// for each tab, which move together; out again above what's left.
     #[test]
