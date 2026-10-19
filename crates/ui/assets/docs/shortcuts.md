@@ -28,7 +28,7 @@ The shortcuts below are the current ones: change them in Keyboard Shortcuts (in 
 | Shortcut | Does |
 | --- | --- |
 | {{ToggleTasks}} | Show or hide the workspaces |
-| {{ToggleInactiveWorkspaces}} | List only the workspaces with an agent, and the one in front, or all of them again |
+| {{ToggleInactiveWorkspaces}} | List only the workspaces with an agent, the one in front and those set to Always Show (right-click a workspace), or all of them again |
 | {{NewTask}} | New worktree in the current repo |
 
 Right-click a workspace to hide it, remove it from the list (nothing on disk is touched) or delete a worktree. Drag them to reorder: a repo moves with its worktrees.

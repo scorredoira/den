@@ -1030,9 +1030,25 @@ impl Den {
     }
 
     /// Whether the Workspaces panel lists `key`: with Hide Inactive
-    /// Workspaces, only those with a coding agent and the one in front.
+    /// Workspaces, only those with a coding agent, the one in front and
+    /// those always shown.
     fn is_listed(&self, key: &TaskKey, cx: &App) -> bool {
-        !Config::get(cx).hide_inactive_workspaces || self.active.as_ref() == Some(key) || !self.workspace_agents(key).is_empty()
+        let config = Config::get(cx);
+        !config.hide_inactive_workspaces
+            || self.active.as_ref() == Some(key)
+            || config.always_shown_workspaces.contains(&key.config())
+            || !self.workspace_agents(key).is_empty()
+    }
+
+    /// Lists `key` even when Hide Inactive Workspaces hides those without
+    /// an agent, or no longer.
+    fn toggle_always_shown(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
+        let key = key.config();
+        Config::update(cx, |config| match config.always_shown_workspaces.contains(&key) {
+            true => config.always_shown_workspaces.retain(|other| *other != key),
+            false => config.always_shown_workspaces.push(key),
+        });
+        cx.notify();
     }
 
     fn toggle_inactive_workspaces(&mut self, _: &ToggleInactiveWorkspaces, _: &mut Window, cx: &mut Context<Self>) {
@@ -1765,6 +1781,12 @@ fn hide_panel(den: &WeakEntity<Den>, panel: Panel) -> menu::PopupMenuItem {
 }
 
 /// Hide Inactive Workspaces, or Show Inactive Workspaces while they're hidden.
+fn always_shown_item(den: &WeakEntity<Den>, key: &TaskKey, cx: &App) -> menu::PopupMenuItem {
+    let shown = Config::get(cx).always_shown_workspaces.contains(&key.config());
+    let key = key.clone();
+    menu::item("Always Show", den, move |this, _, cx| this.toggle_always_shown(&key, cx)).checked(shown)
+}
+
 fn inactive_item(den: &WeakEntity<Den>, cx: &App) -> menu::PopupMenuItem {
     let label = if Config::get(cx).hide_inactive_workspaces { "Show Inactive Workspaces" } else { "Hide Inactive Workspaces" };
     menu::item(label, den, |this, window, cx| this.toggle_inactive_workspaces(&ToggleInactiveWorkspaces, window, cx))
@@ -2089,6 +2111,13 @@ mod palette_tests {
             assert_eq!(den.active, Some(key("/stride")));
             assert_eq!(listed(den, cx), [std::path::PathBuf::from("/stride")]);
         });
+        // Always shown, it's listed without an agent or being in front.
+        cx.update(|_, cx| den.update(cx, |den, cx| den.toggle_always_shown(&key("/den"), cx)));
+        den.read_with(cx, |den, cx| {
+            assert_eq!(listed(den, cx), [std::path::PathBuf::from("/den"), std::path::PathBuf::from("/stride")]);
+        });
+        cx.update(|_, cx| den.update(cx, |den, cx| den.toggle_always_shown(&key("/den"), cx)));
+        den.read_with(cx, |den, cx| assert_eq!(listed(den, cx), [std::path::PathBuf::from("/stride")]));
         // Back to den: its worktree, not its checkout.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/den"), window, cx)));
         den.read_with(cx, |den, _| assert_eq!(den.active, Some(key("/den-hide"))));

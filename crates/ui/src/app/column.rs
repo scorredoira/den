@@ -443,6 +443,7 @@ impl Den {
                         .disabled(unsaved),
                     )
                     .separator()
+                    .when(known, |menu| menu.item(always_shown_item(&weak, &project, cx)))
                     .item(inactive_item(&weak, cx))
                     .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
                 }
@@ -596,6 +597,8 @@ impl Den {
                         }))
                     })
                     .separator()
+                    .item(always_shown_item(&weak, &key, cx))
+                    .item(inactive_item(&weak, cx))
                     .panel_items(hide_panel(&weak, Panel::Workspaces), window, cx)
                 }
             });

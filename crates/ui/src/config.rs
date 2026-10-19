@@ -238,6 +238,10 @@ pub struct Config {
     /// and the one in front.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hide_inactive_workspaces: bool,
+    /// Workspaces Hide Inactive Workspaces lists anyway, agent or not
+    /// (same keys as `order`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub always_shown_workspaces: Vec<String>,
     /// Repos folded to their row in the Workspaces panel, their worktrees
     /// hidden (same keys as `order`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
