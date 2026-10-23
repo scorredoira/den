@@ -469,4 +469,31 @@ pub(crate) mod tests {
             assert!(area.views[&1].read(cx).focus_handle(cx).is_focused(window));
         });
     }
+
+    /// A split's sizes stay as they were dragged while another tab (or
+    /// another workspace) is drawn instead.
+    #[gpui_kit::test]
+    fn split_sizes_survive_not_being_drawn(cx: &mut TestAppContext) {
+        init(cx);
+        let (area, cx) = cx.add_window_view(area);
+        area.update(cx, |area, _| {
+            area.tabs.remove(1);
+            area.tabs[0].tree = Tree::Split { axis: Axis::Row, children: vec![Tree::Leaf(1), Tree::Leaf(2)] };
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let state = area.read_with(cx, |area, _| area.split_sizes.borrow().values().next().unwrap().clone());
+        cx.update(|window, cx| state.update(cx, |state, cx| state.resize_panel(0, px(200.), window, cx)));
+        for tab in [1, 0] {
+            area.update(cx, |area, cx| {
+                area.active = tab;
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        let state = area.read_with(cx, |area, _| area.split_sizes.borrow().values().next().unwrap().clone());
+        assert_eq!(state.read_with(cx, |state, _| state.sizes()[0]), px(200.));
+    }
 }

@@ -12,7 +12,7 @@ use crate::drag_drop::DropPlacement;
 use crate::menu::PanelItems as _;
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
@@ -25,7 +25,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
-    resizable_panel, v_flex, v_resizable,
+    ResizableState, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::TermId;
@@ -155,6 +155,10 @@ pub struct TerminalArea {
     weak: WeakEntity<Self>,
     /// What each terminal's view says, heard while it's here.
     view_subscriptions: HashMap<TermId, Subscription>,
+    /// The sizes of each split's panes, by its tab's id and its place in the
+    /// tree: kept here, as gpui drops an element's state the first frame it
+    /// isn't painted (in another tab, or another workspace).
+    split_sizes: RefCell<HashMap<(usize, String), Entity<ResizableState>>>,
 }
 
 impl EventEmitter<TerminalAreaEvent> for TerminalArea {}
@@ -184,6 +188,7 @@ impl TerminalArea {
             renaming: None,
             weak: cx.entity().downgrade(),
             view_subscriptions: HashMap::new(),
+            split_sizes: RefCell::default(),
         }
     }
 
@@ -1386,11 +1391,18 @@ impl TerminalArea {
             }
             Tree::Split { axis, children } => {
                 let id = SharedString::from(format!("terminal-split-{}-{path}", tab.id));
+                let state = self
+                    .split_sizes
+                    .borrow_mut()
+                    .entry((tab.id, path.clone()))
+                    .or_insert_with(|| cx.new(|_| ResizableState::default()))
+                    .clone();
                 let group = match axis {
                     Axis::Row => h_resizable(id),
                     Axis::Column => v_resizable(id),
                 };
                 group
+                    .with_state(&state)
                     .children(children.iter().enumerate().map(|(ix, child)| {
                         resizable_panel().child(self.render_tree(tab, child, format!("{path}.{ix}"), focused, cx))
                     }))
@@ -1406,6 +1418,7 @@ impl Render for TerminalArea {
             self.cancel_drag(window, cx);
         }
         let focused = self.contains_focus(window, cx);
+        self.split_sizes.get_mut().retain(|(id, _), _| self.tabs.iter().any(|tab| tab.id == *id));
         let body = match self.tabs.get(self.active) {
             _ if let Some(tab) = self.panel_showing() => tab.view.clone().into_any_element(),
             None => {
