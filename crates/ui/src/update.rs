@@ -381,12 +381,40 @@ fn replace_bundle(archive: &Path, bundle: &Path, work: &Path) -> Result<Vec<Stri
     let _ = std::fs::remove_dir_all(&staged);
     let _ = std::fs::remove_dir_all(&old);
     run(Command::new("ditto").arg(&unpacked).arg(&staged))?;
+    if let Err(err) = sign_locally(&staged) {
+        eprintln!("could not sign the update with this Mac's certificate, it keeps the release's: {err:#}");
+    }
     std::fs::rename(bundle, &old).with_context(|| format!("could not replace {}", bundle.display()))?;
     if let Err(err) = std::fs::rename(&staged, bundle) {
         let _ = std::fs::rename(&old, bundle);
         return Err(err).with_context(|| format!("could not replace {}", bundle.display()));
     }
     Ok(vec!["open".into(), "-a".into(), bundle.to_string_lossy().into_owned()])
+}
+
+/// Signs the bundle with this Mac's certificate, as `install` does, when
+/// there is one. The release is signed ad hoc, and macOS ties what the app
+/// was allowed (Accessibility, Screen Recording) to an ad hoc signature's
+/// exact build: every update would lose it. With a certificate it's tied to
+/// the certificate, so it stays.
+fn sign_locally(bundle: &Path) -> Result<()> {
+    let output = Command::new("security").args(["find-identity", "-v", "-p", "codesigning"]).output()?;
+    let identities = String::from_utf8_lossy(&output.stdout);
+    let Some(identity) = signing_identity(&identities) else {
+        return Ok(());
+    };
+    run(Command::new("codesign").args(["--force", "--sign", &identity]).arg(bundle.join("Contents/MacOS/den-agent")))?;
+    run(Command::new("codesign").args(["--force", "--sign", &identity]).arg(bundle))
+}
+
+/// The certificate to sign with, from `security find-identity`'s output:
+/// a Developer ID, else an Apple Development one.
+fn signing_identity(identities: &str) -> Option<String> {
+    let names: Vec<&str> = identities.lines().filter_map(|line| line.split('"').nth(1)).collect();
+    ["Developer ID Application", "Apple Development"]
+        .iter()
+        .find_map(|kind| names.iter().find(|name| name.starts_with(kind)))
+        .map(|name| name.to_string())
 }
 
 /// Copies the agents in `from` to `to`, before `install.sh` puts the next
@@ -477,6 +505,15 @@ xTXliG/BdamJkyXurYv5A7rPeoMf2alJJMKwXhqq+JPN9m6VZ4mFharriGWJsSiIJIr7F50b5ay16hRf
     #[test]
     fn the_release_key_is_valid() {
         minisign_verify::PublicKey::decode(RELEASE_KEY).unwrap();
+    }
+
+    #[test]
+    fn a_developer_id_is_preferred_to_sign_with() {
+        let both = "  1) AB \"Apple Development: Me (X)\"\n  2) CD \"Developer ID Application: Me (Y)\"\n     2 valid identities found\n";
+        assert_eq!(signing_identity(both).as_deref(), Some("Developer ID Application: Me (Y)"));
+        let one = "  1) AB \"Apple Development: Me (X)\"\n     1 valid identities found\n";
+        assert_eq!(signing_identity(one).as_deref(), Some("Apple Development: Me (X)"));
+        assert_eq!(signing_identity("     0 valid identities found\n"), None);
     }
 
     #[test]
