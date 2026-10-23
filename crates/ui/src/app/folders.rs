@@ -263,25 +263,29 @@ impl Den {
         .detach();
     }
 
-    /// Cmd-N: new task in the active task's repo.
+    /// Cmd-Shift-N: new worktree of the active workspace's repo (from its
+    /// checkout or any of its worktrees), named in a dialog.
     pub(super) fn new_task_action(&mut self, _: &NewTask, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.active.clone() else {
             return;
         };
         if let Some(repo) = self.task(&key).map(|task| task.repo.clone()) {
-            self.start_new_task(key.host, repo, window, cx);
+            self.start_new_task(key.host, repo, true, window, cx);
         }
     }
 
-    pub(super) fn start_new_task(&mut self, host: SharedString, repo: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// With `dialog`, named in a dialog; otherwise in a row under its
+    /// project, unfolded, in the Workspaces panel.
+    pub(super) fn start_new_task(&mut self, host: SharedString, repo: PathBuf, dialog: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.client(&host).is_none() {
             return;
         }
-        // It's named under its project, unfolded, in the Workspaces panel.
-        let project = TaskKey { host: host.clone(), path: repo.clone() };
-        self.set_project_folded(&project, false, cx);
-        if let Some(workspace) = self.active_workspace() {
-            workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
+        if !dialog {
+            let project = TaskKey { host: host.clone(), path: repo.clone() };
+            self.set_project_folded(&project, false, cx);
+            if let Some(workspace) = self.active_workspace() {
+                workspace.update(cx, |workspace, cx| workspace.show_panel(Panel::Workspaces, cx));
+            }
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("branch name"));
         let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
@@ -298,6 +302,7 @@ impl Den {
         self.new_task = Some(NewTaskInput {
             host,
             repo,
+            dialog,
             input,
             busy: false,
             error: None,
@@ -335,6 +340,10 @@ impl Den {
                         let key = TaskKey { host, path: task.path };
                         Config::update(cx, |config| config.own_worktrees.push(key.config()));
                         this.activate(key, window, cx);
+                        // A new worktree is to work in: a terminal there, with the keyboard.
+                        if let Some(workspace) = this.active_workspace() {
+                            workspace.update(cx, |workspace, cx| workspace.open_terminal(None, None, None, true, window, cx)).detach();
+                        }
                     }
                     Ok(other) => this.new_task_error(format!("Unexpected response: {other:?}"), window, cx),
                     Err(err) => this.new_task_error(format!("{err:#}"), window, cx),

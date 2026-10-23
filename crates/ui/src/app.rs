@@ -145,10 +145,12 @@ struct ServerWindow {
     start: Option<Option<PathBuf>>,
 }
 
-/// A new worktree being named, in a row under its repo.
+/// A new worktree being named, in a row under its repo or, from its
+/// shortcut, in a dialog wherever you are.
 struct NewTaskInput {
     host: SharedString,
     repo: PathBuf,
+    dialog: bool,
     input: Entity<InputState>,
     busy: bool,
     error: Option<SharedString>,
@@ -1654,6 +1656,7 @@ impl Render for Den {
                     .or_else(|| self.folder_picker.as_ref().map(|(picker, _)| picker.clone().into_any_element()))
                     .map(|picker| div().absolute().top(px(44.)).left_0().right_0().flex().justify_center().child(picker)),
             )
+            .children(self.new_task.as_ref().filter(|form| form.dialog).map(|form| render_new_task_dialog(form, cx)))
             .children(self.about.as_ref().map(|focus| self.render_about(focus, cx)))
             .children(self.confirm_remove.as_ref().map(|(key, focus, at_risk)| self.render_confirm_remove(key, focus, at_risk.as_ref(), cx)))
             .children(
@@ -1869,6 +1872,43 @@ fn render_new_task(form: &NewTaskInput, cx: &App) -> AnyElement {
                 }),
         )
         .children(form.error.clone().map(|error| div().px_3().pb_1().child(error_text(error, cx))))
+        .into_any_element()
+}
+
+/// The worktree being named from its shortcut: a dialog over everything,
+/// under its repo's name. Enter creates it, Esc or a click outside drops it.
+fn render_new_task_dialog(form: &NewTaskInput, cx: &mut Context<Den>) -> AnyElement {
+    let theme = cx.theme();
+    let repo = form.repo.file_name().map_or_else(|| form.repo.display().to_string(), |name| name.to_string_lossy().into_owned());
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui_kit::black().opacity(0.25))
+        .occlude()
+        .child(
+            v_flex()
+                .w(px(400.))
+                .max_w(relative(0.9))
+                .p_4()
+                .gap_3()
+                .rounded(theme.radius_lg)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .shadow_lg()
+                .text_ui(cx)
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.cancel(window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .child(div().text_base().font_semibold().child(format!("New worktree in {repo}")))
+                .child(render_new_task(form, cx)),
+        )
         .into_any_element()
 }
 

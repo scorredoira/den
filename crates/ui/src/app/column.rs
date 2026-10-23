@@ -276,7 +276,7 @@ impl Den {
         let new_task = self
             .new_task
             .as_ref()
-            .filter(|form| form.host == project.host && form.repo == project.path)
+            .filter(|form| !form.dialog && form.host == project.host && form.repo == project.path)
             .map(|form| render_new_task(form, cx));
         let checkout = group.iter().find(|(key, _)| *key == project);
         let worktrees: Vec<&(TaskKey, &TaskInfo)> = group.iter().filter(|(key, _)| *key != project).collect();
@@ -321,7 +321,7 @@ impl Den {
                 format!("New Worktree in {name}…"),
                 cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.start_new_task(host.clone(), repo.clone(), window, cx)
+                    this.start_new_task(host.clone(), repo.clone(), false, window, cx)
                 }),
                 cx,
             )
@@ -390,7 +390,7 @@ impl Den {
                     menu.when(git, |menu| {
                         menu.item(
                             menu::item(format!("New Worktree in {name}…"), &weak, move |this, window, cx| {
-                                this.start_new_task(create.host.clone(), create.path.clone(), window, cx)
+                                this.start_new_task(create.host.clone(), create.path.clone(), false, window, cx)
                             })
                             .disabled(!connected),
                         )
@@ -564,7 +564,7 @@ impl Den {
                     menu.when(git, |menu| {
                         menu.item(
                             menu::item(format!("New Worktree in {repo_name}…"), &weak, move |this, window, cx| {
-                                this.start_new_task(create.host.clone(), repo.clone(), window, cx)
+                                this.start_new_task(create.host.clone(), repo.clone(), false, window, cx)
                             })
                             .disabled(!connected),
                         )
