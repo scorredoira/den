@@ -496,4 +496,25 @@ pub(crate) mod tests {
         let state = area.read_with(cx, |area, _| area.split_sizes.borrow().values().next().unwrap().clone());
         assert_eq!(state.read_with(cx, |state, _| state.sizes()[0]), px(200.));
     }
+
+    /// A split painted for the first time (the app reopened) shares the space
+    /// as it was saved.
+    #[gpui_kit::test]
+    fn a_split_starts_with_its_saved_shares(cx: &mut TestAppContext) {
+        init(cx);
+        let (area, cx) = cx.add_window_view(area);
+        area.update(cx, |area, _| {
+            area.tabs.remove(1);
+            area.tabs[0].tree = Tree::Split { axis: Axis::Row, children: vec![Tree::Leaf(1), Tree::Leaf(2)] };
+            area.split_shares.insert(vec![1, 2], vec![0.25, 0.75]);
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let state = area.read_with(cx, |area, _| area.split_sizes.borrow()[&vec![1, 2]].clone());
+        let sizes = state.read_with(cx, |state, _| state.sizes().clone());
+        let share = sizes[0].as_f32() / (sizes[0] + sizes[1]).as_f32();
+        assert!((share - 0.25).abs() < 0.01, "{sizes:?}");
+    }
 }

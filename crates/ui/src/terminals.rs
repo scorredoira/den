@@ -1,6 +1,6 @@
 //! The task's terminal area: tabs, and in each tab terminals split into
 //! resizable rows and columns. The processes live in the agent; here we only
-//! store which terminal goes where, to restore it when the app is reopened.
+//! store which terminal goes where and how big, to restore it when the app is reopened.
 
 mod drag;
 
@@ -123,8 +123,13 @@ enum Place {
 }
 
 /// What `restore` brings back: the tabs with their names, the terminals'
-/// names, and the terminals attached.
-type Restored = (Vec<(Tree, Option<String>)>, HashMap<TermId, String>, Vec<(TermId, Entity<Terminal>)>);
+/// names, the splits' shares and the terminals attached.
+type Restored = (
+    Vec<(Tree, Option<String>)>,
+    HashMap<TermId, String>,
+    HashMap<Vec<TermId>, Vec<f32>>,
+    Vec<(TermId, Entity<Terminal>)>,
+);
 
 pub struct TerminalArea {
     client: Option<Arc<Client>>,
@@ -155,10 +160,13 @@ pub struct TerminalArea {
     weak: WeakEntity<Self>,
     /// What each terminal's view says, heard while it's here.
     view_subscriptions: HashMap<TermId, Subscription>,
-    /// The sizes of each split's panes, by its tab's id and its place in the
-    /// tree: kept here, as gpui drops an element's state the first frame it
-    /// isn't painted (in another tab, or another workspace).
-    split_sizes: RefCell<HashMap<(usize, String), Entity<ResizableState>>>,
+    /// The sizes of each split's panes, by its terminals (in order): kept
+    /// here, as gpui drops an element's state the first frame it isn't
+    /// painted (in another tab, or another workspace).
+    split_sizes: RefCell<HashMap<Vec<TermId>, Entity<ResizableState>>>,
+    /// The share of each split's panes, as last dragged: saved, for a split
+    /// painted for the first time (when the app is reopened) to start so.
+    split_shares: HashMap<Vec<TermId>, Vec<f32>>,
 }
 
 impl EventEmitter<TerminalAreaEvent> for TerminalArea {}
@@ -189,6 +197,7 @@ impl TerminalArea {
             weak: cx.entity().downgrade(),
             view_subscriptions: HashMap::new(),
             split_sizes: RefCell::default(),
+            split_shares: HashMap::new(),
         }
     }
 
@@ -211,10 +220,11 @@ impl TerminalArea {
                 let mut alive: HashSet<TermId> = agent::list(&client, group.clone()).await?.into_iter().collect();
                 let debug = debug_term.filter(|term| alive.remove(term));
                 let saved = with_layouts(|layouts| layouts.groups.get(&group).cloned()).unwrap_or_default();
-                let mut names = saved.names;
+                let mut names = saved.names.clone();
                 let tabs: Vec<(Tree, Option<String>)> = saved
                     .tabs
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .filter_map(SavedTab::into_tab)
                     // A tab of one terminal named before names were theirs.
                     .map(|(tree, name)| match (&tree, name) {
@@ -243,13 +253,14 @@ impl TerminalArea {
                 let attached: HashSet<TermId> = terminals.iter().map(|(term, _)| *term).collect();
                 let tabs = keep_terms(tabs, &attached);
                 names.retain(|term, _| attached.contains(term));
-                Ok((tabs, names, terminals))
+                Ok((tabs, names, saved.sizes.into_iter().collect(), terminals))
             }
             .await;
 
             this.update_in(cx, |this, window, cx| match result {
-                Ok((tabs, names, terminals)) => {
+                Ok((tabs, names, shares, terminals)) => {
                     this.names = names;
+                    this.split_shares = shares;
                     for (term, terminal) in terminals {
                         let view = this.add_view(term, terminal, window, cx);
                         if Some(term) == this.debug_term {
@@ -1020,9 +1031,14 @@ impl TerminalArea {
         if cfg!(test) {
             return;
         }
+        let splits: HashSet<Vec<TermId>> = self.tabs.iter().flat_map(|tab| splits(&tab.tree)).collect();
+        let mut sizes: Vec<(Vec<TermId>, Vec<f32>)> =
+            self.split_shares.iter().filter(|(terms, _)| splits.contains(*terms)).map(|(terms, shares)| (terms.clone(), shares.clone())).collect();
+        sizes.sort_by(|a, b| a.0.cmp(&b.0));
         let saved = SavedLayout {
             tabs: self.tabs.iter().map(SavedTab::of).collect(),
             names: self.names.clone(),
+            sizes,
         };
         with_layouts(|layouts| {
             layouts.groups.insert(self.group.clone(), saved);
@@ -1391,20 +1407,40 @@ impl TerminalArea {
             }
             Tree::Split { axis, children } => {
                 let id = SharedString::from(format!("terminal-split-{}-{path}", tab.id));
+                let terms = tree.leaves();
                 let state = self
                     .split_sizes
                     .borrow_mut()
-                    .entry((tab.id, path.clone()))
+                    .entry(terms.clone())
                     .or_insert_with(|| cx.new(|_| ResizableState::default()))
                     .clone();
+                // Until it measures its panes, a split shares the space as it
+                // was saved: by flex, from nothing.
+                let shares = self.split_shares.get(&terms).filter(|shares| shares.len() == children.len());
                 let group = match axis {
                     Axis::Row => h_resizable(id),
                     Axis::Column => v_resizable(id),
                 };
+                let area = self.weak.clone();
                 group
                     .with_state(&state)
+                    .on_resize(move |state, _, cx| {
+                        let sizes = state.read(cx).sizes().clone();
+                        let total: f32 = sizes.iter().map(|size| size.as_f32()).sum();
+                        if total <= 0. {
+                            return;
+                        }
+                        let shares = sizes.iter().map(|size| size.as_f32() / total).collect();
+                        area.update(cx, |this, _| {
+                            this.split_shares.insert(terms.clone(), shares);
+                            this.save();
+                        })
+                        .ok();
+                    })
                     .children(children.iter().enumerate().map(|(ix, child)| {
-                        resizable_panel().child(self.render_tree(tab, child, format!("{path}.{ix}"), focused, cx))
+                        resizable_panel()
+                            .when_some(shares, |panel, shares| panel.flex_grow(shares[ix] * shares.len() as f32).flex_basis(px(0.)))
+                            .child(self.render_tree(tab, child, format!("{path}.{ix}"), focused, cx))
                     }))
                     .into_any_element()
             }
@@ -1418,7 +1454,8 @@ impl Render for TerminalArea {
             self.cancel_drag(window, cx);
         }
         let focused = self.contains_focus(window, cx);
-        self.split_sizes.get_mut().retain(|(id, _), _| self.tabs.iter().any(|tab| tab.id == *id));
+        let splits: HashSet<Vec<TermId>> = self.tabs.iter().flat_map(|tab| splits(&tab.tree)).collect();
+        self.split_sizes.get_mut().retain(|terms, _| splits.contains(terms));
         let body = match self.tabs.get(self.active) {
             _ if let Some(tab) = self.panel_showing() => tab.view.clone().into_any_element(),
             None => {
@@ -1481,6 +1518,9 @@ struct SavedLayout {
     /// The terminals' names.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     names: HashMap<TermId, String>,
+    /// The share of each split's panes, by its terminals.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sizes: Vec<(Vec<TermId>, Vec<f32>)>,
 }
 
 /// The saved layouts, read once: the Agents panel asks for the tabs' names
@@ -1588,6 +1628,14 @@ impl SavedLayouts {
 
     fn store(&self) {
         FILE.save_later(self);
+    }
+}
+
+/// Each split in `tree`, by its terminals.
+fn splits(tree: &Tree) -> Vec<Vec<TermId>> {
+    match tree {
+        Tree::Leaf(_) => Vec::new(),
+        Tree::Split { children, .. } => std::iter::once(tree.leaves()).chain(children.iter().flat_map(splits)).collect(),
     }
 }
 
