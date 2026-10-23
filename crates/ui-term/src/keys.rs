@@ -82,6 +82,10 @@ pub(crate) fn to_esc_str(
         ("right", TerminalModifiers::None) if !mode.contains(TermMode::APP_CURSOR) => Some("\x1b[C"),
         ("left", TerminalModifiers::None) if mode.contains(TermMode::APP_CURSOR) => Some("\x1bOD"),
         ("left", TerminalModifiers::None) if !mode.contains(TermMode::APP_CURSOR) => Some("\x1b[D"),
+        // A word back and forward, as Terminal.app and iTerm send it: what
+        // shells bind, unlike xterm's `\x1b[1;3D`, which zsh prints as `;3D`.
+        ("left", TerminalModifiers::Alt) if cfg!(target_os = "macos") => Some("\x1bb"),
+        ("right", TerminalModifiers::Alt) if cfg!(target_os = "macos") => Some("\x1bf"),
         ("back", TerminalModifiers::None) => Some("\x7f"),
         ("insert", TerminalModifiers::None) => Some("\x1b[2~"),
         ("delete", TerminalModifiers::None) => Some("\x1b[3~"),
@@ -262,3 +266,16 @@ fn modifier_code(keystroke: &Keystroke) -> u32 {
     modifier_code + 1
 }
 
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn option_arrows_move_a_word() {
+        let esc = |key| to_esc_str(&Keystroke::parse(key).unwrap(), TermMode::NONE, false);
+        assert_eq!(esc("alt-left").as_deref(), Some("\x1bb"));
+        assert_eq!(esc("alt-right").as_deref(), Some("\x1bf"));
+        assert_eq!(esc("shift-alt-left").as_deref(), Some("\x1b[1;4D"));
+    }
+}
