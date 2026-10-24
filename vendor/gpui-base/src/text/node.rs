@@ -1105,6 +1105,9 @@ pub(crate) struct Paragraph {
     /// What the plain (text-only) render path derives from `children`, kept
     /// between frames; see [`ParagraphRender`].
     pub(super) render_cache: ParagraphRenderCache,
+    /// (den) Its images centered: it is in an HTML block with
+    /// `align="center"`.
+    pub(crate) centered: bool,
 }
 
 /// Derived state, invisible to `Debug` and equality.
@@ -1153,6 +1156,7 @@ impl PartialEq for Paragraph {
         self.span == other.span
             && self.children == other.children
             && self.link_refs == other.link_refs
+            && self.centered == other.centered
     }
 }
 
@@ -1164,6 +1168,7 @@ impl Paragraph {
             link_refs: HashMap::new(),
             state: Arc::new(Mutex::new(InlineState::default())),
             render_cache: ParagraphRenderCache::default(),
+            centered: false,
         }
     }
 
@@ -1683,6 +1688,7 @@ impl Paragraph {
                 link_refs: Default::default(),
                 state: Arc::new(Mutex::new(InlineState::default())),
                 render_cache: ParagraphRenderCache::default(),
+                centered: false,
             },
         )
     }
@@ -2309,6 +2315,8 @@ impl Paragraph {
 
         div()
             .id(leaf_element_id(fade_key))
+            // (den) `align="center"` on the HTML block around it.
+            .when(self.centered, |this| this.flex().flex_col().items_center())
             .children(child_nodes)
             .into_any_element()
     }
@@ -3779,6 +3787,7 @@ mod tests {
             link_refs: HashMap::new(),
             state: Arc::new(Mutex::new(InlineState::default())),
             render_cache: ParagraphRenderCache::default(),
+            centered: false,
         };
         if let Ok(mut state) = paragraph.state.lock() {
             state.set_text(combined.into());
@@ -4264,6 +4273,7 @@ mod tests {
             link_refs: HashMap::new(),
             state: Arc::new(Mutex::new(InlineState::default())),
             render_cache: ParagraphRenderCache::default(),
+            centered: false,
         }
     }
 

@@ -2,7 +2,8 @@
 //! image. Only `stateDiagram`/`stateDiagram-v2` and `flowchart`/`graph`, with
 //! no subgraphs, composite states or styles, laid out in layers (Sugiyama):
 //! ranks, crossings reduced by barycenters, positions by isotonic regression.
-//! A block it can't draw stays as code under the reason.
+//! The image is centered; a block it can't draw stays as code under the
+//! reason.
 use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
 /// `markdown` with each Mermaid block replaced by its image.
@@ -32,7 +33,7 @@ pub(super) fn with_diagrams(markdown: &str) -> Cow<'_, str> {
             Ok(svg) => {
                 let _ = write!(
                     out,
-                    "\n<img src=\"data:image/svg+xml,{}\" width=\"{}\" alt=\"diagram\">\n\n",
+                    "\n<p align=\"center\"><img src=\"data:image/svg+xml,{}\" width=\"{}\" alt=\"diagram\"></p>\n\n",
                     percent_encode(&svg.text),
                     svg.width.ceil(),
                 );
@@ -534,6 +535,11 @@ fn layout(d: &Diagram) -> Layout {
     let mut seen = vec![false; items.len()];
     let mut queue: Vec<usize> = (0..n).filter(|&v| !links.iter().any(|l| l.1 == v)).collect();
     queue.extend(0..items.len());
+    // The order each item is first reached in, following the edges as they
+    // were written: between orders with as many crossings, the one closer
+    // to it wins, so `yes` written before `no` goes to its left.
+    let mut written = vec![0usize; items.len()];
+    let mut found = 0;
     let mut at = 0;
     while at < queue.len() {
         let v = queue[at];
@@ -543,6 +549,8 @@ fn layout(d: &Diagram) -> Layout {
         }
         seen[v] = true;
         layers[items[v].rank].push(v);
+        written[v] = found;
+        found += 1;
         queue.extend(links.iter().filter(|l| l.0 == v).map(|l| l.1));
     }
     // Links between rank r and r + 1, upper end first.
@@ -565,14 +573,11 @@ fn layout(d: &Diagram) -> Layout {
         starts.push(shuffled);
     }
     let mut best = layers.clone();
-    let mut fewest = usize::MAX;
+    let mut fewest = (usize::MAX, usize::MAX);
     for start in starts {
-        let (ordered, count) = order(start, &below);
-        if count < fewest {
-            (best, fewest) = (ordered, count);
-        }
-        if fewest == 0 {
-            break;
+        let (ordered, score) = order(start, &below, &written);
+        if score < fewest {
+            (best, fewest) = (ordered, score);
         }
     }
     let layers = best;
@@ -608,6 +613,56 @@ fn layout(d: &Diagram) -> Layout {
             let gaps: Vec<f32> = layer.windows(2).map(|w| gap(&items[w[0]], &items[w[1]])).collect();
             for (v, pos) in layer.iter().zip(spread(&wanted, &gaps)) {
                 items[*v].pos = pos;
+            }
+        }
+    }
+
+    // Straight runs: items linked one to one (the upper with one link down,
+    // the lower with one link up) go to one position where it fits.
+    let mut run: Vec<usize> = (0..items.len()).collect();
+    fn root(run: &mut [usize], v: usize) -> usize {
+        let mut v = v;
+        while run[v] != v {
+            run[v] = run[run[v]];
+            v = run[v];
+        }
+        v
+    }
+    for &(a, b) in &links {
+        let downs = links.iter().filter(|l| l.0 == a).count();
+        let ups = links.iter().filter(|l| l.1 == b).count();
+        if downs == 1 && ups == 1 {
+            let (ra, rb) = (root(&mut run, a), root(&mut run, b));
+            run[rb] = ra;
+        }
+    }
+    let mut runs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for v in 0..items.len() {
+        let r = root(&mut run, v);
+        runs.entry(r).or_default().push(v);
+    }
+    let place: HashMap<usize, (usize, usize)> =
+        layers.iter().enumerate().flat_map(|(r, layer)| layer.iter().enumerate().map(move |(i, &v)| (v, (r, i)))).collect();
+    let mut runs: Vec<Vec<usize>> = runs.into_values().filter(|run| run.len() > 1).collect();
+    runs.sort();
+    for _ in 0..4 {
+        for members in &runs {
+            // The mean first, then each member's own place, nearest first.
+            let mean = members.iter().map(|&v| items[v].pos).sum::<f32>() / members.len() as f32;
+            let mut targets: Vec<f32> = members.iter().map(|&v| items[v].pos).collect();
+            targets.sort_by(|a, b| (a - mean).abs().total_cmp(&(b - mean).abs()));
+            targets.insert(0, mean);
+            let fits = |target: f32| {
+                members.iter().all(|&v| {
+                    let (r, i) = place[&v];
+                    let layer = &layers[r];
+                    let left = i == 0 || target - items[layer[i - 1]].pos >= gap(&items[layer[i - 1]], &items[v]) - 0.01;
+                    let right = i + 1 == layer.len() || items[layer[i + 1]].pos - target >= gap(&items[v], &items[layer[i + 1]]) - 0.01;
+                    left && right
+                })
+            };
+            if let Some(target) = targets.into_iter().find(|&t| fits(t)) {
+                members.iter().for_each(|&v| items[v].pos = target);
             }
         }
     }
@@ -652,10 +707,18 @@ fn layout(d: &Diagram) -> Layout {
 }
 
 /// Barycenter sweeps from `layers`, each followed by transposing, and the
-/// order seen with the fewest crossings.
-fn order(mut layers: Vec<Vec<usize>>, below: &[Vec<(usize, usize)>]) -> (Vec<Vec<usize>>, usize) {
+/// order seen with the fewest crossings, then the fewest pairs out of their
+/// written order.
+fn order(mut layers: Vec<Vec<usize>>, below: &[Vec<(usize, usize)>], written: &[usize]) -> (Vec<Vec<usize>>, (usize, usize)) {
     let ranks = layers.len();
-    let total = |layers: &[Vec<usize>]| (0..ranks.saturating_sub(1)).map(|r| pair_crossings(&layers[r], &layers[r + 1], &below[r])).sum::<usize>();
+    let total = |layers: &[Vec<usize>]| {
+        let crossings = (0..ranks.saturating_sub(1)).map(|r| pair_crossings(&layers[r], &layers[r + 1], &below[r])).sum::<usize>();
+        let swapped = layers
+            .iter()
+            .map(|layer| (0..layer.len()).map(|i| layer[i + 1..].iter().filter(|&&b| written[b] < written[layer[i]]).count()).sum::<usize>())
+            .sum::<usize>();
+        (crossings, swapped)
+    };
     let mut best = layers.clone();
     let mut fewest = total(&layers);
     for sweep in 0..24 {
@@ -684,13 +747,10 @@ fn order(mut layers: Vec<Vec<usize>>, below: &[Vec<(usize, usize)>]) -> (Vec<Vec
             keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
             layers[r] = keyed.into_iter().map(|(_, v)| v).collect();
         }
-        transpose(&mut layers, below);
-        let count = total(&layers);
-        if count < fewest {
-            (best, fewest) = (layers.clone(), count);
-        }
-        if fewest == 0 {
-            break;
+        transpose(&mut layers, below, written);
+        let score = total(&layers);
+        if score < fewest {
+            (best, fewest) = (layers.clone(), score);
         }
     }
     (best, fewest)
@@ -718,9 +778,10 @@ fn crossings(layers: &[Vec<usize>], links: &[(usize, usize)]) -> usize {
         .sum()
 }
 
-/// Swaps neighbors in a rank while that removes crossings; a swap in rank r
-/// changes only the crossings with r - 1 and r + 1.
-fn transpose(layers: &mut [Vec<usize>], below: &[Vec<(usize, usize)>]) {
+/// Swaps neighbors in a rank while that removes crossings, or puts them in
+/// their written order with no more crossings; a swap in rank r changes only
+/// the crossings with r - 1 and r + 1.
+fn transpose(layers: &mut [Vec<usize>], below: &[Vec<(usize, usize)>], written: &[usize]) {
     let around = |layers: &[Vec<usize>], r: usize| {
         let above = if r > 0 { pair_crossings(&layers[r - 1], &layers[r], &below[r - 1]) } else { 0 };
         let under = if r + 1 < layers.len() { pair_crossings(&layers[r], &layers[r + 1], &below[r]) } else { 0 };
@@ -733,7 +794,8 @@ fn transpose(layers: &mut [Vec<usize>], below: &[Vec<(usize, usize)>]) {
             for i in 1..layers[r].len() {
                 let before = around(layers, r);
                 layers[r].swap(i - 1, i);
-                if around(layers, r) < before {
+                let after = around(layers, r);
+                if after < before || (after == before && written[layers[r][i - 1]] < written[layers[r][i]]) {
                     improved = true;
                 } else {
                     layers[r].swap(i - 1, i);
@@ -854,11 +916,20 @@ fn render(source: &str) -> Result<Svg, String> {
                 );
             }
             Shape::Diamond => {
-                let _ = write!(
-                    s,
-                    "<polygon points=\"{:.1},{:.1} {:.1},{:.1} {:.1},{:.1} {:.1},{:.1}\" fill=\"{FILL}\" stroke=\"{STROKE}\" stroke-width=\"1.2\"/>",
-                    cx, cy - h / 2.0, cx + w / 2.0, cy, cx, cy + h / 2.0, cx - w / 2.0, cy,
-                );
+                // Corners rounded as the boxes' are.
+                let corners = [(cx, cy - h / 2.0), (cx + w / 2.0, cy), (cx, cy + h / 2.0), (cx - w / 2.0, cy)];
+                let toward = |from: (f32, f32), to: (f32, f32)| {
+                    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                    let t = 5.0 / (dx * dx + dy * dy).sqrt();
+                    (from.0 + dx * t, from.1 + dy * t)
+                };
+                s.push_str("<path d=\"");
+                for i in 0..4 {
+                    let (prev, at, next) = (corners[(i + 3) % 4], corners[i], corners[(i + 1) % 4]);
+                    let (a, b) = (toward(at, prev), toward(at, next));
+                    let _ = write!(s, "{}{:.1},{:.1} Q{:.1},{:.1} {:.1},{:.1} ", if i == 0 { "M" } else { "L" }, a.0, a.1, at.0, at.1, b.0, b.1);
+                }
+                let _ = write!(s, "Z\" fill=\"{FILL}\" stroke=\"{STROKE}\" stroke-width=\"1.2\"/>");
             }
             Shape::Rect | Shape::Round => {
                 let radius = if node.shape == Shape::Rect { 3.0 } else { 10.0 };
@@ -1067,6 +1138,23 @@ mod tests {
         assert_eq!(crossings(&layers, &links), 0);
     }
 
+    /// With no crossing at stake, the branches go left to right as written.
+    #[test]
+    fn branches_keep_their_written_order() {
+        for (source, left, right) in [
+            ("flowchart TD\n Q{Ok?} -->|yes| Y\n Q -->|no| N", 1, 2),
+            ("flowchart TD\n Q{Ok?} -->|no| N\n Q -->|yes| Y", 1, 2),
+            ("flowchart TD\n A --> B\n A --> C\n A --> D", 1, 3),
+        ] {
+            let l = layout(&parse(source).unwrap());
+            assert!(l.centers[left].0 < l.centers[right].0, "{source}");
+        }
+        let d = parse(FLOW).unwrap();
+        let l = layout(&d);
+        let x = |label: &str| l.centers[d.nodes.iter().position(|n| n.label[0] == label).unwrap()].0;
+        assert!(x("Charge") < x("Payment page"), "yes is written before no");
+    }
+
     #[test]
     fn spread_keeps_order_and_gaps() {
         assert_eq!(spread(&[0.0, 0.0, 0.0], &[10.0, 10.0]), [-10.0, 0.0, 10.0]);
@@ -1077,8 +1165,8 @@ mod tests {
     fn a_block_becomes_an_image_and_the_rest_stays() {
         let markdown = format!("# Accounts\n\nText.\n```mermaid\n{STATES}```\nAfter.\n");
         let out = with_diagrams(&markdown);
-        assert!(out.starts_with("# Accounts\n\nText.\n\n<img src=\"data:image/svg+xml,%3Csvg"));
-        assert!(out.ends_with("alt=\"diagram\">\n\nAfter.\n"));
+        assert!(out.starts_with("# Accounts\n\nText.\n\n<p align=\"center\"><img src=\"data:image/svg+xml,%3Csvg"));
+        assert!(out.ends_with("alt=\"diagram\"></p>\n\nAfter.\n"));
         assert!(!out.contains("```"));
     }
 

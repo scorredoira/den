@@ -44,6 +44,11 @@ keeping the default handling of HTTP and embedded data URLs (the resolver
 returns an `Option`; `None` keeps the default). The component facade exposes
 this hook in `src/text/compat.rs`.
 
+And `(den)` so Mermaid diagrams sit centered: an HTML block with
+`align="center"` (`<p>`, `<div>`) marks its paragraphs `centered`
+(`src/text/format/html.rs`), and a paragraph of images lays them out
+centered (`src/text/node.rs`). Text in it is not centered.
+
 And `(den)` for Cmd-click: in `src/text/inline.rs`, a Cmd-click on plain text
 in a text view (Markdown) hands the word under the pointer to the link handler
 as a `word:` link (`word_at`), for the app to open a `path:line`. In

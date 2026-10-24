@@ -610,6 +610,10 @@ fn parse_node(
                         }
                     }
                     consume_paragraph(&mut children, paragraph);
+                    // (den) `align="center"` centers the images in it.
+                    if attr_value(attrs, local_name!("align")).is_some_and(|align| align.eq_ignore_ascii_case("center")) {
+                        children.iter_mut().for_each(center);
+                    }
 
                     if children.is_empty() {
                         None
@@ -659,6 +663,15 @@ fn consume_children_nodes(
     }
 
     children
+}
+
+/// (den) Marks the paragraphs in `node` centered.
+fn center(node: &mut BlockNode) {
+    match node {
+        BlockNode::Paragraph(paragraph) => paragraph.centered = true,
+        BlockNode::Root { children, .. } => children.iter_mut().for_each(center),
+        _ => {}
+    }
 }
 
 fn consume_paragraph(children: &mut Vec<BlockNode>, paragraph: &mut Paragraph) {

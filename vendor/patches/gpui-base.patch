@@ -1,6 +1,6 @@
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/Cargo.toml vendor/gpui-base/Cargo.toml
---- a/Cargo.toml	2026-10-13 09:11:18
-+++ b/Cargo.toml	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/Cargo.toml vendor/gpui-base/Cargo.toml
+--- a/Cargo.toml	2006-07-24 03:21:28
++++ b/Cargo.toml	2026-10-13 09:32:24
 @@ -43,27 +43,12 @@
  ]
  test-support = ["gpui/test-support"]
@@ -31,9 +31,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
  [dependencies.anyhow]
  version = "1"
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/base/element.rs vendor/gpui-base/src/input/base/element.rs
---- a/src/input/base/element.rs	2026-10-13 09:11:18
-+++ b/src/input/base/element.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/base/element.rs vendor/gpui-base/src/input/base/element.rs
+--- a/src/input/base/element.rs	2006-07-24 03:21:28
++++ b/src/input/base/element.rs	2026-10-13 09:32:24
 @@ -2,7 +2,7 @@
  use gpui::Corners;
  use gpui::Half;
@@ -595,9 +595,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      }
  }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/base/state.rs vendor/gpui-base/src/input/base/state.rs
---- a/src/input/base/state.rs	2026-10-13 09:11:18
-+++ b/src/input/base/state.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/base/state.rs vendor/gpui-base/src/input/base/state.rs
+--- a/src/input/base/state.rs	2006-07-24 03:21:28
++++ b/src/input/base/state.rs	2026-10-13 09:32:24
 @@ -2,7 +2,7 @@
  //!
  //! Based on the `Input` example from the `gpui` crate.
@@ -996,9 +996,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +    pub at: f32,
 +    pub margin: Option<usize>,
  }
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/lsp/completions.rs vendor/gpui-base/src/input/editor/lsp/completions.rs
---- a/src/input/editor/lsp/completions.rs	2026-10-13 09:11:18
-+++ b/src/input/editor/lsp/completions.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/editor/lsp/completions.rs vendor/gpui-base/src/input/editor/lsp/completions.rs
+--- a/src/input/editor/lsp/completions.rs	2006-07-24 03:21:28
++++ b/src/input/editor/lsp/completions.rs	2026-10-03 08:58:23
 @@ -96,6 +96,12 @@
          Task::ready(Ok(false))
      }
@@ -1041,9 +1041,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              return;
          }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/lsp/definitions.rs vendor/gpui-base/src/input/editor/lsp/definitions.rs
---- a/src/input/editor/lsp/definitions.rs	2026-10-13 09:11:18
-+++ b/src/input/editor/lsp/definitions.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/editor/lsp/definitions.rs vendor/gpui-base/src/input/editor/lsp/definitions.rs
+--- a/src/input/editor/lsp/definitions.rs	2006-07-24 03:21:28
++++ b/src/input/editor/lsp/definitions.rs	2026-10-13 09:32:24
 @@ -21,6 +21,19 @@
          _window: &mut Window,
          _cx: &mut App,
@@ -1097,9 +1097,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          }
  
          let Some(location) = self.extras.hover_definition.locations.first().cloned() else {
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/search.rs vendor/gpui-base/src/input/editor/search.rs
---- a/src/input/editor/search.rs	2026-10-13 09:11:18
-+++ b/src/input/editor/search.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/editor/search.rs vendor/gpui-base/src/input/editor/search.rs
+--- a/src/input/editor/search.rs	2006-07-24 03:21:28
++++ b/src/input/editor/search.rs	2026-10-13 09:32:24
 @@ -1,6 +1,9 @@
 +// (den) Reworked for `SearchOptions` (whole words, regular expressions and
 +// replacements that keep the case), matched with `regex`; every change
@@ -1523,9 +1523,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          matcher.set_current_match_index(2);
          matcher.begin_replacement();
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/mod.rs vendor/gpui-base/src/input/mod.rs
---- a/src/input/mod.rs	2026-10-13 09:11:18
-+++ b/src/input/mod.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/mod.rs vendor/gpui-base/src/input/mod.rs
+--- a/src/input/mod.rs	2006-07-24 03:21:28
++++ b/src/input/mod.rs	2026-10-13 09:32:24
 @@ -118,6 +118,6 @@
  pub use native::{NativeMenu, NativeMenuItem};
  pub use rope_ext::{InputEdit, Point, RopeExt, RopeLines};
@@ -1534,9 +1534,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +pub use search::{SearchMatcher, SearchOptions, SearchSession}; // (den) SearchOptions
  pub use state::*;
  pub use textarea::{Textarea, TextareaState};
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/resizable/mod.rs vendor/gpui-base/src/resizable/mod.rs
---- a/src/resizable/mod.rs	2026-10-13 09:11:18
-+++ b/src/resizable/mod.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/resizable/mod.rs vendor/gpui-base/src/resizable/mod.rs
+--- a/src/resizable/mod.rs	2006-07-24 03:21:28
++++ b/src/resizable/mod.rs	2026-10-03 08:58:23
 @@ -217,6 +217,14 @@
          cx.notify();
      }
@@ -1552,9 +1552,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      /// Remove the panel at `panel_ix` and redistribute the remaining space.
      pub fn remove_panel(&mut self, panel_ix: usize, cx: &mut Context<Self>) {
          self.panels.remove(panel_ix);
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/resizable/panel.rs vendor/gpui-base/src/resizable/panel.rs
---- a/src/resizable/panel.rs	2026-10-13 09:11:18
-+++ b/src/resizable/panel.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/resizable/panel.rs vendor/gpui-base/src/resizable/panel.rs
+--- a/src/resizable/panel.rs	2006-07-24 03:21:28
++++ b/src/resizable/panel.rs	2026-10-03 08:58:23
 @@ -301,6 +301,11 @@
  impl RenderOnce for ResizablePanel {
      fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -1567,9 +1567,39 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              return div().id(("resizable-panel", self.panel_ix));
          }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/inline.rs vendor/gpui-base/src/text/inline.rs
---- a/src/text/inline.rs	2026-10-13 09:11:18
-+++ b/src/text/inline.rs	2026-10-13 09:11:18
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/format/html.rs vendor/gpui-base/src/text/format/html.rs
+--- a/src/text/format/html.rs	2006-07-24 03:21:28
++++ b/src/text/format/html.rs	2026-10-24 13:59:53
+@@ -610,6 +610,10 @@
+                         }
+                     }
+                     consume_paragraph(&mut children, paragraph);
++                    // (den) `align="center"` centers the images in it.
++                    if attr_value(attrs, local_name!("align")).is_some_and(|align| align.eq_ignore_ascii_case("center")) {
++                        children.iter_mut().for_each(center);
++                    }
+ 
+                     if children.is_empty() {
+                         None
+@@ -659,6 +663,15 @@
+     }
+ 
+     children
++}
++
++/// (den) Marks the paragraphs in `node` centered.
++fn center(node: &mut BlockNode) {
++    match node {
++        BlockNode::Paragraph(paragraph) => paragraph.centered = true,
++        BlockNode::Root { children, .. } => children.iter_mut().for_each(center),
++        _ => {}
++    }
+ }
+ 
+ fn consume_paragraph(children: &mut Vec<BlockNode>, paragraph: &mut Paragraph) {
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/inline.rs vendor/gpui-base/src/text/inline.rs
+--- a/src/text/inline.rs	2006-07-24 03:21:28
++++ b/src/text/inline.rs	2026-10-05 18:11:10
 @@ -1130,6 +1130,7 @@
                  let hitbox = hitbox.clone();
                  let text_view_state = GlobalState::global(cx).text_view_state().cloned();
@@ -1616,10 +1646,44 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  }
  
  /// Where one glyph of laid-out text paints: its row, and its horizontal
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/node.rs vendor/gpui-base/src/text/node.rs
---- a/src/text/node.rs	2026-10-13 09:11:18
-+++ b/src/text/node.rs	2026-10-13 09:11:18
-@@ -2005,10 +2005,9 @@
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/node.rs vendor/gpui-base/src/text/node.rs
+--- a/src/text/node.rs	2006-07-24 03:21:28
++++ b/src/text/node.rs	2026-10-24 13:58:49
+@@ -1105,6 +1105,9 @@
+     /// What the plain (text-only) render path derives from `children`, kept
+     /// between frames; see [`ParagraphRender`].
+     pub(super) render_cache: ParagraphRenderCache,
++    /// (den) Its images centered: it is in an HTML block with
++    /// `align="center"`.
++    pub(crate) centered: bool,
+ }
+ 
+ /// Derived state, invisible to `Debug` and equality.
+@@ -1153,6 +1156,7 @@
+         self.span == other.span
+             && self.children == other.children
+             && self.link_refs == other.link_refs
++            && self.centered == other.centered
+     }
+ }
+ 
+@@ -1164,6 +1168,7 @@
+             link_refs: HashMap::new(),
+             state: Arc::new(Mutex::new(InlineState::default())),
+             render_cache: ParagraphRenderCache::default(),
++            centered: false,
+         }
+     }
+ 
+@@ -1683,6 +1688,7 @@
+                 link_refs: Default::default(),
+                 state: Arc::new(Mutex::new(InlineState::default())),
+                 render_cache: ParagraphRenderCache::default(),
++                centered: false,
+             },
+         )
+     }
+@@ -2005,10 +2011,9 @@
  
  impl NodeContext {
      fn image_source(&self, image: &ImageNode) -> ImageSource {
@@ -1633,9 +1697,34 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      }
  
      pub(super) fn add_ref(&mut self, identifier: SharedString, link: LinkMark) {
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/text_view.rs vendor/gpui-base/src/text/text_view.rs
---- a/src/text/text_view.rs	2026-10-13 09:11:18
-+++ b/src/text/text_view.rs	2026-10-13 09:11:18
+@@ -2310,6 +2315,8 @@
+ 
+         div()
+             .id(leaf_element_id(fade_key))
++            // (den) `align="center"` on the HTML block around it.
++            .when(self.centered, |this| this.flex().flex_col().items_center())
+             .children(child_nodes)
+             .into_any_element()
+     }
+@@ -3780,6 +3787,7 @@
+             link_refs: HashMap::new(),
+             state: Arc::new(Mutex::new(InlineState::default())),
+             render_cache: ParagraphRenderCache::default(),
++            centered: false,
+         };
+         if let Ok(mut state) = paragraph.state.lock() {
+             state.set_text(combined.into());
+@@ -4265,6 +4273,7 @@
+             link_refs: HashMap::new(),
+             state: Arc::new(Mutex::new(InlineState::default())),
+             render_cache: ParagraphRenderCache::default(),
++            centered: false,
+         }
+     }
+ 
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/text_view.rs vendor/gpui-base/src/text/text_view.rs
+--- a/src/text/text_view.rs	2006-07-24 03:21:28
++++ b/src/text/text_view.rs	2026-10-13 09:32:24
 @@ -75,7 +75,8 @@
  pub(crate) type TableActionsFn =
      dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
