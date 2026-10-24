@@ -13,7 +13,7 @@ use data_url::DataUrl;
 use gpui_kit::*;
 use proto::{Request, Response};
 
-use super::{image_format, normalize, percent_decode};
+use super::{content_format, image_format, normalize, percent_decode};
 
 pub(super) fn resolver(
     client: Option<Arc<Client>>,
@@ -73,7 +73,7 @@ impl PreviewImages {
                     self.spawn(source, window, cx, async move {
                         let format = format.ok_or_else(|| anyhow::anyhow!("Unsupported image: {}", path.display()))?;
                         match read.ok_or_else(|| anyhow::anyhow!("No agent for Markdown image"))?.await? {
-                            Response::Bytes(bytes) => Ok(Image::from_bytes(format, bytes)),
+                            Response::Bytes(bytes) => Ok(Image::from_bytes(content_format(format, &bytes), bytes)),
                             other => Err(anyhow::anyhow!("Unexpected image response: {other:?}")),
                         }
                     })

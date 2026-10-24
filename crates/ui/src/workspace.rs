@@ -1705,6 +1705,21 @@ fn image_format(path: &Path) -> Option<ImageFormat> {
     })
 }
 
+/// The format a picture's bytes say they are, which wins over its extension:
+/// a .png that holds a JPEG still opens, as in Preview or a browser. Bytes
+/// with no known signature (an SVG is text) keep the extension's.
+fn content_format(by_extension: ImageFormat, bytes: &[u8]) -> ImageFormat {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => ImageFormat::Png,
+        [0xff, 0xd8, 0xff, ..] => ImageFormat::Jpeg,
+        [b'G', b'I', b'F', b'8', ..] => ImageFormat::Gif,
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => ImageFormat::Webp,
+        [b'B', b'M', ..] => ImageFormat::Bmp,
+        [b'I', b'I', 0x2a, 0x00, ..] | [b'M', b'M', 0x00, 0x2a, ..] => ImageFormat::Tiff,
+        _ => by_extension,
+    }
+}
+
 /// Whether two texts are the same, telling most apart by their length.
 fn same_text(a: &input::Rope, b: &input::Rope) -> bool {
     a.len() == b.len() && a == b

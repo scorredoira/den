@@ -241,6 +241,18 @@ fn png(cx: &mut App) -> Arc<RenderImage> {
     Image::from_bytes(ImageFormat::Png, PNG.to_vec()).to_image_data(cx.svg_renderer()).unwrap()
 }
 
+/// A picture whose extension lies opens by what its bytes are: a JPEG saved
+/// as .png (as a browser's screenshot can be) decodes, as Preview opens it.
+#[gpui_kit::test]
+fn an_image_opens_by_its_content_not_its_extension(cx: &mut TestAppContext) {
+    let jpeg = include_bytes!("testdata/one.jpg").to_vec();
+    let format = image_format(Path::new("/files-test/shot.png")).unwrap();
+    cx.update(|cx| {
+        let decoded = Image::from_bytes(content_format(format, &jpeg), jpeg).to_image_data(cx.svg_renderer());
+        assert!(decoded.is_ok(), "{:?}", decoded.err());
+    });
+}
+
 /// An image tab's picture stays on the GPU while a tab shows it, its other
 /// view too, and goes with the last one.
 #[gpui_kit::test]

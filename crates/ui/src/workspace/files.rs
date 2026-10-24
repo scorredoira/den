@@ -141,7 +141,7 @@ impl Workspace {
                     // Decoded here and held by its tab, which frees it when
                     // it goes.
                     Ok(Response::Bytes(bytes)) if let Some(format) = image_format => cx
-                        .background_spawn(async move { Image::from_bytes(format, bytes).to_image_data(renderer) })
+                        .background_spawn(async move { Image::from_bytes(content_format(format, &bytes), bytes).to_image_data(renderer) })
                         .await
                         .map(Read::Image)
                         .map_err(|err| format!("Couldn't open: {err:#}")),
