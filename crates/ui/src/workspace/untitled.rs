@@ -107,7 +107,7 @@ impl Workspace {
         tab.saved = saved;
         tab.text = Some(text.as_str().into());
         if let Some(markdown) = &tab.markdown {
-            markdown.update(cx, |view, cx| view.set_text(&text, cx));
+            markdown.update(cx, |view, cx| view.set_text(&super::diagram::with_diagrams(&text), cx));
         }
         tab.editor.update(cx, |state, cx| {
             state.set_tab_size(indentation(&text, cx), cx);

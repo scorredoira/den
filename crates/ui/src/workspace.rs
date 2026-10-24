@@ -58,6 +58,7 @@ mod tab_drag;
 mod layout;
 mod activity;
 mod markdown_images;
+mod diagram;
 mod commands;
 mod pages;
 mod debugging;
@@ -1142,7 +1143,7 @@ impl Workspace {
         tab.saved = text.clone();
         tab.show_source = false;
         if let Some(markdown) = &tab.markdown {
-            markdown.update(cx, |view, cx| view.set_text(&text, cx));
+            markdown.update(cx, |view, cx| view.set_text(&diagram::with_diagrams(&text), cx));
         }
         tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
         self.activate_with(ix, false, window, cx);

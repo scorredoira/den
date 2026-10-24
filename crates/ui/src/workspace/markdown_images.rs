@@ -116,7 +116,7 @@ impl PreviewImages {
 }
 
 /// A `data:` URL of an image format gpui decodes.
-fn data_url_image(url: &str) -> Option<Image> {
+pub(super) fn data_url_image(url: &str) -> Option<Image> {
     let data_url = DataUrl::process(url).ok()?;
     let mime = data_url.mime_type();
     let format = ImageFormat::from_mime_type(&format!("{}/{}", mime.type_, mime.subtype))?;
