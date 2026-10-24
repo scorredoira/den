@@ -741,10 +741,9 @@ fn the_tests_get_run_and_debug(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("test-lens-0-false").is_none(), "nothing on a helper");
 }
 
-/// Typing in a file's rendered Markdown switches to its source; a shortcut
-/// doesn't.
+/// Typing in a file's rendered Markdown does nothing: it stays rendered.
 #[gpui_kit::test]
-fn typing_in_the_preview_edits_the_markdown(cx: &mut TestAppContext) {
+fn typing_in_the_preview_does_nothing(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         cx.set_global(Config::default());
@@ -762,10 +761,8 @@ fn typing_in_the_preview_edits_the_markdown(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let source = |cx: &mut gpui_kit::VisualTestContext| workspace.read_with(cx, |workspace, _| workspace.tabs[0].show_source);
     assert!(!source(cx), "Markdown opens rendered");
-    cx.simulate_keystrokes("cmd-a");
-    assert!(!source(cx), "a shortcut stays in the preview");
     cx.simulate_keystrokes("x");
-    assert!(source(cx), "typing switches to the source");
+    assert!(!source(cx), "typing stays in the preview");
 }
 
 /// The wheel over a value's card in the code stays in the card: the code

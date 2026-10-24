@@ -769,7 +769,6 @@ impl Render for Workspace {
                     cx.notify();
                 }
             }))
-            .on_key_down(cx.listener(Self::type_in_preview))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| this.close_others(None, window, cx)))

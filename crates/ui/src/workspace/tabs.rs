@@ -101,25 +101,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Typing in a file's rendered Markdown switches it to the source, to
-    /// edit it. What was typed isn't inserted: there's no cursor in the
-    /// preview to say where.
-    pub(super) fn type_in_preview(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
-            return;
-        };
-        let Some(markdown) = tab.rendered() else {
-            return;
-        };
-        let focused = self.focus_handle.is_focused(window) || markdown.read(cx).focus_handle().is_focused(window);
-        let modifiers = &event.keystroke.modifiers;
-        let typed = event.keystroke.key_char.as_ref().is_some_and(|text| !text.trim().is_empty());
-        if focused && typed && tab.diff.is_none() && !tab.doc && !modifiers.platform && !modifiers.control && !modifiers.function {
-            cx.stop_propagation();
-            self.toggle_markdown_source(&ToggleMarkdownSource, window, cx);
-        }
-    }
-
     /// Tabs of renamed items follow the file.
     pub(super) fn renamed(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
         for tab in &mut self.tabs {
