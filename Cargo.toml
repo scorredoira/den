@@ -12,7 +12,7 @@ version = "2.30.37"
 gpui-kit = { version = "=0.7.0", features = ["tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-javascript", "tree-sitter-go", "tree-sitter-toml", "tree-sitter-yaml", "tree-sitter-markdown", "tree-sitter-sql", "tree-sitter-css", "tree-sitter-html", "tree-sitter-bash", "tree-sitter-diff", "tree-sitter-python", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-make"] }
 anyhow = "1"
 alacritty_terminal = "0.26"
-dirs = "6"
+dirs = "7"
 libc = "0.2"
 portable-pty = "0.9"
 rmp-serde = "1"
