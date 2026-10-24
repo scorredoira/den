@@ -6,8 +6,9 @@
 //! reason.
 use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
-/// `markdown` with each Mermaid block replaced by its image.
-pub(super) fn with_diagrams(markdown: &str) -> Cow<'_, str> {
+/// `markdown` with each Mermaid block replaced by its image, its text drawn
+/// at `font_size` like the rest of the preview.
+pub(super) fn with_diagrams(markdown: &str, font_size: f32) -> Cow<'_, str> {
     if !markdown.contains("mermaid") {
         return Cow::Borrowed(markdown);
     }
@@ -35,7 +36,7 @@ pub(super) fn with_diagrams(markdown: &str) -> Cow<'_, str> {
                     out,
                     "\n<p align=\"center\"><img src=\"data:image/svg+xml,{}\" width=\"{}\" alt=\"diagram\"></p>\n\n",
                     percent_encode(&svg.text),
-                    svg.width.ceil(),
+                    (svg.width * font_size / FONT).ceil(),
                 );
             }
             Err(error) => {
@@ -137,6 +138,31 @@ impl Builder {
 }
 
 fn parse(source: &str) -> Result<Diagram, String> {
+    let mut d = parse_lines(source)?;
+    for node in &mut d.nodes {
+        node.label = wrap(&node.label);
+    }
+    let mut edges: Vec<Edge> = Vec::new();
+    for mut edge in d.edges {
+        edge.label = wrap(&edge.label);
+        // Arrows between the same two boxes are drawn as one, their labels
+        // stacked with a rule between them.
+        match edges.iter_mut().find(|e| (e.from, e.to, e.dashed, e.arrow) == (edge.from, edge.to, edge.dashed, edge.arrow)) {
+            Some(same) if !edge.label.is_empty() => {
+                if !same.label.is_empty() {
+                    same.label.push(String::new());
+                }
+                same.label.append(&mut edge.label);
+            }
+            Some(_) => {}
+            None => edges.push(edge),
+        }
+    }
+    d.edges = edges;
+    Ok(d)
+}
+
+fn parse_lines(source: &str) -> Result<Diagram, String> {
     let mut lines = source.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
     let header = lines.next().ok_or("the block is empty")?;
     let mut words = header.split_whitespace();
@@ -361,9 +387,51 @@ fn text_width(line: &str) -> f32 {
         * FONT
 }
 
+/// Text wider than this breaks between words, as Mermaid does.
+const WRAP: f32 = 190.0;
+/// The height of the rule between stacked labels, an empty line.
+const RULE: f32 = 9.0;
+
+/// Each line broken into as few lines as fit in `WRAP`, as even as they can
+/// be, so the last one is not a lone word.
+fn wrap(lines: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in lines {
+        let count = break_at(line, WRAP).len();
+        let mut limit = text_width(line) / count as f32;
+        let mut broken = break_at(line, limit);
+        while broken.len() > count {
+            limit += 4.0;
+            broken = break_at(line, limit);
+        }
+        out.append(&mut broken);
+    }
+    out
+}
+
+fn break_at(line: &str, limit: f32) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        if !current.is_empty() && text_width(&format!("{current} {word}")) > limit {
+            out.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    out.push(current);
+    out
+}
+
+fn line_height(line: &str) -> f32 {
+    if line.is_empty() { RULE } else { LINE }
+}
+
 fn text_size(lines: &[String]) -> (f32, f32) {
     let width = lines.iter().map(|l| text_width(l)).fold(0.0, f32::max);
-    (width, lines.len() as f32 * LINE)
+    (width, lines.iter().map(|l| line_height(l)).sum())
 }
 
 fn node_size(node: &Node) -> (f32, f32) {
@@ -380,13 +448,13 @@ fn node_size(node: &Node) -> (f32, f32) {
 
 // Layout.
 
-const RANK_GAP: f32 = 22.0;
-const NODE_GAP: f32 = 36.0;
+const RANK_GAP: f32 = 36.0;
+const NODE_GAP: f32 = 48.0;
 const DUMMY_GAP: f32 = 14.0;
 const LOOP: f32 = 34.0;
 const MARGIN: f32 = 12.0;
 /// Around a label, in the room kept for it.
-const LABEL_GAP: f32 = 8.0;
+const LABEL_GAP: f32 = 14.0;
 
 /// A box of the layered graph: a node, or a point an edge goes through.
 struct Item {
@@ -510,8 +578,8 @@ fn layout(d: &Diagram) -> Layout {
         let middle = if items[chain[middle]].rank % 2 == 1 { middle } else { middle - 1 };
         let label = (!d.edges[e].label.is_empty()).then(|| {
             let item = &mut items[chain[middle]];
-            let (w, h) = text_size(&d.edges[e].label);
-            (item.breadth, item.depth) = if horizontal { (h + LABEL_GAP * 2.0, w + 12.0) } else { (w + LABEL_GAP * 2.0, h + 6.0) };
+            let (w, h) = label_box(&d.edges[e].label);
+            (item.breadth, item.depth) = if horizontal { (h + LABEL_GAP * 2.0, w) } else { (w + LABEL_GAP * 2.0, h) };
             chain[middle]
         });
         if reversed[e] {
@@ -1000,7 +1068,7 @@ fn path(s: &mut String, points: &[(f32, f32)], edge: &Edge, arrow: bool) {
 
 fn label_box(lines: &[String]) -> (f32, f32) {
     let (w, h) = text_size(lines);
-    (w + 12.0, h + 6.0)
+    (w + 16.0, h + 10.0)
 }
 
 /// A label in a white box with a border, readable on any background.
@@ -1012,18 +1080,34 @@ fn label(s: &mut String, (cx, cy): (f32, f32), lines: &[String]) {
         cx - w / 2.0,
         cy - h / 2.0,
     );
+    let mut y = cy - text_size(lines).1 / 2.0;
+    for line in lines {
+        if line.is_empty() {
+            let _ = write!(
+                s,
+                "<path d=\"M{:.1},{:.1} H{:.1}\" stroke=\"{LABEL_BORDER}\"/>",
+                cx - w / 2.0,
+                y + RULE / 2.0,
+                cx + w / 2.0,
+            );
+        }
+        y += line_height(line);
+    }
     text(s, (cx, cy), lines);
 }
 
 fn text(s: &mut String, (cx, cy): (f32, f32), lines: &[String]) {
-    let top = cy - (lines.len() as f32 - 1.0) * LINE / 2.0 + FONT * 0.35;
-    for (i, line) in lines.iter().enumerate() {
-        let _ = write!(
-            s,
-            "<text x=\"{cx:.1}\" y=\"{:.1}\" text-anchor=\"middle\" fill=\"{INK}\">{}</text>",
-            top + i as f32 * LINE,
-            escape(line),
-        );
+    let mut y = cy - text_size(lines).1 / 2.0;
+    for line in lines {
+        if !line.is_empty() {
+            let _ = write!(
+                s,
+                "<text x=\"{cx:.1}\" y=\"{:.1}\" text-anchor=\"middle\" fill=\"{INK}\">{}</text>",
+                y + LINE / 2.0 + FONT * 0.35,
+                escape(line),
+            );
+        }
+        y += line_height(line);
     }
 }
 
@@ -1164,7 +1248,7 @@ mod tests {
     #[test]
     fn a_block_becomes_an_image_and_the_rest_stays() {
         let markdown = format!("# Accounts\n\nText.\n```mermaid\n{STATES}```\nAfter.\n");
-        let out = with_diagrams(&markdown);
+        let out = with_diagrams(&markdown, FONT);
         assert!(out.starts_with("# Accounts\n\nText.\n\n<p align=\"center\"><img src=\"data:image/svg+xml,%3Csvg"));
         assert!(out.ends_with("alt=\"diagram\"></p>\n\nAfter.\n"));
         assert!(!out.contains("```"));
@@ -1174,10 +1258,26 @@ mod tests {
     fn a_block_it_cannot_draw_stays_as_code_under_the_reason() {
         let markdown = "~~~~mermaid\npie\n~~~~\n";
         assert_eq!(
-            with_diagrams(markdown),
+            with_diagrams(markdown, FONT),
             "\n> Diagram not drawn: `pie`: only stateDiagram and flowchart are drawn\n\n~~~~mermaid\npie\n~~~~\n"
         );
-        assert!(matches!(with_diagrams("```rust\nfn mermaid() {}\n```\n"), Cow::Borrowed(_)));
+        assert!(matches!(with_diagrams("```rust\nfn mermaid() {}\n```\n", FONT), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn arrows_between_the_same_boxes_are_one_with_their_labels_stacked() {
+        let d = parse("stateDiagram-v2\n A --> B: pays\n A --> B: confirmed\n A --> B\n B --> A: moved").unwrap();
+        assert_eq!(d.edges.len(), 2);
+        assert_eq!(d.edges[0].label, ["pays", "", "confirmed"]);
+        assert_eq!(d.edges[1].label, ["moved"]);
+    }
+
+    #[test]
+    fn a_long_label_breaks_into_even_lines() {
+        let lines = wrap(&["paid after it lapsed, hour still free, same booking".to_string()]);
+        assert_eq!(lines, ["paid after it lapsed, hour", "still free, same booking"]);
+        assert!(lines.iter().all(|l| text_width(l) <= WRAP));
+        assert_eq!(wrap(&["paid".to_string()]), ["paid"]);
     }
 
     #[test]
@@ -1210,7 +1310,7 @@ mod tests {
         }
 
         cx.update(gpui_kit::init);
-        let markdown = with_diagrams(&format!("Before.\n```mermaid\n{FLOW}```\n")).into_owned();
+        let markdown = with_diagrams(&format!("Before.\n```mermaid\n{FLOW}```\n"), FONT).into_owned();
         let asked = Arc::new(Mutex::new(Vec::new()));
         let (_, cx) = cx.add_window_view(|_, cx| Preview { text: cx.new(|cx| TextViewState::markdown(&markdown, cx)), asked: asked.clone() });
         cx.run_until_parked();

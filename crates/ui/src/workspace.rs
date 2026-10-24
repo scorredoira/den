@@ -1143,7 +1143,10 @@ impl Workspace {
         tab.saved = text.clone();
         tab.show_source = false;
         if let Some(markdown) = &tab.markdown {
-            markdown.update(cx, |view, cx| view.set_text(&diagram::with_diagrams(&text), cx));
+            markdown.update(cx, |view, cx| {
+            let size = Config::get(cx).font_size(TextArea::Preview);
+            view.set_text(&diagram::with_diagrams(&text, size), cx);
+        });
         }
         tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
         self.activate_with(ix, false, window, cx);
