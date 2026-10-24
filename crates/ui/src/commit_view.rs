@@ -339,9 +339,9 @@ impl CommitView {
     }
 
     /// No room for its two sides: unknown until it is painted.
-    pub fn cramped(&self, cx: &App) -> bool {
+    pub fn cramped(&self) -> bool {
         let width = self.width.get();
-        width > px(0.) && !Config::get(cx).room_for_two_sides(width)
+        width > px(0.) && width < px(crate::config::SIDE_BY_SIDE_WIDTH)
     }
 
     /// Scrolls to `file`'s changes.
@@ -794,8 +794,7 @@ impl Render for CommitView {
 impl CommitView {
     /// Every file's changes, or the picked one's.
     fn render_changes(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        // No room for two sides (or one column chosen): one column.
-        let narrow = !Config::get(cx).diff_side_by_side(self.width.get());
+        let narrow = !Config::get(cx).diff_side_by_side();
         self.narrow.set(narrow);
         let rows = if narrow { self.inline.clone() } else { self.rows.clone() };
         let view = cx.entity().downgrade();

@@ -1102,7 +1102,7 @@ impl Render for HistoryView {
             .sum();
         let font = Config::get(cx).font_size(crate::config::TextArea::Interface);
         let width = f32::from(self.width.get());
-        let stacked = self.commit.read(cx).cramped(cx)
+        let stacked = self.commit.read(cx).cramped()
             || (width > 0. && width - others < (SUBJECT_ROOM + AUTHOR_ROOM + DATE_ROOM) * font);
         let top_state = self.top.state(viewport.width, (&parts, stacked), cx).clone();
         let mut columns = if stacked { v_resizable("history-top") } else { h_resizable("history-top") }.with_state(&top_state);

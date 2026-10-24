@@ -68,6 +68,7 @@ shortcuts![
         (PrevTab, "Previous Tab", "secondary-shift-["),
         (SplitEditorRight, "Split Editor Right", "secondary-alt-s"),
         (SplitEditorDown, "Split Editor Down", "secondary-alt-shift-s"),
+        (ToggleDiffLayout, "Diffs: Side by Side or One Column", "secondary-alt-shift-d"),
     ],
     "Editing": [
         (ToggleWordWrap, "Toggle Word Wrap", "alt-z"),

@@ -285,7 +285,6 @@ impl Workspace {
                 marks: None,
                 inline,
                 inline_marks: None,
-                width: Rc::new(Cell::new(self.group_width(self.tabs[ix].group))),
                 selected,
                 sides: diff::SideBySide::default(),
                 whole: false,

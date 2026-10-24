@@ -139,7 +139,7 @@ actions!(
         ToggleDebugPanel,
         ToggleNotes,
         ResetLayout,
-        DiffLayoutAutomatic,
+        ToggleDiffLayout,
         DiffLayoutSideBySide,
         DiffLayoutOneColumn,
         OpenDiffFile,
@@ -270,7 +270,7 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.defer(app::quit));
         cx.on_action(|_: &ReloadWindow, cx| cx.defer(update::reload));
         // How diffs show, chosen in their menus: every diff, not only that one.
-        cx.on_action(|_: &DiffLayoutAutomatic, cx| workspace::set_diff_layout(config::DiffLayout::Automatic, cx));
+        cx.on_action(|_: &ToggleDiffLayout, cx| workspace::set_diff_layout(config::Config::get(cx).diff_layout.toggled(), cx));
         cx.on_action(|_: &DiffLayoutSideBySide, cx| workspace::set_diff_layout(config::DiffLayout::SideBySide, cx));
         cx.on_action(|_: &DiffLayoutOneColumn, cx| workspace::set_diff_layout(config::DiffLayout::OneColumn, cx));
         cx.activate(true);

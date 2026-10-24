@@ -523,11 +523,10 @@ impl Workspace {
                             move |menu, _: &mut Window, cx: &mut App| diff_menu(menu, layouts, open, Some(&selected), cx)
                         };
                         let body = match &tab.old {
-                            // No room for two sides (or one column chosen): VS Code's inline diff.
-                            Some(old) if !Config::get(cx).diff_side_by_side(old.width.get()) => div()
+                            // One column: VS Code's inline diff.
+                            Some(old) if !Config::get(cx).diff_side_by_side() => div()
                                 .size_full()
                                 .relative()
-                                .child(measure_width(&old.width))
                                 .child(
                                     Editor::new(&old.inline)
                                         .bordered(false)
@@ -539,7 +538,6 @@ impl Workspace {
                             Some(old) => h_flex()
                                 .size_full()
                                 .relative()
-                                .child(measure_width(&old.width))
                                 .child(
                                     div()
                                         .flex_1()

@@ -45,6 +45,7 @@ Right-click a workspace to hide it, remove it from the list (nothing on disk is 
 | {{PrevTab}} | Previous tab |
 | {{SplitEditorRight}} | Split the editor to the right |
 | {{SplitEditorDown}} | Split the editor down |
+| {{ToggleDiffLayout}} | Diffs side by side, or back to one column (also in a diff's right-click menu) |
 
 ## The files panel
 

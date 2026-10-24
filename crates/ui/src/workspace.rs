@@ -29,7 +29,7 @@ use crate::{
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
     ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
-    DiffLayoutAutomatic, DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile, ToggleWholeFile,
+    DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile, ToggleWholeFile,
     changes::{self, ChangesEvent, ChangesPanel},
     history::{HistoryEvent, HistoryView},
     history_panel::{HistoryPanel, HistoryPanelEvent},
@@ -243,11 +243,9 @@ impl EditorLook {
 struct OldSide {
     editor: Entity<EditorState>,
     marks: Option<(RangeDecorationCollection, RangeDecorationCollection)>,
-    /// Both sides in one column, shown instead when there's no room for two.
+    /// Both sides in one column, shown unless side by side is chosen.
     inline: Entity<EditorState>,
     inline_marks: Option<RangeDecorationCollection>,
-    /// The width the diff had when last drawn.
-    width: Rc<Cell<Pixels>>,
     /// Whether the old side, the new one and the column have text selected,
     /// for their menus' Copy (see `diff_menu`).
     selected: [Rc<Cell<bool>>; 3],
@@ -265,10 +263,9 @@ pub(crate) fn set_diff_layout(layout: DiffLayout, cx: &mut App) {
 }
 
 /// How diffs show, checked as chosen: their menus start with this.
-fn diff_layouts(cx: &App) -> [(&'static str, bool, Box<dyn Action>); 3] {
+fn diff_layouts(cx: &App) -> [(&'static str, bool, Box<dyn Action>); 2] {
     let layout = Config::get(cx).diff_layout;
     [
-        ("Automatic", layout == DiffLayout::Automatic, Box::new(DiffLayoutAutomatic)),
         ("Side by Side", layout == DiffLayout::SideBySide, Box::new(DiffLayoutSideBySide)),
         ("One Column", layout == DiffLayout::OneColumn, Box::new(DiffLayoutOneColumn)),
     ]
@@ -1943,8 +1940,8 @@ fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut 
 pub(crate) fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
     let width = width.clone();
     canvas(
-        move |bounds, window, cx| {
-            let fits = |width: Pixels| Config::get(cx).room_for_two_sides(width);
+        move |bounds, window, _| {
+            let fits = |width: Pixels| width >= px(config::SIDE_BY_SIDE_WIDTH);
             if fits(width.replace(bounds.size.width)) != fits(bounds.size.width) {
                 window.refresh();
             }

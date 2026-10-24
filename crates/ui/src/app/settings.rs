@@ -12,9 +12,6 @@ use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 /// Sections, in index order.
 const SECTIONS: [&str; 5] = ["Appearance", "Editor", "Workspaces", "Terminals", "Updates"];
 
-/// What − and + change the width under which diffs go to one column.
-const DIFF_WIDTH_STEP: f32 = 100.;
-
 pub(super) struct Settings {
     focus: FocusHandle,
     /// Keyboard Shortcuts instead of Settings.
@@ -377,32 +374,17 @@ impl Den {
     }
 
     fn render_editor(&self, settings: &Settings, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[1], "Auto Save", "autosave", "focus", "Format on Save", "Format Document", "json", "Diff Layout", "Side by Side", "One Column", "One-Column Width", "Automatic", "Tab Size", "Indent with Tabs", "indentation", "spaces"]
+        let visible = [SECTIONS[1], "Auto Save", "autosave", "focus", "Format on Save", "Format Document", "json", "Diff Layout", "Side by Side", "One Column", "Tab Size", "Indent with Tabs", "indentation", "spaces"]
             .iter().any(|text| matches(text));
         let layout = Config::get(cx).diff_layout;
         let layouts = h_flex().gap_2().children(
-            [(DiffLayout::Automatic, "Automatic"), (DiffLayout::SideBySide, "Side by Side"), (DiffLayout::OneColumn, "One Column")]
+            [(DiffLayout::OneColumn, "One Column"), (DiffLayout::SideBySide, "Side by Side")]
                 .into_iter()
                 .map(|(choice, label)| {
                     chip(label, label, layout == choice, cx)
                         .on_click(cx.listener(move |_, _, _, cx| crate::workspace::set_diff_layout(choice, cx)))
                 }),
         );
-        let width = Config::get(cx).side_by_side_width();
-        let set_width = |width: Option<f32>| {
-            cx.listener(move |_, _, _, cx| {
-                Config::update(cx, |config| config.set_side_by_side_width(width));
-                cx.refresh_windows();
-            })
-        };
-        let one_column_width = h_flex()
-            .gap_2()
-            .child(step("diff-width-smaller".into(), "−", cx).on_click(set_width(Some(width - DIFF_WIDTH_STEP))))
-            .child(div().w(px(64.)).flex().justify_center().child(format!("{width} px")))
-            .child(step("diff-width-larger".into(), "+", cx).on_click(set_width(Some(width + DIFF_WIDTH_STEP))))
-            .when(width != config::DEFAULT_SIDE_BY_SIDE_WIDTH, |el| {
-                el.child(link("diff-width-reset", "↺", cx).on_click(set_width(None)))
-            });
         let tab = Config::get(cx).tab();
         let set_tab_size = |size: Option<usize>| {
             cx.listener(move |_, _, _, cx| {
@@ -453,13 +435,8 @@ impl Den {
             cx,
         ), setting(
             "Diff Layout",
-            "Diffs side by side, in one column, or Automatic: side by side when there's room for two. Also in a diff's right-click menu.",
+            "Diffs in one column or side by side. Also in a diff's right-click menu and with its shortcut.",
             layouts,
-            cx,
-        ), setting(
-            "One-Column Width",
-            "Narrower than this, an Automatic diff shows in one column.",
-            one_column_width,
             cx,
         )];
         Self::section(SECTIONS[1], rows, visible, cx)
