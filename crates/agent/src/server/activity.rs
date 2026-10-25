@@ -17,6 +17,10 @@ const QUIET: Duration = Duration::from_millis(800);
 /// would mark the task as finished again after it was seen.
 const WORK_BURST: Duration = Duration::from_secs(1);
 
+/// Every so many ticks of the foreground check (2 s), the terminals whose
+/// agent may have started or ended under a wrapper are looked at again.
+pub(super) const AGENT_RECHECK_TICKS: u64 = 4;
+
 impl AgentTerm {
     /// Whether it's doing something. Claude Code says so in its title (see
     /// `claude_working`): its redraws (on a resize, a reconnect, a status
@@ -115,8 +119,12 @@ impl State {
     }
 
     /// The terminals whose foreground process changed since last looked at,
-    /// with the new one: whether it's an agent is read off the lock.
-    pub(super) fn foregrounds_changed(&mut self) -> Vec<(TermId, Option<u32>)> {
+    /// with the new one: whether it's an agent is read off the lock. With
+    /// `recheck`, also those running a program that isn't an agent, or whose
+    /// agent under a wrapper ended: a wrapper that runs the agent as its
+    /// child (`claude-soonest`) starts it, or starts it again in another
+    /// account, while it stays in the foreground.
+    pub(super) fn foregrounds_changed(&mut self, recheck: bool) -> Vec<(TermId, Option<u32>)> {
         let mut changed = Vec::new();
         for (term, entry) in &self.terms {
             let mut entry = entry.locked();
@@ -124,7 +132,11 @@ impl State {
             // A wrapper that execs the agent (`python3 claude-soonest` →
             // `claude`) keeps its pid: only its executable says it changed.
             let executable = foreground.and_then(platform::process_executable);
-            if foreground != entry.foreground || executable != entry.foreground_executable {
+            let unsure = match entry.agent_pid {
+                None => foreground != entry.pty.pid(),
+                Some(agent) => agent != foreground.unwrap_or(agent) && !platform::process_alive(agent),
+            };
+            if foreground != entry.foreground || executable != entry.foreground_executable || (recheck && unsure) {
                 entry.foreground = foreground;
                 entry.foreground_executable = executable;
                 changed.push((*term, foreground));

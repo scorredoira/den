@@ -27,7 +27,8 @@ mod restart;
 mod terminals;
 
 use self::{
-    claude::agent_name,
+    activity::AGENT_RECHECK_TICKS,
+    claude::{agent_name, agent_process},
     connection::{Outbox, serve},
     restart::{
         SAVE_TICKS, handed_ide, replace_agent, restart_file, restore_after_restart, save_for_restart, save_if_changed,
@@ -196,18 +197,17 @@ pub fn run(listener: Listener, mut handover: Option<Handover>) -> Result<()> {
             if tick.is_multiple_of(SAVE_TICKS) {
                 lsp::stop_idle();
             }
-            let changed = state.locked().foregrounds_changed();
-            // Reading a command line runs `ps`: not while holding the lock.
-            let agents: Vec<(TermId, Option<String>)> = changed
-                .into_iter()
-                .map(|(term, pid)| (term, pid.and_then(platform::process_args).filter(|args| agent_name(args).is_some())))
-                .collect();
+            let changed = state.locked().foregrounds_changed(tick.is_multiple_of(AGENT_RECHECK_TICKS));
+            // Reading command lines runs `ps`: not while holding the lock.
+            let processes = if changed.is_empty() { Vec::new() } else { platform::processes() };
+            let agents: Vec<(TermId, Option<(u32, String)>)> =
+                changed.into_iter().map(|(term, pid)| (term, pid.and_then(|pid| agent_process(pid, &processes)))).collect();
             let mut state = state.locked();
-            for (term, args) in agents {
+            for (term, agent) in agents {
                 if let Some(entry) = state.terms.get(&term) {
                     let mut entry = entry.locked();
-                    entry.agent = args.as_deref().and_then(agent_name);
-                    entry.agent_args = args;
+                    entry.agent = agent.as_ref().and_then(|(_, args)| agent_name(args));
+                    (entry.agent_pid, entry.agent_args) = agent.unzip();
                 }
             }
             state.expire_activity();

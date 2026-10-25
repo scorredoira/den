@@ -51,11 +51,13 @@ pub(super) struct AgentTerm {
     pub(super) blocked: bool,
     pub(super) checked: Instant,
     /// Its foreground process when last looked at, with its executable (an
-    /// `exec` keeps the pid), and the coding agent it is (`claude`,
-    /// `codex`…), if one, with its command line.
+    /// `exec` keeps the pid), and the coding agent it runs (`claude`,
+    /// `codex`…), if one, with its pid and command line: the foreground
+    /// process's, or that of its child under a wrapper.
     pub(super) foreground: Option<u32>,
     pub(super) foreground_executable: Option<PathBuf>,
     pub(super) agent: Option<String>,
+    pub(super) agent_pid: Option<u32>,
     pub(super) agent_args: Option<String>,
 }
 
@@ -198,6 +200,7 @@ pub(super) fn start(state: &Shared, term: TermId, group: String, cwd: PathBuf, (
         foreground: None,
         foreground_executable: None,
         agent: None,
+        agent_pid: None,
         agent_args: None,
     }));
     // The reader doesn't keep it: closing it drops it, which kills its process.

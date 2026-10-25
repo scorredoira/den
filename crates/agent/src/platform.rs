@@ -264,6 +264,46 @@ pub fn process_args(pid: u32) -> Option<String> {
     (output.status.success() && !args.is_empty()).then_some(args)
 }
 
+/// Every process, with its group and command line: a wrapper that runs the
+/// agent as its child (`claude-soonest`) leads the terminal's foreground
+/// group, and the agent is another of the group's.
+#[cfg(unix)]
+pub fn processes() -> Vec<(u32, u32, String)> {
+    let Ok(output) = std::process::Command::new("ps").args(["-A", "-o", "pid=,pgid=,args="]).output() else {
+        return Vec::new();
+    };
+    parse_processes(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `ps -o pid=,pgid=,args=`: the numbers are padded to a column's width.
+#[cfg(unix)]
+fn parse_processes(ps: &str) -> Vec<(u32, u32, String)> {
+    ps.lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
+            let (group, args) = rest.trim_start().split_once(char::is_whitespace)?;
+            Some((pid.parse().ok()?, group.parse().ok()?, args.trim().to_string()))
+        })
+        .collect()
+}
+
+/// ConPTY has no foreground group: `process_args` looks for the agent.
+#[cfg(windows)]
+pub fn processes() -> Vec<(u32, u32, String)> {
+    Vec::new()
+}
+
+/// Whether a process is still running.
+#[cfg(unix)]
+pub fn process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(windows)]
+pub fn process_alive(_pid: u32) -> bool {
+    true
+}
+
 #[cfg(windows)]
 pub fn process_args(pid: u32) -> Option<String> {
     // ConPTY doesn't expose a foreground process group. At restart, inspect
@@ -533,6 +573,43 @@ mod tests {
         assert_eq!(name(child.id()).as_deref(), Some("sleep"));
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// A wrapper that runs the agent as its child leads the foreground
+    /// group: the agent is found among the group's other processes.
+    #[test]
+    #[cfg(unix)]
+    fn a_process_group_lists_its_children() {
+        use std::os::unix::process::CommandExt as _;
+        let mut leader = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 31 & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = leader.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut children = Vec::new();
+        while children.is_empty() && std::time::Instant::now() < deadline {
+            children = super::processes().into_iter().filter(|(pid, pgid, _)| *pgid == group && *pid != group).collect();
+        }
+        unsafe { libc::killpg(group as libc::pid_t, libc::SIGKILL) };
+        let _ = leader.wait();
+        assert!(children.iter().any(|(_, _, args)| args == "sleep 31"), "{children:?}");
+    }
+
+    /// `ps` pads its numbers: a shorter pid has more spaces after it.
+    #[test]
+    #[cfg(unix)]
+    fn reads_padded_ps_columns() {
+        let ps = "    1     1 /sbin/launchd\n 1688  1667 claude --dangerously-skip-permissions\n76587 76494 claude\n";
+        assert_eq!(
+            super::parse_processes(ps),
+            [
+                (1, 1, "/sbin/launchd".to_string()),
+                (1688, 1667, "claude --dangerously-skip-permissions".to_string()),
+                (76587, 76494, "claude".to_string()),
+            ]
+        );
     }
 
     #[test]

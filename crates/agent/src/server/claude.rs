@@ -40,6 +40,28 @@ pub(super) fn agent_name(args: &str) -> Option<String> {
         .or_else(|| AGENTS.contains(&name.as_str()).then_some(name))
 }
 
+/// The coding agent a terminal whose foreground process is `foreground`
+/// runs, with its pid and command line: that process, or another of its
+/// group (`processes`, see `platform::processes`), as when a wrapper runs
+/// the agent as its child.
+pub(super) fn agent_process(foreground: u32, processes: &[(u32, u32, String)]) -> Option<(u32, String)> {
+    let leader = processes
+        .iter()
+        .find(|(pid, ..)| *pid == foreground)
+        .map(|(_, _, args)| args.clone())
+        .or_else(|| platform::process_args(foreground));
+    leader
+        .map(|args| (foreground, args))
+        .into_iter()
+        .chain(
+            processes
+                .iter()
+                .filter(|(pid, group, _)| *group == foreground && *pid != foreground)
+                .map(|(pid, _, args)| (*pid, args.clone())),
+        )
+        .find(|(_, args)| agent_name(args).is_some())
+}
+
 /// Claude Code's title: what it's doing after `✳` or a spinner (braille,
 /// or half circles from 2.1.2xx on).
 pub(super) fn claude_title(title: &str) -> bool {

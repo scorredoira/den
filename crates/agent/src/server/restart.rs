@@ -7,7 +7,7 @@ use proto::ClientMessage;
 use crate::pty::Pty;
 use super::*;
 use super::{
-    claude::{claude_session, resume_command, resumed_session},
+    claude::{agent_process, claude_session, resume_command, resumed_session},
     terminals::{Screen, start},
 };
 
@@ -190,9 +190,9 @@ fn restart_terms(state: &State, fresh: bool) -> Vec<Restarted> {
         .map(|(term, entry)| {
             let entry = entry.locked();
             let foreground = if fresh { entry.pty.foreground_pid() } else { entry.foreground };
-            let args = if fresh { foreground.and_then(platform::process_args) } else { entry.agent_args.clone() };
-            let args = args.filter(|args| agent_name(args).as_deref() == Some("claude"));
-            let session = foreground.filter(|_| args.is_some()).and_then(claude_session);
+            let agent = if fresh { foreground.and_then(|pid| agent_process(pid, &platform::processes())) } else { entry.agent_pid.zip(entry.agent_args.clone()) };
+            let (pid, args) = agent.filter(|(_, args)| agent_name(args).as_deref() == Some("claude")).unzip();
+            let session = pid.and_then(claude_session);
             // `--resume <id>` finds the session only from the folder it began in.
             let cwd = session.as_ref().and_then(|session| session.cwd.clone());
             Restarted {
