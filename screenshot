@@ -2,8 +2,9 @@
 # Takes the README screenshots (docs/screenshots/): opens Den.app with a demo
 # config of its own (dark theme, a clone of this repo with a few worktrees),
 # runs Claude Code and a shell in split terminals (main.png), then shows an
-# uncommitted change side by side (diff.png), a project search (search.png),
-# Markdown with its outline (markdown.png) and the History tab (history.png),
+# uncommitted change side by side (diff.png), a project search (search.png)
+# and the History tab (history.png), and last, in the light theme, Markdown
+# with a diagram and its outline (markdown.png),
 # capturing the window each time, and closes it.
 # Your config, agent and terminals aren't touched: the demo instance has its
 # own config, state and agent socket.
@@ -25,7 +26,9 @@ pid=""
 
 cleanup() {
   [ -n "$pid" ] && kill "$pid" 2>/dev/null
-  lsof -t "$socket" 2>/dev/null | xargs kill 2>/dev/null
+  for agent in "$demo"/*.sock; do
+    lsof -t "$agent" 2>/dev/null | xargs kill 2>/dev/null
+  done
   sleep 1
   rm -rf "$demo"
   true
@@ -105,17 +108,23 @@ type_line() {
     key code 36"
 }
 
-(cd "$task" && ZDOTDIR="$demo/zdot" DEN_CONFIG_DIR="$demo/config" DEN_STATE_DIR="$demo/state" \
-  DEN_AGENT_SOCKET="$socket" exec "$app") >"$demo/app.log" 2>&1 &
-pid=$!
-window=""
-for _ in $(seq 30); do
-  window="$(swift "$demo/wid.swift" "$pid")"
-  [ -n "$window" ] && break
-  sleep 1
-done
-[ -n "$window" ] || { echo "den didn't open a window; see $demo/app.log" >&2; exit 1; }
-sleep 5
+# launch: opens the demo den, its state in $state and its agent at $socket,
+# and waits for its window.
+launch() {
+  (cd "$task" && ZDOTDIR="$demo/zdot" DEN_CONFIG_DIR="$demo/config" DEN_STATE_DIR="$state" \
+    DEN_AGENT_SOCKET="$socket" exec "$app") >>"$demo/app.log" 2>&1 &
+  pid=$!
+  window=""
+  for _ in $(seq 30); do
+    window="$(swift "$demo/wid.swift" "$pid")"
+    [ -n "$window" ] && break
+    sleep 1
+  done
+  [ -n "$window" ] || { echo "den didn't open a window; see $demo/app.log" >&2; exit 1; }
+  sleep 5
+}
+state="$demo/state"
+launch
 
 echo "running Claude Code…"
 type_line 'claude \"$q\"'
@@ -157,17 +166,6 @@ done
 sleep 2
 shot search
 
-# Markdown, rendered, with its headings in the outline.
-keys 'keystroke "p" using {command down}
-    delay 0.8
-    keystroke "docs/debugger.md"
-    delay 1.2
-    key code 36'
-sleep 2
-keys 'keystroke "l" using {command down, shift down}'
-sleep 2
-shot markdown
-
 # The History tab, on a commit with a few files.
 keys 'keystroke "h" using {command down, shift down}'
 sleep 4
@@ -176,3 +174,46 @@ keys 'key code 125
     key code 125'
 sleep 3
 shot history
+
+# Markdown with a diagram and its headings in the outline, in the light
+# theme: a diagram is drawn for a white page. Den again, with a state and an
+# agent of its own, on a note written now (the shots before don't show it as
+# a change).
+kill "$pid"
+sleep 2
+sed -i '' 's/"theme": "dark"/"theme": "light"/' "$demo/config/config.json"
+cat > "$task/docs/updates.md" <<'MD'
+# Updates
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Checking: every few hours
+    Idle --> Checking: Check for Updates
+    Checking --> Idle: up to date
+    Checking --> Downloading: a newer release
+    Downloading --> Idle: not signed with the release key
+    Downloading --> Ready: signed
+    Ready --> [*]: Restart to update
+```
+
+## After the restart
+
+Workspaces and open files reopen as they were, and terminals keep running in
+the agent across the restart.
+MD
+state="$demo/state-light"
+socket="$demo/light.sock"
+mkdir -p "$state"
+launch
+keys 'keystroke "j" using {command down}'
+sleep 1
+keys 'keystroke "p" using {command down}
+    delay 0.8
+    keystroke "docs/updates.md"
+    delay 2.5
+    key code 36'
+sleep 2
+keys 'keystroke "l" using {command down, shift down}'
+sleep 2
+shot markdown

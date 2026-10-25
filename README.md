@@ -29,11 +29,11 @@ The history as gitk shows it, side-by-side diffs and the blame of the current li
 
 ## Code
 
-Tree-sitter highlighting, language servers, project search, go to file, an outline, split editors, Markdown and images. Cmd-click a `file:line` anywhere to open it.
+Tree-sitter highlighting, language servers, project search, go to file, an outline, split editors, Markdown with images and Mermaid diagrams. Cmd-click a `file:line` anywhere to open it.
 
 <p align="center">
   <img src="docs/screenshots/search.png" width="49%" alt="Project search with the file open at a match and the line's blame">
-  <img src="docs/screenshots/markdown.png" width="49%" alt="Markdown rendered, with its headings in the outline">
+  <img src="docs/screenshots/markdown.png" width="49%" alt="Markdown rendered with a Mermaid diagram, its headings in the outline">
 </p>
 
 ## And
