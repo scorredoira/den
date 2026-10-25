@@ -30,11 +30,11 @@ pub(super) fn with_diagrams(markdown: &str, font_size: f32) -> Cow<'_, str> {
             block.push_str(line);
         }
         changed = true;
-        match render(&block) {
+        match rendered(&block) {
             Ok(svg) => {
                 let _ = write!(
                     out,
-                    "\n<p align=\"center\"><img src=\"data:image/svg+xml,{}\" width=\"{}\" alt=\"diagram\"></p>\n\n",
+                    "\n<p align=\"center\"><img src=\"data:image/svg+xml,{}\" width=\"{}\" style=\"max-width: none\" alt=\"diagram\"></p>\n\n",
                     percent_encode(&svg.text),
                     (svg.width * font_size / FONT).ceil(),
                 );
@@ -48,6 +48,25 @@ pub(super) fn with_diagrams(markdown: &str, font_size: f32) -> Cow<'_, str> {
         }
     }
     if changed { Cow::Owned(out) } else { Cow::Borrowed(markdown) }
+}
+
+/// `render`, remembered by source: the preview is made again on every edit,
+/// and a big diagram takes a while to lay out.
+fn rendered(source: &str) -> Result<Svg, String> {
+    thread_local! {
+        static DRAWN: std::cell::RefCell<HashMap<String, Result<Svg, String>>> = Default::default();
+    }
+    DRAWN.with_borrow_mut(|drawn| {
+        if let Some(svg) = drawn.get(source) {
+            return svg.clone();
+        }
+        if drawn.len() >= 64 {
+            drawn.clear();
+        }
+        let svg = render(source);
+        drawn.insert(source.to_string(), svg.clone());
+        svg
+    })
 }
 
 /// The opening fence of a Mermaid block: its character and length.
@@ -455,6 +474,29 @@ const LOOP: f32 = 34.0;
 const MARGIN: f32 = 12.0;
 /// Around a label, in the room kept for it.
 const LABEL_GAP: f32 = 14.0;
+/// Edges meeting a box's side keep this far from its corners and at most
+/// this far from each other.
+const PORT_INSET: f32 = 10.0;
+const PORT_GAP: f32 = 12.0;
+/// Between an edge and a box it passes.
+const CLEAR: f32 = 6.0;
+/// Between ranks where an edge would run flatter than one in this, the
+/// edges go across on tracks, square: down, along, down.
+const FLAT: f32 = 3.0;
+/// Between a box and the nearest track, and between tracks.
+const CHANNEL: f32 = 18.0;
+const TRACK_GAP: f32 = 8.0;
+/// Of a square edge's corners.
+const RADIUS: f32 = 6.0;
+/// The largest an SVG is drawn at: its side at twice that fits the GPU's
+/// largest texture (16384 pixels), and its area at twice that 128 MB.
+const MAX_SIDE: f32 = 8000.0;
+const MAX_AREA: f32 = 8_000_000.0;
+/// Boxes and edge points beyond which a diagram is ordered from fewer starts.
+const BIG: usize = 1000;
+/// About a preview's width: a diagram laid out wider has its last states
+/// staggered on rows of their own, so it can be drawn at full size.
+const COLUMN: f32 = 760.0;
 
 /// A box of the layered graph: a node, or a point an edge goes through.
 struct Item {
@@ -471,6 +513,9 @@ struct Route {
     /// Items from the edge's source to its target, as drawn.
     items: Vec<usize>,
     label: Option<usize>,
+    /// The line as drawn, in the SVG: one piece, or two when its label
+    /// sits on it; the last one ends at the target.
+    pieces: Vec<Vec<(f32, f32)>>,
 }
 
 struct Layout {
@@ -478,13 +523,68 @@ struct Layout {
     #[cfg(test)]
     items: Vec<Item>,
     routes: Vec<Route>,
+    /// Each node's size as drawn: wider than its text when many edges
+    /// meet one side.
+    boxes: Vec<(f32, f32)>,
+    /// Each node's rank, whether no edge leaves it downward, and whether
+    /// none comes in.
+    ranks: Vec<usize>,
+    sinks: Vec<bool>,
+    sources: Vec<bool>,
     /// Item centers in the SVG, and the drawing's size.
     centers: Vec<(f32, f32)>,
     width: f32,
     height: f32,
 }
 
+/// The diagram laid out, staggered over two to four rows where it would
+/// be wider than COLUMN: in each wide rank, the states nothing leaves go
+/// down in blocks, from the left, or else those nothing reaches go up.
 fn layout(d: &Diagram) -> Layout {
+    let n = d.nodes.len();
+    let first = arrange(d, &vec![0; n]);
+    if first.width <= COLUMN || matches!(d.direction, Direction::Right | Direction::Left) || first.centers.len() > BIG {
+        return first;
+    }
+    let mut rows: HashMap<usize, Vec<usize>> = HashMap::new();
+    for v in 0..n {
+        rows.entry(first.ranks[v]).or_default().push(v);
+    }
+    for row in rows.values_mut() {
+        row.sort_by(|&a, &b| first.centers[a].0.total_cmp(&first.centers[b].0));
+    }
+    // Only the rows that make it wide, and in each its last states, or else
+    // its first: staggering the ones between tangles their edges.
+    rows.retain(|_, row| row.len() > 1 && first.centers[row[row.len() - 1]].0 - first.centers[row[0]].0 > COLUMN / 2.0);
+    for row in rows.values_mut() {
+        let ends = if row.iter().filter(|&&v| first.sinks[v]).count() > 1 { &first.sinks } else { &first.sources };
+        row.retain(|&v| ends[v]);
+    }
+    rows.retain(|_, row| row.len() > 1);
+    if rows.is_empty() {
+        return first;
+    }
+    // The fewest rows that fit, or else that are about as narrow as the most.
+    let mut tried = vec![first];
+    for tiers in 2..=4 {
+        let mut drop = vec![0; n];
+        for row in rows.values() {
+            for (i, &v) in row.iter().enumerate() {
+                drop[v] = i * tiers / row.len();
+            }
+        }
+        tried.push(arrange(d, &drop));
+        if tried[tried.len() - 1].width <= COLUMN {
+            break;
+        }
+    }
+    let narrowest = tried.iter().map(|l| l.width).fold(f32::MAX, f32::min);
+    let at = tried.iter().position(|l| l.width <= COLUMN.max(narrowest * 1.1)).unwrap();
+    tried.swap_remove(at)
+}
+
+/// The layout with each node in `drop` that many rows further down.
+fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
     let horizontal = matches!(d.direction, Direction::Right | Direction::Left);
     let n = d.nodes.len();
     let loops = |v: usize| d.edges.iter().filter(|e| e.from == v && e.to == v).map(|e| LOOP + text_size(&e.label).0).fold(0.0, f32::max);
@@ -538,20 +638,23 @@ fn layout(d: &Diagram) -> Layout {
     // Ranks by longest path, two apart so a label has a rank of its own
     // between them; a node only with edges out then moves down to its
     // nearest successor.
-    let mut rank = vec![0usize; n];
-    for _ in 0..n {
-        let mut moved = false;
-        for &e in &flow {
-            let (u, v) = ends(e);
-            if rank[v] < rank[u] + 2 {
-                rank[v] = rank[u] + 2;
-                moved = true;
+    let settle = |rank: &mut [usize]| {
+        for _ in 0..n {
+            let mut moved = false;
+            for &e in &flow {
+                let (u, v) = ends(e);
+                if rank[v] < rank[u] + 2 {
+                    rank[v] = rank[u] + 2;
+                    moved = true;
+                }
+            }
+            if !moved {
+                break;
             }
         }
-        if !moved {
-            break;
-        }
-    }
+    };
+    let mut rank = vec![0usize; n];
+    settle(&mut rank);
     for v in 0..n {
         let ins = flow.iter().any(|&e| ends(e).1 == v);
         let outs: Vec<usize> = flow.iter().filter(|&&e| ends(e).0 == v).map(|&e| rank[ends(e).1]).collect();
@@ -559,12 +662,23 @@ fn layout(d: &Diagram) -> Layout {
             rank[v] = outs.iter().min().unwrap() - 2;
         }
     }
+    // Staggered: each node `drop` rows down, and what follows it with it;
+    // a node with no edges in goes up instead.
+    let sources: Vec<bool> = (0..n).map(|v| !flow.iter().any(|&e| ends(e).1 == v)).collect();
+    let sinks: Vec<bool> = (0..n).map(|v| !flow.iter().any(|&e| ends(e).0 == v)).collect();
+    let lift = 2 * drop.iter().copied().max().unwrap_or(0);
+    for v in 0..n {
+        rank[v] = if sources[v] { rank[v] + lift - 2 * drop[v] } else { rank[v] + lift + 2 * drop[v] };
+    }
+    settle(&mut rank);
+    let low = rank.iter().copied().min().unwrap_or(0);
+    rank.iter_mut().for_each(|r| *r -= low);
     for (v, item) in items.iter_mut().enumerate() {
         item.rank = rank[v];
     }
 
     // Each edge goes through a point per rank it crosses; its label is the
-    // middle one on a label rank.
+    // middle one on a label rank, or the one beside a node staggered.
     let mut routes = Vec::new();
     for &e in &flow {
         let (u, v) = ends(e);
@@ -575,7 +689,15 @@ fn layout(d: &Diagram) -> Layout {
         }
         chain.push(v);
         let middle = chain.len() / 2;
-        let middle = if items[chain[middle]].rank % 2 == 1 { middle } else { middle - 1 };
+        let middle = if drop[v] > 0 && !sources[v] {
+            chain.len() - 2
+        } else if drop[u] > 0 && sources[u] {
+            1
+        } else if items[chain[middle]].rank % 2 == 1 {
+            middle
+        } else {
+            middle - 1
+        };
         let label = (!d.edges[e].label.is_empty()).then(|| {
             let item = &mut items[chain[middle]];
             let (w, h) = label_box(&d.edges[e].label);
@@ -585,7 +707,7 @@ fn layout(d: &Diagram) -> Layout {
         if reversed[e] {
             chain.reverse();
         }
-        routes.push(Route { edge: e, items: chain, label });
+        routes.push(Route { edge: e, items: chain, label, pieces: Vec::new() });
     }
 
     // Order within each rank: first seen, then barycenter sweeps, keeping
@@ -599,9 +721,28 @@ fn layout(d: &Diagram) -> Layout {
         }
         links.extend(chain.windows(2).map(|w| (w[0], w[1])));
     }
+    let mut g = Graph { up: vec![Vec::new(); items.len()], down: vec![Vec::new(); items.len()] };
+    for &(a, b) in &links {
+        g.down[a].push(b);
+        g.up[b].push(a);
+    }
+    // A box with more edges on a side than fit PORT_GAP apart grows to fit
+    // them.
+    let mut boxes: Vec<(f32, f32)> = d.nodes.iter().map(node_size).collect();
+    for v in 0..n {
+        if matches!(d.nodes[v].shape, Shape::Rect | Shape::Round) {
+            let most = g.up[v].len().max(g.down[v].len());
+            let wanted = most.saturating_sub(1) as f32 * PORT_GAP + 2.0 * PORT_INSET;
+            let breadth = if horizontal { &mut boxes[v].1 } else { &mut boxes[v].0 };
+            if wanted > *breadth {
+                items[v].breadth += wanted - *breadth;
+                *breadth = wanted;
+            }
+        }
+    }
     let mut layers: Vec<Vec<usize>> = vec![Vec::new(); ranks];
     let mut seen = vec![false; items.len()];
-    let mut queue: Vec<usize> = (0..n).filter(|&v| !links.iter().any(|l| l.1 == v)).collect();
+    let mut queue: Vec<usize> = (0..n).filter(|&v| g.up[v].is_empty()).collect();
     queue.extend(0..items.len());
     // The order each item is first reached in, following the edges as they
     // were written: between orders with as many crossings, the one closer
@@ -619,16 +760,13 @@ fn layout(d: &Diagram) -> Layout {
         layers[items[v].rank].push(v);
         written[v] = found;
         found += 1;
-        queue.extend(links.iter().filter(|l| l.0 == v).map(|l| l.1));
-    }
-    // Links between rank r and r + 1, upper end first.
-    let mut below: Vec<Vec<(usize, usize)>> = vec![Vec::new(); ranks];
-    for &(a, b) in &links {
-        below[items[a].rank].push((a, b));
+        queue.extend(&g.down[v]);
     }
     let mut starts = vec![layers.clone(), layers.iter().map(|l| l.iter().rev().copied().collect()).collect()];
     let mut seed = 0x9e37_79b9u32;
-    for _ in 0..6 {
+    // A big diagram tries only those two: each shuffle costs as much again.
+    let shuffles = if items.len() > BIG { 0 } else { 6 };
+    for _ in 0..shuffles {
         let mut shuffled = layers.clone();
         for layer in &mut shuffled {
             for i in (1..layer.len()).rev() {
@@ -641,11 +779,12 @@ fn layout(d: &Diagram) -> Layout {
         starts.push(shuffled);
     }
     let mut best = layers.clone();
-    let mut fewest = (usize::MAX, usize::MAX);
+    let mut fewest = Score::WORST;
     for start in starts {
-        let (ordered, score) = order(start, &below, &written);
+        let (ordered, score) = order(start, &g, &written);
         if score < fewest {
-            (best, fewest) = (ordered, score);
+            best = ordered;
+            fewest = score;
         }
     }
     let layers = best;
@@ -664,11 +803,7 @@ fn layout(d: &Diagram) -> Layout {
         let shift = x / 2.0;
         layer.iter().for_each(|&v| items[v].pos -= shift);
     }
-    let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
-    for &(a, b) in &links {
-        neighbors[a].push(b);
-        neighbors[b].push(a);
-    }
+    let neighbors: Vec<Vec<usize>> = (0..items.len()).map(|v| [&g.up[v][..], &g.down[v][..]].concat()).collect();
     for _ in 0..40 {
         for layer in &layers {
             let wanted: Vec<f32> = layer
@@ -697,9 +832,7 @@ fn layout(d: &Diagram) -> Layout {
         v
     }
     for &(a, b) in &links {
-        let downs = links.iter().filter(|l| l.0 == a).count();
-        let ups = links.iter().filter(|l| l.1 == b).count();
-        if downs == 1 && ups == 1 {
+        if g.down[a].len() == 1 && g.up[b].len() == 1 {
             let (ra, rb) = (root(&mut run, a), root(&mut run, b));
             run[rb] = ra;
         }
@@ -735,14 +868,83 @@ fn layout(d: &Diagram) -> Layout {
         }
     }
 
-    // Across the layers: each rank as deep as its deepest item.
-    let mut depth = vec![0.0f32; ranks];
-    for item in &items {
-        depth[item.rank] = depth[item.rank].max(item.depth);
+    // Where an edge meets a box: on the side facing the other end, spread
+    // along it in the order of the other ends, so a fan doesn't leave from
+    // one point. Diamonds and circles take their edges at the tip.
+    let side = |v: usize| match items[v].node {
+        Some(node) if matches!(d.nodes[node].shape, Shape::Rect | Shape::Round) => {
+            let (w, h) = boxes[node];
+            if horizontal { h } else { w }
+        }
+        _ => 0.0,
+    };
+    let mut port: HashMap<(usize, usize), f32> = HashMap::new();
+    for v in 0..items.len() {
+        for lower in [false, true] {
+            let mut others = if lower { g.down[v].clone() } else { g.up[v].clone() };
+            others.sort_by(|&a, &b| items[a].pos.total_cmp(&items[b].pos));
+            let room = (side(v) - 2.0 * PORT_INSET).max(0.0);
+            let step = if others.len() > 1 { (room / (others.len() - 1) as f32).min(PORT_GAP) } else { 0.0 };
+            for (i, &other) in others.iter().enumerate() {
+                port.insert((v, other), (i as f32 - (others.len() - 1) as f32 / 2.0) * step);
+            }
+        }
     }
+    let at = |v: usize, other: usize| items[v].pos + port[&(v, other)];
+
+    // Across the layers: ranks apart by at least RANK_GAP. Where an edge
+    // between them would run flat, as a wide fan's do, they all go across
+    // on tracks between the ranks; otherwise the ranks move further apart
+    // where an edge would pass over a box on its way.
     let mut line = vec![0.0f32; ranks];
+    let mut track: HashMap<(usize, usize), f32> = HashMap::new();
     for r in 1..ranks {
-        line[r] = line[r - 1] + (depth[r - 1] + depth[r]) / 2.0 + RANK_GAP;
+        let (upper, lower) = (&layers[r - 1], &layers[r]);
+        let deepest = |layer: &[usize]| layer.iter().map(|&v| items[v].depth).fold(0.0, f32::max);
+        let mut gap = (deepest(upper) + deepest(lower)) / 2.0 + RANK_GAP;
+        let links: Vec<(usize, usize)> = upper.iter().flat_map(|&a| g.down[a].iter().map(move |&b| (a, b))).collect();
+        if links.iter().any(|&(a, b)| (at(b, a) - at(a, b)).abs() > FLAT * gap) {
+            let bent: Vec<(usize, usize)> = links.into_iter().filter(|&(a, b)| (at(b, a) - at(a, b)).abs() >= 1.0).collect();
+            let spans: Vec<(f32, f32)> = bent.iter().map(|&(a, b)| (at(a, b), at(b, a))).collect();
+            let tracks = tracks(&spans);
+            let top = line[r - 1] + deepest(upper) / 2.0 + CHANNEL;
+            for (&link, &k) in bent.iter().zip(&tracks) {
+                track.insert(link, top + k as f32 * TRACK_GAP);
+            }
+            let count = tracks.iter().max().map_or(0, |k| k + 1);
+            gap = gap.max((deepest(upper) + deepest(lower)) / 2.0 + 2.0 * CHANNEL + count.saturating_sub(1) as f32 * TRACK_GAP);
+            line[r] = line[r - 1] + gap;
+            continue;
+        }
+        for (a, b) in links {
+            let (pa, pb) = (at(a, b), at(b, a));
+            let (da, db) = (items[a].depth / 2.0, items[b].depth / 2.0);
+            if (pb - pa).abs() < 1.0 {
+                continue;
+            }
+            // How far along the edge, from 0 at `a` to 1 at `b`, it passes
+            // the side of box `c` nearer `toward`.
+            let reach = |c: usize, toward: f32| {
+                let half = items[c].breadth / 2.0 - if items[c].node.is_some() { 0.0 } else { LABEL_GAP };
+                (items[c].pos - (items[c].pos - toward).signum() * half - pa) / (pb - pa)
+            };
+            // The edge leaves `a` at da and reaches `b` at gap - db: above
+            // each box of the lower rank before it gets there...
+            for &c in lower.iter().filter(|&&c| c != b && items[c].depth > 0.0) {
+                let t = reach(c, pb);
+                if t > 0.0 && t < 1.0 {
+                    gap = gap.max(da + (items[c].depth / 2.0 + CLEAR - t * db) / (1.0 - t));
+                }
+            }
+            // ...and below each box of the upper rank it passes.
+            for &c in upper.iter().filter(|&&c| c != a && items[c].depth > 0.0) {
+                let t = reach(c, pa);
+                if t > 0.0 && t < 1.0 {
+                    gap = gap.max((items[c].depth / 2.0 + CLEAR - da) / t + da + db);
+                }
+            }
+        }
+        line[r] = line[r - 1] + gap;
     }
 
     let place = |along: f32, across: f32| match d.direction {
@@ -752,6 +954,33 @@ fn layout(d: &Diagram) -> Layout {
         Direction::Left => (-across, along),
     };
     let mut centers: Vec<(f32, f32)> = items.iter().map(|i| place(i.pos, line[i.rank])).collect();
+    // Each edge from port to port through its points, turning onto its
+    // tracks, and split at its label.
+    let end = |v: usize, other: usize| {
+        let toward = if items[other].rank > items[v].rank { 1.0 } else { -1.0 };
+        place(at(v, other), line[items[v].rank] + toward * items[v].depth / 2.0)
+    };
+    let corners = |u: usize, w: usize| {
+        let link = if items[u].rank < items[w].rank { (u, w) } else { (w, u) };
+        track.get(&link).map(|&across| [place(at(u, w), across), place(at(w, u), across)])
+    };
+    for route in &mut routes {
+        let chain = &route.items;
+        let mut piece = vec![end(chain[0], chain[1])];
+        for i in 1..chain.len() {
+            piece.extend(corners(chain[i - 1], chain[i]).into_iter().flatten());
+            if i == chain.len() - 1 {
+                piece.push(end(chain[i], chain[i - 1]));
+            } else if route.label == Some(chain[i]) {
+                piece.push(end(chain[i], chain[i - 1]));
+                route.pieces.push(std::mem::take(&mut piece));
+                piece.push(end(chain[i], chain[i + 1]));
+            } else {
+                piece.push(centers[chain[i]]);
+            }
+        }
+        route.pieces.push(piece);
+    }
     let sizes: Vec<(f32, f32)> = items.iter().map(|i| if horizontal { (i.depth, i.breadth) } else { (i.breadth, i.depth) }).collect();
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for (c, s) in centers.iter().zip(&sizes) {
@@ -760,7 +989,7 @@ fn layout(d: &Diagram) -> Layout {
         y0 = y0.min(c.1 - s.1 / 2.0);
         y1 = y1.max(c.1 + s.1 / 2.0);
     }
-    for c in &mut centers {
+    for c in centers.iter_mut().chain(routes.iter_mut().flat_map(|r| r.pieces.iter_mut().flatten())) {
         c.0 += MARGIN - x0;
         c.1 += MARGIN - y0;
     }
@@ -768,105 +997,201 @@ fn layout(d: &Diagram) -> Layout {
         #[cfg(test)]
         items,
         routes,
+        boxes,
+        ranks: rank,
+        sinks,
+        sources,
         centers,
         width: x1 - x0 + 2.0 * MARGIN,
         height: y1 - y0 + 2.0 * MARGIN,
     }
 }
 
-/// Barycenter sweeps from `layers`, each followed by transposing, and the
-/// order seen with the fewest crossings, then the fewest pairs out of their
-/// written order.
-fn order(mut layers: Vec<Vec<usize>>, below: &[Vec<(usize, usize)>], written: &[usize]) -> (Vec<Vec<usize>>, (usize, usize)) {
-    let ranks = layers.len();
-    let total = |layers: &[Vec<usize>]| {
-        let crossings = (0..ranks.saturating_sub(1)).map(|r| pair_crossings(&layers[r], &layers[r + 1], &below[r])).sum::<usize>();
-        let swapped = layers
-            .iter()
-            .map(|layer| (0..layer.len()).map(|i| layer[i + 1..].iter().filter(|&&b| written[b] < written[layer[i]]).count()).sum::<usize>())
-            .sum::<usize>();
-        (crossings, swapped)
+/// Tracks for edges across the room between two ranks, each running along
+/// the ranks from its start (on the upper rank) to its end, numbered from
+/// the top. Edges that overlap take different tracks, and one whose start
+/// or end falls within another's span goes above or below it so it doesn't
+/// cross the other's ends; where that can't hold for all, the fewest wait.
+fn tracks(spans: &[(f32, f32)]) -> Vec<usize> {
+    let n = spans.len();
+    let within = |x: f32, (a, b): (f32, f32)| x > a.min(b) && x < a.max(b);
+    let overlap = |s: usize, t: usize| {
+        let ((a, b), (c, d)) = (spans[s], spans[t]);
+        a.min(b) < c.max(d) + TRACK_GAP && c.min(d) < a.max(b) + TRACK_GAP
     };
-    let mut best = layers.clone();
-    let mut fewest = total(&layers);
-    for sweep in 0..24 {
-        let down = sweep % 2 == 0;
-        let ranks_in_order: Vec<usize> = if down { (1..ranks).collect() } else { (0..ranks.saturating_sub(1)).rev().collect() };
-        for r in ranks_in_order {
-            let (near, links) = if down { (r - 1, &below[r - 1]) } else { (r + 1, &below[r]) };
-            let mut keyed: Vec<(f32, usize)> = layers[r]
-                .iter()
-                .enumerate()
-                .map(|(i, &v)| {
-                    let across: Vec<f32> = links
-                        .iter()
-                        .filter_map(|&(a, b)| match (a == v, b == v) {
-                            (true, _) => Some(b),
-                            (_, true) => Some(a),
-                            _ => None,
-                        })
-                        .filter_map(|w| layers[near].iter().position(|&x| x == w))
-                        .map(|p| p as f32)
-                        .collect();
-                    let key = if across.is_empty() { i as f32 } else { across.iter().sum::<f32>() / across.len() as f32 };
-                    (key, v)
-                })
-                .collect();
-            keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
-            layers[r] = keyed.into_iter().map(|(_, v)| v).collect();
+    // above[t]: the edges that go above t, and below[s] the other way.
+    let mut above = vec![Vec::new(); n];
+    let mut below = vec![Vec::new(); n];
+    for s in 0..n {
+        for t in (0..n).filter(|&t| t != s) {
+            if within(spans[s].0, spans[t]) {
+                above[t].push(s);
+                below[s].push(t);
+            }
+            if within(spans[s].1, spans[t]) {
+                above[s].push(t);
+                below[t].push(s);
+            }
         }
-        transpose(&mut layers, below, written);
-        let score = total(&layers);
+    }
+    let mut waiting: Vec<usize> = above.iter().map(Vec::len).collect();
+    let mut track = vec![usize::MAX; n];
+    while let Some(t) = (0..n).filter(|&t| track[t] == usize::MAX).min_by_key(|&t| waiting[t]) {
+        let floor = above[t].iter().filter(|&&s| track[s] != usize::MAX).map(|&s| track[s] + 1).max().unwrap_or(0);
+        track[t] = (floor..).find(|&k| !(0..n).any(|s| track[s] == k && overlap(s, t))).unwrap();
+        for &u in &below[t] {
+            waiting[u] = waiting[u].saturating_sub(1);
+        }
+    }
+    track
+}
+
+/// Each item's neighbors in the rank above and in the rank below.
+struct Graph {
+    up: Vec<Vec<usize>>,
+    down: Vec<Vec<usize>>,
+}
+
+const SWEEPS: usize = 24;
+
+/// Crossings first, then pairs out of their written order: fewer is better.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Score {
+    crossings: usize,
+    out_of_order: usize,
+}
+
+impl Score {
+    const WORST: Score = Score { crossings: usize::MAX, out_of_order: usize::MAX };
+
+    fn of(layers: &[Vec<usize>], g: &Graph, index: &[usize], written: &[usize]) -> Score {
+        Score {
+            crossings: layers.iter().map(|layer| crossings_below(layer, g, index)).sum(),
+            out_of_order: layers.iter().map(|layer| inversions(layer.iter().map(|&v| written[v]))).sum(),
+        }
+    }
+}
+
+/// Barycenter sweeps from `layers`, each followed by transposing; returns the
+/// best order seen.
+fn order(mut layers: Vec<Vec<usize>>, g: &Graph, written: &[usize]) -> (Vec<Vec<usize>>, Score) {
+    // Where each item is in its rank.
+    let mut index = vec![0; written.len()];
+    let reindex = |index: &mut [usize], layer: &[usize]| layer.iter().enumerate().for_each(|(i, &v)| index[v] = i);
+    layers.iter().for_each(|layer| reindex(&mut index, layer));
+    let mut best = layers.clone();
+    let mut fewest = Score::of(&layers, g, &index, written);
+    for sweep in 0..SWEEPS {
+        let down = sweep % 2 == 0;
+        let ranks: Vec<usize> = if down { (1..layers.len()).collect() } else { (0..layers.len().saturating_sub(1)).rev().collect() };
+        for r in ranks {
+            let near = if down { &g.up } else { &g.down };
+            layers[r] = by_barycenter(&layers[r], near, &index);
+            reindex(&mut index, &layers[r]);
+        }
+        transpose(&mut layers, g, &mut index, written);
+        let score = Score::of(&layers, g, &index, written);
         if score < fewest {
-            (best, fewest) = (layers.clone(), score);
+            best = layers.clone();
+            fewest = score;
         }
     }
     (best, fewest)
 }
 
-/// Crossings between two adjacent ranks.
-fn pair_crossings(upper: &[usize], lower: &[usize], links: &[(usize, usize)]) -> usize {
-    let at = |layer: &[usize], v: usize| layer.iter().position(|&x| x == v).unwrap_or(0);
-    let ends: Vec<(usize, usize)> = links.iter().map(|&(a, b)| (at(upper, a), at(lower, b))).collect();
+/// `layer` sorted by the mean place of each item's neighbors in `near`; an
+/// item without any keeps its place.
+fn by_barycenter(layer: &[usize], near: &[Vec<usize>], index: &[usize]) -> Vec<usize> {
+    let mut keyed: Vec<(f32, usize)> = layer
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let key = match near[v].len() {
+                0 => i as f32,
+                k => near[v].iter().map(|&w| index[w] as f32).sum::<f32>() / k as f32,
+            };
+            (key, v)
+        })
+        .collect();
+    keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    keyed.into_iter().map(|(_, v)| v).collect()
+}
+
+/// Crossings between `layer` and the rank below it.
+fn crossings_below(layer: &[usize], g: &Graph, index: &[usize]) -> usize {
+    let mut ends: Vec<(usize, usize)> = layer.iter().flat_map(|&a| g.down[a].iter().map(move |&b| (index[a], index[b]))).collect();
+    ends.sort_unstable();
+    inversions(ends.into_iter().map(|(_, lower)| lower))
+}
+
+/// Pairs that come in decreasing order, in O(n log n): a Fenwick tree of
+/// the values seen.
+fn inversions(values: impl Iterator<Item = usize>) -> usize {
+    // Each value by its place among the distinct ones, for a small tree.
+    let mut values: Vec<usize> = values.collect();
+    let mut distinct = values.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    values.iter_mut().for_each(|v| *v = distinct.binary_search(v).unwrap());
+    let mut tree = vec![0usize; distinct.len() + 1];
     let mut count = 0;
-    for (i, a) in ends.iter().enumerate() {
-        count += ends[i + 1..].iter().filter(|b| (a.0 < b.0 && a.1 > b.1) || (a.0 > b.0 && a.1 < b.1)).count();
+    for (seen, &v) in values.iter().enumerate() {
+        // Those seen so far that are at most v...
+        let (mut at, mut not_greater) = (v + 1, 0);
+        while at > 0 {
+            not_greater += tree[at];
+            at &= at - 1;
+        }
+        // ...and the rest are greater.
+        count += seen - not_greater;
+        let mut at = v + 1;
+        while at < tree.len() {
+            tree[at] += 1;
+            at += at.isolate_lowest_one();
+        }
     }
     count
 }
 
 #[cfg(test)]
 fn crossings(layers: &[Vec<usize>], links: &[(usize, usize)]) -> usize {
-    layers
-        .windows(2)
-        .map(|pair| {
-            let between: Vec<(usize, usize)> = links.iter().filter(|(a, b)| pair[0].contains(a) && pair[1].contains(b)).copied().collect();
-            pair_crossings(&pair[0], &pair[1], &between)
-        })
-        .sum()
+    let items = layers.iter().flatten().max().map_or(0, |m| m + 1);
+    let mut g = Graph { up: vec![Vec::new(); items], down: vec![Vec::new(); items] };
+    for &(a, b) in links {
+        g.down[a].push(b);
+        g.up[b].push(a);
+    }
+    let mut index = vec![0; items];
+    layers.iter().for_each(|layer| layer.iter().enumerate().for_each(|(i, &v)| index[v] = i));
+    layers.iter().map(|layer| crossings_below(layer, &g, &index)).sum()
 }
 
 /// Swaps neighbors in a rank while that removes crossings, or puts them in
-/// their written order with no more crossings; a swap in rank r changes only
-/// the crossings with r - 1 and r + 1.
-fn transpose(layers: &mut [Vec<usize>], below: &[Vec<(usize, usize)>], written: &[usize]) {
-    let around = |layers: &[Vec<usize>], r: usize| {
-        let above = if r > 0 { pair_crossings(&layers[r - 1], &layers[r], &below[r - 1]) } else { 0 };
-        let under = if r + 1 < layers.len() { pair_crossings(&layers[r], &layers[r + 1], &below[r]) } else { 0 };
-        above + under
+/// their written order with no more crossings. Only the edges of the two
+/// swapped items change their crossings.
+fn transpose(layers: &mut [Vec<usize>], g: &Graph, index: &mut [usize], written: &[usize]) {
+    // Crossings among the edges of u and v with u left of v.
+    let between = |index: &[usize], u: usize, v: usize| {
+        [(&g.up[u], &g.up[v]), (&g.down[u], &g.down[v])]
+            .iter()
+            .map(|(left, right)| left.iter().map(|&p| right.iter().filter(|&&q| index[p] > index[q]).count()).sum::<usize>())
+            .sum::<usize>()
     };
-    let mut improved = true;
-    while improved {
-        improved = false;
-        for r in 0..layers.len() {
-            for i in 1..layers[r].len() {
-                let before = around(layers, r);
-                layers[r].swap(i - 1, i);
-                let after = around(layers, r);
-                if after < before || (after == before && written[layers[r][i - 1]] < written[layers[r][i]]) {
-                    improved = true;
-                } else {
-                    layers[r].swap(i - 1, i);
+    // A rank is gone over again only when it or a rank next to it changed.
+    let mut dirty = vec![true; layers.len()];
+    while let Some(r) = dirty.iter().position(|&d| d) {
+        dirty[r] = false;
+        let layer = &mut layers[r];
+        for i in 1..layer.len() {
+            let (u, v) = (layer[i - 1], layer[i]);
+            let (kept, swapped) = (between(index, u, v), between(index, v, u));
+            if swapped < kept || (swapped == kept && written[v] < written[u]) {
+                layer.swap(i - 1, i);
+                (index[u], index[v]) = (i, i - 1);
+                dirty[r] = true;
+                dirty[r.saturating_sub(1)] |= r > 0;
+                if r + 1 < dirty.len() {
+                    dirty[r + 1] = true;
                 }
             }
         }
@@ -896,6 +1221,7 @@ fn spread(wanted: &[f32], gaps: &[f32]) -> Vec<f32> {
 
 // Drawing.
 
+#[derive(Clone)]
 struct Svg {
     text: String,
     width: f32,
@@ -912,52 +1238,45 @@ fn render(source: &str) -> Result<Svg, String> {
         return Err("no states or nodes".into());
     }
     let l = layout(&d);
+    // A huge diagram is drawn smaller: gpui draws an SVG at twice its size,
+    // and a side past the GPU's largest texture isn't drawn at all.
+    let scale = (MAX_SIDE / l.width.max(l.height)).min((MAX_AREA / (l.width * l.height)).sqrt()).min(1.0);
     let mut s = String::new();
     let _ = write!(
         s,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.0}\" height=\"{h:.0}\" viewBox=\"0 0 {w:.1} {h:.1}\" \
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{:.0}\" height=\"{:.0}\" viewBox=\"0 0 {w:.1} {h:.1}\" \
          font-family=\"Helvetica, Arial, sans-serif\" font-size=\"{FONT}\">\
          <defs><marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\">\
          <path d=\"M0,0 L10,5 L0,10 z\" fill=\"{STROKE}\"/></marker></defs>",
+        l.width * scale,
+        l.height * scale,
         w = l.width,
         h = l.height,
     );
-    let size_of = |v: usize| node_size(&d.nodes[v]);
+    let size_of = |v: usize| l.boxes[v];
+    let horizontal = matches!(d.direction, Direction::Right | Direction::Left);
     for route in &l.routes {
         let edge = &d.edges[route.edge];
-        let mut points: Vec<(f32, f32)> = route.items.iter().map(|&i| l.centers[i]).collect();
-        let (first, last) = (route.items[0], *route.items.last().unwrap());
-        let len = points.len();
-        points[0] = clip(d.nodes[first].shape, size_of(first), points[0], points[1]);
-        points[len - 1] = clip(d.nodes[last].shape, size_of(last), points[len - 1], points[len - 2]);
-        // A label's box sits on its edge: each side ends at the box.
-        match route.label.and_then(|item| route.items.iter().position(|&i| i == item)) {
-            Some(at) => {
-                let gap = label_box(&edge.label);
-                let mut before = points[..=at].to_vec();
-                let mut after = points[at..].to_vec();
-                before[at] = clip(Shape::Rect, gap, points[at], points[at - 1]);
-                after[0] = clip(Shape::Rect, gap, points[at], points[at + 1]);
-                path(&mut s, &before, edge, false);
-                path(&mut s, &after, edge, edge.arrow);
-            }
-            None => path(&mut s, &points, edge, edge.arrow),
+        for (i, piece) in route.pieces.iter().enumerate() {
+            path(&mut s, piece, horizontal, edge, edge.arrow && i + 1 == route.pieces.len());
         }
     }
     for (e, edge) in d.edges.iter().enumerate().filter(|(_, e)| e.from == e.to) {
         let (cx, cy) = l.centers[edge.from];
         let (w, h) = size_of(edge.from);
-        let horizontal = matches!(d.direction, Direction::Right | Direction::Left);
         let loops = d.edges[..e].iter().filter(|o| o.from == edge.from && o.to == edge.from).count() as f32;
         let reach = LOOP * 0.8 + loops * 10.0;
-        let points = if horizontal {
+        // One cubic out and back, reaching `reach` from the box.
+        let out = reach * 4.0 / 3.0;
+        let [a, b, c, e] = if horizontal {
             let y = cy + h / 2.0;
-            vec![(cx - w / 4.0, y), (cx, y + reach), (cx + w / 4.0, y)]
+            [(cx - w / 4.0, y), (cx - w / 4.0, y + out), (cx + w / 4.0, y + out), (cx + w / 4.0, y)]
         } else {
             let x = cx + w / 2.0;
-            vec![(x, cy - h / 4.0), (x + reach, cy), (x, cy + h / 4.0)]
+            [(x, cy - h / 4.0), (x + out, cy - h / 4.0), (x + out, cy + h / 4.0), (x, cy + h / 4.0)]
         };
-        path(&mut s, &points, edge, edge.arrow);
+        let _ = write!(s, "<path d=\"M{:.1},{:.1} C{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}", a.0, a.1, b.0, b.1, c.0, c.1, e.0, e.1);
+        stroke(&mut s, edge, edge.arrow);
         if !edge.label.is_empty() {
             let (tw, th) = text_size(&edge.label);
             let at = if horizontal { (cx, cy + h / 2.0 + reach + th / 2.0 + 4.0) } else { (cx + w / 2.0 + reach + tw / 2.0 + 8.0, cy) };
@@ -1014,50 +1333,69 @@ fn render(source: &str) -> Result<Svg, String> {
         }
     }
     s.push_str("</svg>");
-    Ok(Svg { text: s, width: l.width })
+    Ok(Svg { text: s, width: l.width * scale })
 }
 
-/// Where the line from `center` toward `toward` leaves the node.
-fn clip(shape: Shape, (w, h): (f32, f32), center: (f32, f32), toward: (f32, f32)) -> (f32, f32) {
-    let (dx, dy) = (toward.0 - center.0, toward.1 - center.1);
-    if dx == 0.0 && dy == 0.0 {
-        return center;
+/// A smooth line through the points, which go one per rank: across the
+/// ranks it only moves on, and along them it never swings past the points
+/// on either side (a monotone cubic, Fritsch-Carlson). It keeps the room left
+/// beside each box, and makes no waves.
+fn path(s: &mut String, points: &[(f32, f32)], horizontal: bool, edge: &Edge, arrow: bool) {
+    // (along, across) and back.
+    let flip = |(x, y): (f32, f32)| if horizontal { (y, x) } else { (x, y) };
+    let p: Vec<(f32, f32)> = points.iter().map(|&q| flip(q)).collect();
+    if p.windows(2).any(|w| (w[1].1 - w[0].1).abs() < 0.01) {
+        return square(s, points, edge, arrow);
     }
-    let t = match shape {
-        Shape::Start | Shape::End => w / 2.0 / (dx * dx + dy * dy).sqrt(),
-        Shape::Diamond => 1.0 / (dx.abs() / (w / 2.0) + dy.abs() / (h / 2.0)),
-        Shape::Rect | Shape::Round => {
-            let tx = if dx == 0.0 { f32::MAX } else { (w / 2.0) / dx.abs() };
-            let ty = if dy == 0.0 { f32::MAX } else { (h / 2.0) / dy.abs() };
-            tx.min(ty)
+    let steps: Vec<f32> = p.windows(2).map(|w| w[1].1 - w[0].1).collect();
+    let slopes: Vec<f32> = p.windows(2).zip(&steps).map(|(w, &h)| if h == 0.0 { 0.0 } else { (w[1].0 - w[0].0) / h }).collect();
+    let n = p.len();
+    let tangent = |k: usize| match k {
+        0 => slopes[0],
+        k if k == n - 1 => slopes[n - 2],
+        k => {
+            let (d0, d1) = (slopes[k - 1], slopes[k]);
+            if d0 * d1 <= 0.0 {
+                return 0.0;
+            }
+            let (h0, h1) = (steps[k - 1].abs(), steps[k].abs());
+            let (w0, w1) = (2.0 * h1 + h0, h1 + 2.0 * h0);
+            (w0 + w1) / (w0 / d0 + w1 / d1)
         }
     };
-    let t = t.min(1.0);
-    (center.0 + dx * t, center.1 + dy * t)
+    let _ = write!(s, "<path d=\"M{:.1},{:.1}", points[0].0, points[0].1);
+    for k in 0..n - 1 {
+        let h = steps[k] / 3.0;
+        let c1 = flip((p[k].0 + tangent(k) * h, p[k].1 + h));
+        let c2 = flip((p[k + 1].0 - tangent(k + 1) * h, p[k + 1].1 - h));
+        let _ = write!(s, " C{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}", c1.0, c1.1, c2.0, c2.1, points[k + 1].0, points[k + 1].1);
+    }
+    stroke(s, edge, arrow);
 }
 
-/// A smooth line from the first point to the last, pulled toward the ones
-/// between (a uniform B-spline, as Mermaid draws): no waves where they
-/// don't line up.
-fn path(s: &mut String, points: &[(f32, f32)], edge: &Edge, arrow: bool) {
-    let _ = write!(s, "<path d=\"M{:.1},{:.1}", points[0].0, points[0].1);
-    let n = points.len();
-    if n == 2 {
-        let _ = write!(s, " L{:.1},{:.1}", points[1].0, points[1].1);
-    } else {
-        let mix = |a: (f32, f32), b: (f32, f32), wa: f32, wb: f32| ((a.0 * wa + b.0 * wb) / (wa + wb), (a.1 * wa + b.1 * wb) / (wa + wb));
-        let first = mix(points[0], points[1], 5.0, 1.0);
-        let _ = write!(s, " L{:.1},{:.1}", first.0, first.1);
-        for i in 2..=n {
-            let (p0, p1) = (points[i - 2], points[i - 1]);
-            let p = if i < n { points[i] } else { p1 };
-            let c1 = mix(p0, p1, 2.0, 1.0);
-            let c2 = mix(p0, p1, 1.0, 2.0);
-            let end = ((p0.0 + 4.0 * p1.0 + p.0) / 6.0, (p0.1 + 4.0 * p1.1 + p.1) / 6.0);
-            let _ = write!(s, " C{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}", c1.0, c1.1, c2.0, c2.1, end.0, end.1);
-        }
-        let _ = write!(s, " L{:.1},{:.1}", points[n - 1].0, points[n - 1].1);
+/// Straight from point to point, the corners rounded: an edge that goes
+/// across on a track.
+fn square(s: &mut String, points: &[(f32, f32)], edge: &Edge, arrow: bool) {
+    let mut p = points.to_vec();
+    p.dedup_by(|a, b| (a.0 - b.0).hypot(a.1 - b.1) < 0.01);
+    let toward = |from: (f32, f32), to: (f32, f32), by: f32| {
+        let t = by / (to.0 - from.0).hypot(to.1 - from.1);
+        (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+    };
+    let _ = write!(s, "<path d=\"M{:.1},{:.1}", p[0].0, p[0].1);
+    for k in 1..p.len().saturating_sub(1) {
+        let (a, b, c) = (p[k - 1], p[k], p[k + 1]);
+        let r = RADIUS.min((b.0 - a.0).hypot(b.1 - a.1) / 2.0).min((c.0 - b.0).hypot(c.1 - b.1) / 2.0);
+        let (into, out) = (toward(b, a, r), toward(b, c, r));
+        let _ = write!(s, " L{:.1},{:.1} Q{:.1},{:.1} {:.1},{:.1}", into.0, into.1, b.0, b.1, out.0, out.1);
     }
+    let last = p[p.len() - 1];
+    let _ = write!(s, " L{:.1},{:.1}", last.0, last.1);
+    stroke(s, edge, arrow);
+}
+
+/// The end of an edge's `<path`, after its points.
+fn stroke(s: &mut String, edge: &Edge, arrow: bool) {
     let _ = write!(
         s,
         "\" fill=\"none\" stroke=\"{STROKE}\" stroke-width=\"1.5\"{}{}/>",
@@ -1114,6 +1452,9 @@ fn text(s: &mut String, (cx, cy): (f32, f32), lines: &[String]) {
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
+
+#[cfg(test)]
+mod limits;
 
 #[cfg(test)]
 mod tests {
@@ -1240,6 +1581,23 @@ mod tests {
     }
 
     #[test]
+    fn inversions_count_the_pairs_out_of_order() {
+        assert_eq!(inversions([3, 1, 2].into_iter()), 2);
+        assert_eq!(inversions([1, 1, 2, 2].into_iter()), 0);
+        assert_eq!(inversions([5, 4, 3, 2, 1].into_iter()), 10);
+        assert_eq!(inversions([1_000_000, 0].into_iter()), 1);
+        assert_eq!(inversions(std::iter::empty()), 0);
+    }
+
+    /// A fan's edges nest: the one going furthest runs on top, so none
+    /// crosses another's ends, and the two sides share the tracks.
+    #[test]
+    fn a_fan_nests_on_its_tracks() {
+        let spans = [(-12.0, -300.0), (0.0, -200.0), (12.0, -100.0), (24.0, 100.0), (36.0, 200.0)];
+        assert_eq!(tracks(&spans), [0, 1, 2, 1, 0]);
+    }
+
+    #[test]
     fn spread_keeps_order_and_gaps() {
         assert_eq!(spread(&[0.0, 0.0, 0.0], &[10.0, 10.0]), [-10.0, 0.0, 10.0]);
         assert_eq!(spread(&[0.0, 50.0], &[10.0]), [0.0, 50.0]);
@@ -1287,6 +1645,35 @@ mod tests {
     }
 
     /// The preview asks for the diagram's image and gets an SVG that draws.
+    /// A diagram wider than the column keeps its size, its text as big as
+    /// the preview's, and scrolls sideways.
+    #[gpui_kit::test]
+    fn a_wide_diagram_is_not_shrunk(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::text::{TextView, TextViewState};
+        use gpui_kit::*;
+
+        struct Narrow {
+            text: Entity<TextViewState>,
+        }
+        impl Render for Narrow {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(300.)).child(TextView::new(&self.text))
+            }
+        }
+
+        cx.update(gpui_kit::init);
+        let source = "flowchart TD\n A[A wide box] --> B[Another wide box]\n A --> C[A third wide box]\n A --> D[And a fourth one]\n";
+        let width = render(source).unwrap().width;
+        assert!(width > 400.0, "{width}");
+        let markdown = with_diagrams(&format!("```mermaid\n{source}```\n"), FONT).into_owned();
+        let (_, cx) = cx.add_window_view(|_, cx| Narrow { text: cx.new(|cx| TextViewState::markdown(&markdown, cx)) });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert_eq!(cx.debug_bounds("image diagram").expect("the diagram is drawn").size.width, px(width.ceil()));
+    }
+
     #[gpui_kit::test]
     fn the_preview_draws_the_image(cx: &mut gpui_kit::TestAppContext) {
         use gpui_kit::component::text::{TextView, TextViewState};

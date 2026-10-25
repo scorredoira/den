@@ -137,6 +137,15 @@ impl FileTab {
     fn shows_file(&self, path: &Path) -> bool {
         self.diff.is_none() && self.path == path
     }
+
+    /// Shows Markdown `text` in its rendered view, and lets go of the
+    /// diagrams it no longer shows: each edit of one is a new image.
+    fn preview(&self, text: &str, window: &mut Window, cx: &mut App) {
+        let Some(markdown) = &self.markdown else { return };
+        let text = diagram::with_diagrams(text, Config::get(cx).font_size(TextArea::Preview));
+        self.previewed.update(cx, |images, cx| images.keep_shown(&text, window, cx));
+        markdown.update(cx, |view, cx| view.set_text(&text, cx));
+    }
 }
 
 struct FileTab {
@@ -1142,12 +1151,7 @@ impl Workspace {
         tab.content = Content::Ready;
         tab.saved = text.clone();
         tab.show_source = false;
-        if let Some(markdown) = &tab.markdown {
-            markdown.update(cx, |view, cx| {
-            let size = Config::get(cx).font_size(TextArea::Preview);
-            view.set_text(&diagram::with_diagrams(&text, size), cx);
-        });
-        }
+        tab.preview(&text, window, cx);
         tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
         self.activate_with(ix, false, window, cx);
         cx.notify();

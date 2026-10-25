@@ -64,6 +64,19 @@ impl PreviewImages {
         Self(HashMap::new())
     }
 
+    /// Lets go of the `data:` images `markdown` no longer has.
+    pub(super) fn keep_shown(&mut self, markdown: &str, window: &mut Window, cx: &mut App) {
+        self.0.retain(|source, load| match source {
+            Source::Data(url) if !markdown.contains(url.as_ref()) => {
+                if let Some(Ok(image)) = &load.loaded {
+                    cx.drop_image(image.clone(), Some(window));
+                }
+                false
+            }
+            _ => true,
+        });
+    }
+
     fn load(&mut self, source: &Source, client: Option<&Arc<Client>>, window: &mut Window, cx: &mut Context<Self>) -> Option<Loaded> {
         if !self.0.contains_key(source) {
             let load = match source {
@@ -264,6 +277,55 @@ mod tests {
         cx.update(|window, cx| workspace.update(cx, |this, cx| this.close(0, window, cx)));
         painted(cx);
         assert!(!cx.update(|window, _| window.has_image_atlas_entry(&image)));
+    }
+
+    /// Each edit of a diagram is a new `data:` image: the one it replaces
+    /// leaves memory and the GPU, and the one still shown stays.
+    #[gpui_kit::test]
+    fn an_edited_diagram_frees_the_image_it_replaces(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::config::Config::default());
+        });
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            window.activate_window();
+            super::super::Workspace::new(PathBuf::from("/preview-test"), None, true, "preview-test".into(), window, cx)
+        });
+        let diagram = |to: &str| format!("Text.\n```mermaid\nflowchart TD\n A --> {to}\n```\n");
+        cx.update(|window, cx| workspace.update(cx, |this, cx| {
+            let tab = this.new_tab(PathBuf::from("/preview-test/README.md"), false, window, cx);
+            tab.preview(&diagram("B"), window, cx);
+            this.tabs.push(tab);
+            this.tabs[0].content = super::super::Content::Ready;
+            this.activate(0, window, cx);
+            this.open_preview_to_side(&super::super::OpenPreviewToSide, window, cx);
+        }));
+        let painted = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                let images = workspace.read(cx).tabs.last().unwrap().previewed.clone();
+                let images = images.read(cx);
+                assert!(images.0.values().all(|load| load.loaded.is_some()), "nothing is still loading");
+                images.0.values().filter_map(|load| load.loaded.clone()).map(Result::unwrap).collect::<Vec<_>>()
+            })
+        };
+        painted(cx);
+        let first = painted(cx);
+        assert_eq!(first.len(), 1, "the preview loads its diagram");
+        assert!(cx.update(|window, _| window.has_image_atlas_entry(&first[0])));
+        // The same text again keeps it.
+        let edit = |cx: &mut VisualTestContext, text: String| {
+            cx.update(|window, cx| workspace.update(cx, |this, cx| this.tabs.iter().for_each(|tab| tab.preview(&text, window, cx))))
+        };
+        edit(cx, diagram("B"));
+        assert_eq!(painted(cx).iter().map(|i| i.id).collect::<Vec<_>>(), [first[0].id]);
+        edit(cx, diagram("C"));
+        painted(cx);
+        let second = painted(cx);
+        assert_eq!(second.len(), 1, "only the edited diagram is kept");
+        assert_ne!(second[0].id, first[0].id);
+        assert!(!cx.update(|window, _| window.has_image_atlas_entry(&first[0])));
     }
 
     #[test]

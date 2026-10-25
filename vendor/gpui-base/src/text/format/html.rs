@@ -180,6 +180,11 @@ fn value_to_length(value: &str) -> Option<DefiniteLength> {
     }
 }
 
+/// (den) Whether the image is kept at its width: `max-width: none`.
+fn fixed_width(attrs: &RefCell<Vec<html5ever::Attribute>>) -> bool {
+    style_attrs(attrs).get("max-width").is_some_and(|value| value == "none")
+}
+
 /// Get width, height from attributes or parse them from style attribute.
 fn attr_width_height(
     attrs: &RefCell<Vec<html5ever::Attribute>>,
@@ -401,6 +406,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
                     width,
                     height,
                     title: title.map(Into::into),
+                    fixed: fixed_width(attrs),
                     ..Default::default()
                 });
             }
@@ -497,6 +503,7 @@ fn parse_node(
                     alt: alt.map(Into::into),
                     width,
                     height,
+                    fixed: fixed_width(&attrs),
                     ..Default::default()
                 });
 

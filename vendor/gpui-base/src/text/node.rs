@@ -485,6 +485,9 @@ pub struct ImageNode {
     pub alt: Option<SharedString>,
     pub width: Option<DefiniteLength>,
     pub height: Option<DefiniteLength>,
+    /// (den) `style="max-width: none"`: drawn at its width, never shrunk
+    /// to the column; wider, its paragraph scrolls sideways.
+    pub fixed: bool,
     pub(crate) span: Option<Span>,
     /// The image a `data:` URL carries, decoded on first render and kept for
     /// the node's lifetime so it is not decoded again every frame.
@@ -523,6 +526,7 @@ impl std::fmt::Debug for ImageNode {
             .field("alt", &self.alt)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("fixed", &self.fixed)
             .field("span", &self.span)
             .finish()
     }
@@ -536,6 +540,7 @@ impl PartialEq for ImageNode {
             && self.alt == other.alt
             && self.width == other.width
             && self.height == other.height
+            && self.fixed == other.fixed
             && self.span == other.span
     }
 }
@@ -2124,7 +2129,7 @@ impl Paragraph {
         &self,
         fade_key: Option<TextLeafKey>,
         node_cx: &NodeContext,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         let children = &self.children;
@@ -2215,7 +2220,8 @@ impl Paragraph {
                     img(node_cx.image_source(image))
                         .id(ix)
                         .object_fit(ObjectFit::Contain)
-                        .max_w(relative(1.))
+                        .map(|this| if image.fixed { this.flex_none() } else { this.max_w(relative(1.)) })
+                        .debug_selector(|| format!("image {}", image.title()))
                         .when_some(image.width, |this, width| this.w(width))
                         .when_some(image.link.clone(), |this, link| {
                             let link_click_handler = link_click_handler.clone();
@@ -2313,12 +2319,20 @@ impl Paragraph {
                 .unwrap_or_else(|| div().into_any_element());
         }
 
-        div()
+        let paragraph = div()
             .id(leaf_element_id(fade_key))
             // (den) `align="center"` on the HTML block around it.
             .when(self.centered, |this| this.flex().flex_col().items_center())
-            .children(child_nodes)
-            .into_any_element()
+            .children(child_nodes);
+        // (den) An image at its own width scrolls sideways when wider than
+        // the column: the track is as wide as the widest, or the column.
+        let fixed = children.iter().filter_map(|child| child.image.as_ref()).filter(|image| image.fixed);
+        let Some(width) = fixed.filter_map(|image| image.width).map(|width| width.to_pixels(px(0.).into(), window.rem_size())).max() else {
+            return paragraph.into_any_element();
+        };
+        let id = ElementId::NamedChild(Arc::new(leaf_element_id(fade_key)), "scroll".into());
+        let scroll_handle = window.use_keyed_state(id.clone(), cx, |_, _| ScrollHandle::default()).read(cx).clone();
+        horizontal_scroll_area(id, &scroll_handle, &StyleRefinement::default(), paragraph.min_w_full().w(width)).into_any_element()
     }
 
     fn should_render_inline_flow(&self) -> bool {

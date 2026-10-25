@@ -106,12 +106,7 @@ impl Workspace {
         tab.dirty = text != saved;
         tab.saved = saved;
         tab.text = Some(text.as_str().into());
-        if let Some(markdown) = &tab.markdown {
-            markdown.update(cx, |view, cx| {
-            let size = Config::get(cx).font_size(TextArea::Preview);
-            view.set_text(&super::diagram::with_diagrams(&text, size), cx);
-        });
-        }
+        tab.preview(&text, window, cx);
         tab.editor.update(cx, |state, cx| {
             state.set_tab_size(indentation(&text, cx), cx);
             state.set_value(text, window, cx);

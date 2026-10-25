@@ -212,12 +212,7 @@ impl Workspace {
                 }
             }
             Ok(text) => {
-                if let Some(markdown) = &tab.markdown {
-                    markdown.update(cx, |view, cx| {
-            let size = Config::get(cx).font_size(TextArea::Preview);
-            view.set_text(&super::diagram::with_diagrams(&text, size), cx);
-        });
-                }
+                tab.preview(&text, window, cx);
                 tab.on_disk = None;
                 tab.saved = text.clone();
                 tab.content = Content::Ready;
@@ -385,12 +380,7 @@ impl Workspace {
                 }
             });
         }
-        if let Some(markdown) = &self.tabs[ix].markdown {
-            markdown.update(cx, |view, cx| {
-            let size = Config::get(cx).font_size(TextArea::Preview);
-            view.set_text(&super::diagram::with_diagrams(string(), size), cx);
-        });
-        }
+        self.tabs[ix].preview(string(), window, cx);
         // Breakpoints move with the lines they're on, by where the text
         // changed: an edit of another view comes to the file's tab too.
         if self.tabs[ix].is_file() {
