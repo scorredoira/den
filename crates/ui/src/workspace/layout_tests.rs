@@ -1258,3 +1258,28 @@ fn a_plain_editor_shows_the_code_and_only_the_files_or_the_search(cx: &mut TestA
         assert!(!workspace.is_shown(Panel::Changes, cx) && !workspace.is_shown(Panel::Terminals, cx));
     });
 }
+
+/// Cmd-J from the terminals with a diff in one column in front: the keys go
+/// to the editor it shows, so the shortcuts still work.
+#[gpui_kit::test]
+fn hiding_the_terminals_focuses_a_diff(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.terminals = cx.new(|cx| crate::terminals::test_area(window, cx));
+        let mut tab = workspace.new_tab_with(PathBuf::from("/layout-test/main.ts"), false, "diff", window, cx);
+        tab.diff = Some(DiffOf { file: "main.ts".into(), commit: None, source: false, only: None });
+        tab.content = Content::Ready;
+        let ix = workspace.place_tab(tab, true);
+        let sides = crate::diff::split("@@ -1 +1 @@\n-a\n+b\n").unwrap();
+        workspace.show_side_by_side(ix, sides, false, window, cx);
+        workspace.activate_with(ix, false, window, cx);
+        workspace.set_terminals_visible(true, window, cx);
+    });
+    cx.run_until_parked();
+    cx.dispatch_action(ToggleTerminals);
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| {
+        assert!(!workspace.is_shown(Panel::Terminals, cx));
+        assert!(workspace.focus_handle.contains_focused(window, cx));
+    });
+}

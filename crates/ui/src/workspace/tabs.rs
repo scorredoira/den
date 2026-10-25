@@ -79,6 +79,9 @@ impl Workspace {
             focus.focus(window, cx);
         } else if tab.rendered().is_some() || tab.image.is_some() || !matches!(tab.content, Content::Ready) {
             self.focus_handle.focus(window, cx);
+        } else if let Some(old) = tab.old.as_ref().filter(|_| !Config::get(cx).diff_side_by_side()) {
+            // A diff in one column shows neither side's editor.
+            old.inline.update(cx, |state, cx| state.focus(window, cx));
         } else {
             tab.editor.update(cx, |state, cx| state.focus(window, cx));
         }
