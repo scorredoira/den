@@ -281,6 +281,7 @@ impl TerminalArea {
 
     /// The agent's terminals are back, with `tabs` their saved layout: placed
     /// before any opened meanwhile, which keep the focus; with none, one opens.
+    #[allow(clippy::too_many_arguments)]
     fn restored(
         &mut self,
         tabs: Vec<(Tree, Option<String>)>,
