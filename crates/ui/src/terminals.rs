@@ -147,6 +147,12 @@ pub struct TerminalArea {
     body_size: Rc<Cell<Option<Size<Pixels>>>>,
     /// Terminals on this machine (not on a server).
     local: bool,
+    /// `restore` is bringing back the agent's terminals: none shown yet
+    /// isn't none there.
+    restoring: bool,
+    /// The focus was asked for while restoring: it goes to the terminals
+    /// once they're back (to a new one if there are none).
+    focus_restored: bool,
     /// The panels in the terminals' place, a tab each after theirs.
     panel_tabs: Vec<PanelTab>,
     /// The terminal the debugger runs its command in: in `views`, but in no
@@ -190,6 +196,8 @@ impl TerminalArea {
             drag_origin: None,
             body_size: Rc::default(),
             local,
+            restoring: false,
+            focus_restored: false,
             panel_tabs: Vec::new(),
             debug_term: None,
             names: HashMap::new(),
@@ -215,6 +223,7 @@ impl TerminalArea {
         };
         let group = self.group.clone();
         let debug_term = self.debug_term;
+        self.restoring = true;
         cx.spawn_in(window, async move |this, cx| {
             let result: Result<Restored> = async {
                 let mut alive: HashSet<TermId> = agent::list(&client, group.clone()).await?.into_iter().collect();
@@ -258,37 +267,61 @@ impl TerminalArea {
             .await;
 
             this.update_in(cx, |this, window, cx| match result {
-                Ok((tabs, names, shares, terminals)) => {
-                    this.names = names;
-                    this.split_shares = shares;
-                    for (term, terminal) in terminals {
-                        let view = this.add_view(term, terminal, window, cx);
-                        if Some(term) == this.debug_term {
-                            cx.emit(TerminalAreaEvent::DebugTerminal(Some(view)));
-                        }
-                    }
-                    // gone with the agent's restart
-                    if debug_term.is_some_and(|term| !this.views.contains_key(&term)) {
-                        this.debug_term = None;
-                    }
-                    if tabs.is_empty() {
-                        this.open(Place::NewTab, window, cx);
-                        return;
-                    }
-                    for (tree, name) in tabs {
-                        let id = this.next_tab_id();
-                        let active = tree.leaves()[0];
-                        this.tabs.push(TerminalTab { id, tree, active, name });
-                    }
-                    this.active = 0;
-                    this.save();
-                    cx.notify();
+                Ok((tabs, names, shares, terminals)) => this.restored(tabs, names, shares, terminals, debug_term, window, cx),
+                Err(err) => {
+                    this.restoring = false;
+                    this.focus_restored = false;
+                    this.error(format!("Couldn't restore terminals: {err:#}"), cx);
                 }
-                Err(err) => this.error(format!("Couldn't restore terminals: {err:#}"), cx),
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The agent's terminals are back, with `tabs` their saved layout: placed
+    /// before any opened meanwhile, which keep the focus; with none, one opens.
+    fn restored(
+        &mut self,
+        tabs: Vec<(Tree, Option<String>)>,
+        names: HashMap<TermId, String>,
+        shares: HashMap<Vec<TermId>, Vec<f32>>,
+        terminals: Vec<(TermId, Entity<Terminal>)>,
+        debug_term: Option<TermId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.restoring = false;
+        self.names.extend(names);
+        self.split_shares = shares;
+        for (term, terminal) in terminals {
+            let view = self.add_view(term, terminal, window, cx);
+            if Some(term) == self.debug_term {
+                cx.emit(TerminalAreaEvent::DebugTerminal(Some(view)));
+            }
+        }
+        // gone with the agent's restart
+        if debug_term.is_some_and(|term| !self.views.contains_key(&term)) {
+            self.debug_term = None;
+        }
+        let focus = std::mem::take(&mut self.focus_restored);
+        if tabs.is_empty() && self.tabs.is_empty() {
+            self.open(Place::NewTab, window, cx);
+            return;
+        }
+        let opened = std::mem::take(&mut self.tabs);
+        for (tree, name) in tabs {
+            let id = self.next_tab_id();
+            let active = tree.leaves()[0];
+            self.tabs.push(TerminalTab { id, tree, active, name });
+        }
+        self.active = if opened.is_empty() { 0 } else { self.tabs.len() + self.active };
+        self.tabs.extend(opened);
+        if focus {
+            self.focus_active(window, cx);
+        }
+        self.save();
+        cx.notify();
     }
 
     /// Switches to a new connection with the agent (after reconnecting): each
@@ -340,7 +373,8 @@ impl TerminalArea {
                     this.tabs.push(TerminalTab { id, tree: Tree::Leaf(term), active: term, name: None });
                 }
                 this.save();
-                if this.tabs.is_empty() {
+                // While restoring, `restore` opens one if there are none.
+                if this.tabs.is_empty() && !this.restoring {
                     this.open(Place::NewTab, window, cx);
                 }
                 cx.notify();
@@ -673,10 +707,12 @@ impl TerminalArea {
         self.views.values().any(|view| view.read(cx).focus_handle(cx).is_focused(window))
     }
 
-    /// Focuses the active pane; if there is none, opens a terminal.
+    /// Focuses the active pane; if there is none, opens a terminal. While
+    /// restoring, once the terminals are back.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.tabs.get(self.active).and_then(|tab| self.focus_handle(tab.active, cx)) {
             Some(handle) => handle.focus(window, cx),
+            None if self.restoring => self.focus_restored = true,
             None => self.new_terminal(window, cx),
         }
     }
@@ -1704,5 +1740,59 @@ mod tests {
             serde_json::from_str(r#"{"tabs":[{"Split":{"axis":"Row","children":[{"Leaf":1},{"Leaf":null}]}},{"Leaf":null},{"Leaf":2}]}"#).unwrap();
         let tabs: Vec<_> = saved.tabs.into_iter().filter_map(SavedTab::into_tab).collect();
         assert_eq!(tabs, vec![(Tree::Leaf(1), None), (Tree::Leaf(2), None)]);
+    }
+
+    fn init(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::config::Config::default());
+        });
+    }
+
+    /// Asked for the focus with the agent's terminals still on their way
+    /// (entering the workspace, showing the terminals), none is opened: the
+    /// focus waits for them.
+    #[gpui_kit::test]
+    fn the_focus_while_restoring_opens_no_terminal(cx: &mut TestAppContext) {
+        init(cx);
+        let cx = cx.add_empty_window();
+        let area = cx.new_window_entity(|window, cx| {
+            let mut area = test_area(window, cx);
+            area.tabs.clear();
+            area.restoring = true;
+            area
+        });
+        cx.update(|window, cx| {
+            area.update(cx, |this, cx| {
+                this.focus(window, cx);
+                assert!(this.tabs.is_empty());
+                assert!(this.focus_restored);
+                this.restored(vec![(Tree::Leaf(1), None)], HashMap::new(), HashMap::new(), Vec::new(), None, window, cx);
+                assert_eq!(this.tabs.iter().map(TerminalTab::terms).collect::<Vec<_>>(), vec![vec![1]]);
+                assert!(this.contains_focus(window, cx));
+            })
+        });
+    }
+
+    /// One opened while restoring goes after the restored ones, still active.
+    #[gpui_kit::test]
+    fn restored_terminals_go_before_one_opened_meanwhile(cx: &mut TestAppContext) {
+        init(cx);
+        let cx = cx.add_empty_window();
+        let area = cx.new_window_entity(|window, cx| {
+            let mut area = test_area(window, cx);
+            area.tabs.retain(|tab| tab.active == 3);
+            area.active = 0;
+            area.restoring = true;
+            area
+        });
+        cx.update(|window, cx| {
+            area.update(cx, |this, cx| {
+                let tabs = vec![(Tree::Leaf(1), None), (Tree::Leaf(2), None)];
+                this.restored(tabs, HashMap::new(), HashMap::new(), Vec::new(), None, window, cx);
+                assert_eq!(this.tabs.iter().map(TerminalTab::terms).collect::<Vec<_>>(), vec![vec![1], vec![2], vec![3]]);
+                assert_eq!(this.active, 2);
+            })
+        });
     }
 }

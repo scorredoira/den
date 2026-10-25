@@ -340,9 +340,10 @@ impl Den {
                         let key = TaskKey { host, path: task.path };
                         Config::update(cx, |config| config.own_worktrees.push(key.config()));
                         this.activate(key, window, cx);
-                        // A new worktree is to work in: a terminal there, with the keyboard.
+                        // A new worktree is to work in: a terminal there, with the keyboard
+                        // (the one restoring opens, as it has none).
                         if let Some(workspace) = this.active_workspace() {
-                            workspace.update(cx, |workspace, cx| workspace.open_terminal(None, None, None, true, window, cx)).detach();
+                            workspace.update(cx, |workspace, cx| workspace.set_terminals_visible(true, window, cx));
                         }
                     }
                     Ok(other) => this.new_task_error(format!("Unexpected response: {other:?}"), window, cx),
