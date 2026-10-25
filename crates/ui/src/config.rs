@@ -344,17 +344,17 @@ pub fn sync_find_bar(cx: &mut App) {
     .detach();
 }
 
-/// The widths of the Graph tab's author and hash columns, in pixels.
+/// The widths of the Graph tab's author and date columns, in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistorySizes {
     pub author: f32,
-    pub hash: f32,
+    pub date: f32,
 }
 
 impl Default for HistorySizes {
     fn default() -> Self {
-        Self { author: 340., hash: 110. }
+        Self { author: 340., date: 185. }
     }
 }
 

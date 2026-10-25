@@ -1,12 +1,13 @@
 //! The Graph tab, as `git log --graph --oneline` and then `git show`: the
 //! commits of the current branch (or, with All Branches, of every branch, tag
 //! and remote), one line each across the whole tab, with their graph, hash,
-//! date, what points at them, subject, author and hash; Enter or a click opens one
+//! what points at them, subject, author and date; Enter or a click opens one
 //! in their place, its message, files and changes as a commit's tab shows
 //! them, and Esc goes back to the list where it was. Up and down step through
-//! the commits in both. A file's or a folder's history is the same list, of
-//! the commits that changed it, each opened with only its changes. The
-//! author's and hash's columns resize and keep their sizes. It only reads,
+//! the commits in both, and Page Up and Page Down scroll an open one. A
+//! file's or a folder's history is the same list, of the commits that
+//! changed it, each opened with only its changes. The
+//! author's and date's columns resize and keep their sizes. It only reads,
 //! and the agent does all the reading.
 
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
@@ -29,7 +30,7 @@ use crate::{
     menu,
 };
 
-actions!(history, [SelectPrev, SelectNext, OpenCommit, CloseCommit]);
+actions!(history, [SelectPrev, SelectNext, PageUp, PageDown, OpenCommit, CloseCommit]);
 
 /// The history's shortcuts: they only apply while it has focus.
 pub fn keymap() -> Vec<KeyBinding> {
@@ -37,6 +38,8 @@ pub fn keymap() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("up", SelectPrev, context),
         KeyBinding::new("down", SelectNext, context),
+        KeyBinding::new("pageup", PageUp, context),
+        KeyBinding::new("pagedown", PageDown, context),
         KeyBinding::new("enter", OpenCommit, context),
         KeyBinding::new("escape", CloseCommit, context),
     ]
@@ -54,12 +57,12 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// The width of a lane of the graph.
 const LANE: f32 = 14.;
 
-/// The room the commits keep for their subject, author and hash, in widths
-/// of the interface's font. Short of it, the author's and then the hash's
+/// The room the commits keep for their subject, author and date, in widths
+/// of the interface's font. Short of it, the author's and then the date's
 /// columns give up theirs down to their own.
 const SUBJECT_ROOM: f32 = 28.;
 const AUTHOR_ROOM: f32 = 9.;
-const HASH_ROOM: f32 = 7.;
+const DATE_ROOM: f32 = 7.;
 
 /// Commits whose text is kept, to go back to them at once.
 const MAX_TEXTS: usize = 64;
@@ -430,6 +433,22 @@ impl HistoryView {
         self.select_offset(1, cx);
     }
 
+    /// A page up or down the open commit's changes.
+    fn page_up(&mut self, _: &PageUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.scroll_commit(-1., cx);
+    }
+
+    fn page_down(&mut self, _: &PageDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.scroll_commit(1., cx);
+    }
+
+    fn scroll_commit(&mut self, pages: f32, cx: &mut Context<Self>) {
+        if !self.open {
+            return cx.propagate();
+        }
+        self.commit.update(cx, |view, cx| view.scroll_pages(pages, cx));
+    }
+
     /// Shows the selected commit in the list's place.
     fn open_commit(&mut self, _: &OpenCommit, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected.is_some() && !self.open {
@@ -710,8 +729,8 @@ impl HistoryView {
         }
     }
 
-    /// The commits' rows in `range`: graph, date, labels and subject, author,
-    /// hash. `focused`: the list has the keyboard, and its selection is
+    /// The commits' rows in `range`: graph, hash, labels and subject, author,
+    /// date. `focused`: the list has the keyboard, and its selection is
     /// outlined.
     fn render_rows(
         &mut self,
@@ -752,10 +771,8 @@ impl HistoryView {
                             .pl_1()
                             .overflow_hidden()
                             .child(graph_cell(&row, head, cx))
-                            // in the editor's font, to the minute: every date as wide, the subjects in line
-                            .child(div().flex_none().pr_2().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(
-                                commit.date.get(..16).unwrap_or(&commit.date).to_string(),
-                            ))
+                            // in the editor's font: every hash as wide, the subjects in line
+                            .child(div().flex_none().pr_2().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(commit.short.clone()))
                             .child(h_flex().flex_none().gap_1().pr_1().children(ref_labels(&commit, cx)))
                             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone())),
                     )
@@ -767,7 +784,7 @@ impl HistoryView {
                             })
                             .flex(),
                     )
-                    .child(cell(widths.1).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(commit.short.clone()))
+                    .child(cell(widths.1).text_color(theme.muted_foreground).child(commit.date.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.select(hash.clone(), false, cx);
@@ -862,13 +879,13 @@ impl HistoryView {
     fn render_commits(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let sizes = Config::get(cx).history;
         let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
-        let (author, hash) = fit_columns(f32::from(self.commits_width.get()), sizes.author, sizes.hash, size);
+        let (author, date) = fit_columns(f32::from(self.commits_width.get()), sizes.author, sizes.date, size);
         // Squeezed, they start again from their room whenever it changes.
-        let squeezed = (author != sizes.author || hash != sizes.hash).then(|| f32::from(self.commits_width.get()).to_bits());
+        let squeezed = (author != sizes.author || date != sizes.date).then(|| f32::from(self.commits_width.get()).to_bits());
         let state = self.columns.state(window.viewport_size().width, squeezed, cx).clone();
         let widths = match state.read(cx).sizes().as_slice() {
-            [_, author, hash] => (*author, *hash),
-            _ => (px(author), px(hash)),
+            [_, author, date] => (*author, *date),
+            _ => (px(author), px(date)),
         };
         let theme = cx.theme();
         let title = |text: &'static str| div().px_2().h_full().flex().items_center().overflow_hidden().whitespace_nowrap().child(text);
@@ -876,13 +893,13 @@ impl HistoryView {
             .with_state(&state)
             .child(resizable_panel().child(title("Commit").pl(px(LANE + 6.))))
             .child(resizable_panel().size(px(author)).size_range(px(60.)..px(1000.)).child(title("Author")))
-            .child(resizable_panel().size(px(hash)).size_range(px(60.)..px(600.)).child(title("Hash")))
+            .child(resizable_panel().size(px(date)).size_range(px(60.)..px(600.)).child(title("Date")))
             .on_resize(|state, _, cx| {
-                if let [_, author, hash] = state.read(cx).sizes().as_slice() {
-                    let (author, hash) = (f32::from(*author), f32::from(*hash));
+                if let [_, author, date] = state.read(cx).sizes().as_slice() {
+                    let (author, date) = (f32::from(*author), f32::from(*date));
                     Config::update_quietly(cx, |config| {
                         config.history.author = author;
-                        config.history.hash = hash;
+                        config.history.date = date;
                     });
                 }
             });
@@ -955,6 +972,8 @@ impl Render for HistoryView {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::select_prev))
             .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::page_up))
+            .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::open_commit))
             .on_action(cx.listener(Self::close_commit))
             .child(body)
@@ -993,21 +1012,21 @@ impl HistoryView {
     }
 }
 
-/// The author's and hash's widths in commits `width` wide, at `font`: they
+/// The author's and date's widths in commits `width` wide, at `font`: they
 /// give up theirs, the author's first, before the subject's room.
-fn fit_columns(width: f32, author: f32, hash: f32, font: f32) -> (f32, f32) {
+fn fit_columns(width: f32, author: f32, date: f32, font: f32) -> (f32, f32) {
     if width <= 0. {
-        return (author, hash);
+        return (author, date);
     }
-    let mut short = author + hash + SUBJECT_ROOM * font - width;
+    let mut short = author + date + SUBJECT_ROOM * font - width;
     let mut give = |own: f32, room: f32| {
         let given = short.clamp(0., (own - room * font).max(0.));
         short -= given;
         own - given
     };
     let author = give(author, AUTHOR_ROOM);
-    let hash = give(hash, HASH_ROOM);
-    (author, hash)
+    let date = give(date, DATE_ROOM);
+    (author, date)
 }
 
 /// Keeps in `width` how wide the element it's in is, and redraws when it
@@ -1048,8 +1067,8 @@ mod tests {
     use core::prelude::v1::test;
 
     #[test]
-    fn the_author_and_then_the_hash_give_their_room_to_the_subject() {
-        // Font 10: the subject keeps 280, the author 90, the hash 70.
+    fn the_author_and_then_the_date_give_their_room_to_the_subject() {
+        // Font 10: the subject keeps 280, the author 90, the date 70.
         assert_eq!(fit_columns(1000., 300., 150., 10.), (300., 150.));
         assert_eq!(fit_columns(600., 300., 150., 10.), (170., 150.));
         assert_eq!(fit_columns(400., 300., 150., 10.), (90., 70.));

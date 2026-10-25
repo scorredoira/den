@@ -133,7 +133,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{ShowFiles}} | Files |
 | {{CollapseFileTree}} | Collapse all the folders |
 | {{ShowChanges}} | Changes: what isn't committed |
-| {{ShowGraph}} | The Graph tab: the current branch's commits (All Branches: every branch's), one line each with their graph, date, subject, author and hash; {{key:enter}} or a click opens one in the list's place, with its message, files and changes, and {{key:escape}} goes back. Show File History lists only those that changed a file or a folder, each opened with only its changes. Its search looks in the messages, the paths or the content |
+| {{ShowGraph}} | The Graph tab: the current branch's commits (All Branches: every branch's), one line each with their graph, hash, subject, author and date; {{key:enter}} or a click opens one in the list's place, with its message, files and changes, and {{key:escape}} goes back. Show File History lists only those that changed a file or a folder, each opened with only its changes. Its search looks in the messages, the paths or the content |
 | {{ShowReferences}} | References |
 | {{ShowOutline}} | Outline: the classes, functions, constants… of the file in front, not what's inside the functions |
 

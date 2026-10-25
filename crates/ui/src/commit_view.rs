@@ -311,6 +311,14 @@ impl CommitView {
         }
     }
 
+    /// Scrolls the changes by `pages` of their height, up if negative.
+    pub fn scroll_pages(&self, pages: f32, cx: &mut Context<Self>) {
+        let handle = self.scroll.0.borrow().base_handle.clone();
+        let (offset, height) = (handle.offset(), handle.bounds().size.height);
+        handle.set_offset(point(offset.x, (offset.y - height * pages).clamp(-handle.max_offset().y, px(0.))));
+        cx.notify();
+    }
+
     /// Shows another commit in its place, from the top: no new view, so it
     /// keeps its width and doesn't go blank in between.
     pub fn set(&mut self, prepared: Prepared, cx: &mut Context<Self>) {
