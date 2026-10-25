@@ -1,5 +1,5 @@
 //! The Changes panel: what isn't committed yet, staged and unstaged (the
-//! commits are the History panel's, see `history_panel`). It only reads: committing, staging, discarding and switching branches
+//! commits are the Graph tab's, see `history`). It only reads: committing, staging, discarding and switching branches
 //! are done in a terminal. The branch is in the status bar. The agent does
 //! all the reading.
 
@@ -32,7 +32,7 @@ pub enum ChangesEvent {
     OpenFile { file: String },
     /// Select `file` in the Files panel.
     RevealInTree { file: String },
-    /// The History panel with the commits that changed `file`.
+    /// The Graph tab with the commits that changed `file`.
     ShowHistory { file: String },
 }
 

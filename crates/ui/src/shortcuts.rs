@@ -91,13 +91,12 @@ shortcuts![
         (CollapseFileTree, "Collapse All Folders", "secondary-alt-c"),
         (RefreshFiles, "Files: Refresh", ""),
         (ShowChanges, "Panel: Changes", "secondary-shift-g"),
-        (ShowHistory, "Panel: History", "secondary-shift-h"),
         (ShowSearch, "Panel: Search", "secondary-shift-f"),
         (ShowReferences, "Panel: References", "secondary-shift-r"),
         (ShowOutline, "Panel: Outline", "secondary-shift-l"),
         (NextResult, "Next Result", "f4"),
         (PrevResult, "Previous Result", "shift-f4"),
-        (ShowGraph, "Show Graph", ""),
+        (ShowGraph, "Show Graph", "secondary-shift-h"),
     ],
     "Terminals": [
         (ToggleTerminals, "Toggle Terminals", mac_or("cmd-j", "ctrl-`")),
@@ -138,7 +137,6 @@ pub fn in_plain_editor(name: &str) -> bool {
     !matches!(
         id,
         "ShowChanges"
-            | "ShowHistory"
             | "ShowGraph"
             | "OpenChanges"
             | "ShowFileHistory"

@@ -31,11 +31,6 @@ impl Workspace {
                     None => name,
                 };
                 let name = match &tab.diff {
-                    // A file's history: the file's name.
-                    Some(DiffOf { commit: Some((_, short)), file, only: Some((only, false)), .. }) if file.is_empty() => {
-                        format!("{} ({short})", only.rsplit('/').next().unwrap_or(only))
-                    }
-                    Some(DiffOf { commit: Some((_, short)), file, .. }) if file.is_empty() => format!("Commit {short}"),
                     Some(DiffOf { commit: Some((_, short)), source: true, .. }) => format!("{name} @ {short}"),
                     Some(DiffOf { commit: Some((_, short)), .. }) => format!("{name} ({short})"),
                     Some(_) => format!("{name} (changes)"),
@@ -169,7 +164,6 @@ impl Workspace {
         let editor = tab.editor.clone();
         let diff = tab.diff.is_some();
         let markdown = tab.markdown.is_some() && tab.is_file();
-        let whole_commit = tab.diff.as_ref().is_some_and(|diff| diff.file.is_empty());
         let in_preview = tab.preview;
         // The file's own changes, from its tab or a view of it.
         let changeable = !diff && !tab.doc && !self.plain;
@@ -258,7 +252,7 @@ impl Workspace {
                     .action(Box::new(OpenPreviewToSide)),
                 )
             })
-            .when(diff && !whole_commit, |menu| {
+            .when(diff, |menu| {
                 let path = path.clone();
                 menu.item(menu::item("Open File", &workspace, move |this, window, cx| {
                     this.open(path.clone(), true, window, cx)
@@ -271,10 +265,10 @@ impl Workspace {
                         .disabled(!changed(cx)),
                 )
             })
-            .when(!whole_commit && !plain, |menu| {
+            .when(!plain, |menu| {
                 let path = path.clone();
-                menu.item(menu::item("Show File History", &workspace, move |this, _, cx| {
-                    this.show_history(&path, false, cx)
+                menu.item(menu::item("Show File History", &workspace, move |this, window, cx| {
+                    this.show_history(&path, false, window, cx)
                 }))
             })
             .separator()
@@ -363,27 +357,6 @@ impl Workspace {
                     .child(img(image.clone()).max_w_full().max_h_full().object_fit(ObjectFit::Contain))
                     .into_any_element(),
                 Content::Ready if let Some(page) = &tab.page => page.view(self),
-                Content::Ready if let Some(commit) = &tab.commit => {
-                    let tab_menu = self.tab_menu(tab, self.editor_split.is_some(), cx.entity().downgrade());
-                    let hash = tab.diff.as_ref().and_then(|diff| diff.commit.as_ref()).map(|(hash, _)| hash.clone()).unwrap_or_default();
-                    div()
-                        .id("commit-view")
-                        .size_full()
-                        .context_menu(move |menu, window, cx| {
-                            let hash = hash.clone();
-                            let menu = diff_layouts(cx)
-                                .into_iter()
-                                .fold(menu, |menu, (label, checked, action)| menu.menu_with_check(label, checked, action))
-                                .separator()
-                                .item(menu::PopupMenuItem::new("Copy Hash").on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))
-                                }))
-                                .separator();
-                            tab_menu(menu, window, cx)
-                        })
-                        .child(commit.clone())
-                        .into_any_element()
-                }
                 Content::Ready => match tab.rendered() {
                     Some(markdown) => div()
                         .id("markdown-preview")
@@ -613,7 +586,6 @@ impl Workspace {
                             .map_or(EditorDrop::Center, |(_, placement)| placement);
                         this.drop_tab(drag, group, None, placement, window, cx);
                     }))
-                    .child(measure_width(&self.group_widths[group]))
                     .child(body)
                     .when_some(self.editor_drop.filter(|(target, _)| *target == group && cx.has_active_drag()), |el, (_, placement)| {
                         el.child(placement.indicator(cx))
@@ -783,7 +755,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_side_panel))
             .on_action(cx.listener(|this, _: &ShowFiles, _, cx| this.toggle_panel(Panel::Files, cx)))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.toggle_panel(Panel::Changes, cx)))
-            .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.toggle_panel(Panel::History, cx)))
             .on_action(cx.listener(|this, _: &ShowGraph, window, cx| this.toggle_graph(window, cx)))
             .on_action(cx.listener(Self::show_search))
             .on_action(cx.listener(Self::open_file_finder))
@@ -830,9 +801,9 @@ impl Render for Workspace {
                     this.open_changes(&path, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &ShowFileHistory, _, cx| {
+            .on_action(cx.listener(|this, _: &ShowFileHistory, window, cx| {
                 if let Some((path, _)) = this.cursor_place(cx) {
-                    this.show_history(&path, false, cx);
+                    this.show_history(&path, false, window, cx);
                 }
             }))
             .on_action(cx.listener(Self::add_to_watch))

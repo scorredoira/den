@@ -31,7 +31,7 @@ impl Workspace {
         self.show_panel(Panel::Changes, cx);
         if let Some(file) = file {
             self.terminals_maximized = false;
-            self.open_diff(DiffOf { file, commit: None, source: false, only: None }, true, window, cx);
+            self.open_diff(DiffOf { file, commit: None, source: false }, true, window, cx);
         }
         cx.notify();
     }
@@ -79,7 +79,6 @@ impl Workspace {
         match &tab.diff {
             _ if tab.doc => format!("doc: {}", tab.path.display()),
             Some(diff) => match &diff.commit {
-                Some((_, short)) if diff.file.is_empty() => format!("commit {short}"),
                 Some((_, short)) => format!("{} at {short}", diff.file),
                 None => format!("changes: {}", diff.file),
             },

@@ -23,7 +23,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowGraph, ShowHistory,
+    CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowGraph,
     OpenChanges, ShowFileHistory,
     FocusNext, FocusPrevious, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
@@ -32,8 +32,7 @@ use crate::{
     DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile, ToggleWholeFile,
     changes::{self, ChangesEvent, ChangesPanel},
     history::{HistoryEvent, HistoryView},
-    history_panel::{HistoryPanel, HistoryPanelEvent},
-    commit_view::{self, CommitView, CommitViewEvent},
+    commit_view::CommitViewEvent,
     definition,
     completion::Completions,
     editing::{self, DuplicateLineDown, DuplicateLineUp, MoveLineDown, MoveLineUp, SelectNextOccurrence},
@@ -184,8 +183,6 @@ struct FileTab {
     diff: Option<DiffOf>,
     /// A file's diff shown side by side: `editor` has the new side.
     old: Option<OldSide>,
-    /// A whole commit: its message and every file's changes.
-    commit: Option<Entity<CommitView>>,
     /// A view of its own instead of a file (it's a `doc` too).
     page: Option<pages::Page>,
     /// Reopened on returning to the task: if the file is gone, it closes itself.
@@ -380,29 +377,22 @@ fn empty_hints(plain: bool, cx: &App) -> impl IntoElement {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct DiffOf {
-    /// Relative to the task's folder; empty for the whole commit.
+    /// Relative to the task's folder.
     file: String,
     /// What changed in a commit (hash and short hash), not in the folder.
     commit: Option<(String, String)>,
     /// The file as it was in `commit`, not its diff.
     source: bool,
-    /// Of a whole commit, only this file's changes, or (`true`) this
-    /// folder's: a file's or folder's history shows it so.
-    only: Option<(String, bool)>,
 }
 
 impl DiffOf {
     fn commit(commit: String, short: String, file: String, source: bool) -> Self {
-        Self { file, commit: Some((commit, short)), source, only: None }
+        Self { file, commit: Some((commit, short)), source }
     }
 }
 
 pub struct Workspace {
     root: PathBuf,
-    /// How wide each editor group's body is, measured every frame: a new
-    /// diff is laid out at that width from its first frame, not corrected
-    /// on the next one.
-    group_widths: [Rc<Cell<Pixels>>; 2],
     /// What was read of commits (they don't change): going back to one, or
     /// to one read ahead, shows it at once.
     commit_texts: HashMap<DiffOf, String>,
@@ -462,8 +452,7 @@ pub struct Workspace {
     /// On this machine (not on a server).
     local: bool,
     changes: Entity<ChangesPanel>,
-    /// The History panel, and the Graph tab.
-    history: Entity<HistoryPanel>,
+    /// The Graph tab.
     graph: Entity<HistoryView>,
     search: Entity<SearchPanel>,
     /// References panel: the latest F12 (with several targets) or Shift-F12.
@@ -535,7 +524,6 @@ impl Workspace {
         let has_agent = agent.is_some();
         let terminals = cx.new(|cx| TerminalArea::new(root.clone(), agent.clone(), local, cx));
         let changes = cx.new(|_| ChangesPanel::new(root.clone(), agent.clone(), local));
-        let history = cx.new(|cx| HistoryPanel::new(root.clone(), agent.clone(), window, cx));
         let graph = cx.new(|cx| HistoryView::new(root.clone(), agent.clone(), window, cx));
         let search = cx.new(|cx| SearchPanel::new(root.clone(), agent.clone(), window, cx));
         let references = cx.new(|cx| SearchPanel::references(root.clone(), window, cx));
@@ -584,7 +572,7 @@ impl Workspace {
                     FileTreeEvent::Open { path, pin } => this.open_with(path.clone(), *pin, *pin, window, cx),
                     FileTreeEvent::Renamed { from, to } => this.renamed(from, to, cx),
                     FileTreeEvent::Trashed { path } => this.trashed(path, window, cx),
-                    FileTreeEvent::ShowHistory { path, dir } => this.show_history(path, *dir, cx),
+                    FileTreeEvent::ShowHistory { path, dir } => this.show_history(path, *dir, window, cx),
                     FileTreeEvent::OpenTerminal { dir } => {
                         this.show_panel(Panel::Terminals, cx);
                         this.terminals.update(cx, |terminals, cx| terminals.new_terminal_in(dir.clone(), window, cx));
@@ -625,7 +613,6 @@ impl Workspace {
                 },
             ),
             cx.subscribe_in(&changes, window, Self::on_git_event),
-            cx.subscribe_in(&history, window, Self::on_history_event),
             cx.subscribe_in(&graph, window, Self::on_graph_event),
             cx.subscribe_in(&search, window, |this, search, event: &SearchEvent, window, cx| match event {
                 SearchEvent::Open { file, line, column, pin } => {
@@ -667,7 +654,6 @@ impl Workspace {
             Self::watch_ports(cx);
         }
         Self {
-            group_widths: Default::default(),
             commit_texts: HashMap::new(),
             head: None,
             root,
@@ -699,7 +685,6 @@ impl Workspace {
             window: window.window_handle(),
             local,
             changes,
-            history,
             graph,
             search,
             references,
@@ -1028,8 +1013,6 @@ impl Workspace {
         self.changes.update(cx, |changes, cx| changes.set_client(client.clone(), cx));
         let visible = self.graph_visible();
         self.graph.update(cx, |graph, cx| graph.set_client(client.clone(), visible, cx));
-        let visible = self.is_shown(Panel::History, cx);
-        self.history.update(cx, |history, cx| history.set_client(client.clone(), visible, cx));
         self.search.update(cx, |search, _| search.set_client(client.clone()));
         self.debugger.update(cx, |debugger, cx| {
             debugger.set_client(client.clone(), cx);
@@ -1629,61 +1612,34 @@ impl Workspace {
                 if *pin && !deleted {
                     self.open(self.root.join(file), true, window, cx);
                 } else {
-                    let of = DiffOf { file: file.clone(), commit: None, source: false, only: None };
+                    let of = DiffOf { file: file.clone(), commit: None, source: false };
                     self.open_diff(of, *pin, window, cx);
                 }
             }
             ChangesEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
-            ChangesEvent::ShowHistory { file } => self.open_history(Some((file.clone(), false)), cx),
+            ChangesEvent::ShowHistory { file } => self.open_history(Some((file.clone(), false)), window, cx),
         }
     }
 
-    /// What the History panel asks to show.
-    fn on_history_event(&mut self, _: &Entity<HistoryPanel>, event: &HistoryPanelEvent, window: &mut Window, cx: &mut Context<Self>) {
-        match event {
-            HistoryPanelEvent::OpenCommit { commit, short, only, pin } => {
-                let of = DiffOf { only: only.clone(), ..DiffOf::commit(commit.clone(), short.clone(), String::new(), false) };
-                self.open_diff(of, *pin, window, cx);
-            }
-        }
-    }
-
-    /// What the Graph tab asks to open.
+    /// What the Graph tab's open commit asks of one of its files.
     fn on_graph_event(&mut self, _: &Entity<HistoryView>, event: &HistoryEvent, window: &mut Window, cx: &mut Context<Self>) {
-        match event {
-            HistoryEvent::OpenCommitDiff { commit, short, file } => {
-                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), false), true, window, cx);
-            }
-            HistoryEvent::OpenFileAt { commit, short, file } => {
-                self.open_diff(DiffOf::commit(commit.clone(), short.clone(), file.clone(), true), true, window, cx);
-            }
-            HistoryEvent::OpenFile { file } => self.open(self.root.join(file), true, window, cx),
-            HistoryEvent::RevealInTree { file } => self.reveal_in_tree(&self.root.join(file), cx),
-        }
-    }
-
-    /// What a commit's tab asks of one of its files.
-    pub(super) fn on_commit_event(&mut self, view: &Entity<CommitView>, event: &CommitViewEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // The tab's commit when asked: it may show another one by then.
-        let commit = self.tabs.iter().find(|tab| tab.commit.as_ref() == Some(view)).and_then(|tab| tab.diff.as_ref()?.commit.clone());
-        match event {
+        match &event.event {
             CommitViewEvent::OpenFile(file) | CommitViewEvent::OpenFileAt(file) => {
-                if let Some((hash, short)) = commit {
-                    let source = matches!(event, CommitViewEvent::OpenFileAt(_));
-                    self.open_diff(DiffOf::commit(hash, short, file.clone(), source), true, window, cx);
-                }
+                let source = matches!(event.event, CommitViewEvent::OpenFileAt(_));
+                let of = DiffOf::commit(event.commit.clone(), event.short.clone(), file.clone(), source);
+                self.open_diff(of, true, window, cx);
             }
             CommitViewEvent::OpenSource(file) => self.open(self.root.join(file), true, window, cx),
-            CommitViewEvent::ShowHistory(file) => self.open_history(Some((file.clone(), false)), cx),
+            CommitViewEvent::ShowHistory(file) => self.open_history(Some((file.clone(), false)), window, cx),
             CommitViewEvent::RevealInTree(file) => self.reveal_in_tree(&self.root.join(file), cx),
             CommitViewEvent::CopyPath(file) => cx.write_to_clipboard(ClipboardItem::new_string(self.root.join(file).to_string_lossy().into_owned())),
         }
     }
 
-    /// The History panel with the commits that changed `path`.
-    fn show_history(&mut self, path: &Path, dir: bool, cx: &mut Context<Self>) {
+    /// The Graph tab with the commits that changed `path`.
+    fn show_history(&mut self, path: &Path, dir: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(file) = self.repo_path(path) {
-            self.open_history(Some((file, dir)), cx);
+            self.open_history(Some((file, dir)), window, cx);
         }
     }
 
@@ -1941,23 +1897,6 @@ fn follow_scroll(from: &Entity<EditorState>, to: &Entity<EditorState>, cx: &mut 
     if offset.y != y {
         to.update(cx, |state, cx| state.set_scroll_offset(point(offset.x, y), cx));
     }
-}
-
-/// Keeps in `width` how wide the diff is, and redraws when that changes
-/// whether its two sides have room.
-pub(crate) fn measure_width(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
-    let width = width.clone();
-    canvas(
-        move |bounds, window, _| {
-            let fits = |width: Pixels| width >= px(config::SIDE_BY_SIDE_WIDTH);
-            if fits(width.replace(bounds.size.width)) != fits(bounds.size.width) {
-                window.refresh();
-            }
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .size_full()
 }
 
 /// How a diff in one column shows each line: both numbers, removed lines in

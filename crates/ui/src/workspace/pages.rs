@@ -108,12 +108,11 @@ impl Workspace {
         self.graph_tab().is_some_and(|ix| self.shown_in(self.tabs[ix].group) == Some(ix))
     }
 
-    /// Shows the History panel with the commits that changed `file`
-    /// (relative; `true`: a folder), or with all of them; the newest shows
-    /// in the code.
-    pub(crate) fn open_history(&mut self, file: Option<(String, bool)>, cx: &mut Context<Self>) {
-        self.history.update(cx, |history, cx| history.show_file(file, cx));
-        self.show_panel(Panel::History, cx);
+    /// The Graph tab in front with the commits that changed `file`
+    /// (relative; `true`: a folder), or with all of them.
+    pub(crate) fn open_history(&mut self, file: Option<(String, bool)>, window: &mut Window, cx: &mut Context<Self>) {
+        self.graph.update(cx, |graph, cx| graph.show_file(file, cx));
+        self.show_graph_tab(window, cx);
     }
 
     /// The Graph tab in front, opened if it wasn't, with what it showed.
@@ -129,11 +128,11 @@ impl Workspace {
         self.layout_changed(cx);
     }
 
-    /// The Graph tab, closed if it's the one in front.
+    /// The Graph tab with every commit, closed if it's the one in front.
     pub(crate) fn toggle_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.graph_tab() {
             Some(ix) if self.active == Some(ix) => self.close(ix, window, cx),
-            _ => self.show_graph_tab(window, cx),
+            _ => self.open_history(None, window, cx),
         }
     }
 

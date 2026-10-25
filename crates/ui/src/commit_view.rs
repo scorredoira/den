@@ -1,10 +1,10 @@
-//! A whole commit in one tab (VS Code's multi-diff): above, in a band sized
-//! by dragging the line under it, its message, author and date beside its
-//! files; under it each file's changes side by side, one after another, with
-//! the lines highlighted as the file's language, or a file's only once it's
-//! picked in the band. Read-only rows in one list; a file's name opens that
-//! file's diff in its own tab. Text is selected with the mouse in one column
-//! at a time, and Cmd-C copies it.
+//! A whole commit (VS Code's multi-diff), as `git show` prints it: above, as
+//! tall as they need, its message, author and date and its files; under
+//! them each file's changes side by side, one after another, with the lines
+//! highlighted as the file's language. A file above goes to its changes.
+//! Read-only rows in one list; a file's name opens that file's diff in its
+//! own tab. Text is selected with the mouse in one column at a time, and
+//! Cmd-C copies it.
 
 use std::{
     cell::{Cell, RefCell},
@@ -19,17 +19,15 @@ use gpui_kit::component::{
     highlighter::{HighlightTheme, SyntaxHighlighter},
     input::{Copy, Rope},
     menu::ContextMenuExt as _,
-    resizable_panel, v_flex, v_resizable,
+    v_flex,
 };
-use proto::ChangedFile;
 use gpui_base::AutoScroll;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    config::{Config, Split, TextArea, UiText as _},
+    config::{Config, TextArea, UiText as _},
     diff::{self, Kind},
     language, menu,
-    workspace::measure_width,
 };
 
 /// Beyond this many rows a file's changes aren't drawn: its name opens them.
@@ -37,10 +35,8 @@ const MAX_FILE_ROWS: usize = 3000;
 /// Sides larger than this aren't highlighted.
 const MAX_HIGHLIGHTED: usize = 256 * 1024;
 
-/// The band's height until dragged.
-const BAND_HEIGHT: f32 = 220.;
-
 /// What a file of the commit asks for, by its path.
+#[derive(Clone)]
 pub enum CommitViewEvent {
     /// Its changes, in a tab of their own.
     OpenFile(String),
@@ -55,22 +51,14 @@ pub enum CommitViewEvent {
 }
 
 pub struct CommitView {
-    /// The rows shown: every file's, or the picked one's.
+    /// Every file's rows.
     rows: Rc<Vec<Row>>,
     /// The same in one column, for when there's no room for two sides.
     inline: Rc<Vec<Row>>,
-    /// Every file's rows, in two columns and in one.
-    all: (Rc<Vec<Row>>, Rc<Vec<Row>>),
-    /// The message, shown in the band with the files: none in the Graph
-    /// tab, which shows them itself.
+    /// The message, over the files: none for a file's diff of the commit.
     message: Option<CommitMessage>,
     files: Vec<CommitFile>,
-    /// The file whose changes alone show.
-    picked: Option<SharedString>,
-    /// The band over the changes, its line dragged to size it.
-    split: Split,
     scroll: UniformListScrollHandle,
-    width: Rc<Cell<Pixels>>,
     /// Drawn in one column last time: the rows a file's name is among.
     narrow: Cell<bool>,
     selection: Option<Selection>,
@@ -288,19 +276,13 @@ struct Colors {
 }
 
 impl CommitView {
-    /// `width`: the room it has, if known, so its first frame already has
-    /// one column or two.
-    pub fn new(prepared: Prepared, width: Pixels, cx: &mut Context<Self>) -> Self {
+    pub fn new(prepared: Prepared, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             rows: Rc::default(),
             inline: Rc::default(),
-            all: Default::default(),
             message: None,
             files: Vec::new(),
-            picked: None,
-            split: Split::new(cx),
             scroll: UniformListScrollHandle::new(),
-            width: Rc::new(Cell::new(width)),
             narrow: Cell::new(false),
             selection: None,
             selecting: false,
@@ -314,34 +296,11 @@ impl CommitView {
     }
 
     /// Takes a commit's rows, every file's: the message out of them if
-    /// they have it, for the band.
+    /// they have it, for over the files.
     fn take(&mut self, mut prepared: Prepared) {
         self.message = (prepared.header > 0).then(|| prepared.take_message());
         self.files = prepared.files();
-        self.picked = None;
-        self.all = (Rc::new(prepared.rows), Rc::new(prepared.inline));
-        (self.rows, self.inline) = self.all.clone();
-    }
-
-    /// Shows only `file`'s changes, or every file's, from the top.
-    fn pick(&mut self, file: Option<SharedString>, cx: &mut Context<Self>) {
-        if self.picked == file {
-            return;
-        }
-        (self.rows, self.inline) = match &file {
-            Some(file) => (Rc::new(file_rows(&self.all.0, file)), Rc::new(file_rows(&self.all.1, file))),
-            None => self.all.clone(),
-        };
-        self.picked = file;
-        self.scroll = UniformListScrollHandle::new();
-        self.selection = None;
-        cx.notify();
-    }
-
-    /// No room for its two sides: unknown until it is painted.
-    pub fn cramped(&self) -> bool {
-        let width = self.width.get();
-        width > px(0.) && width < px(crate::config::SIDE_BY_SIDE_WIDTH)
+        (self.rows, self.inline) = (Rc::new(prepared.rows), Rc::new(prepared.inline));
     }
 
     /// Scrolls to `file`'s changes.
@@ -603,20 +562,6 @@ fn section_status(section: &str) -> char {
     'M'
 }
 
-/// The rows of `file`'s changes in `rows`, from its name to the next file's.
-fn file_rows(rows: &[Row], file: &str) -> Vec<Row> {
-    let Some(start) = rows.iter().position(|row| matches!(row, Row::File { path, .. } if path == file)) else {
-        return Vec::new();
-    };
-    let end = rows[start + 1..].iter().position(|row| matches!(row, Row::File { .. })).map_or(rows.len(), |ix| start + 1 + ix);
-    let mut rows = rows[start..end].to_vec();
-    // and the blank line before the next file
-    if matches!(rows.last(), Some(Row::Blank)) {
-        rows.pop();
-    }
-    rows
-}
-
 /// The file a section is about: the new name, or the old one if deleted.
 fn section_path(section: &str) -> String {
     let line = |prefix: &str| {
@@ -674,68 +619,57 @@ fn halves(side: &diff::Side, language: &str, word: Hsla, theme: &HighlightTheme)
 }
 
 impl CommitView {
-    /// The message, who wrote it and when, beside the files: a click on
-    /// one shows only its changes, on All Files every file's again.
-    fn render_band(&self, message: &CommitMessage, cx: &mut Context<Self>) -> AnyElement {
+    /// Over the changes, as tall as it needs (up to a part of the view,
+    /// then it scrolls): the message, who wrote it and when, and the files
+    /// one after another in lines.
+    fn render_header(&self, message: &CommitMessage, cx: &mut Context<Self>) -> AnyElement {
+        let files: Vec<AnyElement> = self.files.iter().enumerate().map(|(ix, file)| self.file_item(ix, file, cx)).collect();
         let theme = cx.theme();
-        let message = v_flex()
-            .id("commit-band-message")
-            .flex_1()
-            .min_w_0()
-            .h_full()
+        v_flex()
+            .id("commit-header")
+            .when(cfg!(test), |el| el.debug_selector(|| "commit-header".into()))
+            .flex_none()
+            .max_h(relative(0.4))
             .overflow_y_scroll()
             .px_4()
             .py_2()
             .gap_2()
+            .border_b_1()
+            .border_color(theme.border)
+            .text_ui(cx)
             .whitespace_normal()
             .child(div().font_semibold().child(message.subject.clone()))
             .when(!message.body.is_empty(), |el| el.child(div().child(message.body.clone())))
-            .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(message.meta.clone()));
-        let all = self.picked.is_none();
-        let header = h_flex()
-            .id("commit-band-all")
-            .flex_none()
-            .h(px(24.))
-            .px_3()
-            .text_ui_small(cx)
-            .text_color(theme.muted_foreground)
-            .when(all, |el| el.bg(crate::app::selected_row(cx)))
-            .when(!all, |el| el.hover(|style| style.bg(theme.list_hover)))
-            .child(format!("All Files ({})", self.files.len()))
-            .on_click(cx.listener(|this, _, _, cx| this.pick(None, cx)));
-        let files = v_flex()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .border_l_1()
-            .border_color(theme.border)
-            .child(header)
-            .child(
-                uniform_list(
-                    "commit-band-files",
-                    self.files.len(),
-                    cx.processor(|this, range: Range<usize>, _, cx| {
-                        range.filter_map(|ix| Some((ix, this.files.get(ix)?.clone()))).map(|(ix, file)| this.file_row(ix, &file, cx)).collect()
-                    }),
-                )
-                .flex_1()
-                .min_h_0(),
-            );
-        h_flex().size_full().text_ui(cx).child(message).child(files).into_any_element()
+            .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(message.meta.clone()))
+            .child(h_flex().flex_wrap().gap_x_3().children(files))
+            .into_any_element()
     }
 
-    /// A file of the commit: a click shows only its changes, a double
-    /// click opens them in a tab of their own.
-    fn file_row(&self, ix: usize, file: &CommitFile, cx: &mut Context<Self>) -> AnyElement {
-        let selected = self.picked.as_ref() == Some(&file.path);
-        let changed = ChangedFile { path: file.path.to_string(), status: file.status, added: file.added as u32, removed: file.removed as u32 };
+    /// A file of the commit, its folder muted, with the lines it added and
+    /// removed: a click goes to its changes, a double click opens them in a
+    /// tab of their own.
+    fn file_item(&self, ix: usize, file: &CommitFile, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let dir = file.path.rfind('/').map_or(0, |slash| slash + 1);
+        let muted = HighlightStyle { color: Some(theme.muted_foreground), ..Default::default() };
         let path = file.path.clone();
-        crate::changes::file_row(("commit-band-file", ix).into(), &changed, selected, 0., cx)
+        h_flex()
+            .id(("commit-file", ix))
+            .when(cfg!(test), |el| el.debug_selector(move || format!("commit-file-{ix}")))
+            .gap_1()
+            .px_1()
+            .rounded(theme.radius)
+            .whitespace_nowrap()
+            .hover(|style| style.bg(theme.list_hover))
+            .child(div().when(file.status == 'D', |el| el.line_through()).child(StyledText::new(file.path.clone()).with_highlights([(0..dir, muted)])))
+            .when(file.added > 0, |el| el.child(div().text_ui_small(cx).text_color(theme.success).child(format!("+{}", file.added))))
+            .when(file.removed > 0, |el| el.child(div().text_ui_small(cx).text_color(theme.danger).child(format!("−{}", file.removed))))
             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                 if event.click_count() >= 2 {
                     cx.emit(CommitViewEvent::OpenFile(path.to_string()));
                 } else {
-                    this.pick(Some(path.clone()), cx);
+                    this.scroll_to(&path);
+                    cx.notify();
                 }
             }))
             .context_menu(self.file_menu(file, cx))
@@ -769,30 +703,18 @@ impl CommitView {
 }
 
 impl Render for CommitView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let changes = self.render_changes(cx);
         let Some(message) = self.message.clone() else {
             return changes;
         };
-        // The band takes the height it was dragged to, the changes the rest.
-        let band = self.render_band(&message, cx);
-        let height = Config::get(cx).commit_band_height.unwrap_or(BAND_HEIGHT);
-        let state = self.split.state(window.viewport_size().height, (), cx).clone();
-        v_resizable("commit-band-split")
-            .with_state(&state)
-            .child(resizable_panel().size(px(height)).size_range(px(60.)..px(4000.)).child(band))
-            .child(resizable_panel().size_range(px(80.)..px(4000.)).child(changes))
-            .on_resize(|state, _, cx| {
-                if let Some(band) = state.read(cx).sizes().first().copied() {
-                    Config::update_quietly(cx, |config| config.commit_band_height = Some(f32::from(band)));
-                }
-            })
-            .into_any_element()
+        let header = self.render_header(&message, cx);
+        v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(changes)).into_any_element()
     }
 }
 
 impl CommitView {
-    /// Every file's changes, or the picked one's.
+    /// Every file's changes.
     fn render_changes(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let narrow = !Config::get(cx).diff_side_by_side();
         self.narrow.set(narrow);
@@ -948,7 +870,6 @@ impl CommitView {
                     }
                 }),
             )
-            .child(measure_width(&self.width))
             .child(follow_drag(cx.entity().downgrade()))
             .child(list)
             .into_any_element()
@@ -957,7 +878,7 @@ impl CommitView {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_rows, header_rows, section_path, section_status, selected_text, shows, word_at, Column, Half, Kind, Row, Selection};
+    use super::{header_rows, section_path, section_status, selected_text, shows, word_at, Column, Half, Kind, Row, Selection};
 
     #[test]
     fn header_and_paths() {
@@ -972,27 +893,8 @@ mod tests {
         assert_eq!(section_path("a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n"), "i.png");
     }
 
-    /// A file picked in the band: its name and its lines, not the next one's.
     #[test]
-    fn a_picked_file_shows_alone() {
-        let half = |text: &str| Half { number: Some(1), kind: Kind::Same, text: text.to_string().into(), highlights: Vec::new() };
-        let file = |path: &str| Row::File { path: path.to_string().into(), status: 'M', added: 0, removed: 0 };
-        let line = |text: &str| Row::Line { old: half(text), new: half(text) };
-        let rows = vec![file("a.rs"), line("a"), Row::Blank, file("b.rs"), line("b1"), Row::Skip, line("b2"), Row::Blank, file("c.rs"), Row::Note("Binary file".into())];
-        let texts = |rows: Vec<Row>| -> Vec<String> {
-            rows.iter()
-                .map(|row| match row {
-                    Row::File { path, .. } => path.to_string(),
-                    Row::Line { new, .. } => new.text.to_string(),
-                    Row::Skip => "⋯".into(),
-                    Row::Note(text) => text.to_string(),
-                    _ => String::new(),
-                })
-                .collect()
-        };
-        assert_eq!(texts(file_rows(&rows, "b.rs")), ["b.rs", "b1", "⋯", "b2"]);
-        assert_eq!(texts(file_rows(&rows, "c.rs")), ["c.rs", "Binary file"]);
-        assert!(file_rows(&rows, "gone.rs").is_empty());
+    fn a_section_s_status() {
         assert_eq!(section_status("a/n.rs b/n.rs\nnew file mode 100644\n--- /dev/null\n"), 'A');
         assert_eq!(section_status("a/o.rs b/o.rs\ndeleted file mode 100644\n"), 'D');
         assert_eq!(section_status("a/o.rs b/p.rs\nrename from o.rs\nrename to p.rs\n"), 'R');

@@ -257,7 +257,7 @@ impl Workspace {
     /// and `den diff` show them.
     pub(super) fn open_changes(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(file) = self.repo_path(path) {
-            self.open_diff(DiffOf { file, commit: None, source: false, only: None }, true, window, cx);
+            self.open_diff(DiffOf { file, commit: None, source: false }, true, window, cx);
         }
     }
 

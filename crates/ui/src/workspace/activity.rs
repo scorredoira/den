@@ -95,7 +95,6 @@ impl Item {
             Ok(Panel::Search) | Err(Group::Search) => Box::new(ShowSearch),
             Ok(Panel::References) => Box::new(ShowReferences),
             Ok(Panel::Changes) | Err(Group::Git) => Box::new(ShowChanges),
-            Ok(Panel::History) => Box::new(ShowHistory),
             Ok(Panel::Outline) => Box::new(ShowOutline),
             _ => return None,
         };

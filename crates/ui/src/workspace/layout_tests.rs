@@ -227,13 +227,6 @@ fn the_graph_is_a_tab_that_reopens(cx: &mut TestAppContext) {
         assert!(workspace.graph_visible());
     });
     bounds(cx, "history-commits");
-    // The commit's files beside the commits, until Files is turned off.
-    let commits = bounds(cx, "history-commits");
-    let files = bounds(cx, "commit-files");
-    assert!(files.left() >= commits.right() - px(1.) && files.top() < commits.bottom(), "{files:?} {commits:?}");
-    cx.update(|_, cx| Config::update(cx, |config| config.history_hide_files = true));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("commit-files").is_none());
     let again = workspace.update_in(cx, |_, window, cx| {
         cx.new(|cx| {
             let mut workspace = Workspace::new(PathBuf::from("/layout-test"), None, true, "layout-test".into(), window, cx);
@@ -245,30 +238,6 @@ fn the_graph_is_a_tab_that_reopens(cx: &mut TestAppContext) {
     // Show Graph closes it while it's in front.
     workspace.update_in(cx, |workspace, window, cx| workspace.toggle_graph(window, cx));
     assert!(workspace.read_with(cx, |workspace, _| workspace.graph_tab().is_none()));
-}
-
-/// Above the changes, three columns: the commits, the selected one's
-/// message and its files. A column's header dragged onto another swaps the
-/// two, and the order is kept.
-#[gpui_kit::test]
-fn the_graph_s_columns_are_dragged_into_place(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    workspace.update_in(cx, |workspace, window, cx| workspace.toggle_graph(window, cx));
-    cx.run_until_parked();
-    let (commits, message, files) = (bounds(cx, "history-commits"), bounds(cx, "commit-message"), bounds(cx, "commit-files"));
-    assert!(commits.right() <= message.left() + px(1.) && message.right() <= files.left() + px(1.), "{commits:?} {message:?} {files:?}");
-    assert!(message.top() == files.top(), "{message:?} {files:?}");
-    let start = bounds(cx, "history-header-Files").center();
-    let end = bounds(cx, "history-commits").center();
-    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(start + point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    cx.run_until_parked();
-    use config::HistoryPart::*;
-    assert_eq!(cx.update(|_, cx| Config::get(cx).history_order()), [Files, Message, Commits]);
-    let (commits, files) = (bounds(cx, "history-commits"), bounds(cx, "commit-files"));
-    assert!(files.right() <= bounds(cx, "commit-message").left() + px(1.) && commits.left() >= files.right(), "{files:?} {commits:?}");
 }
 
 /// The Graph tab has an icon on the activity bar, after the places': a
@@ -294,50 +263,19 @@ fn the_debug_icon_toggles_its_tab(cx: &mut TestAppContext) {
     workspace.read_with(cx, |workspace, cx| assert!(!workspace.is_shown(Panel::Console, cx)));
 }
 
-/// A file's history is the History panel's, beside the Changes, with the
-/// commit in the code.
+/// A file's history is the Graph tab's, with only the commits that changed
+/// it; the Graph's icon shows every commit's again.
 #[gpui_kit::test]
-fn a_file_s_history_shows_in_the_history_panel(cx: &mut TestAppContext) {
+fn a_file_s_history_is_the_graph_s(cx: &mut TestAppContext) {
     let (workspace, cx) = draw(cx, |_| {});
-    workspace.update(cx, |workspace, cx| workspace.open_history(Some(("main.ts".into(), false)), cx));
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_history(Some(("main.ts".into(), false)), window, cx));
     cx.run_until_parked();
-    workspace.read_with(cx, |workspace, cx| {
-        assert!(workspace.is_shown(Panel::History, cx));
-        assert!(workspace.graph_tab().is_none());
-    });
-    bounds(cx, "stack-History");
-}
-
-/// Going through a file's history shows each commit in the same preview
-/// tab, with only that file's changes; a double click keeps one in a tab.
-#[gpui_kit::test]
-fn a_file_s_commits_show_in_the_preview_tab(cx: &mut TestAppContext) {
-    let (workspace, cx) = draw(cx, |_| {});
-    let only = Some(("src/main.ts".to_string(), false));
-    let open = |commit: &str, pin: bool| crate::history_panel::HistoryPanelEvent::OpenCommit {
-        commit: commit.into(),
-        short: commit.into(),
-        only: only.clone(),
-        pin,
-    };
-    workspace.update_in(cx, |workspace, window, cx| {
-        let history = workspace.history.clone();
-        workspace.on_history_event(&history, &open("aaa", false), window, cx);
-        workspace.on_history_event(&history, &open("bbb", false), window, cx);
-    });
-    workspace.read_with(cx, |workspace, _| {
-        let commits: Vec<_> = workspace.tabs.iter().filter_map(|tab| tab.diff.as_ref()).collect();
-        assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].commit.as_ref().map(|(hash, _)| hash.as_str()), Some("bbb"));
-        assert_eq!(commits[0].only, only);
-        assert!(workspace.tabs.iter().any(|tab| tab.diff.is_some() && tab.preview));
-    });
-    workspace.update_in(cx, |workspace, window, cx| {
-        let history = workspace.history.clone();
-        workspace.on_history_event(&history, &open("bbb", true), window, cx);
-        workspace.on_history_event(&history, &open("ccc", false), window, cx);
-    });
-    workspace.read_with(cx, |workspace, _| assert_eq!(workspace.tabs.iter().filter(|tab| tab.diff.is_some()).count(), 2));
+    workspace.read_with(cx, |workspace, _| assert!(workspace.graph_visible()));
+    bounds(cx, "history-file");
+    click(cx, "activity-Graph");
+    click(cx, "activity-Graph");
+    workspace.read_with(cx, |workspace, _| assert!(workspace.graph_visible()));
+    assert!(cx.debug_bounds("history-file").is_none());
 }
 
 /// The Graph tab in front leaves the panels as they were: the terminals
@@ -1267,11 +1205,11 @@ fn hiding_the_terminals_focuses_a_diff(cx: &mut TestAppContext) {
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.terminals = cx.new(|cx| crate::terminals::test_area(window, cx));
         let mut tab = workspace.new_tab_with(PathBuf::from("/layout-test/main.ts"), false, "diff", window, cx);
-        tab.diff = Some(DiffOf { file: "main.ts".into(), commit: None, source: false, only: None });
+        tab.diff = Some(DiffOf { file: "main.ts".into(), commit: None, source: false });
         tab.content = Content::Ready;
         let ix = workspace.place_tab(tab, true);
         let sides = crate::diff::split("@@ -1 +1 @@\n-a\n+b\n").unwrap();
-        workspace.show_side_by_side(ix, sides, false, window, cx);
+        workspace.show_side_by_side(ix, sides, window, cx);
         workspace.activate_with(ix, false, window, cx);
         workspace.set_terminals_visible(true, window, cx);
     });

@@ -22,48 +22,19 @@ impl Workspace {
             }
             if self.tabs[ix].diff.as_ref() != Some(&of) {
                 self.tabs[ix].diff = Some(of);
-                self.load_diff(ix, false, window, cx);
+                self.load_diff(ix, window, cx);
             }
             self.activate_with(ix, false, window, cx);
             return;
         }
-        // A whole commit is its own tab, not a file's.
-        let path = match &of.commit {
-            Some((commit, _)) if file.is_empty() => self.root.join(commit),
-            _ => self.root.join(&file),
-        };
-        // Another commit in the preview tab (going through the history): it
-        // keeps showing the one before until the new one is read, instead of
-        // going blank and being laid out again from nothing.
-        let group = self.group;
-        let reuse = self.tabs.iter().position(|tab| {
-            tab.preview
-                && tab.group == group
-                && matches!(tab.content, Content::Ready)
-                && tab.diff.as_ref().is_some_and(|diff| {
-                    diff.commit.is_some() && of.commit.is_some() && !diff.source && !of.source && diff.file == of.file
-                })
-        });
-        if let Some(ix) = reuse.filter(|_| !pin) {
-            self.tabs[ix].path = path;
-            self.tabs[ix].diff = Some(of);
-            self.load_diff(ix, true, window, cx);
-            self.activate_with(ix, false, window, cx);
-            return;
-        }
+        let path = self.root.join(&file);
         let language = if of.source { language::for_path(&path) } else { "diff" };
         let mut tab = self.new_tab_with(path, !pin, language, window, cx);
         tab.diff = Some(of);
         tab.grab_focus = false;
         let ix = self.place_tab(tab, pin);
-        self.load_diff(ix, false, window, cx);
+        self.load_diff(ix, window, cx);
         self.activate_with(ix, false, window, cx);
-    }
-
-    /// The width last measured for `group`'s body (unknown: as wide as can be).
-    pub(super) fn group_width(&self, group: usize) -> Pixels {
-        let width = self.group_widths[group.min(1)].get();
-        if width > px(0.) { width } else { px(f32::MAX) }
     }
 
     /// Keeps what a commit showed, the most recent ones only.
@@ -76,25 +47,19 @@ impl Workspace {
     }
 
     /// Asks the agent for a diff tab's text: a file's changes with the whole
-    /// file, a whole commit, or a file as it was.
+    /// file, or a file as it was.
     pub(super) fn fetch_diff(&self, of: &DiffOf, client: Arc<Client>) -> impl std::future::Future<Output = anyhow::Result<Response>> + use<> {
         let path = self.root.clone();
         let commit = of.commit.as_ref().map(|(commit, _)| commit.clone());
         // A file's changes go side by side, with the whole file.
-        let whole = (!of.source && !of.file.is_empty()).then(|| Request::Git {
+        let whole = (!of.source).then(|| Request::Git {
             path: path.clone(),
             op: GitOp::WholeDiff { file: of.file.clone(), commit: commit.clone(), uncommitted: true },
         });
         let request = match commit {
             Some(commit) => {
                 let file = of.file.clone();
-                let op = if of.source {
-                    GitOp::FileAt { commit, file }
-                } else if file.is_empty() {
-                    GitOp::Show { commit }
-                } else {
-                    GitOp::CommitDiff { commit, file }
-                };
+                let op = if of.source { GitOp::FileAt { commit, file } } else { GitOp::CommitDiff { commit, file } };
                 Request::Git { path, op }
             }
             None => Request::GitDiff { path, file: of.file.clone(), uncommitted: true },
@@ -110,9 +75,8 @@ impl Workspace {
         }
     }
 
-    /// Reads a diff tab's changes. With `reveal` (another commit in the same
-    /// tab) it goes to the first change, or the top, as when first shown.
-    pub(super) fn load_diff(&mut self, ix: usize, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Reads a diff tab's changes.
+    pub(super) fn load_diff(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(client), Some(of)) = (self.client.clone(), self.tabs[ix].diff.clone()) else {
             return;
         };
@@ -134,50 +98,20 @@ impl Workspace {
                     response
                 }
             };
-            // A file's changes are split in two sides, and a whole commit's
-            // rows highlighted, in the background.
+            // A file's changes are split in two sides in the background.
             let mut sides = None;
             if let Ok(Response::Text(text)) = &response
                 && !of.source
-                && !of.file.is_empty()
             {
                 let text = text.clone();
                 sides = cx.background_spawn(async move { diff::split(&text) }).await;
-            }
-            let mut prepared = None;
-            if let Ok(Response::Text(show)) = &response
-                && of.commit.is_some()
-                && of.file.is_empty()
-                && !of.source
-            {
-                let show = show.clone();
-                let Ok(task) = this.update(cx, |_, cx| commit_view::prepare(show, of.only.clone(), cx)) else {
-                    return;
-                };
-                prepared = Some(task.await);
             }
             this.update_in(cx, |this, window, cx| {
                 let Some(ix) = this.tabs.iter().position(|tab| tab.diff.as_ref() == Some(&of) && tab.reading == generation) else {
                     return;
                 };
                 if let Some(sides) = sides {
-                    this.show_side_by_side(ix, sides, reveal, window, cx);
-                    cx.notify();
-                    return;
-                }
-                if let Some(prepared) = prepared {
-                    if let Some(view) = &this.tabs[ix].commit {
-                        view.update(cx, |view, cx| view.set(prepared, cx));
-                        cx.notify();
-                        return;
-                    }
-                    let width = this.group_width(this.tabs[ix].group);
-                    let view = cx.new(|cx| CommitView::new(prepared, width, cx));
-                    let subscription = cx.subscribe_in(&view, window, Self::on_commit_event);
-                    let tab = &mut this.tabs[ix];
-                    tab.commit = Some(view);
-                    tab._subscriptions.push(subscription);
-                    tab.content = Content::Ready;
+                    this.show_side_by_side(ix, sides, window, cx);
                     cx.notify();
                     return;
                 }
@@ -234,7 +168,7 @@ impl Workspace {
         let (full, inline_editor) = (std::mem::take(&mut old.sides), old.inline.clone());
         let shown = diff::collapse(&full, if old.whole { usize::MAX } else { diff::CONTEXT });
         let inline = diff::inline(&shown);
-        self.show_side_by_side(ix, full, false, window, cx);
+        self.show_side_by_side(ix, full, window, cx);
         let rows = [
             lines[0].and_then(|line| shown.new.lines.iter().position(|row| row.number >= Some(line))),
             lines[1].and_then(|line| inline.lines.iter().position(|row| row.new.or(row.old) >= Some(line))),
@@ -252,7 +186,7 @@ impl Workspace {
     /// new one in the tab's, both highlighted as the file and scrolling
     /// together; only the changes, unless chosen otherwise. The first time
     /// it goes to the first change.
-    pub(super) fn show_side_by_side(&mut self, ix: usize, full: diff::SideBySide, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_side_by_side(&mut self, ix: usize, full: diff::SideBySide, window: &mut Window, cx: &mut Context<Self>) {
         let language = language::for_path(&self.tabs[ix].path);
         let new = self.tabs[ix].editor.clone();
         let first = self.tabs[ix].old.is_none();
@@ -376,7 +310,7 @@ impl Workspace {
                 old.inline_marks = Some(collection);
             }
         }
-        if first || reveal {
+        if first {
             if let Some(&row) = sides.changes.first() {
                 let at = Position::new(row as u32, 0);
                 new.update(cx, |state, cx| state.set_cursor_position(at, window, cx));

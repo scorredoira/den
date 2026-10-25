@@ -89,7 +89,6 @@ impl Workspace {
             grab_focus: true,
             diff: None,
             old: None,
-            commit: None,
             page: None,
             restored: false,
             blame: None,
@@ -333,14 +332,12 @@ impl Workspace {
         self.changes.update(cx, |changes, cx| changes.mark_stale(cx));
         let visible = self.graph_visible();
         self.graph.update(cx, |graph, cx| graph.mark_stale(visible, cx));
-        let visible = self.is_shown(Panel::History, cx);
-        self.history.update(cx, |history, cx| history.mark_stale(visible, cx));
         self.reload_changed(paths.clone(), window, cx);
         let diffs: Vec<usize> = (0..self.tabs.len())
             .filter(|ix| self.tabs[*ix].diff.is_some() && paths.contains(&self.tabs[*ix].path))
             .collect();
         for ix in diffs {
-            self.load_diff(ix, false, window, cx);
+            self.load_diff(ix, window, cx);
         }
     }
 

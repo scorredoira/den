@@ -15,7 +15,6 @@ mod editing;
 mod changes;
 mod commit_view;
 mod history;
-mod history_panel;
 mod completion;
 mod file_tree;
 mod language;
@@ -63,7 +62,6 @@ actions!(
         ReloadWindow,
         ShowFiles,
         ShowChanges,
-        ShowHistory,
         ShowGraph,
         OpenChanges,
         ShowFileHistory,

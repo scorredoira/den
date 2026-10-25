@@ -67,7 +67,6 @@ config() {
   "theme": "$1",
   "check_for_updates": false,
   "diff_layout": "side_by_side",
-  "keys": { "ShowGraph": "cmd-alt-g" },
   "layout": { "side_width": 280, "dock_width": 800 },
   "window": { "x": 40, "y": 60, "width": 1800, "height": 1000, "maximized": false },
   "last": { "host": "local", "path": "$task" },
@@ -172,13 +171,14 @@ done
 sleep 2
 shot search
 
-# The History tab, on a commit with a few files (Show Graph has no shortcut
-# of its own: the demo config gives it one).
-keys 'keystroke "g" using {command down, option down}'
+# The History tab, a commit with a few files opened from the list.
+keys 'keystroke "h" using {command down, shift down}'
 sleep 4
 keys 'key code 125
     delay 0.3
-    key code 125'
+    key code 125
+    delay 0.3
+    key code 36'
 sleep 3
 shot history
 

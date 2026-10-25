@@ -737,8 +737,6 @@ impl Layout {
         tabs.iter().find_map(|panel| self.heights.get(panel).copied()).unwrap_or(match tabs[0] {
             Panel::Workspaces | Panel::Changes => 240.,
             Panel::Agents => 110.,
-            // Elsewhere than where it fills: room for a dozen commits.
-            Panel::History => 400.,
             _ => 180.,
         })
     }
@@ -781,7 +779,7 @@ impl Group {
         match self {
             Group::Explorer => &[Panel::Workspaces, Panel::Agents, Panel::Files, Panel::Outline],
             Group::Search => &[Panel::Search, Panel::References],
-            Group::Git => &[Panel::Changes, Panel::History],
+            Group::Git => &[Panel::Changes],
         }
     }
 
@@ -790,7 +788,7 @@ impl Group {
         match self {
             Group::Explorer => Panel::Files,
             Group::Search => Panel::Search,
-            Group::Git => Panel::History,
+            Group::Git => Panel::Changes,
         }
     }
 
@@ -818,9 +816,6 @@ pub enum Panel {
     Workspaces,
     Files,
     Changes,
-    /// The commits of the current branch, or those that changed a file or
-    /// a folder (see `history_panel`).
-    History,
     Search,
     References,
     /// The classes, functions, constants… of the file in front, without
@@ -839,7 +834,7 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub const ALL: [Panel; 12] = [
+    pub const ALL: [Panel; 11] = [
         Panel::Workspaces,
         Panel::Agents,
         Panel::Files,
@@ -847,7 +842,6 @@ impl Panel {
         Panel::Search,
         Panel::References,
         Panel::Changes,
-        Panel::History,
         Panel::Code,
         Panel::Terminals,
         Panel::Console,

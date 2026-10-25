@@ -1,41 +1,45 @@
-//! The Graph tab, as gitk lays it out: above, in three columns, the
+//! The Graph tab, as `git log --graph --oneline` and then `git show`: the
 //! commits of the current branch (or, with All Branches, of every branch, tag
-//! and remote) with their graph, what points at them, their author and their
-//! date; the selected commit's message; and, if Files is on, its files, a
-//! click away from their changes. Under them every file's changes, as a
-//! commit's tab shows them. The columns are dragged by their headers to
-//! reorder them; they, the rows and the author's and date's columns resize,
-//! and keep their sizes and order. A file's or a folder's commits are the
-//! History panel's (see `history_panel`). It only reads, and the agent does
-//! all the reading.
+//! and remote), one line each across the whole tab, with their graph, hash,
+//! date, what points at them, subject, author and hash; Enter or a click opens one
+//! in their place, its message, files and changes as a commit's tab shows
+//! them, and Esc goes back to the list where it was. Up and down step through
+//! the commits in both. A file's or a folder's history is the same list, of
+//! the commits that changed it, each opened with only its changes. The
+//! author's and hash's columns resize and keep their sizes. It only reads,
+//! and the agent does all the reading.
 
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use client::Client;
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, h_resizable,
+    ActiveTheme as _, Sizable as _, h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
     resizable_panel,
     tooltip::Tooltip,
-    v_flex, v_resizable,
+    v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use proto::{GitOp, GraphCommit, GraphScope, Request, Response};
 
 use crate::{
-    commit_view::{self, CommitFile, CommitMessage, CommitView, CommitViewEvent},
-    config::{Config, HistoryPart, Split, UiText as _},
-    drag_drop::TabDragPreview,
+    commit_view::{self, CommitView, CommitViewEvent},
+    config::{Config, Split, UiText as _},
     menu,
 };
 
-actions!(history, [SelectPrev, SelectNext]);
+actions!(history, [SelectPrev, SelectNext, OpenCommit, CloseCommit]);
 
-/// The history's shortcuts: they only apply while its commits have focus.
+/// The history's shortcuts: they only apply while it has focus.
 pub fn keymap() -> Vec<KeyBinding> {
     let context = Some("History");
-    vec![KeyBinding::new("up", SelectPrev, context), KeyBinding::new("down", SelectNext, context)]
+    vec![
+        KeyBinding::new("up", SelectPrev, context),
+        KeyBinding::new("down", SelectNext, context),
+        KeyBinding::new("enter", OpenCommit, context),
+        KeyBinding::new("escape", CloseCommit, context),
+    ]
 }
 
 /// Commits read each time: more are read on scrolling near the end.
@@ -50,25 +54,21 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// The width of a lane of the graph.
 const LANE: f32 = 14.;
 
-/// The room the commits keep for their subject, author and date, in widths
-/// of the interface's font. Short of it, the author's and then the date's
-/// columns give up theirs down to their own, and short of all three, the
-/// columns go one under the other.
+/// The room the commits keep for their subject, author and hash, in widths
+/// of the interface's font. Short of it, the author's and then the hash's
+/// columns give up theirs down to their own.
 const SUBJECT_ROOM: f32 = 28.;
 const AUTHOR_ROOM: f32 = 9.;
-const DATE_ROOM: f32 = 7.;
+const HASH_ROOM: f32 = 7.;
 
 /// Commits whose text is kept, to go back to them at once.
 const MAX_TEXTS: usize = 64;
 
-pub enum HistoryEvent {
-    /// Show what `file` changed in a commit, in a tab of its own.
-    OpenCommitDiff { commit: String, short: String, file: String },
-    /// Show `file` as it was in a commit.
-    OpenFileAt { commit: String, short: String, file: String },
-    OpenFile { file: String },
-    /// Select `file` in the Files panel.
-    RevealInTree { file: String },
+/// What the open commit asks of one of its files.
+pub struct HistoryEvent {
+    pub commit: String,
+    pub short: String,
+    pub event: CommitViewEvent,
 }
 
 pub struct HistoryView {
@@ -85,15 +85,15 @@ pub struct HistoryView {
     query: Entity<InputState>,
     /// Where the search looks: the message, the paths or the content.
     scope: GraphScope,
-    /// The selected commit, and the one its diff shows.
+    /// Only the history of this file or folder (`true`: a folder).
+    file: Option<(String, bool)>,
+    /// The selected commit, and the one its view shows.
     selected: Option<String>,
     shown: Option<String>,
+    /// The selected commit shows in the list's place.
+    open: bool,
     /// What `git show` said of the commits read, the most recent last.
     texts: Vec<(String, Arc<String>)>,
-    /// The shown commit's message, its files, and the one picked among them.
-    message: CommitMessage,
-    files: Vec<CommitFile>,
-    file_selected: Option<SharedString>,
     commit: Entity<CommitView>,
     refresh: Option<Task<()>>,
     /// Counts the reads of the list from the top: a page more read for one
@@ -103,15 +103,9 @@ pub struct HistoryView {
     reading: Option<Task<()>>,
     scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
-    /// The files' list: its selection is outlined while it has the keyboard.
-    files_focus: FocusHandle,
-    /// The columns above the changes, the columns side by side, and the
-    /// commits' own columns.
-    rows: Split,
-    top: Split,
+    /// The commits' columns.
     columns: Split,
-    /// How wide the tab and its commits are, as last painted.
-    width: Rc<Cell<Pixels>>,
+    /// How wide the commits are, as last painted.
     commits_width: Rc<Cell<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -121,7 +115,7 @@ impl EventEmitter<HistoryEvent> for HistoryView {}
 impl HistoryView {
     pub fn new(root: PathBuf, client: Option<Arc<Client>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search hash, message or author"));
-        let commit = cx.new(|cx| CommitView::new(commit_view::Prepared::default(), px(0.), cx));
+        let commit = cx.new(|cx| CommitView::new(commit_view::Prepared::default(), cx));
         let subscriptions = vec![
             cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
                 if let InputEvent::Change = event {
@@ -129,12 +123,9 @@ impl HistoryView {
                 }
             }),
             cx.subscribe(&commit, |this, _, event: &CommitViewEvent, cx| {
-                // Only a file's name in the changes asks here: the band is the commit tab's.
-                if let CommitViewEvent::OpenFile(file) = event
-                    && let Some(commit) = this.shown_commit()
-                {
+                if let Some(commit) = this.shown_commit() {
                     let (commit, short) = (commit.hash.clone(), commit.short.clone());
-                    cx.emit(HistoryEvent::OpenCommitDiff { commit, short, file: file.clone() });
+                    cx.emit(HistoryEvent { commit, short, event: event.clone() });
                 }
             }),
         ];
@@ -149,23 +140,18 @@ impl HistoryView {
             stale: true,
             query,
             scope: GraphScope::Message,
+            file: None,
             selected: None,
             shown: None,
+            open: false,
             texts: Vec::new(),
-            message: CommitMessage::default(),
-            files: Vec::new(),
-            file_selected: None,
             commit,
             refresh: None,
             listing: 0,
             reading: None,
             scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
-            files_focus: cx.focus_handle(),
-            rows: Split::new(cx),
-            top: Split::new(cx),
             columns: Split::new(cx),
-            width: Rc::default(),
             commits_width: Rc::default(),
             _subscriptions: subscriptions,
         }
@@ -197,10 +183,26 @@ impl HistoryView {
         }
     }
 
+    /// Only the history of `file` (relative; `true`: a folder), or of
+    /// everything: the list, from the top.
+    pub fn show_file(&mut self, file: Option<(String, bool)>, cx: &mut Context<Self>) {
+        if self.file == file {
+            return;
+        }
+        self.file = file;
+        self.commits.clear();
+        self.selected = None;
+        self.shown = None;
+        self.open = false;
+        self.scroll = UniformListScrollHandle::new();
+        self.schedule(Duration::ZERO, cx);
+    }
+
     fn op(&self, skip: usize, limit: usize, cx: &App) -> GitOp {
         let query = self.query.read(cx).value().trim().to_string();
         let all = Config::get(cx).history_all_branches;
-        GitOp::FindGraph { query, scope: self.scope, file: None, all, skip, limit }
+        let file = self.file.as_ref().map(|(file, _)| file.clone());
+        GitOp::FindGraph { query, scope: self.scope, file, all, skip, limit }
     }
 
     /// Searches somewhere else, the placeholder saying where.
@@ -227,11 +229,6 @@ impl HistoryView {
         Config::update(cx, |config| config.history_all_branches = all);
         self.commits.clear();
         self.schedule(Duration::ZERO, cx);
-    }
-
-    /// Shows or hides the shown commit's files, beside the commits.
-    fn toggle_files(&mut self, cx: &mut Context<Self>) {
-        Config::update(cx, |config| config.history_hide_files = !config.history_hide_files);
     }
 
     /// Rereads the commits: as many as were read, so the list stays where it was.
@@ -279,8 +276,7 @@ impl HistoryView {
                 None => {
                     self.selected = None;
                     self.shown = None;
-                    self.message = CommitMessage::default();
-                    self.files.clear();
+                    self.open = false;
                     self.commit.update(cx, |view, cx| view.set(commit_view::Prepared::default(), cx));
                 }
             }
@@ -336,8 +332,8 @@ impl HistoryView {
         }
     }
 
-    /// Selects a commit and shows it under the list; `reveal` scrolls the
-    /// list to it.
+    /// Selects a commit and reads it, for when it opens; `reveal` scrolls
+    /// the list to it.
     fn select(&mut self, hash: String, reveal: bool, cx: &mut Context<Self>) {
         let Some(ix) = self.commits.iter().position(|commit| commit.hash == hash) else {
             return;
@@ -355,6 +351,7 @@ impl HistoryView {
         };
         let cached = self.text(&hash);
         let path = self.root.clone();
+        let only = self.file.clone();
         self.reading = Some(cx.spawn(async move |this, cx| {
             let text = match cached {
                 Some(text) => text,
@@ -373,16 +370,13 @@ impl HistoryView {
             };
             let Ok(prepare) = this.update(cx, |this, cx| {
                 this.keep_text(hash.clone(), text.clone());
-                commit_view::prepare(text.to_string(), None, cx)
+                commit_view::prepare(text.to_string(), only, cx)
             }) else {
                 return;
             };
-            let mut prepared = prepare.await;
+            let prepared = prepare.await;
             this.update(cx, |this, cx| {
                 this.shown = Some(hash);
-                this.message = prepared.take_message();
-                this.files = prepared.files();
-                this.file_selected = None;
                 this.commit.update(cx, |view, cx| view.set(prepared, cx));
                 cx.notify();
             })
@@ -436,10 +430,23 @@ impl HistoryView {
         self.select_offset(1, cx);
     }
 
-    /// Picks one of the commit's files and scrolls the changes there.
-    fn pick_file(&mut self, file: SharedString, cx: &mut Context<Self>) {
-        self.commit.read(cx).scroll_to(&file);
-        self.file_selected = Some(file);
+    /// Shows the selected commit in the list's place.
+    fn open_commit(&mut self, _: &OpenCommit, _: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.is_some() && !self.open {
+            self.open = true;
+            cx.notify();
+        }
+    }
+
+    /// Back to the list, at the selected commit.
+    fn close_commit(&mut self, _: &CloseCommit, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            return cx.propagate();
+        }
+        self.open = false;
+        if let Some(ix) = self.selected.as_ref().and_then(|hash| self.commits.iter().position(|commit| commit.hash == *hash)) {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        }
         cx.notify();
     }
 }
@@ -691,7 +698,7 @@ impl HistoryView {
     fn commit_menu(&self, commit: &GraphCommit, cx: &mut Context<Self>) -> impl Fn(menu::PopupMenu, &mut Window, &mut Context<menu::PopupMenu>) -> menu::PopupMenu + 'static {
         let view = cx.entity().downgrade();
         let (hash, short, subject) = (commit.hash.clone(), commit.short.clone(), commit.subject.clone());
-        move |menu, _, cx| {
+        move |menu, _, _| {
             let (hash, short, subject) = (hash.clone(), short.clone(), subject.clone());
             menu.item(menu::item("Copy Hash", &view, move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))))
                 .item(menu::item("Copy Short Hash", &view, move |_, _, cx| {
@@ -700,48 +707,12 @@ impl HistoryView {
                 .item(menu::item("Copy Message", &view, move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(subject.clone()))
                 }))
-                .separator()
-                .item(files_item(&view, cx))
         }
     }
 
-    /// The commit's and its files' menu: only Files.
-    fn files_menu(&self, cx: &mut Context<Self>) -> impl Fn(menu::PopupMenu, &mut Window, &mut Context<menu::PopupMenu>) -> menu::PopupMenu + 'static {
-        let view = cx.entity().downgrade();
-        move |menu, _, cx| menu.item(files_item(&view, cx))
-    }
-
-    fn file_menu(&self, file: &CommitFile, cx: &mut Context<Self>) -> impl Fn(menu::PopupMenu, &mut Window, &mut Context<menu::PopupMenu>) -> menu::PopupMenu + 'static {
-        let view = cx.entity().downgrade();
-        let commit = self.shown_commit().map(|commit| (commit.hash.clone(), commit.short.clone())).unwrap_or_default();
-        let path = file.path.to_string();
-        let root = self.root.clone();
-        move |menu, _, cx| {
-            let ((diff_hash, diff_short), (at_hash, at_short)) = (commit.clone(), commit.clone());
-            let (diff, at, open, copy, reveal) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
-            let absolute = root.join(&path).to_string_lossy().into_owned();
-            menu.item(menu::item("Open Changes", &view, move |_, _, cx| {
-                cx.emit(HistoryEvent::OpenCommitDiff { commit: diff_hash.clone(), short: diff_short.clone(), file: diff.clone() })
-            }))
-            .item(menu::item("Open File at This Commit", &view, move |_, _, cx| {
-                cx.emit(HistoryEvent::OpenFileAt { commit: at_hash.clone(), short: at_short.clone(), file: at.clone() })
-            }))
-            .item(menu::item("Open File", &view, move |_, _, cx| cx.emit(HistoryEvent::OpenFile { file: open.clone() })))
-            .separator()
-            .item(menu::item("Copy Path", &view, move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(absolute.clone()))))
-            .item(menu::item("Copy Relative Path", &view, move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-            }))
-            .item(menu::item("Reveal in File Tree", &view, move |_, _, cx| {
-                cx.emit(HistoryEvent::RevealInTree { file: reveal.clone() })
-            }))
-            .separator()
-            .item(files_item(&view, cx))
-        }
-    }
-
-    /// The commits' rows in `range`: graph, labels and message, author, date.
-    /// `focused`: the list has the keyboard, and its selection is outlined.
+    /// The commits' rows in `range`: graph, date, labels and subject, author,
+    /// hash. `focused`: the list has the keyboard, and its selection is
+    /// outlined.
     fn render_rows(
         &mut self,
         range: Range<usize>,
@@ -781,6 +752,10 @@ impl HistoryView {
                             .pl_1()
                             .overflow_hidden()
                             .child(graph_cell(&row, head, cx))
+                            // in the editor's font, to the minute: every date as wide, the subjects in line
+                            .child(div().flex_none().pr_2().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(
+                                commit.date.get(..16).unwrap_or(&commit.date).to_string(),
+                            ))
                             .child(h_flex().flex_none().gap_1().pr_1().children(ref_labels(&commit, cx)))
                             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone())),
                     )
@@ -792,10 +767,11 @@ impl HistoryView {
                             })
                             .flex(),
                     )
-                    .child(cell(widths.1).text_color(theme.muted_foreground).child(commit.date.clone()))
+                    .child(cell(widths.1).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(commit.short.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.select(hash.clone(), false, cx);
+                        this.open_commit(&OpenCommit, window, cx);
                     }))
                     .context_menu(self.commit_menu(&commit, cx))
                     .into_any_element()
@@ -834,17 +810,35 @@ impl HistoryView {
             .on_click(cx.listener(move |this, _, _, cx| this.set_all_branches(!all, cx)))
     }
 
-    /// Files: the shown commit's files beside the commits, or not.
-    fn render_files_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        toggle("history-files", "Files", !Config::get(cx).history_hide_files, cx)
-            .tooltip(|window, cx| Tooltip::new("The commit's files, beside the commits").build(window, cx))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx)))
+    /// A file's or folder's history: its path, and a cross to see every
+    /// commit's again.
+    fn render_file(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (file, _) = self.file.as_ref()?;
+        let theme = cx.theme();
+        Some(
+            h_flex()
+                .id("history-file")
+                .when(cfg!(test), |el| el.debug_selector(|| "history-file".into()))
+                .flex_none()
+                .min_w_0()
+                .gap_1()
+                .px_2()
+                .py_0p5()
+                .rounded(theme.radius)
+                .bg(crate::app::selected_row(cx))
+                .text_ui_small(cx)
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis_start().child(format!("Only {file}")))
+                .child(div().text_color(theme.muted_foreground).hover(|style| style.text_color(theme.foreground)).child("✕"))
+                .tooltip(|window, cx| Tooltip::new("Every commit's history").build(window, cx))
+                .on_click(cx.listener(|this, _, _, cx| this.show_file(None, cx)))
+                .into_any_element(),
+        )
     }
 
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let branches = self.render_branches_toggle(cx).into_any_element();
-        let files = self.render_files_toggle(cx).into_any_element();
         let scopes = self.render_scopes(cx).into_any_element();
+        let file = self.render_file(cx);
         let theme = cx.theme();
         h_flex()
             .flex_none()
@@ -855,9 +849,9 @@ impl HistoryView {
             .border_color(theme.border)
             .child(div().w(px(320.)).flex_none().child(Input::new(&self.query).small().cleanable(true)))
             .child(scopes)
+            .children(file)
             .child(div().flex_1())
             .child(branches)
-            .child(files)
             .when(self.loading, |el| el.child(div().text_ui_small(cx).text_color(theme.muted_foreground).child("…")))
             .when_some(self.error.clone(), |el, error| {
                 el.child(div().min_w_0().overflow_hidden().text_ellipsis().text_ui_small(cx).text_color(theme.danger).child(error))
@@ -868,33 +862,27 @@ impl HistoryView {
     fn render_commits(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let sizes = Config::get(cx).history;
         let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
-        let (author, date) = fit_columns(f32::from(self.commits_width.get()), sizes.author, sizes.date, size);
+        let (author, hash) = fit_columns(f32::from(self.commits_width.get()), sizes.author, sizes.hash, size);
         // Squeezed, they start again from their room whenever it changes.
-        let squeezed = (author != sizes.author || date != sizes.date).then(|| f32::from(self.commits_width.get()).to_bits());
+        let squeezed = (author != sizes.author || hash != sizes.hash).then(|| f32::from(self.commits_width.get()).to_bits());
         let state = self.columns.state(window.viewport_size().width, squeezed, cx).clone();
         let widths = match state.read(cx).sizes().as_slice() {
-            [_, author, date] => (*author, *date),
-            _ => (px(author), px(date)),
+            [_, author, hash] => (*author, *hash),
+            _ => (px(author), px(hash)),
         };
         let theme = cx.theme();
         let title = |text: &'static str| div().px_2().h_full().flex().items_center().overflow_hidden().whitespace_nowrap().child(text);
         let header = h_resizable("history-columns")
             .with_state(&state)
-            .child(resizable_panel().child(
-                title("Commit")
-                    .pl(px(LANE + 6.))
-                    .id("history-header-Commits")
-                    .when(cfg!(test), |el| el.debug_selector(|| "history-header-Commits".into()))
-                    .on_drag(PartDrag(HistoryPart::Commits), drag_preview),
-            ))
+            .child(resizable_panel().child(title("Commit").pl(px(LANE + 6.))))
             .child(resizable_panel().size(px(author)).size_range(px(60.)..px(1000.)).child(title("Author")))
-            .child(resizable_panel().size(px(date)).size_range(px(60.)..px(600.)).child(title("Date")))
+            .child(resizable_panel().size(px(hash)).size_range(px(60.)..px(600.)).child(title("Hash")))
             .on_resize(|state, _, cx| {
-                if let [_, author, date] = state.read(cx).sizes().as_slice() {
-                    let (author, date) = (f32::from(*author), f32::from(*date));
+                if let [_, author, hash] = state.read(cx).sizes().as_slice() {
+                    let (author, hash) = (f32::from(*author), f32::from(*hash));
                     Config::update_quietly(cx, |config| {
                         config.history.author = author;
-                        config.history.date = date;
+                        config.history.hash = hash;
                     });
                 }
             });
@@ -920,10 +908,6 @@ impl HistoryView {
                     .flex_1()
                     .min_h_0()
                     .when(cfg!(test), |el| el.debug_selector(|| "history-commits".into()))
-                    .key_context("History")
-                    .track_focus(&self.focus_handle)
-                    .on_action(cx.listener(Self::select_prev))
-                    .on_action(cx.listener(Self::select_next))
                     .when_some(empty, |el, empty| {
                         el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
                     })
@@ -942,126 +926,6 @@ impl HistoryView {
             )
             .into_any_element()
     }
-
-    /// A column's header, which drags it onto another to swap the two.
-    fn part_header(&self, part: HistoryPart, cx: &App) -> impl IntoElement {
-        let theme = cx.theme();
-        let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
-        div()
-            .id(SharedString::from(format!("history-header-{part:?}")))
-            .when(cfg!(test), |el| el.debug_selector(move || format!("history-header-{part:?}")))
-            .flex_none()
-            .h(px((size * 1.6).round()))
-            .px_3()
-            .flex()
-            .items_center()
-            .border_b_1()
-            .border_color(theme.border)
-            .text_ui_small(cx)
-            .text_color(theme.muted_foreground)
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .child(part.title())
-            .on_drag(PartDrag(part), drag_preview)
-    }
-
-    /// The shown commit's message: its subject in bold, its body, and who
-    /// wrote it when.
-    fn render_message(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let message = &self.message;
-        v_flex()
-            .size_full()
-            .when(cfg!(test), |el| el.debug_selector(|| "commit-message".into()))
-            .child(self.part_header(HistoryPart::Message, cx))
-            .child(
-                v_flex()
-                    .id("commit-message")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .whitespace_normal()
-                    .child(div().font_semibold().child(message.subject.clone()))
-                    .when(!message.body.is_empty(), |el| el.child(div().child(message.body.clone())))
-                    .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(message.meta.clone())),
-            )
-            .into_any_element()
-    }
-
-    /// The shown commit's files.
-    fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.files.len();
-        v_flex()
-            .size_full()
-            .when(cfg!(test), |el| el.debug_selector(|| "commit-files".into()))
-            .track_focus(&self.files_focus)
-            .text_ui(cx)
-            .child(self.part_header(HistoryPart::Files, cx))
-            .child(
-                uniform_list(
-                    "commit-files",
-                    count,
-                    cx.processor(|this, range: Range<usize>, window, cx| {
-                        let focused = this.files_focus.is_focused(window);
-                        range
-                            .filter_map(|ix| Some((ix, this.files.get(ix)?.clone())))
-                            .map(|(ix, file)| this.file_row(ix, &file, focused, cx))
-                            .collect()
-                    }),
-                )
-                .flex_1()
-                .min_h_0(),
-            )
-            .context_menu(self.files_menu(cx))
-            .into_any_element()
-    }
-
-    /// A file row: name, folder, and lines added and removed. A click goes
-    /// to its changes in the diff; a double click opens them in a tab.
-    fn file_row(&self, ix: usize, file: &CommitFile, focused: bool, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let selected = self.file_selected.as_ref() == Some(&file.path);
-        let dir = file.path.rfind('/').map_or(0, |slash| slash + 1);
-        let muted = HighlightStyle { color: Some(theme.muted_foreground), ..Default::default() };
-        let path = StyledText::new(file.path.clone()).with_highlights([(0..dir, muted)]);
-        let tip = file.path.clone();
-        let picked = file.path.clone();
-        h_flex()
-            .id(("commit-file", ix))
-            .h(px(24.))
-            .px_3()
-            .gap_2()
-            .border_1()
-            .border_color(transparent_black())
-            .when(selected, |el| el.bg(crate::app::selected_row(cx)))
-            .when(selected && focused, |el| el.border_color(theme.list_active_border))
-            .when(!selected, |el| el.hover(|style| style.bg(theme.list_hover)))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis_start().child(path))
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .text_ui_small(cx)
-                    .when(file.added > 0, |el| el.child(div().text_color(theme.success).child(format!("+{}", file.added))))
-                    .when(file.removed > 0, |el| el.child(div().text_color(theme.danger).child(format!("−{}", file.removed)))),
-            )
-            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                this.files_focus.focus(window, cx);
-                if event.click_count() >= 2
-                    && let Some(commit) = this.shown_commit()
-                {
-                    let (commit, short) = (commit.hash.clone(), commit.short.clone());
-                    cx.emit(HistoryEvent::OpenCommitDiff { commit, short, file: picked.to_string() });
-                }
-                this.pick_file(picked.clone(), cx);
-            }))
-            .context_menu(self.file_menu(file, cx))
-            .into_any_element()
-    }
 }
 
 impl Focusable for HistoryView {
@@ -1072,124 +936,78 @@ impl Focusable for HistoryView {
 
 impl Render for HistoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sizes = Config::get(cx).history;
-        let viewport = window.viewport_size();
-        let rows = self.rows.state(viewport.height, (), cx).clone();
-        let bar = self.render_bar(cx).into_any_element();
-        let commit = div()
-            .id("history-commit")
-            .size_full()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(self.commit.clone())
-            .context_menu(self.files_menu(cx));
-        // The columns in their order, the files only if Files is on; the
-        // commits take what the others leave.
-        let parts: Vec<HistoryPart> = Config::get(cx)
-            .history_order()
-            .into_iter()
-            .filter(|part| *part != HistoryPart::Files || !Config::get(cx).history_hide_files)
-            .collect();
-        // No room for the diff's two sides, or for the commits beside the
-        // others: they go one under the other.
-        let others: f32 = parts
-            .iter()
-            .map(|part| match part {
-                HistoryPart::Commits => 0.,
-                HistoryPart::Message => sizes.message,
-                HistoryPart::Files => sizes.files,
-            })
-            .sum();
-        let font = Config::get(cx).font_size(crate::config::TextArea::Interface);
-        let width = f32::from(self.width.get());
-        let stacked = self.commit.read(cx).cramped()
-            || (width > 0. && width - others < (SUBJECT_ROOM + AUTHOR_ROOM + DATE_ROOM) * font);
-        let top_state = self.top.state(viewport.width, (&parts, stacked), cx).clone();
-        let mut columns = if stacked { v_resizable("history-top") } else { h_resizable("history-top") }.with_state(&top_state);
-        for (ix, part) in parts.iter().copied().enumerate() {
-            let (content, size) = match part {
-                HistoryPart::Commits => (self.render_commits(window, cx), None),
-                HistoryPart::Message => (self.render_message(cx), Some(sizes.message)),
-                HistoryPart::Files => (self.render_files(cx), Some(sizes.files)),
-            };
-            let primary = cx.theme().primary;
-            let column = div()
+        let body = if self.open {
+            v_flex()
                 .size_full()
-                .when(ix > 0 && !stacked, |el| el.border_l_1())
-                .when(ix > 0 && stacked, |el| el.border_t_1())
-                .border_color(cx.theme().border)
-                .child(content)
-                // dropped anywhere on the column, the dragged one takes its place
-                .drag_over::<PartDrag>(move |style, _, _, _| style.border_2().border_color(primary))
-                .on_drop(move |drag: &PartDrag, _, cx| {
-                    if drag.0 != part {
-                        let dragged = drag.0;
-                        Config::update(cx, |config| config.swap_history(dragged, part));
-                    }
-                });
-            let panel = resizable_panel().child(column);
-            // The saved sizes are widths: stacked, they share the height.
-            columns = columns.child(match size {
-                Some(size) if !stacked => panel.size(px(size)).size_range(px(120.)..px(2000.)),
-                _ => panel.size_range(px(40.)..px(4000.)),
-            });
-        }
-        let top = columns
-            .on_resize(move |state, _, cx| {
-                if stacked {
-                    return;
-                }
-                let sizes: Vec<f32> = state.read(cx).sizes().iter().copied().map(f32::from).collect();
-                Config::update_quietly(cx, |config| {
-                    for (part, size) in parts.iter().zip(sizes) {
-                        match part {
-                            HistoryPart::Commits => {}
-                            HistoryPart::Message => config.history.message = size,
-                            HistoryPart::Files => config.history.files = size,
-                        }
-                    }
-                });
-            })
-            .into_any_element();
+                .child(self.render_commit_bar(cx))
+                .child(div().flex_1().min_h_0().child(self.commit.clone()))
+                .into_any_element()
+        } else {
+            let bar = self.render_bar(cx).into_any_element();
+            v_flex().size_full().child(bar).child(div().flex_1().min_h_0().child(self.render_commits(window, cx))).into_any_element()
+        };
         let theme = cx.theme();
-        v_flex()
+        div()
             .size_full()
-            .relative()
             .bg(theme.background)
             .text_ui(cx)
-            .child(measure(&self.width))
-            .child(bar)
-            .child(
-                div().flex_1().min_h_0().child(
-                    v_resizable("history-rows")
-                        .with_state(&rows)
-                        .child(resizable_panel().size(px(sizes.commits)).size_range(px(80.)..px(4000.)).child(top))
-                        .child(resizable_panel().child(commit))
-                        .on_resize(|state, _, cx| {
-                            if let Some(commits) = state.read(cx).sizes().first().copied() {
-                                Config::update_quietly(cx, |config| config.history.commits = f32::from(commits));
-                            }
-                        }),
-                ),
-            )
+            .key_context("History")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::select_prev))
+            .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::open_commit))
+            .on_action(cx.listener(Self::close_commit))
+            .child(body)
     }
 }
 
-/// The author's and date's widths in commits `width` wide, at `font`: they
-/// give up theirs, the author's first, before the subject's room.
-fn fit_columns(width: f32, author: f32, date: f32, font: f32) -> (f32, f32) {
-    if width <= 0. {
-        return (author, date);
+impl HistoryView {
+    /// Over an open commit: back to the commits, and where it is among them.
+    fn render_commit_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let at = self.selected.as_ref().and_then(|hash| self.commits.iter().position(|commit| commit.hash == *hash));
+        let place = at.map(|ix| format!("{} of {}{}", ix + 1, self.commits.len(), if self.more { "+" } else { "" }));
+        h_flex()
+            .flex_none()
+            .px_2()
+            .py_1()
+            .gap_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .text_ui_small(cx)
+            .child(
+                div()
+                    .id("history-back")
+                    .when(cfg!(test), |el| el.debug_selector(|| "history-back".into()))
+                    .px_2()
+                    .py_0p5()
+                    .rounded(theme.radius)
+                    .hover(|style| style.bg(theme.secondary_hover))
+                    .child("← Commits")
+                    .tooltip(|window, cx| Tooltip::new("Back to the commits (Esc)").build(window, cx))
+                    .on_click(cx.listener(|this, _, window, cx| this.close_commit(&CloseCommit, window, cx))),
+            )
+            .when_some(place, |el, place| el.child(div().text_color(theme.muted_foreground).child(place)))
+            .child(div().flex_1())
+            .child(div().text_color(theme.muted_foreground).child("↑ ↓ the previous or next commit"))
     }
-    let mut short = author + date + SUBJECT_ROOM * font - width;
+}
+
+/// The author's and hash's widths in commits `width` wide, at `font`: they
+/// give up theirs, the author's first, before the subject's room.
+fn fit_columns(width: f32, author: f32, hash: f32, font: f32) -> (f32, f32) {
+    if width <= 0. {
+        return (author, hash);
+    }
+    let mut short = author + hash + SUBJECT_ROOM * font - width;
     let mut give = |own: f32, room: f32| {
         let given = short.clamp(0., (own - room * font).max(0.));
         short -= given;
         own - given
     };
     let author = give(author, AUTHOR_ROOM);
-    let date = give(date, DATE_ROOM);
-    (author, date)
+    let hash = give(hash, HASH_ROOM);
+    (author, hash)
 }
 
 /// Keeps in `width` how wide the element it's in is, and redraws when it
@@ -1208,24 +1026,6 @@ fn measure(width: &Rc<Cell<Pixels>>) -> impl IntoElement {
     .size_full()
 }
 
-/// A column dragged by its header onto another: the two swap.
-#[derive(Clone)]
-struct PartDrag(HistoryPart);
-
-fn drag_preview(drag: &PartDrag, _: Point<Pixels>, _: &mut Window, cx: &mut App) -> Entity<TabDragPreview> {
-    cx.new(|_| TabDragPreview(drag.0.title().into()))
-}
-
-impl HistoryPart {
-    fn title(self) -> &'static str {
-        match self {
-            HistoryPart::Commits => "Commits",
-            HistoryPart::Message => "Message",
-            HistoryPart::Files => "Files",
-        }
-    }
-}
-
 /// A checkbox in the bar, as gitk's.
 fn toggle(id: &'static str, label: &'static str, on: bool, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
@@ -1242,25 +1042,46 @@ fn toggle(id: &'static str, label: &'static str, on: bool, cx: &App) -> Stateful
         .child(label)
 }
 
-/// Files, checked while the commit's files show: a click shows or hides them.
-fn files_item(view: &WeakEntity<HistoryView>, cx: &App) -> menu::PopupMenuItem {
-    menu::item("Files", view, |this, _, cx| this.toggle_files(cx)).checked(!Config::get(cx).history_hide_files)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::prelude::v1::test;
 
     #[test]
-    fn the_author_and_then_the_date_give_their_room_to_the_subject() {
-        // Font 10: the subject keeps 280, the author 90, the date 70.
+    fn the_author_and_then_the_hash_give_their_room_to_the_subject() {
+        // Font 10: the subject keeps 280, the author 90, the hash 70.
         assert_eq!(fit_columns(1000., 300., 150., 10.), (300., 150.));
         assert_eq!(fit_columns(600., 300., 150., 10.), (170., 150.));
         assert_eq!(fit_columns(400., 300., 150., 10.), (90., 70.));
         assert_eq!(fit_columns(100., 300., 150., 10.), (90., 70.));
         // Already narrower than their room, they keep what they have.
         assert_eq!(fit_columns(300., 60., 60., 10.), (60., 60.));
+    }
+
+    /// Enter opens the selected commit in the list's place, the arrows go
+    /// on through the commits, and Esc brings the list back.
+    #[gpui_kit::test]
+    fn a_commit_opens_in_the_list_s_place(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            cx.bind_keys(keymap());
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| HistoryView::new(PathBuf::from("/history-test"), None, window, cx));
+        view.update_in(cx, |view, window, cx| {
+            view.set_commits(vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])], cx);
+            view.focus_handle.focus(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("history-back").is_none());
+        cx.simulate_keystrokes("down enter");
+        assert!(cx.debug_bounds("history-commits").is_none());
+        assert!(cx.debug_bounds("history-back").is_some());
+        cx.simulate_keystrokes("down");
+        view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open), (Some("a"), true)));
+        cx.simulate_keystrokes("escape");
+        assert!(cx.debug_bounds("history-commits").is_some());
+        view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open), (Some("a"), false)));
     }
 
     fn commit(hash: &str, parents: &[&str]) -> GraphCommit {
