@@ -3,7 +3,7 @@
 # config of its own (dark theme, a clone of this repo with a few worktrees),
 # runs Claude Code and a shell in split terminals (main.png), then shows an
 # uncommitted change side by side (diff.png), a project search (search.png)
-# and the History tab (history.png), and last, in the light theme, Markdown
+# and the commit graph in the History tab (history.png), and last, in the light theme, Markdown
 # with a diagram and its outline (markdown.png),
 # capturing the window each time, and closes it.
 # Your config, agent and terminals aren't touched: the demo instance has its
@@ -171,15 +171,13 @@ done
 sleep 2
 shot search
 
-# The History tab, a commit with a few files opened from the list.
+# The History tab: the commits with their graph, the third one selected.
 keys 'keystroke "h" using {command down, shift down}'
 sleep 4
 keys 'key code 125
     delay 0.3
-    key code 125
-    delay 0.3
-    key code 36'
-sleep 3
+    key code 125'
+sleep 2
 shot history
 
 # Markdown with a diagram and its headings in the outline, in the light

@@ -23,7 +23,7 @@
 The history as gitk shows it, side-by-side diffs and the blame of the current line. Den only reads: commit and push from a terminal.
 
 <p align="center">
-  <img src="docs/screenshots/history.png" width="49%" alt="The History tab: a commit opened from the list, its message and files above its changes">
+  <img src="docs/screenshots/history.png" width="49%" alt="The History tab: the commits with their graph, one line each">
   <img src="docs/screenshots/diff.png" width="49%" alt="An uncommitted change side by side">
 </p>
 
