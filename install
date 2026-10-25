@@ -1,10 +1,14 @@
 #!/bin/sh
-# Builds den in release, assembles Den.app (the app, its agent, the agent for
-# Linux servers and the icon), signs it and installs it in /Applications. A
-# running Den keeps working: the whole folder is replaced, and the running
-# process keeps its files; the new one is used the next time it's opened.
+# Checks the code with Clippy, builds den in release, assembles Den.app (the
+# app, its agent, the agent for Linux servers and the icon), signs it and
+# installs it in /Applications. A running Den keeps working: the whole folder
+# is replaced, and the running process keeps its files; the new one is used
+# the next time it's opened.
 set -e
 dir="$(cd "$(dirname "$0")" && pwd)"
+# The same lint check as CI: a warning stops the install here instead of the
+# release's build later.
+cargo clippy --locked --quiet --manifest-path "$dir/Cargo.toml" --workspace --all-targets -- -D warnings
 cargo build --release --quiet --manifest-path "$dir/Cargo.toml" -p ui -p agent
 linux="$dir/target/x86_64-unknown-linux-musl/release/den-agent"
 if command -v cargo-zigbuild >/dev/null; then

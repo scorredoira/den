@@ -26,6 +26,6 @@ git clone https://github.com/scorredoira/den && cd den
 cargo build --release --locked -p ui -p agent
 ```
 
-Both executables are in `target/release`. On macOS, `./install` builds and installs `Den.app`; `./run` opens a development build. To include the Linux SSH agent when building on macOS, install `cargo-zigbuild` and Zig first.
+Both executables are in `target/release`. On macOS, `./install` checks the code with Clippy (as CI does) and builds and installs `Den.app`; `./run` opens a development build. To include the Linux SSH agent when building on macOS, install `cargo-zigbuild` and Zig first.
 
 For local development, finish every change by running `./install` and verifying that `/Applications/Den.app` contains the updated build. This installation is part of completing the change, without a separate request or confirmation; compiling and testing alone do not finish the task. A running Den keeps using its current build until it is reopened.
