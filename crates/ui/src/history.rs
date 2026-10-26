@@ -7,7 +7,8 @@
 //! the commits in both, and Page Up and Page Down scroll an open one. A
 //! file's or a folder's history is the same list, of the commits that
 //! changed it, each opened with only its changes. The
-//! author's and date's columns resize and keep their sizes. It only reads,
+//! author's column resizes and keeps its size; the date, in the editor's
+//! font, takes just its width. It only reads,
 //! and the agent does all the reading.
 
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
@@ -57,12 +58,14 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// The width of a lane of the graph.
 const LANE: f32 = 14.;
 
-/// The room the commits keep for their subject, author and date, in widths
-/// of the interface's font. Short of it, the author's and then the date's
-/// columns give up theirs down to their own.
+/// The room the commits keep for their subject and author, in widths of
+/// the interface's font. Short of it, the author's column gives up its
+/// width down to its own.
 const SUBJECT_ROOM: f32 = 28.;
 const AUTHOR_ROOM: f32 = 9.;
-const DATE_ROOM: f32 = 7.;
+
+/// A date as git gives it: `2026-10-21 09:41:14`.
+const DATE_CHARS: f32 = 19.;
 
 /// Commits whose text is kept, to go back to them at once.
 const MAX_TEXTS: usize = 64;
@@ -784,7 +787,7 @@ impl HistoryView {
                             })
                             .flex(),
                     )
-                    .child(cell(widths.1).text_color(theme.muted_foreground).child(commit.date.clone()))
+                    .child(cell(widths.1).font_family(theme.mono_font_family.clone()).text_ui_small(cx).text_color(theme.muted_foreground).child(commit.date.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.select(hash.clone(), false, cx);
@@ -879,30 +882,34 @@ impl HistoryView {
     fn render_commits(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let sizes = Config::get(cx).history;
         let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
-        let (author, date) = fit_columns(f32::from(self.commits_width.get()), sizes.author, sizes.date, size);
-        // Squeezed, they start again from their room whenever it changes.
-        let squeezed = (author != sizes.author || date != sizes.date).then(|| f32::from(self.commits_width.get()).to_bits());
+        let date = date_width(size - 1., window, cx);
+        let author = fit_author(f32::from(self.commits_width.get()) - f32::from(date), sizes.author, size);
+        // Squeezed, it starts again from its room whenever it changes.
+        let squeezed = (author != sizes.author).then(|| f32::from(self.commits_width.get()).to_bits());
         let state = self.columns.state(window.viewport_size().width, squeezed, cx).clone();
         let widths = match state.read(cx).sizes().as_slice() {
-            [_, author, date] => (*author, *date),
-            _ => (px(author), px(date)),
+            [_, author] => (*author, date),
+            _ => (px(author), date),
         };
         let theme = cx.theme();
         let title = |text: &'static str| div().px_2().h_full().flex().items_center().overflow_hidden().whitespace_nowrap().child(text);
-        let header = h_resizable("history-columns")
-            .with_state(&state)
-            .child(resizable_panel().child(title("Commit").pl(px(LANE + 6.))))
-            .child(resizable_panel().size(px(author)).size_range(px(60.)..px(1000.)).child(title("Author")))
-            .child(resizable_panel().size(px(date)).size_range(px(60.)..px(600.)).child(title("Date")))
-            .on_resize(|state, _, cx| {
-                if let [_, author, date] = state.read(cx).sizes().as_slice() {
-                    let (author, date) = (f32::from(*author), f32::from(*date));
-                    Config::update_quietly(cx, |config| {
-                        config.history.author = author;
-                        config.history.date = date;
-                    });
-                }
-            });
+        let header = h_flex()
+            .size_full()
+            .child(
+                div().flex_1().min_w_0().h_full().child(
+                    h_resizable("history-columns")
+                        .with_state(&state)
+                        .child(resizable_panel().child(title("Commit").pl(px(LANE + 6.))))
+                        .child(resizable_panel().size(px(author)).size_range(px(60.)..px(1000.)).child(title("Author")))
+                        .on_resize(|state, _, cx| {
+                            if let [_, author] = state.read(cx).sizes().as_slice() {
+                                let author = f32::from(*author);
+                                Config::update_quietly(cx, |config| config.history.author = author);
+                            }
+                        }),
+                ),
+            )
+            .child(title("Date").flex_none().w(date));
         let height = px((size * 1.75).round());
         let count = self.commits.len();
         let empty = (count == 0 && !self.loading && self.error.is_none()).then_some("No commits");
@@ -1012,21 +1019,24 @@ impl HistoryView {
     }
 }
 
-/// The author's and date's widths in commits `width` wide, at `font`: they
-/// give up theirs, the author's first, before the subject's room.
-fn fit_columns(width: f32, author: f32, date: f32, font: f32) -> (f32, f32) {
+/// The author's width in `width` beside the subject, at `font`: it gives up
+/// its own before the subject's room.
+fn fit_author(width: f32, author: f32, font: f32) -> f32 {
     if width <= 0. {
-        return (author, date);
+        return author;
     }
-    let mut short = author + date + SUBJECT_ROOM * font - width;
-    let mut give = |own: f32, room: f32| {
-        let given = short.clamp(0., (own - room * font).max(0.));
-        short -= given;
-        own - given
-    };
-    let author = give(author, AUTHOR_ROOM);
-    let date = give(date, DATE_ROOM);
-    (author, date)
+    let short = author + SUBJECT_ROOM * font - width;
+    author - short.clamp(0., (author - AUTHOR_ROOM * font).max(0.))
+}
+
+/// The date's column: a date in the editor's font at `size` (a point under
+/// the interface's, which it would look bigger than), and the cell's
+/// padding.
+fn date_width(size: f32, window: &Window, cx: &App) -> Pixels {
+    let text_system = window.text_system();
+    let font_id = text_system.resolve_font(&font(cx.theme().mono_font_family.clone()));
+    let digit = text_system.advance(font_id, px(size), '0').map(|advance| advance.width).unwrap_or(px(size * 0.6));
+    (digit * DATE_CHARS + px(16.)).ceil()
 }
 
 /// Keeps in `width` how wide the element it's in is, and redraws when it
@@ -1067,14 +1077,13 @@ mod tests {
     use core::prelude::v1::test;
 
     #[test]
-    fn the_author_and_then_the_date_give_their_room_to_the_subject() {
-        // Font 10: the subject keeps 280, the author 90, the date 70.
-        assert_eq!(fit_columns(1000., 300., 150., 10.), (300., 150.));
-        assert_eq!(fit_columns(600., 300., 150., 10.), (170., 150.));
-        assert_eq!(fit_columns(400., 300., 150., 10.), (90., 70.));
-        assert_eq!(fit_columns(100., 300., 150., 10.), (90., 70.));
-        // Already narrower than their room, they keep what they have.
-        assert_eq!(fit_columns(300., 60., 60., 10.), (60., 60.));
+    fn the_author_gives_its_room_to_the_subject() {
+        // Font 10: the subject keeps 280, the author 90.
+        assert_eq!(fit_author(1000., 300., 10.), 300.);
+        assert_eq!(fit_author(450., 300., 10.), 170.);
+        assert_eq!(fit_author(100., 300., 10.), 90.);
+        // Already narrower than its room, it keeps what it has.
+        assert_eq!(fit_author(300., 60., 10.), 60.);
     }
 
     /// Enter opens the selected commit in the list's place, the arrows go
