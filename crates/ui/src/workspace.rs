@@ -591,11 +591,7 @@ impl Workspace {
                 |this, _, event: &TerminalAreaEvent, window, cx| match event {
                     TerminalAreaEvent::Hide => this.set_terminals_visible(false, window, cx),
                     TerminalAreaEvent::OpenPath { path, line, column } => {
-                        let goto = Position::new(
-                            line.unwrap_or(1).saturating_sub(1),
-                            column.unwrap_or(1).saturating_sub(1),
-                        );
-                        this.open_at(path.clone(), goto, window, cx);
+                        this.open_terminal_path(path.clone(), *line, *column, window, cx)
                     }
                     TerminalAreaEvent::Message(message) => {
                         this.message = Some(message.clone());
@@ -1240,6 +1236,33 @@ impl Workspace {
         self.navigating = false;
     }
 
+    /// A path Cmd-clicked in a terminal. A folder of the task opens in the
+    /// files panel, one outside it in Finder; a file Den can't show (a PDF)
+    /// in its app; any other file in a tab, at its line.
+    fn open_terminal_path(
+        &mut self,
+        path: PathBuf,
+        line: Option<u32>,
+        column: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = normalize(&path);
+        let is_dir = match self.local {
+            true => path.is_dir(),
+            false => self.file_tree.read(cx).is_dir(&path).unwrap_or(false),
+        };
+        if is_dir && path.starts_with(&self.root) {
+            self.show_panel(Panel::Files, cx);
+            self.file_tree.update(cx, |tree, cx| tree.reveal_folder(&path, cx));
+        } else if self.local && (is_dir || !shown_in_den(&path)) {
+            cx.open_with_system(&path);
+        } else {
+            let goto = Position::new(line.unwrap_or(1).saturating_sub(1), column.unwrap_or(1).saturating_sub(1));
+            self.open_at(path, goto, window, cx);
+        }
+    }
+
     /// Opens a pinned file with the cursor at `goto` (Cmd-click in a terminal).
     fn open_at(&mut self, path: PathBuf, goto: Position, window: &mut Window, cx: &mut Context<Self>) {
         self.open_at_with(path, goto, true, true, window, cx);
@@ -1686,6 +1709,24 @@ fn same_text(a: &input::Rope, b: &input::Rope) -> bool {
     a.len() == b.len() && a == b
 }
 
+/// Whether a tab can show the file on this disk: a picture, or text (what
+/// its start says, as `decode_text` judges the whole).
+fn shown_in_den(path: &Path) -> bool {
+    use std::io::Read as _;
+    if image_format(path).is_some() {
+        return true;
+    }
+    let mut start = Vec::new();
+    let Ok(file) = std::fs::File::open(path) else {
+        return true;
+    };
+    if file.take(8000).read_to_end(&mut start).is_err() {
+        return true;
+    }
+    // A character cut at the end of what was read is still text.
+    !start.contains(&0) && std::str::from_utf8(&start).map_or_else(|e| e.error_len().is_none(), |_| true)
+}
+
 /// What a file read: its text, or the image it is.
 enum Read {
     Text(String),
@@ -2044,7 +2085,7 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{LspStatus, next_stop, normalize, percent_decode, scrollbar_marks, word_at};
+    use super::{LspStatus, next_stop, normalize, percent_decode, scrollbar_marks, shown_in_den, word_at};
     use gpui_kit::{blue, red};
     use proto::Response;
 
@@ -2057,6 +2098,24 @@ mod tests {
         assert_eq!(next_stop(3, None, false), Some(0));
         assert_eq!(next_stop(1, Some(0), false), None);
         assert_eq!(next_stop(0, None, true), None);
+    }
+
+    #[test]
+    fn a_pdf_is_not_shown_in_den_but_text_and_pictures_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        assert!(!shown_in_den(&file("a.pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\x00")));
+        assert!(!shown_in_den(&file("a.bin", b"\xff\xfe\xfd")));
+        assert!(shown_in_den(&file("a.png", b"\x00\x00")));
+        assert!(shown_in_den(&file("a.rs", "fn main() {} // ñ".as_bytes())));
+        // An accent cut at the 8000th byte.
+        let mut long = vec![b'a'; 7999];
+        long.extend("ñ".as_bytes());
+        assert!(shown_in_den(&file("long.txt", &long)));
     }
 
     #[test]

@@ -308,6 +308,21 @@ impl FileTree {
         cx.notify();
     }
 
+    /// `reveal`, with the folder open: one Cmd-clicked in a terminal.
+    pub fn reveal_folder(&mut self, dir: &Path, cx: &mut Context<Self>) {
+        self.expanded.insert(dir.to_path_buf());
+        self.reveal(dir, cx);
+        self.rebuild(cx);
+        cx.notify();
+    }
+
+    /// Whether `path` is a folder, if its folder has been listed (on a
+    /// server, the only way to know without asking).
+    pub fn is_dir(&self, path: &Path) -> Option<bool> {
+        let entries = self.children.get(path.parent()?)?;
+        entries.iter().find(|entry| entry.path == path).map(|entry| entry.is_dir)
+    }
+
     /// Whether the selected file is in the rows (and so scrolled to).
     fn scroll_to_selected(&mut self) -> bool {
         let selected = self.selected.as_deref();
