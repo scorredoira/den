@@ -190,9 +190,11 @@ impl HistoryView {
     }
 
     /// Only the history of `file` (relative; `true`: a folder), or of
-    /// everything: the list, from the top.
+    /// everything: the list, from the top (the same one: back to the list,
+    /// at the selected commit).
     pub fn show_file(&mut self, file: Option<(String, bool)>, cx: &mut Context<Self>) {
         if self.file == file {
+            self.show_list(cx);
             return;
         }
         self.file = file;
@@ -464,6 +466,14 @@ impl HistoryView {
     fn close_commit(&mut self, _: &CloseCommit, _: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
             return cx.propagate();
+        }
+        self.show_list(cx);
+    }
+
+    /// The list in the open commit's place, scrolled to it.
+    fn show_list(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
         }
         self.open = false;
         if let Some(ix) = self.selected.as_ref().and_then(|hash| self.commits.iter().position(|commit| commit.hash == *hash)) {
@@ -1109,6 +1119,10 @@ mod tests {
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open), (Some("a"), true)));
         cx.simulate_keystrokes("escape");
         assert!(cx.debug_bounds("history-commits").is_some());
+        view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open), (Some("a"), false)));
+        // Shown again with the same commits (the graph icon): the list.
+        cx.simulate_keystrokes("enter");
+        view.update(cx, |view, cx| view.show_file(None, cx));
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open), (Some("a"), false)));
     }
 
