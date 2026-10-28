@@ -9,8 +9,8 @@ reporting if any step fails (never force, never push — pushing is the user's):
 1. **Commit — ONLY your own changes.** Another session may be working in this same
    directory, so NEVER `git add -A` / `git add .`. Stage only the specific files
    *you* edited in this session, by explicit path (`git add <file> <file> …`), then
-   commit them with a concise message in English you derive from that diff (subject +
-   a short body of what changed and why). No `Co-Authored-By` or any other Claude
+   commit them with a concise message in English you derive from that diff (subject
+   ≤ 72 chars, blank line, a short body of what changed and why wrapped at 72). No `Co-Authored-By` or any other Claude
    attribution line. Leave every other modified/untracked file alone — do not stage,
    stash, or revert it. If you touched nothing, skip this step.
 

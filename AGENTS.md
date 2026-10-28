@@ -8,3 +8,8 @@ passing tests alone are not enough. If installation fails, report the failure
 explicitly.
 
 See [docs/install.md](docs/install.md) for the installation workflow.
+
+# Commits
+
+Subject ≤ 72 chars, blank line, body wrapped at 72. Never cram the whole
+story into one subject glued with `—`/`;`.
