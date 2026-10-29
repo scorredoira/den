@@ -294,7 +294,7 @@ fn parse_flowchart<'a>(lines: impl Iterator<Item = &'a str>, mut direction: Dire
             return Err(format!("`{line}`: subgraphs and styles are not drawn"));
         }
         let mut p = Cursor { text: line.trim_end_matches(';'), at: 0 };
-        let mut from = flow_node(&mut p, &mut b, line)?;
+        let mut from = flow_nodes(&mut p, &mut b, line)?;
         loop {
             p.skip_spaces();
             if p.done() {
@@ -302,8 +302,12 @@ fn parse_flowchart<'a>(lines: impl Iterator<Item = &'a str>, mut direction: Dire
             }
             let (dashed, arrow, label) = flow_link(&mut p, line)?;
             p.skip_spaces();
-            let to = flow_node(&mut p, &mut b, line)?;
-            b.edges.push(Edge { from, to, label, dashed, arrow });
+            let to = flow_nodes(&mut p, &mut b, line)?;
+            for &f in &from {
+                for &t in &to {
+                    b.edges.push(Edge { from: f, to: t, label: label.clone(), dashed, arrow });
+                }
+            }
             from = to;
         }
     }
@@ -324,6 +328,20 @@ impl Cursor<'_> {
     }
     fn skip_spaces(&mut self) {
         self.at = self.text.len() - self.rest().trim_start().len();
+    }
+}
+
+/// One node or several joined by `&` (`A & B --> C`): a link from or to
+/// them is one edge for each.
+fn flow_nodes(p: &mut Cursor, b: &mut Builder, line: &str) -> Result<Vec<usize>, String> {
+    let mut nodes = vec![flow_node(p, b, line)?];
+    loop {
+        p.skip_spaces();
+        let Some(rest) = p.rest().strip_prefix('&') else {
+            return Ok(nodes);
+        };
+        p.at = p.text.len() - rest.len();
+        nodes.push(flow_node(p, b, line)?);
     }
 }
 
@@ -1233,11 +1251,23 @@ const INK: &str = "#1f2329";
 const LABEL_BORDER: &str = "#d3d8e0";
 
 fn render(source: &str) -> Result<Svg, String> {
-    let d = parse(source)?;
+    let mut d = parse(source)?;
     if d.nodes.is_empty() {
         return Err("no states or nodes".into());
     }
-    let l = layout(&d);
+    let mut l = layout(&d);
+    // Left to right wider than a preview goes top to bottom instead, when
+    // that is narrower: drawn smaller it would not be read.
+    if l.width > COLUMN && matches!(d.direction, Direction::Right | Direction::Left) {
+        let along = d.direction;
+        d.direction = if along == Direction::Right { Direction::Down } else { Direction::Up };
+        let turned = layout(&d);
+        if turned.width < l.width {
+            l = turned;
+        } else {
+            d.direction = along;
+        }
+    }
     // A huge diagram is drawn smaller: gpui draws an SVG at twice its size,
     // and a side past the GPU's largest texture isn't drawn at all.
     let scale = (MAX_SIDE / l.width.max(l.height)).min((MAX_AREA / (l.width * l.height)).sqrt()).min(1.0);
@@ -1511,6 +1541,25 @@ mod tests {
         assert_eq!(d.direction, Direction::Right);
         assert_eq!(d.edges.len(), 2);
         assert!(d.edges[0].arrow && !d.edges[1].arrow);
+    }
+
+    #[test]
+    fn an_ampersand_links_each_node() {
+        let d = parse("flowchart TD\n A --> B & C\n B & C --> D").unwrap();
+        let pairs: Vec<(usize, usize)> = d.edges.iter().map(|e| (e.from, e.to)).collect();
+        assert_eq!(pairs, [(0, 1), (0, 2), (1, 3), (2, 3)]);
+    }
+
+    /// Left to right that does not fit a preview is drawn top to bottom;
+    /// one that fits stays as written.
+    #[test]
+    fn too_wide_left_to_right_turns_down() {
+        let wide = "flowchart LR\n A[a long first box] --> B[a long second box] --> C[a long third box] --> D[a long fourth box] --> E[a long fifth box]";
+        let svg = render(wide).unwrap();
+        assert!(svg.width <= COLUMN, "{}", svg.width);
+        let narrow = "flowchart LR\n A --> B";
+        let svg = render(narrow).unwrap();
+        assert!(svg.width > render("flowchart TD\n A --> B").unwrap().width);
     }
 
     #[test]
