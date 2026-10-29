@@ -256,6 +256,10 @@ pub struct Config {
     /// current branch (as gitk does without `--all`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub history_all_branches: bool,
+    /// The Graph tab's author column shows each author's email after the
+    /// name; off, the email is in the name's tooltip.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub history_emails: bool,
     /// The groups of the Outline turned off with the icons at its top.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outline_hidden: Vec<OutlineGroup>,
@@ -344,16 +348,25 @@ pub fn sync_find_bar(cx: &mut App) {
     .detach();
 }
 
-/// The width of the Graph tab's author column, in pixels.
+/// The width of the Graph tab's author column, in pixels: with the
+/// emails (`author`) and with the names alone (`name`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistorySizes {
     pub author: f32,
+    pub name: f32,
 }
 
 impl Default for HistorySizes {
     fn default() -> Self {
-        Self { author: 340. }
+        Self { author: 340., name: 180. }
+    }
+}
+
+impl HistorySizes {
+    /// The author column's width, with the emails or without.
+    pub fn author(&self, emails: bool) -> f32 {
+        if emails { self.author } else { self.name }
     }
 }
 

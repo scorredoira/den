@@ -10,7 +10,7 @@ use super::*;
 use crate::shortcuts::{self, SHORTCUTS, Shortcut};
 
 /// Sections, in index order.
-const SECTIONS: [&str; 5] = ["Appearance", "Editor", "Workspaces", "Terminals", "Updates"];
+const SECTIONS: [&str; 6] = ["Appearance", "Editor", "Workspaces", "Terminals", "Git", "Updates"];
 
 pub(super) struct Settings {
     focus: FocusHandle,
@@ -202,6 +202,7 @@ impl Den {
             self.render_editor(settings, &matches, cx),
             self.render_workspaces(&matches, cx),
             self.render_terminals(&matches, cx),
+            self.render_git(&matches, cx),
             self.render_updates(&matches, cx),
         ];
         let visible: Vec<bool> = sections.iter().map(|(_, visible)| *visible).collect();
@@ -480,8 +481,26 @@ impl Den {
         Self::section(SECTIONS[3], rows, visible, cx)
     }
 
+    fn render_git(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
+        let visible = [SECTIONS[4], "Author Emails", "email", "graph", "history", "author"].iter().any(|text| matches(text));
+        let emails = Switch::new("history-emails")
+            .accessibility_label("Author Emails")
+            .checked(Config::get(cx).history_emails)
+            .on_click(cx.listener(|_, checked: &bool, _, cx| {
+                Config::update(cx, |config| config.history_emails = *checked);
+                cx.refresh_windows();
+            }));
+        let rows = vec![setting(
+            "Author Emails",
+            "The Graph's author column shows each author's email after the name. Off, only the name, and the email in its tooltip.",
+            emails,
+            cx,
+        )];
+        Self::section(SECTIONS[4], rows, visible, cx)
+    }
+
     fn render_updates(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[4], "Check for Updates", "automatically", "release", "version"].iter().any(|text| matches(text));
+        let visible = [SECTIONS[5], "Check for Updates", "automatically", "release", "version"].iter().any(|text| matches(text));
         let check = Switch::new("check-for-updates")
             .accessibility_label("Check for Updates Automatically")
             .checked(Config::get(cx).checks_for_updates())
@@ -498,7 +517,7 @@ impl Den {
             check,
             cx,
         )];
-        Self::section(SECTIONS[4], rows, visible, cx)
+        Self::section(SECTIONS[5], rows, visible, cx)
     }
 
     /// The shortcuts that match, under their sections.

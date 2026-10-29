@@ -758,6 +758,7 @@ impl HistoryView {
             self.load_more(cx);
         }
         let graph = self.graph.clone();
+        let emails = Config::get(cx).history_emails;
         range
             .filter_map(|ix| Some((ix, self.commits.get(ix)?.clone())))
             .map(|(ix, commit)| {
@@ -791,9 +792,14 @@ impl HistoryView {
                     )
                     .child(
                         cell(widths.0)
+                            .id(("author", ix))
                             .child(commit.author.clone())
-                            .when(!commit.email.is_empty(), |el| {
+                            .when(emails && !commit.email.is_empty(), |el| {
                                 el.child(div().flex_none().text_color(theme.muted_foreground).child(format!(" <{}>", commit.email)))
+                            })
+                            .when(!emails && !commit.email.is_empty(), |el| {
+                                let full = format!("{} <{}>", commit.author, commit.email);
+                                el.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
                             })
                             .flex(),
                     )
@@ -891,12 +897,13 @@ impl HistoryView {
     /// The commits: their columns' titles, which resize them, and the rows.
     fn render_commits(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let sizes = Config::get(cx).history;
+        let emails = Config::get(cx).history_emails;
         let size = Config::get(cx).font_size(crate::config::TextArea::Interface);
         let date = date_width(size - 1., window, cx);
-        let author = fit_author(f32::from(self.commits_width.get()) - f32::from(date), sizes.author, size);
+        let author = fit_author(f32::from(self.commits_width.get()) - f32::from(date), sizes.author(emails), size);
         // Squeezed, it starts again from its room whenever it changes.
-        let squeezed = (author != sizes.author).then(|| f32::from(self.commits_width.get()).to_bits());
-        let state = self.columns.state(window.viewport_size().width, squeezed, cx).clone();
+        let squeezed = (author != sizes.author(emails)).then(|| f32::from(self.commits_width.get()).to_bits());
+        let state = self.columns.state(window.viewport_size().width, (squeezed, emails), cx).clone();
         let widths = match state.read(cx).sizes().as_slice() {
             [_, author] => (*author, date),
             _ => (px(author), date),
@@ -911,10 +918,16 @@ impl HistoryView {
                         .with_state(&state)
                         .child(resizable_panel().child(title("Commit").pl(px(LANE + 6.))))
                         .child(resizable_panel().size(px(author)).size_range(px(60.)..px(1000.)).child(title("Author")))
-                        .on_resize(|state, _, cx| {
+                        .on_resize(move |state, _, cx| {
                             if let [_, author] = state.read(cx).sizes().as_slice() {
                                 let author = f32::from(*author);
-                                Config::update_quietly(cx, |config| config.history.author = author);
+                                Config::update_quietly(cx, |config| {
+                                    if emails {
+                                        config.history.author = author
+                                    } else {
+                                        config.history.name = author
+                                    }
+                                });
                             }
                         }),
                 ),
