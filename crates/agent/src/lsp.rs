@@ -91,6 +91,16 @@ const C: Language = Language {
     topmost: true,
 };
 
+/// sourcekit-lsp comes with Xcode and its Command Line Tools. A package
+/// is the nearest `Package.swift`; an Xcode project needs a
+/// `buildServer.json` (xcode-build-server) to be understood.
+const SWIFT: Language = Language {
+    name: "sourcekit-lsp",
+    commands: &[&["sourcekit-lsp"], &["xcrun", "sourcekit-lsp"]],
+    markers: &["Package.swift", "buildServer.json"],
+    topmost: false,
+};
+
 /// A file's language and its LSP `languageId`.
 fn language(path: &Path) -> Option<(&'static Language, &'static str)> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -104,6 +114,7 @@ fn language(path: &Path) -> Option<(&'static Language, &'static str)> {
         "py" | "pyi" => (&PYTHON, "python"),
         "c" | "h" => (&C, "c"),
         "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => (&C, "cpp"),
+        "swift" => (&SWIFT, "swift"),
         _ => return None,
     })
 }
@@ -1395,6 +1406,27 @@ mod tests {
         assert_eq!(found("onCronTick"), Some(("main.ts".into(), 5, 16)), "{symbols:?}");
         let Response::Symbols { symbols, .. } = workspace_symbols(&ts, None, "", "twice").unwrap() else { panic!() };
         assert!(symbols.iter().any(|s| s.name == "twice" && s.path.ends_with("util.ts") && s.column == 16), "{symbols:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore]
+    fn swift_with_real_server() {
+        let dir = std::env::temp_dir().join(format!("den-lsp-swift-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pkg = dir.join("demo");
+        std::fs::create_dir_all(pkg.join("Sources/Demo")).unwrap();
+        std::fs::write(pkg.join("Package.swift"), "// swift-tools-version:5.9\nimport PackageDescription\n\nlet package = Package(name: \"Demo\", targets: [.executableTarget(name: \"Demo\")])\n").unwrap();
+        let text = "func twice(_ x: Int) -> Int {\n    x * 2\n}\n\nlet y = twice(1)\n";
+        let file = pkg.join("Sources/Demo/main.swift");
+        std::fs::write(&file, text).unwrap();
+        let column = "let y = tw".chars().count() as u32;
+        let Response::Lsp { locations, server } = request(&pkg, &file, text, 4, column, LspOp::Definition).unwrap() else {
+            panic!()
+        };
+        assert_eq!(server.as_deref(), Some("sourcekit-lsp"));
+        assert_eq!(locations.len(), 1, "{locations:?}");
+        assert_eq!((locations[0].line, locations[0].column), (0, 5));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

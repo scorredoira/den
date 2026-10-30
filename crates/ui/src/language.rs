@@ -69,6 +69,7 @@ pub fn for_path(path: &Path) -> &'static str {
         "c" | "h" => "c",
         "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
         "mk" => "make",
+        "swift" => "swift",
         _ => "text",
     }
 }
@@ -122,5 +123,8 @@ mod tests {
         assert_eq!(color("json", json, "key"), Some(rgb(0x0451a5).into()));
         assert_eq!(color("json", json, "value"), Some(rgb(0xa31515).into()));
         assert_eq!(color("json", json, "item"), Some(rgb(0xa31515).into()));
+        let swift = "struct Point { let x: Int = 1 }";
+        assert!(color("swift", swift, "struct").is_some(), "Swift is colored");
+        assert!(color("swift", swift, "Int").is_some());
     }
 }
