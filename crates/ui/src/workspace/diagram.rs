@@ -1,14 +1,17 @@
 //! Mermaid diagrams in Markdown previews: a ```mermaid block becomes an SVG
 //! image. Only `stateDiagram`/`stateDiagram-v2` and `flowchart`/`graph`, with
-//! no subgraphs, composite states or styles, laid out in layers (Sugiyama):
-//! ranks, crossings reduced by barycenters, positions by isotonic regression.
+//! subgraphs one level deep and no composite states or styles, laid out in
+//! layers (Sugiyama): ranks, crossings reduced by barycenters, positions by
+//! isotonic regression.
 //! The image is centered; a block it can't draw stays as code under the
 //! reason.
 use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
 /// `markdown` with each Mermaid block replaced by its image, its text drawn
-/// at `font_size` like the rest of the preview.
-pub(super) fn with_diagrams(markdown: &str, font_size: f32) -> Cow<'_, str> {
+/// at `font_size` like the rest of the preview. One wider than `fit`, the
+/// preview's width, is drawn smaller to fit it; with none, it scrolls
+/// sideways.
+pub(super) fn with_diagrams(markdown: &str, font_size: f32, fit: Option<f32>) -> Cow<'_, str> {
     if !markdown.contains("mermaid") {
         return Cow::Borrowed(markdown);
     }
@@ -32,11 +35,14 @@ pub(super) fn with_diagrams(markdown: &str, font_size: f32) -> Cow<'_, str> {
         changed = true;
         match rendered(&block) {
             Ok(svg) => {
+                // Within `fit` even rounded up.
+                let scale = fit.map_or(font_size / FONT, |fit| (font_size / FONT).min((fit - 1.0) / svg.width));
+                let scale = svg.scale(scale);
                 let _ = write!(
                     out,
                     "\n<p align=\"center\"><img src=\"data:image/svg+xml,{}\" width=\"{}\" style=\"max-width: none\" alt=\"diagram\"></p>\n\n",
-                    percent_encode(&svg.text),
-                    (svg.width * font_size / FONT).ceil(),
+                    percent_encode(&svg.text(scale)),
+                    (svg.width * scale).ceil(),
                 );
             }
             Err(error) => {
@@ -106,6 +112,8 @@ enum Shape {
     Diamond,
     Start,
     End,
+    /// A subgraph's name used as a node: an edge to it ends at its box.
+    Cluster,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -120,6 +128,8 @@ enum Direction {
 struct Node {
     label: Vec<String>,
     shape: Shape,
+    /// The subgraph it is drawn in.
+    cluster: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -135,6 +145,8 @@ struct Edge {
 struct Diagram {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    /// Each subgraph's title.
+    clusters: Vec<Vec<String>>,
     direction: Direction,
 }
 
@@ -143,14 +155,19 @@ struct Builder {
     ids: HashMap<String, usize>,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    /// The subgraph being read, which takes the nodes named in it.
+    cluster: Option<usize>,
 }
 
 impl Builder {
     fn node(&mut self, id: &str, shape: Shape) -> usize {
         if let Some(&ix) = self.ids.get(id) {
+            if self.nodes[ix].cluster.is_none() {
+                self.nodes[ix].cluster = self.cluster;
+            }
             return ix;
         }
-        self.nodes.push(Node { label: vec![id.to_string()], shape });
+        self.nodes.push(Node { label: vec![id.to_string()], shape, cluster: self.cluster });
         self.ids.insert(id.to_string(), self.nodes.len() - 1);
         self.nodes.len() - 1
     }
@@ -260,7 +277,7 @@ fn parse_states<'a>(lines: impl Iterator<Item = &'a str>) -> Result<Diagram, Str
             }
         }
     }
-    Ok(Diagram { nodes: b.nodes, edges: b.edges, direction })
+    Ok(Diagram { nodes: b.nodes, edges: b.edges, clusters: Vec::new(), direction })
 }
 
 fn state_id<'a>(id: &'a str, line: &str) -> Result<&'a str, String> {
@@ -284,14 +301,44 @@ fn lines_of(label: &str) -> Vec<String> {
 
 fn parse_flowchart<'a>(lines: impl Iterator<Item = &'a str>, mut direction: Direction) -> Result<Diagram, String> {
     let mut b = Builder::default();
+    // Each subgraph's id and title, and the line that opens the one being read.
+    let mut clusters: Vec<(String, Vec<String>)> = Vec::new();
+    let mut open = "";
     for line in lines {
         if let Some(d) = direction_line(line) {
-            direction = d?;
+            // A subgraph's own direction is not followed.
+            if b.cluster.is_none() {
+                direction = d?;
+            }
             continue;
         }
         let first = line.split_whitespace().next().unwrap_or("");
-        if ["subgraph", "end", "classDef", "class", "style", "linkStyle", "click"].contains(&first) {
-            return Err(format!("`{line}`: subgraphs and styles are not drawn"));
+        if first == "subgraph" {
+            if b.cluster.is_some() {
+                return Err(format!("`{line}`: subgraphs inside subgraphs are not drawn"));
+            }
+            // `subgraph id`, `subgraph id[title]` or `subgraph "title"`.
+            let rest = line["subgraph".len()..].trim();
+            let (id, title) = match rest.find('[') {
+                Some(i) if rest.ends_with(']') => (rest[..i].trim(), lines_of(&rest[i + 1..rest.len() - 1])),
+                _ => (rest, lines_of(rest)),
+            };
+            if id.is_empty() {
+                return Err(format!("`{line}`: a subgraph with no name"));
+            }
+            clusters.push((id.to_string(), title));
+            b.cluster = Some(clusters.len() - 1);
+            open = line;
+            continue;
+        }
+        if first == "end" {
+            if b.cluster.take().is_none() {
+                return Err(format!("`{line}`: no subgraph to end"));
+            }
+            continue;
+        }
+        if ["classDef", "class", "style", "linkStyle", "click"].contains(&first) {
+            return Err(format!("`{line}`: styles are not drawn"));
         }
         let mut p = Cursor { text: line.trim_end_matches(';'), at: 0 };
         let mut from = flow_nodes(&mut p, &mut b, line)?;
@@ -311,7 +358,15 @@ fn parse_flowchart<'a>(lines: impl Iterator<Item = &'a str>, mut direction: Dire
             from = to;
         }
     }
-    Ok(Diagram { nodes: b.nodes, edges: b.edges, direction })
+    if b.cluster.is_some() {
+        return Err(format!("`{open}` has no `end`"));
+    }
+    for (c, (id, _)) in clusters.iter().enumerate() {
+        if let Some(&ix) = b.ids.get(id) {
+            b.nodes[ix] = Node { label: Vec::new(), shape: Shape::Cluster, cluster: Some(c) };
+        }
+    }
+    Ok(Diagram { nodes: b.nodes, edges: b.edges, clusters: clusters.into_iter().map(|(_, title)| title).collect(), direction })
 }
 
 struct Cursor<'a> {
@@ -476,6 +531,7 @@ fn node_size(node: &Node) -> (f32, f32) {
     match node.shape {
         Shape::Start => (16.0, 16.0),
         Shape::End => (20.0, 20.0),
+        Shape::Cluster => (0.0, 0.0),
         Shape::Rect | Shape::Round => ((w + 28.0).max(56.0), h + 20.0),
         // The text's box fits a rhombus whose half-diagonals take 62% of its
         // width and 38% of its height.
@@ -515,10 +571,17 @@ const BIG: usize = 1000;
 /// About a preview's width: a diagram laid out wider has its last states
 /// staggered on rows of their own, so it can be drawn at full size.
 const COLUMN: f32 = 760.0;
+/// Between a subgraph's box and what is in it, and between its box and
+/// what is not; under its title.
+const CLUSTER_PAD: f32 = 14.0;
+const CLUSTER_GAP: f32 = 12.0;
+const TITLE_GAP: f32 = 4.0;
 
 /// A box of the layered graph: a node, or a point an edge goes through.
 struct Item {
     node: Option<usize>,
+    /// The subgraph it is in: a node's, or an edge's in one.
+    cluster: Option<usize>,
     /// Its extent along the layer and across it.
     breadth: f32,
     depth: f32,
@@ -541,6 +604,9 @@ struct Layout {
     #[cfg(test)]
     items: Vec<Item>,
     routes: Vec<Route>,
+    /// Each subgraph's box, left, top, right and bottom; none when it has
+    /// nothing in it.
+    clusters: Vec<Option<[f32; 4]>>,
     /// Each node's size as drawn: wider than its text when many edges
     /// meet one side.
     boxes: Vec<(f32, f32)>,
@@ -610,7 +676,7 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         .map(|v| {
             let (w, h) = node_size(&d.nodes[v]);
             let (breadth, depth) = if horizontal { (h, w) } else { (w, h) };
-            Item { node: Some(v), breadth: breadth + 2.0 * loops(v), depth, rank: 0, pos: 0.0 }
+            Item { node: Some(v), cluster: d.nodes[v].cluster, breadth: breadth + 2.0 * loops(v), depth, rank: 0, pos: 0.0 }
         })
         .collect();
 
@@ -689,11 +755,31 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         rank[v] = if sources[v] { rank[v] + lift - 2 * drop[v] } else { rank[v] + lift + 2 * drop[v] };
     }
     settle(&mut rank);
+    // A subgraph's nodes with no edges go to the first rank of those with
+    // some, so its box spans no more ranks than they do.
+    for c in 0..d.clusters.len() {
+        let linked = |v: usize| d.edges.iter().any(|e| e.from == v || e.to == v);
+        let mine = |v: &usize| d.nodes[*v].cluster == Some(c);
+        if let Some(first) = (0..n).filter(mine).filter(|&v| linked(v)).map(|v| rank[v]).min() {
+            (0..n).filter(mine).filter(|&v| !linked(v)).for_each(|v| rank[v] = first);
+        }
+    }
     let low = rank.iter().copied().min().unwrap_or(0);
     rank.iter_mut().for_each(|r| *r -= low);
     for (v, item) in items.iter_mut().enumerate() {
         item.rank = rank[v];
     }
+    let node_spans: Vec<Option<(usize, usize)>> = (0..d.clusters.len())
+        .map(|c| {
+            let ranks = (0..n).filter(|&v| d.nodes[v].cluster == Some(c)).map(|v| rank[v]);
+            Some((ranks.clone().min()?, ranks.max()?))
+        })
+        .collect();
+    // An edge to a subgraph itself stays out of its box until it ends there.
+    let within = |v: usize, r: usize| {
+        let c = d.nodes[v].cluster.filter(|_| d.nodes[v].shape != Shape::Cluster);
+        c.filter(|&c| node_spans[c].is_some_and(|(low, high)| low <= r && r <= high))
+    };
 
     // Each edge goes through a point per rank it crosses; its label is the
     // middle one on a label rank, or the one beside a node staggered.
@@ -702,7 +788,11 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         let (u, v) = ends(e);
         let mut chain = vec![u];
         for r in rank[u] + 1..rank[v] {
-            items.push(Item { node: None, breadth: 0.0, depth: 0.0, rank: r, pos: 0.0 });
+            // In the subgraph of the nearer end, or of the other, that spans
+            // its rank, so the edge does not go around that box.
+            let (near, far) = if r - rank[u] <= rank[v] - r { (u, v) } else { (v, u) };
+            let cluster = within(near, r).or(within(far, r));
+            items.push(Item { node: None, cluster, breadth: 0.0, depth: 0.0, rank: r, pos: 0.0 });
             chain.push(items.len() - 1);
         }
         chain.push(v);
@@ -739,7 +829,7 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         }
         links.extend(chain.windows(2).map(|w| (w[0], w[1])));
     }
-    let mut g = Graph { up: vec![Vec::new(); items.len()], down: vec![Vec::new(); items.len()] };
+    let mut g = Graph { up: vec![Vec::new(); items.len()], down: vec![Vec::new(); items.len()], cluster: items.iter().map(|i| i.cluster).collect() };
     for &(a, b) in &links {
         g.down[a].push(b);
         g.up[b].push(a);
@@ -886,6 +976,63 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         }
     }
 
+    // A subgraph's box keeps out what is not in it: in each rank it spans,
+    // what is on either side of its items moves out past its box, until
+    // no box takes in another's items.
+    let title = |c: usize| text_size(&d.clusters[c]);
+    let spans: Vec<Option<(usize, usize)>> = (0..d.clusters.len())
+        .map(|c| {
+            let ranks = items.iter().filter(|i| i.cluster == Some(c)).map(|i| i.rank);
+            Some((ranks.clone().min()?, ranks.max()?))
+        })
+        .collect();
+    for _ in 0..20 {
+        let mut moved = false;
+        for (c, span) in spans.iter().enumerate() {
+            let Some((low, high)) = *span else { continue };
+            let inside = items.iter().filter(|i| i.cluster == Some(c));
+            let mut lo = inside.clone().map(|i| i.pos - i.breadth / 2.0).fold(f32::MAX, f32::min) - CLUSTER_PAD;
+            let mut hi = inside.map(|i| i.pos + i.breadth / 2.0).fold(f32::MIN, f32::max) + CLUSTER_PAD;
+            let (tw, th) = title(c);
+            if horizontal {
+                lo -= th + TITLE_GAP;
+            } else if hi - lo < tw + 2.0 * CLUSTER_PAD {
+                let more = (tw + 2.0 * CLUSTER_PAD - (hi - lo)) / 2.0;
+                (lo, hi) = (lo - more, hi + more);
+            }
+            for layer in &layers[low..=high] {
+                let mine: Vec<usize> = (0..layer.len()).filter(|&i| items[layer[i]].cluster == Some(c)).collect();
+                let (first, last) = match (mine.first(), mine.last()) {
+                    (Some(&first), Some(&last)) => (first, last + 1),
+                    _ => {
+                        let split = layer.iter().position(|&v| items[v].pos > (lo + hi) / 2.0).unwrap_or(layer.len());
+                        (split, split)
+                    }
+                };
+                // Another subgraph's items keep its box apart too.
+                let gap = |v: usize| CLUSTER_GAP + if items[v].cluster.is_some() { CLUSTER_PAD } else { 0.0 };
+                let over = layer[..first].iter().map(|&v| items[v].pos + items[v].breadth / 2.0 + gap(v) - lo).fold(0.0, f32::max);
+                let under = layer[last..].iter().map(|&v| hi + gap(v) - items[v].pos + items[v].breadth / 2.0).fold(0.0, f32::max);
+                if over > 0.01 || under > 0.01 {
+                    layer[..first].iter().for_each(|&v| items[v].pos -= over);
+                    layer[last..].iter().for_each(|&v| items[v].pos += under);
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    // Across, room for the box between its first rank and the one before,
+    // and its last and the one after, and for its title on top.
+    let room = |r: usize| {
+        let top = |c: usize| if horizontal { 0.0 } else { title(c).1 + TITLE_GAP };
+        let ends = (0..spans.len()).filter(|&c| spans[c].is_some_and(|s| s.1 + 1 == r)).map(|c| CLUSTER_PAD + if d.direction == Direction::Up { top(c) } else { 0.0 });
+        let starts = (0..spans.len()).filter(|&c| spans[c].is_some_and(|s| s.0 == r)).map(|c| CLUSTER_PAD + if d.direction == Direction::Down { top(c) } else { 0.0 });
+        (ends.fold(0.0, f32::max), starts.fold(0.0, f32::max))
+    };
+
     // Where an edge meets a box: on the side facing the other end, spread
     // along it in the order of the other ends, so a fan doesn't leave from
     // one point. Diamonds and circles take their edges at the tip.
@@ -919,19 +1066,20 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
     for r in 1..ranks {
         let (upper, lower) = (&layers[r - 1], &layers[r]);
         let deepest = |layer: &[usize]| layer.iter().map(|&v| items[v].depth).fold(0.0, f32::max);
+        let (after, before) = room(r);
         let mut gap = (deepest(upper) + deepest(lower)) / 2.0 + RANK_GAP;
         let links: Vec<(usize, usize)> = upper.iter().flat_map(|&a| g.down[a].iter().map(move |&b| (a, b))).collect();
         if links.iter().any(|&(a, b)| (at(b, a) - at(a, b)).abs() > FLAT * gap) {
             let bent: Vec<(usize, usize)> = links.into_iter().filter(|&(a, b)| (at(b, a) - at(a, b)).abs() >= 1.0).collect();
             let spans: Vec<(f32, f32)> = bent.iter().map(|&(a, b)| (at(a, b), at(b, a))).collect();
             let tracks = tracks(&spans);
-            let top = line[r - 1] + deepest(upper) / 2.0 + CHANNEL;
+            let top = line[r - 1] + deepest(upper) / 2.0 + CHANNEL + after;
             for (&link, &k) in bent.iter().zip(&tracks) {
                 track.insert(link, top + k as f32 * TRACK_GAP);
             }
             let count = tracks.iter().max().map_or(0, |k| k + 1);
             gap = gap.max((deepest(upper) + deepest(lower)) / 2.0 + 2.0 * CHANNEL + count.saturating_sub(1) as f32 * TRACK_GAP);
-            line[r] = line[r - 1] + gap;
+            line[r] = line[r - 1] + gap + after + before;
             continue;
         }
         for (a, b) in links {
@@ -962,7 +1110,7 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
                 }
             }
         }
-        line[r] = line[r - 1] + gap;
+        line[r] = line[r - 1] + gap + after + before;
     }
 
     let place = |along: f32, across: f32| match d.direction {
@@ -1000,6 +1148,38 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         route.pieces.push(piece);
     }
     let sizes: Vec<(f32, f32)> = items.iter().map(|i| if horizontal { (i.depth, i.breadth) } else { (i.breadth, i.depth) }).collect();
+    // Each subgraph's box: around its items, its title on top.
+    let mut clusters: Vec<Option<[f32; 4]>> = (0..d.clusters.len())
+        .map(|c| {
+            let inside: Vec<usize> = (0..items.len()).filter(|&v| items[v].cluster == Some(c)).collect();
+            if inside.is_empty() {
+                return None;
+            }
+            let edge = |f: fn(f32, f32) -> f32, side: &dyn Fn(usize) -> f32| inside.iter().map(|&v| side(v)).reduce(f).unwrap();
+            let (tw, th) = title(c);
+            let (mut x0, mut x1) = (edge(f32::min, &|v| centers[v].0 - sizes[v].0 / 2.0), edge(f32::max, &|v| centers[v].0 + sizes[v].0 / 2.0));
+            let more = (tw + 2.0 * CLUSTER_PAD - (x1 - x0)).max(0.0) / 2.0;
+            (x0, x1) = (x0 - more, x1 + more);
+            let y0 = edge(f32::min, &|v| centers[v].1 - sizes[v].1 / 2.0) - th - TITLE_GAP;
+            let y1 = edge(f32::max, &|v| centers[v].1 + sizes[v].1 / 2.0);
+            Some([x0 - CLUSTER_PAD, y0 - CLUSTER_PAD, x1 + CLUSTER_PAD, y1 + CLUSTER_PAD])
+        })
+        .collect();
+    // An edge to a subgraph ends where it meets its box, and one from it
+    // starts there.
+    for route in &mut routes {
+        let (from, to) = (route.items[0], *route.items.last().unwrap());
+        let cluster = |v: usize| (d.nodes[v].shape == Shape::Cluster).then(|| d.nodes[v].cluster.and_then(|c| clusters[c])).flatten();
+        if let Some(rect) = cluster(to) {
+            clip(route.pieces.last_mut().unwrap(), rect);
+        }
+        if let Some(rect) = cluster(from) {
+            let first = route.pieces.first_mut().unwrap();
+            first.reverse();
+            clip(first, rect);
+            first.reverse();
+        }
+    }
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for (c, s) in centers.iter().zip(&sizes) {
         x0 = x0.min(c.0 - s.0 / 2.0);
@@ -1007,14 +1187,21 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         y0 = y0.min(c.1 - s.1 / 2.0);
         y1 = y1.max(c.1 + s.1 / 2.0);
     }
+    for rect in clusters.iter().flatten() {
+        (x0, y0, x1, y1) = (x0.min(rect[0]), y0.min(rect[1]), x1.max(rect[2]), y1.max(rect[3]));
+    }
     for c in centers.iter_mut().chain(routes.iter_mut().flat_map(|r| r.pieces.iter_mut().flatten())) {
         c.0 += MARGIN - x0;
         c.1 += MARGIN - y0;
+    }
+    for rect in clusters.iter_mut().flatten() {
+        *rect = [rect[0] + MARGIN - x0, rect[1] + MARGIN - y0, rect[2] + MARGIN - x0, rect[3] + MARGIN - y0];
     }
     Layout {
         #[cfg(test)]
         items,
         routes,
+        clusters,
         boxes,
         ranks: rank,
         sinks,
@@ -1023,6 +1210,26 @@ fn arrange(d: &Diagram, drop: &[usize]) -> Layout {
         width: x1 - x0 + 2.0 * MARGIN,
         height: y1 - y0 + 2.0 * MARGIN,
     }
+}
+
+/// `piece` cut where it first goes into `rect`, from a point outside it.
+fn clip(piece: &mut Vec<(f32, f32)>, [x0, y0, x1, y1]: [f32; 4]) {
+    let inside = |(x, y): (f32, f32)| x >= x0 && x <= x1 && y >= y0 && y <= y1;
+    let Some(k) = (1..piece.len()).find(|&k| inside(piece[k]) && !inside(piece[k - 1])) else { return };
+    let (a, b) = (piece[k - 1], piece[k]);
+    // How far along a→b it crosses the last side it has to cross.
+    let cross = |from: f32, to: f32, low: f32, high: f32| {
+        if from < low {
+            (low - from) / (to - from)
+        } else if from > high {
+            (high - from) / (to - from)
+        } else {
+            0.0
+        }
+    };
+    let t = cross(a.0, b.0, x0, x1).max(cross(a.1, b.1, y0, y1));
+    piece.truncate(k);
+    piece.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
 }
 
 /// Tracks for edges across the room between two ranks, each running along
@@ -1068,6 +1275,8 @@ fn tracks(spans: &[(f32, f32)]) -> Vec<usize> {
 struct Graph {
     up: Vec<Vec<usize>>,
     down: Vec<Vec<usize>>,
+    /// Each item's subgraph, whose items stay together in a rank.
+    cluster: Vec<Option<usize>>,
 }
 
 const SWEEPS: usize = 24;
@@ -1092,7 +1301,8 @@ impl Score {
 
 /// Barycenter sweeps from `layers`, each followed by transposing; returns the
 /// best order seen.
-fn order(mut layers: Vec<Vec<usize>>, g: &Graph, written: &[usize]) -> (Vec<Vec<usize>>, Score) {
+fn order(layers: Vec<Vec<usize>>, g: &Graph, written: &[usize]) -> (Vec<Vec<usize>>, Score) {
+    let mut layers: Vec<Vec<usize>> = layers.iter().map(|layer| together(layer, &g.cluster)).collect();
     // Where each item is in its rank.
     let mut index = vec![0; written.len()];
     let reindex = |index: &mut [usize], layer: &[usize]| layer.iter().enumerate().for_each(|(i, &v)| index[v] = i);
@@ -1104,7 +1314,7 @@ fn order(mut layers: Vec<Vec<usize>>, g: &Graph, written: &[usize]) -> (Vec<Vec<
         let ranks: Vec<usize> = if down { (1..layers.len()).collect() } else { (0..layers.len().saturating_sub(1)).rev().collect() };
         for r in ranks {
             let near = if down { &g.up } else { &g.down };
-            layers[r] = by_barycenter(&layers[r], near, &index);
+            layers[r] = by_barycenter(&layers[r], near, &index, &g.cluster);
             reindex(&mut index, &layers[r]);
         }
         transpose(&mut layers, g, &mut index, written);
@@ -1117,9 +1327,18 @@ fn order(mut layers: Vec<Vec<usize>>, g: &Graph, written: &[usize]) -> (Vec<Vec<
     (best, fewest)
 }
 
+/// `layer` with each subgraph's items brought to where its first one is.
+fn together(layer: &[usize], cluster: &[Option<usize>]) -> Vec<usize> {
+    let mut first: HashMap<usize, usize> = HashMap::new();
+    let mut keyed: Vec<(usize, usize)> = layer.iter().enumerate().map(|(i, &v)| (cluster[v].map_or(i, |c| *first.entry(c).or_insert(i)), v)).collect();
+    keyed.sort_by_key(|k| k.0);
+    keyed.into_iter().map(|(_, v)| v).collect()
+}
+
 /// `layer` sorted by the mean place of each item's neighbors in `near`; an
-/// item without any keeps its place.
-fn by_barycenter(layer: &[usize], near: &[Vec<usize>], index: &[usize]) -> Vec<usize> {
+/// item without any keeps its place. A subgraph's items go together, at
+/// the mean of theirs.
+fn by_barycenter(layer: &[usize], near: &[Vec<usize>], index: &[usize], cluster: &[Option<usize>]) -> Vec<usize> {
     let mut keyed: Vec<(f32, usize)> = layer
         .iter()
         .enumerate()
@@ -1131,7 +1350,15 @@ fn by_barycenter(layer: &[usize], near: &[Vec<usize>], index: &[usize]) -> Vec<u
             (key, v)
         })
         .collect();
-    keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut sums: HashMap<usize, (f32, f32)> = HashMap::new();
+    for &(key, v) in &keyed {
+        if let Some(c) = cluster[v] {
+            let sum = sums.entry(c).or_default();
+            *sum = (sum.0 + key, sum.1 + 1.0);
+        }
+    }
+    let block = |&(key, v): &(f32, usize)| cluster[v].map_or(key, |c| sums[&c].0 / sums[&c].1);
+    keyed.sort_by(|a, b| block(a).total_cmp(&block(b)).then(cluster[a.1].cmp(&cluster[b.1])).then(a.0.total_cmp(&b.0)));
     keyed.into_iter().map(|(_, v)| v).collect()
 }
 
@@ -1174,7 +1401,7 @@ fn inversions(values: impl Iterator<Item = usize>) -> usize {
 #[cfg(test)]
 fn crossings(layers: &[Vec<usize>], links: &[(usize, usize)]) -> usize {
     let items = layers.iter().flatten().max().map_or(0, |m| m + 1);
-    let mut g = Graph { up: vec![Vec::new(); items], down: vec![Vec::new(); items] };
+    let mut g = Graph { up: vec![Vec::new(); items], down: vec![Vec::new(); items], cluster: vec![None; items] };
     for &(a, b) in links {
         g.down[a].push(b);
         g.up[b].push(a);
@@ -1202,6 +1429,10 @@ fn transpose(layers: &mut [Vec<usize>], g: &Graph, index: &mut [usize], written:
         let layer = &mut layers[r];
         for i in 1..layer.len() {
             let (u, v) = (layer[i - 1], layer[i]);
+            // A swap that would split a subgraph's items is not tried.
+            if g.cluster[u] != g.cluster[v] {
+                continue;
+            }
             let (kept, swapped) = (between(index, u, v), between(index, v, u));
             if swapped < kept || (swapped == kept && written[v] < written[u]) {
                 layer.swap(i - 1, i);
@@ -1239,16 +1470,44 @@ fn spread(wanted: &[f32], gaps: &[f32]) -> Vec<f32> {
 
 // Drawing.
 
+/// A diagram drawn, at any size: its size here is the layout's.
 #[derive(Clone)]
 struct Svg {
-    text: String,
+    /// What goes inside the `<svg>` element.
+    body: String,
     width: f32,
+    height: f32,
+}
+
+impl Svg {
+    /// How many times its size it is drawn for `wanted`, which is no more
+    /// than fits: gpui draws an SVG at twice its size, and a side past the
+    /// GPU's largest texture isn't drawn at all.
+    fn scale(&self, wanted: f32) -> f32 {
+        wanted.min(MAX_SIDE / self.width.max(self.height)).min((MAX_AREA / (self.width * self.height)).sqrt())
+    }
+
+    /// The SVG at `scale` times its size, so it is drawn as sharp as it is
+    /// shown.
+    fn text(&self, scale: f32) -> String {
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{:.0}\" height=\"{:.0}\" viewBox=\"0 0 {:.1} {:.1}\" \
+             font-family=\"Helvetica, Arial, sans-serif\" font-size=\"{FONT}\">{}</svg>",
+            self.width * scale,
+            self.height * scale,
+            self.width,
+            self.height,
+            self.body,
+        )
+    }
 }
 
 const STROKE: &str = "#7c8597";
 const FILL: &str = "#eef1f8";
 const INK: &str = "#1f2329";
 const LABEL_BORDER: &str = "#d3d8e0";
+const CLUSTER_FILL: &str = "#f8f9fc";
+const CLUSTER_STROKE: &str = "#c3c9d4";
 
 fn render(source: &str) -> Result<Svg, String> {
     let mut d = parse(source)?;
@@ -1268,23 +1527,25 @@ fn render(source: &str) -> Result<Svg, String> {
             d.direction = along;
         }
     }
-    // A huge diagram is drawn smaller: gpui draws an SVG at twice its size,
-    // and a side past the GPU's largest texture isn't drawn at all.
-    let scale = (MAX_SIDE / l.width.max(l.height)).min((MAX_AREA / (l.width * l.height)).sqrt()).min(1.0);
     let mut s = String::new();
     let _ = write!(
         s,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{:.0}\" height=\"{:.0}\" viewBox=\"0 0 {w:.1} {h:.1}\" \
-         font-family=\"Helvetica, Arial, sans-serif\" font-size=\"{FONT}\">\
-         <defs><marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\">\
+        "<defs><marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto\">\
          <path d=\"M0,0 L10,5 L0,10 z\" fill=\"{STROKE}\"/></marker></defs>",
-        l.width * scale,
-        l.height * scale,
-        w = l.width,
-        h = l.height,
     );
     let size_of = |v: usize| l.boxes[v];
     let horizontal = matches!(d.direction, Direction::Right | Direction::Left);
+    for (c, rect) in l.clusters.iter().enumerate() {
+        let Some([x0, y0, x1, y1]) = *rect else { continue };
+        let _ = write!(
+            s,
+            "<rect x=\"{x0:.1}\" y=\"{y0:.1}\" width=\"{:.1}\" height=\"{:.1}\" rx=\"6\" fill=\"{CLUSTER_FILL}\" stroke=\"{CLUSTER_STROKE}\" stroke-width=\"1.2\"/>",
+            x1 - x0,
+            y1 - y0,
+        );
+        let title = &d.clusters[c];
+        text(&mut s, ((x0 + x1) / 2.0, y0 + CLUSTER_PAD + text_size(title).1 / 2.0), title);
+    }
     for route in &l.routes {
         let edge = &d.edges[route.edge];
         for (i, piece) in route.pieces.iter().enumerate() {
@@ -1348,6 +1609,7 @@ fn render(source: &str) -> Result<Svg, String> {
                 }
                 let _ = write!(s, "Z\" fill=\"{FILL}\" stroke=\"{STROKE}\" stroke-width=\"1.2\"/>");
             }
+            Shape::Cluster => {}
             Shape::Rect | Shape::Round => {
                 let radius = if node.shape == Shape::Rect { 3.0 } else { 10.0 };
                 let _ = write!(
@@ -1358,12 +1620,11 @@ fn render(source: &str) -> Result<Svg, String> {
                 );
             }
         }
-        if !matches!(node.shape, Shape::Start | Shape::End) {
+        if !matches!(node.shape, Shape::Start | Shape::End | Shape::Cluster) {
             text(&mut s, (cx, cy), &node.label);
         }
     }
-    s.push_str("</svg>");
-    Ok(Svg { text: s, width: l.width * scale })
+    Ok(Svg { body: s, width: l.width, height: l.height })
 }
 
 /// A smooth line through the points, which go one per rank: across the
@@ -1566,7 +1827,10 @@ mod tests {
     fn what_it_cannot_draw_is_an_error_naming_the_line() {
         for (source, part) in [
             ("sequenceDiagram\n A->>B: hi", "sequenceDiagram"),
-            ("flowchart TD\n subgraph one", "subgraph one"),
+            ("flowchart TD\n subgraph one", "`subgraph one` has no `end`"),
+            ("flowchart TD\n subgraph one\n subgraph two", "inside subgraphs"),
+            ("flowchart TD\n A --> B\n end", "no subgraph to end"),
+            ("flowchart TD\n style A fill:#f00", "styles are not drawn"),
             ("stateDiagram-v2\n state Big {", "state Big {"),
             ("flowchart TD\n A --> ", "expected a node"),
             ("flowchart TD\n A[open --> B", "`[` with no `]`"),
@@ -1629,6 +1893,82 @@ mod tests {
         assert!(x("Charge") < x("Payment page"), "yes is written before no");
     }
 
+    const SERVERS: &str = "flowchart LR
+  subgraph V3[v3]
+    ci[ci<br/>devTasks runner]
+    help[help]
+    com[com<br/>eu.golfmanager.com]
+    com2[com2<br/>eu2.golfmanager.com]
+    app[app<br/>eu.golfmanager.app]
+    bs[bs<br/>bsant]
+    ws[ws<br/>firebase]
+  end
+  subgraph V1[v1]
+    v1pro[v1pro<br/>produccion = v1_prod_eu_1]
+    v1am[v1america]
+    v1rep[v1replica]
+    v1gg[v1getgolfing-pro]
+    v1pre[v1pre<br/>preproduccion]
+  end
+
+  ci -- \"SSH root@ci → sim@help<br/>API key (codereview, devTasks.help)<br/>MCP + API key (t_dev)\" --> help
+  ci -- \"deployKey: ships code<br/>MCP + API key (t_dev)\" --> app
+  ci -- \"MCP read-only + API key (t_dev)<br/>logwatch API key\" --> com
+  ci -- \"MCP + API key (t_dev)\" --> com2
+
+  com -- \"cmdKey (servers.app, servers.run)\" --> app
+  com2 -- \"cmdKey (servers.app, servers.run)\" --> app
+  bs -- \"cmdKey (servers.run)\" --> app
+  com2 -- \"cmdKey (servers.eu1)\" --> com
+  com -- \"firebaseKey\" --> ws
+  com2 -- \"firebaseKey\" --> ws
+
+  ci -- \"SSH root@ci\" --> v1pro
+  ci -- \"SSH root@ci\" --> v1am
+  help -- \"SSH sim@help, servidor-replica-git\" --> v1pro
+  help -- \"SSH sim@help\" --> v1am
+  com & com2 & app & ci -- \"v2api.pass (v1 API)\" --> V1
+";
+
+    /// A subgraph's nodes are drawn in its box and no other node is; an
+    /// edge to the subgraph ends on its box.
+    #[test]
+    fn subgraphs_are_boxes_around_their_nodes() {
+        let d = parse(SERVERS).unwrap();
+        assert_eq!(d.clusters, [vec!["v3".to_string()], vec!["v1".to_string()]]);
+        let anchor = d.nodes.iter().position(|n| n.shape == Shape::Cluster).unwrap();
+        assert_eq!(d.nodes[anchor].cluster, Some(1));
+        assert_eq!(d.edges.iter().filter(|e| e.to == anchor).count(), 4);
+        let l = layout(&d);
+        let inside = |v: usize, [x0, y0, x1, y1]: [f32; 4]| {
+            let ((cx, cy), (w, h)) = (l.centers[v], l.boxes[v]);
+            cx - w / 2.0 >= x0 && cx + w / 2.0 <= x1 && cy - h / 2.0 >= y0 && cy + h / 2.0 <= y1
+        };
+        let overlaps = |v: usize, [x0, y0, x1, y1]: [f32; 4]| {
+            let ((cx, cy), (w, h)) = (l.centers[v], l.boxes[v]);
+            cx + w / 2.0 > x0 && cx - w / 2.0 < x1 && cy + h / 2.0 > y0 && cy - h / 2.0 < y1
+        };
+        for (v, node) in d.nodes.iter().enumerate() {
+            for (c, rect) in l.clusters.iter().enumerate() {
+                let rect = rect.unwrap();
+                if node.cluster == Some(c) {
+                    assert!(inside(v, rect), "{:?} out of its box", node.label);
+                } else {
+                    assert!(!overlaps(v, rect), "{:?} in box {c}", node.label);
+                }
+            }
+        }
+        let [x0, y0, x1, y1] = l.clusters[1].unwrap();
+        for route in l.routes.iter().filter(|r| d.edges[r.edge].to == anchor) {
+            let (x, y) = *route.pieces.last().unwrap().last().unwrap();
+            let on = |a: f32, low: f32, high: f32| a >= low - 0.1 && a <= high + 0.1;
+            assert!(on(x, x0, x1) && on(y, y0, y1) && ((x - x0).abs() < 0.1 || (x - x1).abs() < 0.1 || (y - y0).abs() < 0.1 || (y - y1).abs() < 0.1));
+        }
+        if let Ok(path) = std::env::var("DIAGRAM_OUT") {
+            std::fs::write(path, render(SERVERS).unwrap().text(1.0)).unwrap();
+        }
+    }
+
     #[test]
     fn inversions_count_the_pairs_out_of_order() {
         assert_eq!(inversions([3, 1, 2].into_iter()), 2);
@@ -1655,7 +1995,7 @@ mod tests {
     #[test]
     fn a_block_becomes_an_image_and_the_rest_stays() {
         let markdown = format!("# Accounts\n\nText.\n```mermaid\n{STATES}```\nAfter.\n");
-        let out = with_diagrams(&markdown, FONT);
+        let out = with_diagrams(&markdown, FONT, None);
         assert!(out.starts_with("# Accounts\n\nText.\n\n<p align=\"center\"><img src=\"data:image/svg+xml,%3Csvg"));
         assert!(out.ends_with("alt=\"diagram\"></p>\n\nAfter.\n"));
         assert!(!out.contains("```"));
@@ -1665,10 +2005,10 @@ mod tests {
     fn a_block_it_cannot_draw_stays_as_code_under_the_reason() {
         let markdown = "~~~~mermaid\npie\n~~~~\n";
         assert_eq!(
-            with_diagrams(markdown, FONT),
+            with_diagrams(markdown, FONT, None),
             "\n> Diagram not drawn: `pie`: only stateDiagram and flowchart are drawn\n\n~~~~mermaid\npie\n~~~~\n"
         );
-        assert!(matches!(with_diagrams("```rust\nfn mermaid() {}\n```\n", FONT), Cow::Borrowed(_)));
+        assert!(matches!(with_diagrams("```rust\nfn mermaid() {}\n```\n", FONT, None), Cow::Borrowed(_)));
     }
 
     #[test]
@@ -1690,7 +2030,7 @@ mod tests {
     #[test]
     fn labels_are_escaped() {
         let svg = render("flowchart TD\n A[a < b & \"c\"] --> B").unwrap();
-        assert!(svg.text.contains(">a &lt; b &amp; &quot;c&quot;</text>"));
+        assert!(svg.body.contains(">a &lt; b &amp; &quot;c&quot;</text>"));
     }
 
     /// The preview asks for the diagram's image and gets an SVG that draws.
@@ -1714,7 +2054,7 @@ mod tests {
         let source = "flowchart TD\n A[A wide box] --> B[Another wide box]\n A --> C[A third wide box]\n A --> D[And a fourth one]\n";
         let width = render(source).unwrap().width;
         assert!(width > 400.0, "{width}");
-        let markdown = with_diagrams(&format!("```mermaid\n{source}```\n"), FONT).into_owned();
+        let markdown = with_diagrams(&format!("```mermaid\n{source}```\n"), FONT, None).into_owned();
         let (_, cx) = cx.add_window_view(|_, cx| Narrow { text: cx.new(|cx| TextViewState::markdown(&markdown, cx)) });
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -1746,7 +2086,7 @@ mod tests {
         }
 
         cx.update(gpui_kit::init);
-        let markdown = with_diagrams(&format!("Before.\n```mermaid\n{FLOW}```\n"), FONT).into_owned();
+        let markdown = with_diagrams(&format!("Before.\n```mermaid\n{FLOW}```\n"), FONT, None).into_owned();
         let asked = Arc::new(Mutex::new(Vec::new()));
         let (_, cx) = cx.add_window_view(|_, cx| Preview { text: cx.new(|cx| TextViewState::markdown(&markdown, cx)), asked: asked.clone() });
         cx.run_until_parked();

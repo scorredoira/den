@@ -53,7 +53,8 @@ keyboard stays in the terminal unless --focus.
                       without columns).
   den diff [<file>]   shows the uncommitted changes of the file, or the
                       list of changed files.
-  den doc [<title>]   shows the Markdown read from stdin in a tab.
+  den doc [<title>]   shows the Markdown read from stdin in a tab, which
+                      opens again with the workspace until closed.
   den edit [--idle <seconds>] [<title>]
                       opens the text read from stdin in a tab with no
                       file behind it, for a program to edit text it

@@ -129,6 +129,11 @@ pub fn set(cx: &mut App) {
             MenuItem::action("Word Wrap", ToggleWordWrap).checked(wrap),
             MenuItem::action("Markdown: Toggle Source or Preview", ToggleMarkdownSource),
             MenuItem::action("Markdown: Open Preview to the Side", OpenPreviewToSide),
+            MenuItem::action("Markdown: Zoom In", ZoomInPreview),
+            MenuItem::action("Markdown: Zoom Out", ZoomOutPreview),
+            MenuItem::action("Markdown: Reset Zoom", ResetPreviewZoom),
+            MenuItem::action("Markdown: Fit Diagrams to Width", FitPreviewDiagrams),
+            MenuItem::action("Markdown: Export Preview as PDF…", ExportPreviewPdf),
         ]),
         Menu::new("Go").items([
             MenuItem::action("Back", NavigateBack),

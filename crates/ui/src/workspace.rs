@@ -26,7 +26,7 @@ use crate::{
     CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, SaveAs, ShowChanges, ShowFiles, ShowGraph,
     OpenChanges, ShowFileHistory,
     FocusNext, FocusPrevious, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
-    SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
+    SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel, ZoomInPreview, ZoomOutPreview, ResetPreviewZoom, ExportPreviewPdf, FitPreviewDiagrams,
     ToggleTerminals, OpenFileFinder, OpenFile, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile, ToggleWholeFile,
@@ -58,6 +58,7 @@ mod layout;
 mod activity;
 mod markdown_images;
 mod diagram;
+mod pdf;
 mod commands;
 mod pages;
 mod debugging;
@@ -137,11 +138,26 @@ impl FileTab {
         self.diff.is_none() && self.path == path
     }
 
+    /// The rendered Markdown's text size, zoomed.
+    fn preview_font_size(&self, cx: &App) -> f32 {
+        Config::get(cx).font_size(TextArea::Preview) * self.zoom.get()
+    }
+
+    /// A doc's text, rendered.
+    fn show_doc(&mut self, text: String, window: &mut Window, cx: &mut App) {
+        self.content = Content::Ready;
+        self.saved = text.clone();
+        self.show_source = false;
+        self.preview(&text, window, cx);
+        self.editor.update(cx, |state, cx| state.set_value(text, window, cx));
+    }
+
     /// Shows Markdown `text` in its rendered view, and lets go of the
     /// diagrams it no longer shows: each edit of one is a new image.
     fn preview(&self, text: &str, window: &mut Window, cx: &mut App) {
         let Some(markdown) = &self.markdown else { return };
-        let text = diagram::with_diagrams(text, Config::get(cx).font_size(TextArea::Preview));
+        let fit = self.fit.get().then(|| self.column.get()).filter(|width| *width > 0.0);
+        let text = diagram::with_diagrams(text, self.preview_font_size(cx), fit);
         self.previewed.update(cx, |images, cx| images.keep_shown(&text, window, cx));
         markdown.update(cx, |view, cx| view.set_text(&text, cx));
     }
@@ -159,6 +175,14 @@ struct FileTab {
     markdown: Option<Entity<TextViewState>>,
     /// For Markdown, the source is shown instead of the rendered view.
     show_source: bool,
+    /// How much its rendered Markdown is zoomed, shared with its other
+    /// views like `markdown`.
+    zoom: Rc<Cell<f32>>,
+    /// Its diagrams wider than the preview are drawn to fit it, shared
+    /// like `zoom`.
+    fit: Rc<Cell<bool>>,
+    /// The width of its preview's text as last drawn, which `fit` fits.
+    column: Rc<Cell<f32>>,
     content: Content,
     lsp_status: LspStatus,
     /// Text as it is on disk, to tell whether there are unsaved changes.
@@ -211,6 +235,9 @@ struct FileTab {
     /// A page of the app's own (the shortcuts guide), with no file behind
     /// it: read-only, never saved, not reopened with the session.
     doc: bool,
+    /// A doc a program showed (`den doc`): reopened with the session, its
+    /// text kept with it.
+    kept: bool,
     /// Text of a `den edit`, with no file behind it: saving hands it back.
     external: Option<edits::External>,
     /// The text as of its last change, once read: what an edit changed
@@ -495,6 +522,8 @@ pub struct Workspace {
     /// `apply_tab`): its size and whether it's tabs.
     tab: (usize, bool),
     message: Option<SharedString>,
+    /// The wheel's or the pinch's zoom not yet a whole step.
+    zoom_gesture: f32,
     /// On a server, ports the task's terminals are listening on.
     ports: Vec<PortInfo>,
     lsp: Lsp,
@@ -705,6 +734,7 @@ impl Workspace {
             word_wrap: Config::get(cx).word_wrap,
             tab: (Config::get(cx).tab().tab_size, Config::get(cx).tab().hard_tabs),
             message,
+            zoom_gesture: 0.0,
             ports: Vec::new(),
             lsp: Lsp::default(),
             debugger,
@@ -787,6 +817,13 @@ impl Workspace {
             if self.restore_page(&saved, window, cx) {
                 continue;
             }
+            if let Some(text) = saved.doc {
+                let mut tab = self.doc_tab(&saved.path, true, window, cx);
+                tab.group = saved.group.min(1);
+                tab.show_doc(text, window, cx);
+                self.tabs.push(tab);
+                continue;
+            }
             // The same file twice: the second is a view of the first.
             if let Some(file) = self.tabs.iter().position(|tab| tab.path == saved.path) {
                 let view = self.new_view(file, saved.group.min(1), true, window, cx);
@@ -830,12 +867,17 @@ impl Workspace {
             ..Session::default()
         };
         // A page is a doc that opens again; the shortcuts guide isn't.
-        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.has_no_file() && (!tab.doc || tab.page.is_some())) {
+        // So is a `den doc`, with its text.
+        for (ix, tab) in self.tabs.iter().enumerate().filter(|(_, tab)| tab.diff.is_none() && !tab.has_no_file() && (!tab.doc || tab.page.is_some() || tab.kept)) {
             if self.active == Some(ix) {
                 session.active = Some(session.tabs.len());
             }
             if let Some(page) = &tab.page {
-                session.tabs.push(SavedTab { path: page.saved_path(), line: 0, column: 0, group: tab.group });
+                session.tabs.push(SavedTab { path: page.saved_path(), line: 0, column: 0, group: tab.group, doc: None });
+                continue;
+            }
+            if tab.kept {
+                session.tabs.push(SavedTab { path: tab.path.clone(), line: 0, column: 0, group: tab.group, doc: Some(tab.saved.clone()) });
                 continue;
             }
             // If it hasn't loaded yet, the right cursor is the one it's headed to.
@@ -845,6 +887,7 @@ impl Workspace {
                 line: cursor.line,
                 column: cursor.character,
                 group: tab.group,
+                doc: None,
             });
         }
         session
@@ -1113,27 +1156,29 @@ impl Workspace {
     }
 
     /// Shows `text`, Markdown, in a tab called `title` of its own (the
-    /// shortcuts guide): rendered, read-only, with no file behind it. Open
-    /// already, it gets the new text.
-    pub fn open_doc(&mut self, title: &str, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// shortcuts guide, a `den doc`): rendered, read-only, with no file
+    /// behind it. Open already, it gets the new text. One `kept` opens
+    /// again with the session.
+    pub fn open_doc(&mut self, title: &str, text: String, kept: bool, window: &mut Window, cx: &mut Context<Self>) {
         let path = PathBuf::from(title);
         let ix = match self.tabs.iter().position(|tab| tab.doc && tab.path == path) {
             Some(ix) => ix,
             None => {
-                let mut tab = self.new_tab_with(path, false, "markdown", window, cx);
-                tab.doc = true;
-                tab.grab_focus = false;
+                let tab = self.doc_tab(&path, kept, window, cx);
                 self.place_tab(tab, true)
             }
         };
-        let tab = &mut self.tabs[ix];
-        tab.content = Content::Ready;
-        tab.saved = text.clone();
-        tab.show_source = false;
-        tab.preview(&text, window, cx);
-        tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
+        self.tabs[ix].show_doc(text, window, cx);
         self.activate_with(ix, false, window, cx);
         cx.notify();
+    }
+
+    fn doc_tab(&mut self, title: &Path, kept: bool, window: &mut Window, cx: &mut Context<Self>) -> FileTab {
+        let mut tab = self.new_tab_with(title.to_path_buf(), false, "markdown", window, cx);
+        tab.doc = true;
+        tab.kept = kept;
+        tab.grab_focus = false;
+        tab
     }
 
     /// Opens `path`; with `focus`, the keyboard goes to the editor.

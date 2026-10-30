@@ -7738,6 +7738,7 @@ dependencies = [
  "gpui-base",
  "gpui-kit",
  "lsp-types",
+ "markdown",
  "minisign-verify",
  "nucleo-matcher",
  "objc2 0.6.4",

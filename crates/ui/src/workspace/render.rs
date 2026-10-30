@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The room a Markdown preview keeps for its scrollbar, beside its text.
+const PREVIEW_SCROLLBAR: f32 = 12.0;
+
 impl Workspace {
     pub(super) fn render_tab_bar(&self, group: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -361,12 +364,59 @@ impl Workspace {
                 Content::Ready => match tab.rendered() {
                     Some(markdown) => div()
                         .id("markdown-preview")
+                        .debug_selector(|| "markdown-preview-area".into())
                         .size_full()
+                        .relative()
+                        .on_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
+                            this.pinch_preview(event.delta, window, cx);
+                        }))
                         .context_menu({
                             let readonly = tab.diff.is_some() || tab.doc;
-                            move |menu, _, _| menu.menu_with_disabled("Edit", Box::new(ToggleMarkdownSource), readonly)
+                            let fit = tab.fit.get();
+                            move |menu, _, _| {
+                                menu.menu_with_disabled("Edit", Box::new(ToggleMarkdownSource), readonly)
+                                    .separator()
+                                    .menu("Zoom In", Box::new(ZoomInPreview))
+                                    .menu("Zoom Out", Box::new(ZoomOutPreview))
+                                    .menu("Reset Zoom", Box::new(ResetPreviewZoom))
+                                    .menu_with_check("Fit Diagrams to Width", fit, Box::new(FitPreviewDiagrams))
+                                    .separator()
+                                    .menu("Export as PDF…", Box::new(ExportPreviewPdf))
+                            }
                         })
-                        .text_size(px(Config::get(cx).font_size(TextArea::Preview)))
+                        // Cmd and the wheel zoom instead of scrolling: taken
+                        // before the preview's scrolling gets it. And the
+                        // width its text has, for the diagrams to fit it.
+                        .child({
+                            let workspace = cx.entity().downgrade();
+                            let (column, editor) = (tab.column.get(), tab.editor.clone());
+                            canvas(|_, _, _| (), move |bounds, _, window, cx| {
+                                // Less the text's margins (`px_8`) and the scrollbar's room.
+                                let width = f32::from(bounds.size.width - window.rem_size() * 4.) - PREVIEW_SCROLLBAR;
+                                if (width - column).abs() >= 1.0 {
+                                    let workspace = workspace.clone();
+                                    let editor = editor.clone();
+                                    window.defer(cx, move |window, cx| {
+                                        workspace.update(cx, |this, cx| this.preview_resized(&editor, width, window, cx)).ok();
+                                    });
+                                }
+                                let workspace = workspace.clone();
+                                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                                    if phase != DispatchPhase::Capture || !event.modifiers.platform || !bounds.contains(&event.position) {
+                                        return;
+                                    }
+                                    let lines = match event.delta {
+                                        ScrollDelta::Lines(lines) => lines.y,
+                                        ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 50.0,
+                                    };
+                                    cx.stop_propagation();
+                                    workspace.update(cx, |this, cx| this.zoom_preview_by(lines, window, cx)).ok();
+                                });
+                            })
+                            .absolute()
+                            .size_full()
+                        })
+                        .text_size(px(tab.preview_font_size(cx)))
                         .child(
                             TextView::new(markdown)
                                 .resolve_image_source(markdown_images::resolver(
@@ -789,6 +839,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowOutline, _, cx| this.toggle_panel(Panel::Outline, cx)))
             .on_action(cx.listener(Self::toggle_markdown_source))
             .on_action(cx.listener(Self::open_preview_to_side))
+            .on_action(cx.listener(Self::zoom_in_preview))
+            .on_action(cx.listener(Self::zoom_out_preview))
+            .on_action(cx.listener(Self::reset_preview_zoom))
+            .on_action(cx.listener(Self::export_preview_pdf))
+            .on_action(cx.listener(Self::fit_preview_diagrams))
             .on_action(cx.listener(Self::toggle_word_wrap))
             .on_action(cx.listener(Self::format_document))
             .on_action(cx.listener(|this, _: &SplitEditorRight, window, cx| this.split_editor(Axis::Row, window, cx)))

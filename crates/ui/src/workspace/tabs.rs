@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// Each step of a rendered Markdown's zoom, and how far it goes.
+const ZOOM_STEP: f32 = 1.25;
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 3.0;
+/// A step of zooming with the wheel or the trackpad.
+const ZOOM_GESTURE: f32 = 1.1;
+
 impl Workspace {
     /// Opens another view of tab `of`'s file in `group`, with the same text
     /// and cursor, showing the source or the rendered Markdown.
@@ -16,6 +23,9 @@ impl Workspace {
         view.show_source = show_source;
         view.markdown = source.markdown.clone();
         view.previewed = source.previewed.clone();
+        view.zoom = source.zoom.clone();
+        view.fit = source.fit.clone();
+        view.column = source.column.clone();
         view.image = source.image.clone();
         view.grab_focus = false;
         if matches!(source.content, Content::Ready) {
@@ -425,6 +435,147 @@ impl Workspace {
             }
         }
         self.activate(ix, window, cx);
+    }
+
+    pub(super) fn zoom_in_preview(&mut self, _: &ZoomInPreview, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_preview(|zoom| zoom * ZOOM_STEP, window, cx);
+    }
+
+    pub(super) fn zoom_out_preview(&mut self, _: &ZoomOutPreview, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_preview(|zoom| zoom / ZOOM_STEP, window, cx);
+    }
+
+    pub(super) fn reset_preview_zoom(&mut self, _: &ResetPreviewZoom, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_preview(|_| 1.0, window, cx);
+    }
+
+    /// Markdown: the active tab's diagrams wider than its preview are drawn
+    /// to fit it, or again at their size, scrolling sideways.
+    pub(super) fn fit_preview_diagrams(&mut self, _: &FitPreviewDiagrams, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active.map(|ix| &self.tabs[ix]).filter(|tab| tab.rendered().is_some()) else {
+            return;
+        };
+        tab.fit.set(!tab.fit.get());
+        self.preview_again(window, cx);
+    }
+
+    /// The preview of the tab with `editor` is `width` wide for its text:
+    /// when its diagrams fit it and it changed, they are drawn again to fit.
+    pub(super) fn preview_resized(&mut self, editor: &Entity<EditorState>, width: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tab_index(editor).map(|ix| &self.tabs[ix]) else {
+            return;
+        };
+        if (tab.column.get() - width).abs() < 1.0 {
+            return;
+        }
+        tab.column.set(width);
+        if tab.fit.get() {
+            let text = tab.editor.read(cx).value().to_string();
+            tab.preview(&text, window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The active tab's preview, made again for its zoom or its width.
+    fn preview_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active.map(|ix| &self.tabs[ix]).filter(|tab| tab.rendered().is_some()) else {
+            return;
+        };
+        let text = tab.editor.read(cx).value().to_string();
+        tab.preview(&text, window, cx);
+        cx.notify();
+    }
+
+    /// Cmd and the wheel, or a pinch, zoom the preview by `steps` of
+    /// ZOOM_GESTURE, a line of the wheel each: whole ones, as the wheel or
+    /// the fingers add up to them, so each draws the diagrams once.
+    pub(super) fn zoom_preview_by(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_gesture += steps;
+        let whole = self.zoom_gesture.trunc();
+        if whole != 0.0 {
+            self.zoom_gesture -= whole;
+            self.zoom_preview(|zoom| zoom * ZOOM_GESTURE.powf(whole), window, cx);
+        }
+    }
+
+    /// A pinch of `delta` (0.1 is 10% larger) in steps of ZOOM_GESTURE.
+    pub(super) fn pinch_preview(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_preview_by((1.0 + delta).max(0.01).ln() / ZOOM_GESTURE.ln(), window, cx);
+    }
+
+    /// Markdown: the rendered view of the active tab, its text and its
+    /// diagrams, larger or smaller; a diagram is drawn again at its new size.
+    fn zoom_preview(&mut self, change: impl FnOnce(f32) -> f32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
+            return;
+        };
+        if tab.rendered().is_none() {
+            return;
+        }
+        let zoom = change(tab.zoom.get()).clamp(MIN_ZOOM, MAX_ZOOM);
+        // Steps back and forth land on 100% again.
+        let zoom = if (zoom - 1.0).abs() < 0.01 { 1.0 } else { zoom };
+        if zoom == tab.zoom.get() {
+            return;
+        }
+        tab.zoom.set(zoom);
+        self.preview_again(window, cx);
+    }
+
+    /// Markdown: saves the active tab's rendered view as a PDF where the
+    /// user says, and says how it went.
+    pub(super) fn export_preview_pdf(&mut self, _: &ExportPreviewPdf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
+            return;
+        };
+        if tab.rendered().is_none() {
+            return;
+        }
+        let text = tab.editor.read(cx).value().to_string();
+        let title = tab.path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+        // A doc's title can have a `:` or a `/`, which Finder's names can't.
+        let name = title.replace([':', '/'], " -");
+        let page = pdf::html(&diagram::with_diagrams(&text, Config::get(cx).font_size(TextArea::Preview), None), &title);
+        // A remote file's folder is not on this Mac, and a doc's path is its
+        // title: their images are not found, and the PDF goes to the home
+        // folder.
+        let folder = tab.path.parent().filter(|folder| self.local && folder.is_absolute()).map(Path::to_path_buf);
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let to = cx.prompt_for_new_path(folder.as_deref().unwrap_or(&home), Some(&format!("{name}.pdf")));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(to))) = to.await else {
+                return;
+            };
+            let name = to.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            let saved = async {
+                let export = pdf::Export::start(&page, folder.as_deref(), &to)?;
+                let started = std::time::Instant::now();
+                while !export.loaded() {
+                    if started.elapsed() > std::time::Duration::from_secs(20) {
+                        return Err("the page did not load".to_string());
+                    }
+                    cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+                }
+                export.print();
+                loop {
+                    match export.done() {
+                        Some(true) => return Ok(()),
+                        Some(false) => return Err("printing failed".to_string()),
+                        None => cx.background_executor().timer(std::time::Duration::from_millis(50)).await,
+                    }
+                }
+            }
+            .await;
+            this.update(cx, |this, cx| {
+                this.message = Some(match saved {
+                    Ok(()) => format!("Saved {name}").into(),
+                    Err(error) => format!("Couldn't save {name}: {error}").into(),
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn toggle_word_wrap(&mut self, _: &ToggleWordWrap, _: &mut Window, cx: &mut Context<Self>) {

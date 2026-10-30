@@ -101,6 +101,9 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | {{NavigateBack}} / {{NavigateForward}} | Back and forward through the places you jumped to |
 | {{ToggleMarkdownSource}} | Markdown: show the source or the preview |
 | {{OpenPreviewToSide}} | Markdown: open the preview to the side |
+| {{ZoomInPreview}} / {{ZoomOutPreview}} / {{ResetPreviewZoom}} | Markdown: zoom the preview and its diagrams in, out, or back to 100%; also Cmd and the wheel, or a pinch |
+| {{FitPreviewDiagrams}} | Markdown: draw the diagrams wider than the preview to fit it, or let them scroll sideways |
+| {{ExportPreviewPdf}} | Markdown: save the preview as a PDF, in pages, its diagrams sharp |
 
 ## Debugging
 

@@ -85,6 +85,10 @@ pub struct SavedTab {
     /// The editor group it's in: 1 is the second one of a split.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub group: usize,
+    /// A `den doc`'s Markdown, which has no file to read it from again;
+    /// `path` is its title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 fn is_zero(n: &usize) -> bool {

@@ -78,7 +78,7 @@ impl Den {
                 Ok(String::new())
             }),
             ["doc", title, text] => here(self, true, window, cx).map(|(_, workspace)| {
-                workspace.update(cx, |workspace, cx| workspace.open_doc(title, text.to_string(), window, cx));
+                workspace.update(cx, |workspace, cx| workspace.open_doc(title, text.to_string(), true, window, cx));
                 String::new()
             }),
             ["selection"] => here(self, false, window, cx).and_then(|(_, workspace)| workspace.read(cx).selection(cx)),

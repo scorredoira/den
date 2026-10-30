@@ -649,6 +649,36 @@ fn a_workspace_reopens_with_its_panels(cx: &mut TestAppContext) {
     });
 }
 
+/// A `den doc` opens again with the workspace, with its text; the
+/// shortcuts guide does not.
+#[gpui_kit::test]
+fn a_den_doc_reopens_with_the_workspace(cx: &mut TestAppContext) {
+    let (first, cx) = draw(cx, |_| {});
+    first.update_in(cx, |workspace, window, cx| {
+        workspace.restore(window, cx);
+        workspace.open_doc(crate::guide::TITLE, "# Guide".into(), false, window, cx);
+        workspace.open_doc("gm servers: keys", "# Keys\n\nWho holds them.".into(), true, window, cx);
+    });
+    let again = first.update_in(cx, |_, window, cx| {
+        cx.new(|cx| {
+            let mut workspace = Workspace::new(PathBuf::from("/layout-test"), None, true, "layout-test".into(), window, cx);
+            workspace.restore(window, cx);
+            workspace
+        })
+    });
+    again.read_with(cx, |workspace, cx| {
+        let docs: Vec<(String, String)> = workspace
+            .tabs
+            .iter()
+            .filter(|tab| tab.doc)
+            .map(|tab| (tab.path.display().to_string(), tab.editor.read(cx).value().to_string()))
+            .collect();
+        assert_eq!(docs, [("gm servers: keys".to_string(), "# Keys\n\nWho holds them.".to_string())]);
+        let tab = workspace.tabs.iter().find(|tab| tab.doc).unwrap();
+        assert!(tab.rendered().is_some() && tab.kept, "rendered, and kept again");
+    });
+}
+
 /// Run and Debug go on the lines that declare a test, and nowhere else.
 #[gpui_kit::test]
 fn the_tests_get_run_and_debug(cx: &mut TestAppContext) {
@@ -701,6 +731,125 @@ fn typing_in_the_preview_does_nothing(cx: &mut TestAppContext) {
     assert!(!source(cx), "Markdown opens rendered");
     cx.simulate_keystrokes("x");
     assert!(!source(cx), "typing stays in the preview");
+}
+
+/// Zooming a rendered Markdown draws its diagrams larger, as far as it
+/// goes, and resetting it brings them back.
+#[gpui_kit::test]
+fn zooming_the_preview_grows_its_diagrams(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let (_workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/zoom-test"), None, true, "zoom-test".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        let mut tab = workspace.new_tab(PathBuf::from("/zoom-test/README.md"), false, window, cx);
+        tab.content = Content::Ready;
+        let text = "```mermaid\nflowchart TD\n A --> B\n```\n";
+        tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
+        tab.preview(text, window, cx);
+        workspace.tabs.push(tab);
+        workspace.activate(0, window, cx);
+        workspace
+    });
+    cx.run_until_parked();
+    let width = |cx: &mut gpui_kit::VisualTestContext| bounds(cx, "image diagram").size.width;
+    let normal = width(cx);
+    cx.dispatch_action(crate::ZoomInPreview);
+    cx.run_until_parked();
+    assert!(width(cx) > normal * 1.2, "{:?} after {normal:?}", width(cx));
+    for _ in 0..10 {
+        cx.dispatch_action(crate::ZoomInPreview);
+    }
+    cx.run_until_parked();
+    let most = width(cx);
+    assert!(most > normal * 2.9 && most < normal * 3.1, "{most:?} for {normal:?}");
+    cx.dispatch_action(crate::ResetPreviewZoom);
+    cx.run_until_parked();
+    assert_eq!(width(cx), normal);
+}
+
+/// A doc's preview zooms with Cmd-= and Cmd-+, and Cmd-0 brings it back.
+#[gpui_kit::test]
+fn a_doc_zooms_with_the_keys(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+        crate::shortcuts::apply(cx);
+    });
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/doc-zoom"), None, true, "doc-zoom".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        workspace.open_doc("gm servers: keys", "```mermaid\nflowchart TD\n A --> B\n```\n".into(), true, window, cx);
+        workspace
+    });
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| workspace.focus_active(window, cx));
+    let width = |cx: &mut gpui_kit::VisualTestContext| bounds(cx, "image diagram").size.width;
+    let normal = width(cx);
+    cx.simulate_keystrokes("cmd-=");
+    cx.run_until_parked();
+    let bigger = width(cx);
+    assert!(bigger > normal, "cmd-=: {bigger:?} after {normal:?}");
+    cx.simulate_keystrokes("cmd-+");
+    cx.run_until_parked();
+    assert!(width(cx) > bigger, "cmd-+");
+    cx.simulate_keystrokes("cmd-0");
+    cx.run_until_parked();
+    assert_eq!(width(cx), normal);
+}
+
+/// Over the preview, Cmd and the wheel zoom it, a pinch too, and the wheel
+/// alone does not; fitting draws a diagram wider than the preview to fit.
+#[gpui_kit::test]
+fn the_mouse_zooms_the_preview_and_its_diagrams_fit(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let fan: String = (0..12).map(|i| format!(" A --> B{i}[a long box number {i}]\n")).collect();
+    let wide = format!("```mermaid\nflowchart TD\n{fan}```\n");
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/wheel-zoom"), None, true, "wheel-zoom".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        workspace.open_doc("wide", wide, true, window, cx);
+        workspace
+    });
+    cx.simulate_resize(size(px(700.), px(600.)));
+    workspace.update_in(cx, |workspace, window, cx| workspace.focus_active(window, cx));
+    cx.run_until_parked();
+    let width = |cx: &mut gpui_kit::VisualTestContext| bounds(cx, "image diagram").size.width;
+    let preview = bounds(cx, "markdown-preview-area");
+    let normal = width(cx);
+    let tall = bounds(cx, "image diagram").size.height;
+    assert!(normal > preview.size.width, "the case is wider than the preview: {normal:?} in {:?}", preview.size.width);
+    let wheel = |cx: &mut gpui_kit::VisualTestContext, modifiers: Modifiers| {
+        cx.simulate_event(ScrollWheelEvent { position: preview.center(), delta: ScrollDelta::Lines(point(0., 1.)), modifiers, ..Default::default() });
+        cx.run_until_parked();
+    };
+    wheel(cx, Modifiers::none());
+    assert_eq!(width(cx), normal, "the wheel alone scrolls");
+    wheel(cx, Modifiers::command());
+    let bigger = width(cx);
+    assert!(bigger > normal, "Cmd and the wheel: {bigger:?} after {normal:?}");
+    cx.simulate_event(PinchEvent { position: preview.center(), delta: -0.2, ..Default::default() });
+    cx.run_until_parked();
+    assert!(width(cx) < bigger, "a pinch");
+    cx.dispatch_action(crate::ResetPreviewZoom);
+    cx.dispatch_action(crate::FitPreviewDiagrams);
+    cx.run_until_parked();
+    let fitted = bounds(cx, "image diagram").size;
+    assert!(fitted.width <= preview.size.width, "fit: {:?} in {:?}", fitted.width, preview.size.width);
+    // As much shorter: the box is the diagram's, no room left under it.
+    let shorter = tall * (fitted.width / normal);
+    assert!((fitted.height - shorter).abs() <= px(2.), "{:?}, not {shorter:?}", fitted.height);
+    cx.dispatch_action(crate::FitPreviewDiagrams);
+    cx.run_until_parked();
+    assert_eq!(width(cx), normal);
 }
 
 /// The wheel over a value's card in the code stays in the card: the code

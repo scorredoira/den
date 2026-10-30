@@ -101,7 +101,7 @@ fn drawing(svg: &str) -> (Vec<Obstacle>, Vec<Vec<(f32, f32)>>) {
 
 /// What is wrong in the drawing of `source`, in words.
 fn faults(source: &str) -> Vec<String> {
-    let svg = render(source).unwrap().text;
+    let svg = render(source).unwrap().text(1.0);
     let (shapes, edges) = drawing(&svg);
     let mut faults = Vec::new();
     for (e, points) in edges.iter().enumerate() {
@@ -268,8 +268,9 @@ fn fuzz() {
     }
 }
 
-/// A huge diagram is declared small enough for gpui to draw it: at twice
-/// its size, within the GPU's largest texture and 128 MB.
+/// A huge diagram is declared small enough for gpui to draw it, however
+/// much it is zoomed: at twice its size, within the GPU's largest texture
+/// and 128 MB.
 #[test]
 fn a_huge_diagram_fits_the_gpu() {
     let mut source = String::from("flowchart TD\n");
@@ -277,12 +278,14 @@ fn a_huge_diagram_fits_the_gpu() {
         source.push_str(&format!("  N{i} --> N{}\n  N{i} -->|to {}| N{}\n", i + 1, (i * 7) % 120, (i * 7) % 120));
     }
     let svg = render(&source).unwrap();
-    let (w, h) = (attr(&svg.text, "width").unwrap(), attr(&svg.text, "height").unwrap());
-    let view = numbers(&svg.text[svg.text.find("viewBox").unwrap()..]);
+    let scale = svg.scale(3.0);
+    let text = svg.text(scale);
+    let (w, h) = (attr(&text, "width").unwrap(), attr(&text, "height").unwrap());
+    let view = numbers(&text[text.find("viewBox").unwrap()..]);
     assert!(view[3] > 8000.0, "the case is past the limit: {view:?}");
     assert!(w.max(h) * 2.0 <= 16384.0 && w * h * 4.0 * 4.0 <= 128e6 * 1.01, "{w}x{h}");
     assert!((w / h - view[2] / view[3]).abs() < 0.01, "keeps its shape");
-    assert_eq!(svg.width.round(), w);
+    assert_eq!((svg.width * scale).round(), w);
 }
 
 

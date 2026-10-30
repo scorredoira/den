@@ -27,6 +27,8 @@ tempfile = "3"
 minisign-verify = "0.3"
 # Already gpui-base's: `data:` images in Markdown previews.
 data-url = "0.3"
+# Already gpui-component's: a Markdown preview as HTML, to save it as PDF.
+markdown = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already GPUI's: Cmd-E asks AppKit whether its key is held down.

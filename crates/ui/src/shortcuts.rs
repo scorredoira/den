@@ -77,6 +77,11 @@ shortcuts![
         (FormatDocument, "Format Document", "shift-alt-f"),
         (ToggleMarkdownSource, "Markdown: Toggle Source or Preview", "secondary-shift-v"),
         (OpenPreviewToSide, "Markdown: Open Preview to the Side", "secondary-alt-v"),
+        (ZoomInPreview, "Markdown: Zoom In", "secondary-="),
+        (ZoomOutPreview, "Markdown: Zoom Out", "secondary--"),
+        (ResetPreviewZoom, "Markdown: Reset Zoom", "secondary-0"),
+        (ExportPreviewPdf, "Markdown: Export Preview as PDF", ""),
+        (FitPreviewDiagrams, "Markdown: Fit Diagrams to Width", ""),
     ],
     "Code": [
         (GoToDefinition, "Go to Definition", "f12"),
@@ -308,6 +313,8 @@ pub fn apply(cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(others);
     cx.bind_keys(bindings);
+    // Where + has a key of its own (a Spanish keyboard), it zooms in too.
+    cx.bind_keys([KeyBinding::new("secondary-+", ZoomInPreview, None)]);
     // After the app's, so they win inside the editor (see `editing::keymap`).
     cx.bind_keys(crate::editing::keymap());
     // Also after the app's: a binding without context and one in the focused

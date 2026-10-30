@@ -174,7 +174,7 @@ impl Den {
         let text = crate::guide::markdown(cx);
         match self.active_workspace() {
             Some(workspace) => {
-                workspace.update(cx, |workspace, cx| workspace.open_doc(crate::guide::TITLE, text, window, cx))
+                workspace.update(cx, |workspace, cx| workspace.open_doc(crate::guide::TITLE, text, false, window, cx))
             }
             None => {
                 let guide = cx.new(|cx| gpui_kit::component::text::TextViewState::markdown(&text, cx));
