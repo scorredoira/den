@@ -411,10 +411,17 @@ impl Workspace {
                         let layouts = tab.old.as_ref().map(|old| old.whole);
                         let diff_selected = diff.map(|_| tab.old.as_ref().map(|old| old.selected.clone()));
                         let plain = self.plain;
+                        // The labels at the ends of lines go under the find bar, as the text does.
+                        let labels = blame
+                            .and_then(|blame| inline_blame(&tab.editor, &blame, cx))
+                            .into_iter()
+                            .chain(debug_inline_values(&tab.editor, &tab.path, &self.debugger, cx))
+                            .chain(self.test_lenses(&tab.editor, &tab.path, cx.entity().downgrade(), cx));
                         let editor = Editor::new(&tab.editor)
                             .bordered(false)
                             .readonly(readonly)
                             .h_full()
+                            .under_find_bar(labels)
                             // The right click already put the cursor where clicked. The menu
                             // is built while the editor is mid-update: it can't be
                             // read (GPUI aborts), so Cut and Copy are always
@@ -481,9 +488,6 @@ impl Workspace {
                             .on_action(cx.listener(|this, _: &DuplicateLineUp, window, cx| this.edit_lines(true, true, window, cx)))
                             .on_action(cx.listener(|this, _: &DuplicateLineDown, window, cx| this.edit_lines(false, true, window, cx)))
                             .child(editor)
-                            .children(blame.and_then(|blame| inline_blame(&tab.editor, &blame, cx)))
-                            .children(debug_inline_values(&tab.editor, &tab.path, &self.debugger, cx))
-                            .children(self.test_lenses(&tab.editor, &tab.path, cx.entity().downgrade(), cx))
                             .children(breakpoint_edit_box(&tab.editor, &tab.path, &self.debugger, cx))
                             .children(
                                 self.lsp

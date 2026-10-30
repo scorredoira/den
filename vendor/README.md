@@ -118,7 +118,10 @@ floats at the editor's top right (placed in `render_editor` in
 queries searched; `FindBarMemory` (exported from `src/input/mod.rs`, with
 `SearchOptions`) holds the width, the history and the toggles for the app to
 save. Its icons not in the default set (`whole-word`, `regex`, `replace-all`,
-`case-upper`) come from the app's assets.
+`case-upper`) come from the app's assets. `under_find_bar` on `Input` and
+`Editor` takes the app's labels at the ends of lines (blame, the debugger's
+values, test lenses), drawn after the text and before the bar, so the bar
+covers them.
 
 And `(den)` so a tooltip never shows over an open menu: an open context menu
 holds a `DeferredPopover` in `src/menu/context_menu.rs`, as an open popover

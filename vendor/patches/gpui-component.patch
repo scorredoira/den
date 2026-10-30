@@ -1,4 +1,4 @@
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/Cargo.toml vendor/gpui-component/Cargo.toml
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/Cargo.toml vendor/gpui-component/Cargo.toml
 --- a/Cargo.toml	2006-07-24 03:21:28
 +++ b/Cargo.toml	2026-10-13 09:32:24
 @@ -232,38 +232,11 @@
@@ -41,7 +41,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
  [dependencies.anyhow]
  version = "1"
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/highlighter.rs vendor/gpui-component/src/highlighter/highlighter.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/highlighter.rs vendor/gpui-component/src/highlighter/highlighter.rs
 --- a/src/highlighter/highlighter.rs	2006-07-24 03:21:28
 +++ b/src/highlighter/highlighter.rs	2026-10-19 11:40:31
 @@ -14,7 +14,7 @@
@@ -264,7 +264,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  }
  
  #[cfg(test)]
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/input_adapter.rs vendor/gpui-component/src/highlighter/input_adapter.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/input_adapter.rs vendor/gpui-component/src/highlighter/input_adapter.rs
 --- a/src/highlighter/input_adapter.rs	2006-07-24 03:21:28
 +++ b/src/highlighter/input_adapter.rs	2026-10-03 08:58:23
 @@ -234,29 +234,37 @@
@@ -326,7 +326,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 -    ranges
  }
 +
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/go/highlights.scm vendor/gpui-component/src/highlighter/languages/go/highlights.scm
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/languages/go/highlights.scm vendor/gpui-component/src/highlighter/languages/go/highlights.scm
 --- a/src/highlighter/languages/go/highlights.scm	2006-07-24 03:21:28
 +++ b/src/highlighter/languages/go/highlights.scm	2026-10-03 17:22:26
 @@ -1,3 +1,9 @@
@@ -407,7 +407,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +  "select"
 +  "switch"
 +] @keyword.control
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/javascript/highlights.scm vendor/gpui-component/src/highlighter/languages/javascript/highlights.scm
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/languages/javascript/highlights.scm vendor/gpui-component/src/highlighter/languages/javascript/highlights.scm
 --- a/src/highlighter/languages/javascript/highlights.scm	2006-07-24 03:21:28
 +++ b/src/highlighter/languages/javascript/highlights.scm	2026-10-03 17:22:26
 @@ -1,3 +1,9 @@
@@ -490,7 +490,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
    "yield"
 -] @keyword
 +] @keyword.control
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/json/highlights.scm vendor/gpui-component/src/highlighter/languages/json/highlights.scm
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/languages/json/highlights.scm vendor/gpui-component/src/highlighter/languages/json/highlights.scm
 --- a/src/highlighter/languages/json/highlights.scm	2006-07-24 03:21:28
 +++ b/src/highlighter/languages/json/highlights.scm	2026-10-05 19:20:24
 @@ -1,11 +1,15 @@
@@ -511,7 +511,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
  [
    (true)
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/rust/highlights.scm vendor/gpui-component/src/highlighter/languages/rust/highlights.scm
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/languages/rust/highlights.scm vendor/gpui-component/src/highlighter/languages/rust/highlights.scm
 --- a/src/highlighter/languages/rust/highlights.scm	2006-07-24 03:21:28
 +++ b/src/highlighter/languages/rust/highlights.scm	2026-10-13 09:32:24
 @@ -103,31 +103,32 @@
@@ -581,7 +581,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
  (escape_sequence) @escape
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/languages/typescript/highlights.scm vendor/gpui-component/src/highlighter/languages/typescript/highlights.scm
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/languages/typescript/highlights.scm vendor/gpui-component/src/highlighter/languages/typescript/highlights.scm
 --- a/src/highlighter/languages/typescript/highlights.scm	2006-07-24 03:21:28
 +++ b/src/highlighter/languages/typescript/highlights.scm	2026-10-13 09:32:24
 @@ -1,3 +1,10 @@
@@ -693,7 +693,24 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +  "with"
 +  "yield"
 +] @keyword.control
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/registry.rs vendor/gpui-component/src/highlighter/registry.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/languages.rs vendor/gpui-component/src/highlighter/languages.rs
+--- a/src/highlighter/languages.rs	2006-07-24 03:21:28
++++ b/src/highlighter/languages.rs	2026-10-30 13:11:48
+@@ -497,7 +497,12 @@
+                 "",
+             ),
+             #[cfg(feature = "tree-sitter-swift")]
+-            Self::Swift => (tree_sitter_swift::LANGUAGE, "", "", ""),
++            Self::Swift => (
++                tree_sitter_swift::LANGUAGE,
++                tree_sitter_swift::HIGHLIGHTS_QUERY,
++                "",
++                tree_sitter_swift::LOCALS_QUERY,
++            ),
+             #[cfg(feature = "tree-sitter-scala")]
+             Self::Scala => (
+                 tree_sitter_scala::LANGUAGE,
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/registry.rs vendor/gpui-component/src/highlighter/registry.rs
 --- a/src/highlighter/registry.rs	2006-07-24 03:21:28
 +++ b/src/highlighter/registry.rs	2026-10-13 09:32:24
 @@ -15,12 +15,14 @@
@@ -887,7 +904,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              "variable.special" => self.variable_special,
              "variant" => self.variant,
              _ => None,
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/highlighter/wasm_stub.rs vendor/gpui-component/src/highlighter/wasm_stub.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/highlighter/wasm_stub.rs vendor/gpui-component/src/highlighter/wasm_stub.rs
 --- a/src/highlighter/wasm_stub.rs	2006-07-24 03:21:28
 +++ b/src/highlighter/wasm_stub.rs	2026-10-13 09:32:24
 @@ -165,10 +165,20 @@
@@ -1081,10 +1098,97 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              "variable.special",
              "variant",
          ];
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/input.rs vendor/gpui-component/src/input/input.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/input/editor.rs vendor/gpui-component/src/input/editor.rs
+--- a/src/input/editor.rs	2006-07-24 03:21:28
++++ b/src/input/editor.rs	2026-10-30 19:07:13
+@@ -1,7 +1,7 @@
+ use std::rc::Rc;
+ 
+ use gpui::{
+-    App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
++    AnyElement, App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
+     Window, prelude::FluentBuilder as _, relative,
+ };
+ 
+@@ -33,6 +33,9 @@
+     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
+ 
+     paste_handler: Option<Rc<dyn Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool>>,
++
++    /// (den) See [`Input::under_find_bar`].
++    under_find_bar: Vec<AnyElement>,
+ }
+ 
+ impl Editor {
+@@ -50,6 +53,7 @@
+             aria_label: None,
+             context_menu_builder: None,
+             paste_handler: None,
++            under_find_bar: Vec::new(),
+         }
+     }
+ 
+@@ -125,6 +129,12 @@
+         self.paste_handler = Some(Rc::new(handler));
+         self
+     }
++
++    /// (den) See [`Input::under_find_bar`].
++    pub fn under_find_bar(mut self, elements: impl IntoIterator<Item = AnyElement>) -> Self {
++        self.under_find_bar.extend(elements);
++        self
++    }
+ }
+ 
+ impl Styled for Editor {
+@@ -158,6 +168,7 @@
+             .when_some(self.paste_handler, |this, handler| {
+                 this.on_paste(move |item, window, cx| handler(item, window, cx))
+             })
++            .under_find_bar(self.under_find_bar)
+             .refine_style(&self.style)
+     }
+ }
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/input/input.rs vendor/gpui-component/src/input/input.rs
 --- a/src/input/input.rs	2006-07-24 03:21:28
-+++ b/src/input/input.rs	2026-10-06 22:17:07
-@@ -506,11 +506,22 @@
++++ b/src/input/input.rs	2026-10-30 19:07:13
+@@ -111,6 +111,9 @@
+ pub struct Input {
+     token_renderer: Option<gpui_base::input::InlineTokenRenderer>,
+     token_click_listener: Option<gpui_base::input::InlineTokenClickListener>,
++    /// (den) Drawn over the text and under the find bar: the app's labels
++    /// at the ends of lines.
++    under_find_bar: Vec<AnyElement>,
+     id: Option<ElementId>,
+     state: TextInputState,
+     style: StyleRefinement,
+@@ -238,6 +241,7 @@
+             paste_handler: None,
+             token_renderer: None,
+             token_click_listener: None,
++            under_find_bar: Vec::new(),
+         }
+     }
+ 
+@@ -365,6 +369,13 @@
+         self
+     }
+ 
++    /// (den) Elements drawn over the text and under the find bar, so the
++    /// bar covers them as it covers the text.
++    pub fn under_find_bar(mut self, elements: impl IntoIterator<Item = AnyElement>) -> Self {
++        self.under_find_bar.extend(elements);
++        self
++    }
++
+     /// Intercept paste payloads (images, files) before the default text insertion.
+     ///
+     /// The handler receives the clipboard item and returns whether it took the
+@@ -503,14 +514,27 @@
+     /// This method must after the refine_style.
+     fn render_editor(
+         input_state: TextInputState,
++        under_find_bar: Vec<AnyElement>,
          search_panel: Option<AnyElement>,
          _: &Window,
      ) -> impl IntoElement {
@@ -1097,6 +1201,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                  .flex_1()
 -                .child(input_state.into_any_element()),
 +                .child(input_state.into_any_element())
++                .children(under_find_bar)
 +                .children(search_panel.map(|panel| {
 +                    h_flex()
 +                        .absolute()
@@ -1109,7 +1214,16 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          )
      }
  }
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/mod.rs vendor/gpui-component/src/input/mod.rs
+@@ -789,7 +813,7 @@
+                     .child(p)
+             }))
+             .when(presentation.is_multi_line(), |this| {
+-                this.child(Self::render_editor(state.clone(), overlays.search, window))
++                this.child(Self::render_editor(state.clone(), self.under_find_bar, overlays.search, window))
+             })
+             .when(!presentation.is_multi_line(), |this| {
+                 this.child(state.clone().into_any_element())
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/input/mod.rs vendor/gpui-component/src/input/mod.rs
 --- a/src/input/mod.rs	2006-07-24 03:21:28
 +++ b/src/input/mod.rs	2026-10-13 09:32:24
 @@ -6,6 +6,7 @@
@@ -1129,7 +1243,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      SelectToEndOfLine, SelectToNextWordEnd, SelectToPreviousWordStart, SelectToStart,
      SelectToStartOfLine, Selection, ShowCharacterPalette, ShowDocumentHandler, TabSize,
      TextDecoration, TextDecorationCollection, TextareaState, ToggleCodeActions, Undo,
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/overlay.rs vendor/gpui-component/src/input/overlay.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/input/overlay.rs vendor/gpui-component/src/input/overlay.rs
 --- a/src/input/overlay.rs	2006-07-24 03:21:28
 +++ b/src/input/overlay.rs	2026-10-13 09:32:24
 @@ -522,7 +522,7 @@
@@ -1141,7 +1255,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                  assert_eq!(state.next_search_match(cx), Some(8..11));
                  assert_eq!(state.search_session().matcher.current_match_index(), 1);
                  state.close_search(cx);
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/popovers/completion_menu.rs vendor/gpui-component/src/input/popovers/completion_menu.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/input/popovers/completion_menu.rs vendor/gpui-component/src/input/popovers/completion_menu.rs
 --- a/src/input/popovers/completion_menu.rs	2006-07-24 03:21:28
 +++ b/src/input/popovers/completion_menu.rs	2026-10-13 09:32:24
 @@ -2,38 +2,79 @@
@@ -1414,7 +1528,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          self.list.update(cx, |this, cx| {
              let longest_ix = items
                  .iter()
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/input/search.rs vendor/gpui-component/src/input/search.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/input/search.rs vendor/gpui-component/src/input/search.rs
 --- a/src/input/search.rs	2006-07-24 03:21:28
 +++ b/src/input/search.rs	2026-10-13 09:32:24
 @@ -1,20 +1,22 @@
@@ -2125,7 +2239,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          matcher.update_cursor_by_offset(0);
          assert_eq!(matcher.current_match_index(), 0);
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/menu/context_menu.rs vendor/gpui-component/src/menu/context_menu.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/menu/context_menu.rs vendor/gpui-component/src/menu/context_menu.rs
 --- a/src/menu/context_menu.rs	2006-07-24 03:21:28
 +++ b/src/menu/context_menu.rs	2026-10-19 17:07:47
 @@ -128,6 +128,9 @@
@@ -2204,7 +2318,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      }
  }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/fallback.rs vendor/gpui-component/src/native_menu/fallback.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/native_menu/fallback.rs vendor/gpui-component/src/native_menu/fallback.rs
 --- a/src/native_menu/fallback.rs	2006-07-24 03:21:28
 +++ b/src/native_menu/fallback.rs	2026-10-13 09:32:24
 @@ -81,6 +81,7 @@
@@ -2223,7 +2337,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                  } => menu.menu_with_check_and_disabled(label, checked, action, disabled),
                  NativeMenuItem::Item { action: None, .. } => menu,
                  NativeMenuItem::Submenu {
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/macos.rs vendor/gpui-component/src/native_menu/macos.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/native_menu/macos.rs vendor/gpui-component/src/native_menu/macos.rs
 --- a/src/native_menu/macos.rs	2006-07-24 03:21:28
 +++ b/src/native_menu/macos.rs	2026-10-13 09:32:24
 @@ -2,11 +2,11 @@
@@ -2310,7 +2424,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  }
  
  fn ns_image_for_icon(
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/mod.rs vendor/gpui-component/src/native_menu/mod.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/native_menu/mod.rs vendor/gpui-component/src/native_menu/mod.rs
 --- a/src/native_menu/mod.rs	2006-07-24 03:21:28
 +++ b/src/native_menu/mod.rs	2026-10-13 09:32:24
 @@ -30,7 +30,7 @@
@@ -2430,7 +2544,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          } = &menu.items[0]
          else {
              panic!("expected a disabled actionable item with an icon");
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/native_menu/windows.rs vendor/gpui-component/src/native_menu/windows.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/native_menu/windows.rs vendor/gpui-component/src/native_menu/windows.rs
 --- a/src/native_menu/windows.rs	2006-07-24 03:21:28
 +++ b/src/native_menu/windows.rs	2026-10-13 09:32:24
 @@ -218,6 +218,7 @@
@@ -2454,7 +2568,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
                  let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
                  // Actionable, enabled items get an id; others use 0.
                  let id = match action {
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/text/compat.rs vendor/gpui-component/src/text/compat.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/text/compat.rs vendor/gpui-component/src/text/compat.rs
 --- a/src/text/compat.rs	2006-07-24 03:21:28
 +++ b/src/text/compat.rs	2026-10-03 08:58:23
 @@ -64,6 +64,14 @@
@@ -2472,7 +2586,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      /// Creates a text view that parses `text` as Markdown.
      pub fn markdown(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
          let id = id.into();
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-component-0.7.0/src/tooltip.rs vendor/gpui-component/src/tooltip.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-den/cc14e9d3-69df-4ccb-97e9-e34f0772bfaf/scratchpad/gpui-component-0.7.0/src/tooltip.rs vendor/gpui-component/src/tooltip.rs
 --- a/src/tooltip.rs	2006-07-24 03:21:28
 +++ b/src/tooltip.rs	2026-10-13 09:32:24
 @@ -91,6 +91,12 @@

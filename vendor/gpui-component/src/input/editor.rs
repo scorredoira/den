@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
+    AnyElement, App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
     Window, prelude::FluentBuilder as _, relative,
 };
 
@@ -33,6 +33,9 @@ pub struct Editor {
     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
 
     paste_handler: Option<Rc<dyn Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool>>,
+
+    /// (den) See [`Input::under_find_bar`].
+    under_find_bar: Vec<AnyElement>,
 }
 
 impl Editor {
@@ -50,6 +53,7 @@ impl Editor {
             aria_label: None,
             context_menu_builder: None,
             paste_handler: None,
+            under_find_bar: Vec::new(),
         }
     }
 
@@ -125,6 +129,12 @@ impl Editor {
         self.paste_handler = Some(Rc::new(handler));
         self
     }
+
+    /// (den) See [`Input::under_find_bar`].
+    pub fn under_find_bar(mut self, elements: impl IntoIterator<Item = AnyElement>) -> Self {
+        self.under_find_bar.extend(elements);
+        self
+    }
 }
 
 impl Styled for Editor {
@@ -158,6 +168,7 @@ impl RenderOnce for Editor {
             .when_some(self.paste_handler, |this, handler| {
                 this.on_paste(move |item, window, cx| handler(item, window, cx))
             })
+            .under_find_bar(self.under_find_bar)
             .refine_style(&self.style)
     }
 }

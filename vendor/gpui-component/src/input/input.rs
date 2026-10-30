@@ -111,6 +111,9 @@ pub(crate) fn input_style(disabled: bool, cx: &App) -> (Hsla, Hsla) {
 pub struct Input {
     token_renderer: Option<gpui_base::input::InlineTokenRenderer>,
     token_click_listener: Option<gpui_base::input::InlineTokenClickListener>,
+    /// (den) Drawn over the text and under the find bar: the app's labels
+    /// at the ends of lines.
+    under_find_bar: Vec<AnyElement>,
     id: Option<ElementId>,
     state: TextInputState,
     style: StyleRefinement,
@@ -238,6 +241,7 @@ impl Input {
             paste_handler: None,
             token_renderer: None,
             token_click_listener: None,
+            under_find_bar: Vec::new(),
         }
     }
 
@@ -362,6 +366,13 @@ impl Input {
         f: impl Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu + 'static,
     ) -> Self {
         self.context_menu_builder = Some(Rc::new(f));
+        self
+    }
+
+    /// (den) Elements drawn over the text and under the find bar, so the
+    /// bar covers them as it covers the text.
+    pub fn under_find_bar(mut self, elements: impl IntoIterator<Item = AnyElement>) -> Self {
+        self.under_find_bar.extend(elements);
         self
     }
 
@@ -503,6 +514,7 @@ impl Input {
     /// This method must after the refine_style.
     fn render_editor(
         input_state: TextInputState,
+        under_find_bar: Vec<AnyElement>,
         search_panel: Option<AnyElement>,
         _: &Window,
     ) -> impl IntoElement {
@@ -513,6 +525,7 @@ impl Input {
                 .relative()
                 .flex_1()
                 .child(input_state.into_any_element())
+                .children(under_find_bar)
                 .children(search_panel.map(|panel| {
                     h_flex()
                         .absolute()
@@ -800,7 +813,7 @@ impl RenderOnce for Input {
                     .child(p)
             }))
             .when(presentation.is_multi_line(), |this| {
-                this.child(Self::render_editor(state.clone(), overlays.search, window))
+                this.child(Self::render_editor(state.clone(), self.under_find_bar, overlays.search, window))
             })
             .when(!presentation.is_multi_line(), |this| {
                 this.child(state.clone().into_any_element())
