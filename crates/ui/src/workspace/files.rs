@@ -416,6 +416,47 @@ impl Workspace {
         self.tabs.iter().any(|file| file.path == tab.path && file.is_file() && file.dirty)
     }
 
+    /// Open File: files from anywhere on this machine, chosen in the
+    /// system's dialog. A server's are found with Go to File.
+    pub(super) fn open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.local {
+            self.message = Some("On a server, Go to File opens its files".into());
+            return cx.notify();
+        }
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Open".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| this.open_files(paths, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Files from anywhere on this machine (Open File, dropped from Finder),
+    /// each in a tab, the last in front; one Den can't show (a PDF) in its
+    /// app. Folders are left alone, and a server can't read them.
+    pub(super) fn open_files(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_drop = None;
+        if !self.local {
+            self.message = Some("Files from this computer open in its workspaces, not a server's".into());
+            return cx.notify();
+        }
+        for path in paths.iter().map(|path| normalize(path)).filter(|path| !path.is_dir()) {
+            if shown_in_den(&path) {
+                self.open_at(path, Position::new(0, 0), window, cx);
+            } else {
+                cx.open_with_system(&path);
+            }
+        }
+        cx.notify();
+    }
+
     /// Saves the active tab's file (from a view too), formatting it first if
     /// Settings say so for its type.
     pub(super) fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {

@@ -36,6 +36,15 @@ impl Workspace {
         }
     }
 
+    /// Files dragged from Finder over group `group`: it lights up whole.
+    pub(super) fn track_files_drop(&mut self, group: usize, event: &DragMoveEvent<ExternalPaths>, cx: &mut Context<Self>) {
+        let next = EditorDrop::at(event.bounds, event.event.position, false).map(|placement| (group, placement));
+        if (next.is_some() || self.editor_drop.is_some_and(|(target, _)| target == group)) && self.editor_drop != next {
+            self.editor_drop = next;
+            cx.notify();
+        }
+    }
+
     pub(super) fn drop_tab(
         &mut self,
         drag: &TabDrag,

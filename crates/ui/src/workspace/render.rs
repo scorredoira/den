@@ -19,6 +19,7 @@ impl Workspace {
             .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
                 this.drop_tab(drag, group, Some(this.tabs.len()), EditorDrop::Center, window, cx);
             }))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.open_files(paths.paths().to_vec(), window, cx)))
             .children(self.tabs.iter().enumerate().filter(|(_, tab)| tab.group == group).map(|(ix, tab)| {
                 let active = shown == Some(ix);
                 let name = tab
@@ -586,6 +587,14 @@ impl Workspace {
                             .map_or(EditorDrop::Center, |(_, placement)| placement);
                         this.drop_tab(drag, group, None, placement, window, cx);
                     }))
+                    // Files from Finder open, in this group.
+                    .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                        this.track_files_drop(group, event, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                        this.group = group;
+                        this.open_files(paths.paths().to_vec(), window, cx);
+                    }))
                     .child(body)
                     .when_some(self.editor_drop.filter(|(target, _)| *target == group && cx.has_active_drag()), |el, (_, placement)| {
                         el.child(placement.indicator(cx))
@@ -742,6 +751,8 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::save_as))
+            .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| this.close_others(None, window, cx)))
             .on_action(cx.listener(|this, _: &CollapseFileTree, _, cx| {

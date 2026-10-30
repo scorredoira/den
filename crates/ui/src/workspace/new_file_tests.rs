@@ -118,3 +118,52 @@ fn the_quit_dialog_goes_to_an_untitled_tab(cx: &mut TestAppContext) {
         assert_eq!(this.tabs.len(), 2);
     }));
 }
+
+/// Save As on a server names the file again in the files panel, in its
+/// file's folder; the tab keeps its changes and becomes the new file's.
+#[gpui_kit::test]
+fn save_as_names_a_file_again(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx, false);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        this.new_file(&NewFile, window, cx);
+        type_in(this, 0, "fn main() {}", window, cx);
+        this.became_file(0, PathBuf::from("/new-file-test/src/main.rs"), "fn main() {}".into(), window, cx);
+        type_in(this, 0, "fn main() { run() }", window, cx);
+        this.save_as(&SaveAs, window, cx);
+        let dir = this.file_tree.read(cx).save_as_dir().map(Path::to_path_buf);
+        assert_eq!(dir, Some(PathBuf::from("/new-file-test/src")));
+
+        this.became_file(0, PathBuf::from("/new-file-test/src/run.rs"), "fn main() { run() }".into(), window, cx);
+        assert_eq!(this.tabs.len(), 1);
+        assert_eq!(this.tabs[0].path, Path::new("/new-file-test/src/run.rs"));
+        assert!(!this.tabs[0].dirty);
+    }));
+}
+
+/// Files from anywhere on this machine (dropped from Finder, Open File)
+/// open in tabs, outside the workspace's folder too; folders don't.
+#[gpui_kit::test]
+fn files_from_outside_the_folder_open(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "elsewhere").unwrap();
+    let (workspace, cx) = workspace(cx, true);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        this.open_files(vec![dir.path().to_path_buf(), file.clone()], window, cx);
+        assert_eq!(this.tabs.len(), 1);
+        assert_eq!(this.tabs[0].path, normalize(&file));
+        assert!(!this.tabs[0].preview);
+    }));
+}
+
+/// A server can't read this machine's files: dropped on its workspace, they
+/// don't open.
+#[gpui_kit::test]
+fn files_from_this_machine_dont_open_on_a_server(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx, false);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        this.open_files(vec![PathBuf::from("/tmp/notes.txt")], window, cx);
+        assert!(this.tabs.is_empty());
+        assert!(this.message.is_some());
+    }));
+}

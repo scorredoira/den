@@ -12,6 +12,7 @@ The shortcuts below are the current ones: change them in Keyboard Shortcuts (in 
 | --- | --- |
 | {{OpenCommandPalette}} or {{ShowShortcuts}} | Command palette: run any command by name |
 | {{OpenFileFinder}} | Go to a file by name |
+| {{OpenFile}} | Open files from anywhere on this computer (or drop them from Finder on the code) |
 | {{OpenTaskPicker}} | Go to a workspace, on any server |
 | {{PreviousTask}} | Switch workspace, as Cmd-Tab: the previous one, then those with an agent, waiting ones first; holding Cmd, E again goes further, Shift-E back; let go to enter |
 | {{NextActiveTask}} | Go straight into the next workspace with an agent; while Cmd is down the workspaces show where it is (over the window if hidden) and, at the bottom, its notes and agents |
@@ -39,6 +40,7 @@ Right-click a workspace to hide it, remove it from the list (nothing on disk is 
 | --- | --- |
 | {{NewFile}} | New file, in the folder of the file open (the workspace's when none is): its name is typed in the files panel |
 | {{Save}} | Save |
+| {{SaveAs}} | Save as another file, anywhere: the tab shows that one from then on |
 | {{CloseTab}} | Close the tab (or the terminal) |
 | {{CloseAllTabs}} | Close all tabs |
 | {{NextTab}} | Next tab |

@@ -60,8 +60,10 @@ shortcuts![
     ],
     "Files and Tabs": [
         (OpenFileFinder, "Go to File", "secondary-p"),
+        (OpenFile, "Open File", ""),
         (NewFile, "New File", "secondary-n"),
         (Save, "Save", "secondary-s"),
+        (SaveAs, "Save As", "secondary-shift-s"),
         (CloseTab, "Close Tab or Terminal", mac_or("cmd-w", "ctrl-shift-w")),
         (CloseAllTabs, "Close All Tabs", "secondary-alt-w"),
         (NextTab, "Next Tab", "secondary-shift-]"),

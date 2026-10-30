@@ -23,11 +23,11 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, ShowChanges, ShowFiles, ShowGraph,
+    CloseAllTabs, CloseTab, CollapseFileTree, RefreshFiles, MaximizeTerminals, MoveTerminals, NewTerminal, NextTab, PrevTab, Save, SaveAs, ShowChanges, ShowFiles, ShowGraph,
     OpenChanges, ShowFileHistory,
     FocusNext, FocusPrevious, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel,
-    ToggleTerminals, OpenFileFinder, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
+    ToggleTerminals, OpenFileFinder, OpenFile, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile, ToggleWholeFile,
     changes::{self, ChangesEvent, ChangesPanel},

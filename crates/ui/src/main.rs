@@ -52,6 +52,8 @@ actions!(
         OpenSettings,
         Quit,
         Save,
+        SaveAs,
+        OpenFile,
         CloseTab,
         CloseAllTabs,
         NextTab,
