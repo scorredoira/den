@@ -317,7 +317,10 @@ pub fn apply(cx: &mut App) {
     // does, while Zoom In has a key with = and + is no other shortcut's.
     let zoom_in = SHORTCUTS.iter().find(|shortcut| shortcut.id == "ZoomInPreview").expect("a shortcut");
     if let Some(mut plus) = keys(zoom_in, cx).filter(|keystroke| keystroke.key == "=") {
+        // Shift and = is + on a US keyboard; where + has its own key, it
+        // goes without Shift.
         plus.key = "+".into();
+        plus.modifiers.shift = false;
         if owner(&plus, cx).is_none() {
             cx.bind_keys([KeyBinding::new(&plus.unparse(), ZoomInPreview, None)]);
         }

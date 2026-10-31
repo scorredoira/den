@@ -79,7 +79,7 @@ impl Workspace {
             zoom: Rc::new(Cell::new(1.0)),
             fit: Rc::new(Cell::new(false)),
             column: Cell::new(0.0),
-            refit: None,
+            fitted: Rc::new(Cell::new(0.0)),
             content: Content::Loading,
             lsp_status: LspStatus::default(),
             saved: String::new(),

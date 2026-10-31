@@ -12,6 +12,15 @@ const ZOOM_GESTURE: f32 = 1.1;
 /// How long a preview's width stays put before its diagrams fit it again.
 const REFIT_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// A preview shown that fits its width: its rendered view, shared by the
+/// views of its file, the view's editor and its width.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct FitView {
+    markdown: EntityId,
+    editor: EntityId,
+    width: f32,
+}
+
 impl Workspace {
     /// Opens another view of tab `of`'s file in `group`, with the same text
     /// and cursor, showing the source or the rendered Markdown.
@@ -27,6 +36,7 @@ impl Workspace {
         view.previewed = source.previewed.clone();
         view.zoom = source.zoom.clone();
         view.fit = source.fit.clone();
+        view.fitted = source.fitted.clone();
         view.image = source.image.clone();
         view.grab_focus = false;
         if matches!(source.content, Content::Ready) {
@@ -461,37 +471,95 @@ impl Workspace {
         let Some(ix) = self.active_preview() else {
             return;
         };
-        let fit = &self.tabs[ix].fit;
-        fit.set(!fit.get());
-        self.preview_again(ix, window, cx);
+        let tab = &self.tabs[ix];
+        tab.fit.set(!tab.fit.get());
+        if tab.fit.get() {
+            // Fitting nothing yet: drawn once, to fit what's shown.
+            self.fit_previews(true, window, cx);
+        } else {
+            tab.fitted.set(0.0);
+            self.preview_again(ix, window, cx);
+        }
     }
 
-    /// The preview of the tab with `editor` is `width` wide for its text:
-    /// when its diagrams fit it and it changed, they are drawn again to fit,
-    /// once it stops changing (a window or a split dragged changes it every
-    /// frame).
+    /// The preview of the tab with `editor` is `width` wide for its text.
     pub(super) fn preview_resized(&mut self, editor: &Entity<EditorState>, width: f32, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.tab_index(editor) else {
             return;
         };
-        let tab = &mut self.tabs[ix];
-        if (tab.column.get() - width).abs() < 1.0 {
+        if (self.tabs[ix].column.replace(width) - width).abs() >= 1.0 {
+            self.fit_previews(false, window, cx);
+        }
+    }
+
+    /// Draws again the diagrams of the previews shown that fit their width,
+    /// if it changed: to the narrowest view of the file shown, as its views
+    /// share what they render. At once if its views shown changed (one
+    /// opened, hidden or closed), with `now`, or if the widths had been
+    /// still a while; a width changing on every frame (a window or a split
+    /// dragged) fits again once it stops.
+    pub(super) fn fit_previews(&mut self, now: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let groups = [Some(0), self.editor_split.map(|_| 1)];
+        let shown = groups.map(|group| group.and_then(|group| self.shown_in(group)));
+        // A preview not shown (another tab, or its source) forgets its
+        // width, which may change meanwhile: shown again, it fits once it's
+        // drawn.
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            if !shown.contains(&Some(ix)) || tab.rendered().is_none() {
+                tab.column.set(0.0);
+            }
+        }
+        // It runs after every render: nothing fits, nor did, nothing to do.
+        if self.fit_shown.is_empty() && !self.tabs.iter().any(|tab| tab.fit.get()) {
             return;
         }
-        tab.column.set(width);
-        if !tab.fit.get() {
+        let fitting = |ix: usize| {
+            let tab = &self.tabs[ix];
+            let markdown = tab.rendered()?.entity_id();
+            let view = FitView { markdown, editor: tab.editor.entity_id(), width: tab.column.get() };
+            (tab.fit.get() && view.width > 0.0).then_some((ix, view))
+        };
+        let fits = shown.map(|ix| ix.and_then(fitting));
+        // As it was: drawn, or waiting for its widths to stop changing.
+        if !now && fits.iter().flatten().map(|(_, view)| view).eq(self.fit_shown.iter()) {
             return;
         }
-        let editor = editor.clone();
-        tab.refit = Some(cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(REFIT_AFTER).await;
-            this.update_in(cx, |this, window, cx| {
-                if let Some(ix) = this.tab_index(&editor) {
-                    this.preview_again(ix, window, cx);
-                }
-            })
-            .ok();
-        }));
+        let shown: Vec<(usize, FitView)> = fits.into_iter().flatten().collect();
+        let was = std::mem::replace(&mut self.fit_shown, shown.iter().map(|(_, view)| *view).collect());
+        let views = |list: &[FitView], markdown: EntityId| list.iter().filter(|view| view.markdown == markdown).copied().collect::<Vec<_>>();
+        let time = cx.background_executor().now();
+        let still = self.fit_moved.is_none_or(|at| time.duration_since(at) >= REFIT_AFTER);
+        let (mut moved, mut waiting) = (false, false);
+        for &(ix, FitView { markdown, .. }) in &shown {
+            let (before, after) = (views(&was, markdown), views(&self.fit_shown, markdown));
+            let width = after.iter().map(|view| view.width).fold(f32::INFINITY, f32::min);
+            let fitted = &self.tabs[ix].fitted;
+            if (fitted.get() - width).abs() < 1.0 {
+                continue;
+            }
+            moved |= before != after;
+            let same_views = before.iter().map(|view| view.editor).eq(after.iter().map(|view| view.editor));
+            if now || still || !same_views {
+                fitted.set(width);
+                self.preview_again(ix, window, cx);
+            } else {
+                waiting = true;
+            }
+        }
+        if moved {
+            self.fit_moved = Some(time);
+        }
+        // Each change puts it off again (a render that changed nothing has
+        // returned above); with nothing waiting, it's not drawn again for
+        // nothing (the timer's own call, `now`, is ending anyway).
+        if waiting {
+            self.refit = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(REFIT_AFTER).await;
+                this.update_in(cx, |this, window, cx| this.fit_previews(true, window, cx)).ok();
+            }));
+        } else if !now {
+            self.refit = None;
+        }
     }
 
     /// A tab's preview, made again for its zoom or its width.
@@ -510,10 +578,16 @@ impl Workspace {
         let Some(ix) = self.tab_index(editor) else {
             return;
         };
-        self.zoom_gesture += steps;
-        let whole = self.zoom_gesture.trunc();
+        // What another preview's gesture left is not this one's.
+        let (on, gesture) = &mut self.zoom_gesture;
+        if *on != Some(editor.entity_id()) {
+            *on = Some(editor.entity_id());
+            *gesture = 0.0;
+        }
+        *gesture += steps;
+        let whole = gesture.trunc();
         if whole != 0.0 {
-            self.zoom_gesture -= whole;
+            *gesture -= whole;
             self.zoom_preview(ix, |zoom| zoom * ZOOM_GESTURE.powf(whole), window, cx);
         }
     }
@@ -524,7 +598,7 @@ impl Workspace {
     }
 
     fn zoom_active_preview(&mut self, change: impl FnOnce(f32) -> f32, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.active_preview() {
+        if let Some(ix) = self.active {
             self.zoom_preview(ix, change, window, cx);
         }
     }

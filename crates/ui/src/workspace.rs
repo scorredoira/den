@@ -156,7 +156,7 @@ impl FileTab {
     /// diagrams it no longer shows: each edit of one is a new image.
     fn preview(&self, text: &str, window: &mut Window, cx: &mut App) {
         let Some(markdown) = &self.markdown else { return };
-        let fit = self.fit.get().then(|| self.column.get()).filter(|width| *width > 0.0);
+        let fit = self.fit.get().then(|| self.fitted.get()).filter(|width| *width > 0.0);
         let text = diagram::with_diagrams(text, self.preview_font_size(cx), fit);
         self.previewed.update(cx, |images, cx| images.keep_shown(&text, window, cx));
         markdown.update(cx, |view, cx| view.set_text(&text, cx));
@@ -181,12 +181,12 @@ struct FileTab {
     /// Its diagrams wider than the preview are drawn to fit it, shared
     /// like `zoom`.
     fit: Rc<Cell<bool>>,
-    /// The width of its preview's text as last drawn, which `fit` fits:
-    /// its own, as each view of the file has its width.
+    /// The width of its preview's text as last drawn: its own, as each
+    /// view of the file has its width.
     column: Cell<f32>,
-    /// Draws the diagrams again to fit the preview once its width stops
-    /// changing.
-    refit: Option<Task<()>>,
+    /// The width its diagrams were drawn to fit, shared like `zoom`: the
+    /// narrowest of its views shown (see `fit_previews`); 0, none yet.
+    fitted: Rc<Cell<f32>>,
     content: Content,
     lsp_status: LspStatus,
     /// Text as it is on disk, to tell whether there are unsaved changes.
@@ -526,8 +526,15 @@ pub struct Workspace {
     /// `apply_tab`): its size and whether it's tabs.
     tab: (usize, bool),
     message: Option<SharedString>,
-    /// The wheel's or the pinch's zoom not yet a whole step.
-    zoom_gesture: f32,
+    /// The wheel's or the pinch's zoom not yet a whole step, and the
+    /// editor of the preview it's over.
+    zoom_gesture: (Option<EntityId>, f32),
+    /// The previews shown that fit their width, as last seen; when what
+    /// they fit last changed; and a fit waiting for widths to stop
+    /// changing.
+    fit_shown: Vec<tabs::FitView>,
+    fit_moved: Option<std::time::Instant>,
+    refit: Option<Task<()>>,
     /// On a server, ports the task's terminals are listening on.
     ports: Vec<PortInfo>,
     lsp: Lsp,
@@ -738,7 +745,10 @@ impl Workspace {
             word_wrap: Config::get(cx).word_wrap,
             tab: (Config::get(cx).tab().tab_size, Config::get(cx).tab().hard_tabs),
             message,
-            zoom_gesture: 0.0,
+            zoom_gesture: (None, 0.0),
+            fit_shown: Vec::new(),
+            fit_moved: None,
+            refit: None,
             ports: Vec::new(),
             lsp: Lsp::default(),
             debugger,

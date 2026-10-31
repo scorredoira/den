@@ -885,6 +885,115 @@ fn the_wheel_zooms_the_preview_under_it(cx: &mut TestAppContext) {
     assert!(zooms[0] > 1.0 && zooms[1] == 1.0, "{zooms:?}");
 }
 
+/// Two views of a file side by side share their preview: fitting, its
+/// diagrams fit the narrower one, at once, and the other again when that
+/// one is no longer shown.
+#[gpui_kit::test]
+fn two_views_fit_the_narrower(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let fan: String = (0..12).map(|i| format!(" A --> B{i}[a long box number {i}]\n")).collect();
+    let wide = format!("```mermaid\nflowchart TD\n{fan}```\n");
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/two-fit"), None, true, "two-fit".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        workspace.open_doc("wide", wide, true, window, cx);
+        workspace.tabs[0].fit.set(true);
+        workspace
+    });
+    cx.simulate_resize(size(px(1200.), px(600.)));
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.new_view(0, 1, false, window, cx);
+        workspace.editor_split = Some(Axis::Row);
+        cx.notify();
+    });
+    // No clock advanced: a first width fits without waiting.
+    cx.run_until_parked();
+    let columns = workspace.read_with(cx, |workspace, _| [workspace.tabs[0].column.get(), workspace.tabs[1].column.get()]);
+    let narrower = columns[0].min(columns[1]);
+    assert!(narrower > 0.0 && narrower < 1200.0 / 2.0 + 1.0, "{columns:?}");
+    let diagram = bounds(cx, "image diagram").size.width;
+    assert!(f32::from(diagram) <= narrower + 1.0, "{diagram:?} for {columns:?}");
+    // The left one hides behind another tab while the window grows; shown
+    // again, the diagram fits both at their new width, not its old one.
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    let views = workspace.read_with(cx, |workspace, _| [workspace.tabs[0].editor.clone(), workspace.tabs[1].editor.clone()]);
+    workspace.update_in(cx, |workspace, window, cx| {
+        let left = workspace.tabs.iter().find(|tab| tab.editor == views[0]).unwrap().group;
+        workspace.open_doc("other", "# Other\n".into(), true, window, cx);
+        let other = workspace.tabs.iter().position(|tab| tab.path == Path::new("other")).unwrap();
+        workspace.tabs[other].group = left;
+        workspace.activate(other, window, cx);
+    });
+    cx.simulate_resize(size(px(1600.), px(600.)));
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| {
+        let left = workspace.tab_index(&views[0]).unwrap();
+        workspace.activate(left, window, cx);
+    });
+    cx.run_until_parked();
+    let columns = workspace.read_with(cx, |workspace, _| views.clone().map(|view| workspace.tabs[workspace.tab_index(&view).unwrap()].column.get()));
+    let regrown = f32::from(bounds(cx, "image diagram").size.width);
+    assert!(columns[0] > narrower + 50.0 && columns[1] > narrower + 50.0, "{columns:?}");
+    assert!(regrown > narrower + 50.0 && regrown <= columns[0].min(columns[1]) + 1.0, "{regrown} for {columns:?}");
+    // A while later the split closes: the view left shows it alone, the
+    // whole width.
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    workspace.update(cx, |workspace, cx| {
+        workspace.editor_split = None;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let wider = bounds(cx, "image diagram").size.width;
+    assert!(f32::from(wider) > narrower + 50.0, "{wider:?} after {diagram:?}");
+}
+
+/// Fitting, a preview whose width changes on and on (a window dragged)
+/// fits the first change at once and the rest once it stops.
+#[gpui_kit::test]
+fn a_dragged_width_fits_when_it_stops(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let fan: String = (0..12).map(|i| format!(" A --> B{i}[a long box number {i}]\n")).collect();
+    let wide = format!("```mermaid\nflowchart TD\n{fan}```\n");
+    let (_workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/drag-fit"), None, true, "drag-fit".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        workspace.open_doc("wide", wide, true, window, cx);
+        workspace.tabs[0].fit.set(true);
+        workspace
+    });
+    cx.simulate_resize(size(px(900.), px(600.)));
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    let width = |cx: &mut gpui_kit::VisualTestContext| f32::from(bounds(cx, "image diagram").size.width);
+    let at = |cx: &mut gpui_kit::VisualTestContext| f32::from(bounds(cx, "markdown-preview-area").size.width);
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    let first = width(cx);
+    assert!(first <= at(cx), "the first change fits at once: {first} in {}", at(cx));
+    // Changing on, for longer than it waits: still, nothing is drawn.
+    for wide in [700., 650., 600.] {
+        cx.simulate_resize(size(px(wide), px(600.)));
+        cx.run_until_parked();
+        cx.executor().advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(width(cx), first, "the next ones wait");
+    }
+    cx.executor().advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(width(cx) < first && width(cx) <= at(cx), "{} once it stopped, in {}", width(cx), at(cx));
+}
+
 /// The wheel over a value's card in the code stays in the card: the code
 /// under it doesn't scroll, and the card stays.
 #[gpui_kit::test]

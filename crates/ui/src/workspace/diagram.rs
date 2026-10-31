@@ -200,9 +200,15 @@ fn parse(source: &str) -> Result<Diagram, String> {
 
 fn parse_lines(source: &str) -> Result<Diagram, String> {
     let mut lines = source.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
-    let header = lines.next().ok_or("the block is empty")?;
+    let first = lines.next().ok_or("the block is empty")?;
+    // `graph TD;`, as most of Mermaid's examples begin, or all of it in a
+    // line: `graph TD; A-->B; B-->C`.
+    let (header, after) = first.split_once(';').unwrap_or((first, ""));
     let mut words = header.split_whitespace();
     match words.next() {
+        Some("stateDiagram" | "stateDiagram-v2") if !after.trim_matches(|c: char| c == ';' || c.is_whitespace()).is_empty() => {
+            Err(format!("`{first}`: a state diagram's statements go on lines of their own"))
+        }
         Some("stateDiagram" | "stateDiagram-v2") => parse_states(lines),
         Some("flowchart" | "graph") => {
             let direction = match words.next() {
@@ -212,19 +218,33 @@ fn parse_lines(source: &str) -> Result<Diagram, String> {
                 Some("RL") => Direction::Left,
                 Some(other) => return Err(format!("unknown direction `{other}`")),
             };
-            parse_flowchart(lines, direction)
+            parse_flowchart(std::iter::once(after).chain(lines), direction)
         }
         _ => Err(format!("`{header}`: only stateDiagram and flowchart are drawn")),
     }
 }
 
+/// How long the subgraph title `text` begins with is: `[…]`, `"…"`, or
+/// `["…"]`, where a `]` inside the quotes is the title's.
+fn title_len(text: &str) -> Option<usize> {
+    if let Some(inner) = text.strip_prefix("[\"") {
+        let quote = inner.find('"')?;
+        Some(2 + quote + inner[quote..].find(']')? + 1)
+    } else if let Some(inner) = text.strip_prefix('[') {
+        Some(1 + inner.find(']')? + 1)
+    } else {
+        Some(1 + text.strip_prefix('"')?.find('"')? + 1)
+    }
+}
+
 fn direction_line(line: &str) -> Option<Result<Direction, String>> {
-    let rest = line.strip_prefix("direction ")?;
+    let rest = line.strip_prefix("direction").filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))?;
     Some(match rest.trim() {
         "TB" | "TD" => Ok(Direction::Down),
         "BT" => Ok(Direction::Up),
         "LR" => Ok(Direction::Right),
         "RL" => Ok(Direction::Left),
+        "" => Err(format!("`{line}`: a direction with no TB, TD, BT, LR or RL")),
         other => Err(format!("unknown direction `{other}`")),
     })
 }
@@ -305,59 +325,84 @@ fn parse_flowchart<'a>(lines: impl Iterator<Item = &'a str>, mut direction: Dire
     let mut clusters: Vec<(String, Vec<String>)> = Vec::new();
     let mut open = "";
     for line in lines {
-        // A statement may end in `;`, `end;` and `subgraph A;` too.
-        let line = line.trim_end_matches(';').trim_end();
-        if let Some(d) = direction_line(line) {
-            // A subgraph's own direction is not followed.
-            if b.cluster.is_none() {
-                direction = d?;
-            }
-            continue;
-        }
-        let first = line.split_whitespace().next().unwrap_or("");
-        if first == "subgraph" {
-            if b.cluster.is_some() {
-                return Err(format!("`{line}`: subgraphs inside subgraphs are not drawn"));
-            }
-            // `subgraph id`, `subgraph id[title]` or `subgraph "title"`.
-            let rest = line["subgraph".len()..].trim();
-            let (id, title) = match rest.find('[') {
-                Some(i) if rest.ends_with(']') => (rest[..i].trim(), lines_of(&rest[i + 1..rest.len() - 1])),
-                _ => (rest, lines_of(rest)),
-            };
-            if id.is_empty() {
-                return Err(format!("`{line}`: a subgraph with no name"));
-            }
-            clusters.push((id.to_string(), title));
-            b.cluster = Some(clusters.len() - 1);
-            open = line;
-            continue;
-        }
-        if first == "end" {
-            if b.cluster.take().is_none() {
-                return Err(format!("`{line}`: no subgraph to end"));
-            }
-            continue;
-        }
-        if ["classDef", "class", "style", "linkStyle", "click"].contains(&first) {
-            return Err(format!("`{line}`: styles are not drawn"));
-        }
-        let mut p = Cursor { text: line, at: 0 };
-        let mut from = flow_nodes(&mut p, &mut b, line)?;
+        // A line may have several statements, each ended by `;`.
+        let mut text = line;
         loop {
-            p.skip_spaces();
-            if p.done() {
+            text = text.trim_start_matches(|c: char| c == ';' || c.is_whitespace());
+            if text.is_empty() {
                 break;
             }
-            let (dashed, arrow, label) = flow_link(&mut p, line)?;
-            p.skip_spaces();
-            let to = flow_nodes(&mut p, &mut b, line)?;
-            for &f in &from {
-                for &t in &to {
-                    b.edges.push(Edge { from: f, to: t, label: label.clone(), dashed, arrow });
+            let first = text.split(|c: char| c == ';' || c.is_whitespace()).next().unwrap_or("");
+            if !["direction", "subgraph", "end", "classDef", "class", "style", "linkStyle", "click"].contains(&first) {
+                // Nodes and links: where a statement ends is known as they're
+                // read, as their texts may have a `;`.
+                let mut p = Cursor { text, at: 0 };
+                let mut from = flow_nodes(&mut p, &mut b, line)?;
+                loop {
+                    p.skip_spaces();
+                    if p.done() || p.rest().starts_with(';') {
+                        break;
+                    }
+                    let (dashed, arrow, label) = flow_link(&mut p, line)?;
+                    p.skip_spaces();
+                    let to = flow_nodes(&mut p, &mut b, line)?;
+                    for &f in &from {
+                        for &t in &to {
+                            b.edges.push(Edge { from: f, to: t, label: label.clone(), dashed, arrow });
+                        }
+                    }
+                    from = to;
                 }
+                text = &p.text[p.at..];
+                continue;
             }
-            from = to;
+            // A keyword's statement goes to the next `;` after a subgraph's
+            // title (`subgraph A[a; b]`, `subgraph "a; b"`).
+            let semicolon = text.find(';');
+            let title = text
+                .find(['[', '"'])
+                .filter(|&open| first == "subgraph" && semicolon.is_some_and(|semicolon| open < semicolon))
+                .and_then(|open| Some(open + title_len(&text[open..])?))
+                .unwrap_or(0);
+            let (statement, rest) = match text[title..].find(';') {
+                Some(at) => (&text[..title + at], &text[title + at + 1..]),
+                None => (text, ""),
+            };
+            let statement = statement.trim();
+            text = rest;
+            if let Some(d) = direction_line(statement) {
+                // A subgraph's own direction is not followed.
+                if b.cluster.is_none() {
+                    direction = d?;
+                }
+                continue;
+            }
+            match first {
+                "subgraph" => {
+                    if b.cluster.is_some() {
+                        return Err(format!("`{statement}`: subgraphs inside subgraphs are not drawn"));
+                    }
+                    // `subgraph id`, `subgraph id[title]` or `subgraph "title"`.
+                    let rest = statement["subgraph".len()..].trim();
+                    let (id, title) = match rest.find('[') {
+                        // The title, read as the statement was split.
+                        Some(i) if title_len(&rest[i..]) == Some(rest.len() - i) => (rest[..i].trim(), lines_of(&rest[i + 1..rest.len() - 1])),
+                        _ => (rest, lines_of(rest)),
+                    };
+                    if id.is_empty() {
+                        return Err(format!("`{statement}`: a subgraph with no name"));
+                    }
+                    clusters.push((id.to_string(), title));
+                    b.cluster = Some(clusters.len() - 1);
+                    open = statement;
+                }
+                "end" => {
+                    if b.cluster.take().is_none() {
+                        return Err(format!("`{statement}`: no subgraph to end"));
+                    }
+                }
+                _ => return Err(format!("`{statement}`: styles are not drawn")),
+            }
         }
     }
     if b.cluster.is_some() {
@@ -1932,13 +1977,40 @@ mod tests {
   com & com2 & app & ci -- \"v2api.pass (v1 API)\" --> V1
 ";
 
-    /// A statement may end in `;`, a subgraph's first and last lines too.
+    /// A statement may end in `;`: the header, a subgraph's first and last
+    /// lines too; and a line may have several.
     #[test]
     fn subgraphs_end_in_semicolons_too() {
-        let d = parse("flowchart TD\n subgraph A;\n a --> b;\n end;\n c --> A;").unwrap();
+        let d = parse("graph TD;\n subgraph A;\n a --> b;\n end;\n c --> A;").unwrap();
         assert_eq!(d.clusters, [vec!["A".to_string()]]);
         let anchor = d.nodes.iter().position(|n| n.shape == Shape::Cluster).unwrap();
         assert_eq!(d.edges.iter().filter(|e| e.to == anchor).count(), 1);
+        // All in a line; a `;` in a text is the text's.
+        let d = parse("graph LR;A[\"a; b\"]-->B;B-->|x;y| C(c;d); C -- yes; maybe --> D").unwrap();
+        assert_eq!(d.direction, Direction::Right);
+        let labels: Vec<_> = d.edges.iter().map(|e| e.label.join(" ")).collect();
+        assert_eq!(labels, ["", "x;y", "yes; maybe"]);
+        assert!(d.nodes.iter().any(|n| n.label == ["a; b"]), "{:?}", d.nodes.iter().map(|n| &n.label).collect::<Vec<_>>());
+        assert!(d.nodes.iter().any(|n| n.label == ["c;d"]));
+        // A bracket in a text is the text's too.
+        let d = parse("flowchart TD\n A[smile :(] --> B; B --> C;").unwrap();
+        assert_eq!(d.edges.len(), 2);
+        assert!(d.nodes.iter().any(|n| n.label == ["smile :("]));
+        // Subgraphs and directions in a line, a title with a `;`.
+        let d = parse("graph TD; subgraph S[a; b]; direction LR; a --> b; end; c --> S").unwrap();
+        assert_eq!(d.clusters, [vec!["a; b".to_string()]]);
+        assert_eq!(d.edges.len(), 2);
+        for (title, read) in [("S[\"x [y]; z\"]", "x [y]; z"), ("\"a; b\"", "a; b"), ("S[\"q\"]", "q")] {
+            let d = parse(&format!("graph TD\n subgraph {title}; a; end")).unwrap_or_else(|e| panic!("{title}: {e}"));
+            assert_eq!(d.clusters, [vec![read.to_string()]], "{title}");
+        }
+        assert!(parse("stateDiagram-v2;;\n [*] --> A").is_ok());
+        // A direction with no direction says so.
+        assert!(parse("graph TD\n direction").unwrap_err().contains("a direction with no"));
+        assert!(parse("graph TD\n direction\tLR\n a --> b").is_ok());
+        // A state diagram's statements go on lines of their own.
+        assert!(parse("stateDiagram-v2; [*] --> A").is_err());
+        assert_eq!(parse("stateDiagram-v2;\n [*] --> A").unwrap().edges.len(), 1);
     }
 
     /// A subgraph's nodes are drawn in its box and no other node is; an

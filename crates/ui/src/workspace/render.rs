@@ -784,7 +784,9 @@ impl Render for Workspace {
         // What the panels show follows what's drawn here, told to them right
         // after: told while drawing, the ones drawn from cache wouldn't see
         // it until something else redrew them.
-        cx.defer_in(window, |this, _, cx| {
+        cx.defer_in(window, |this, window, cx| {
+            // A preview shown or hidden changes what the diagrams fit.
+            this.fit_previews(false, window, cx);
             this.shape_terminals(cx);
             this.sync_debug_layout(cx);
             this.place_shown(cx);
