@@ -305,6 +305,8 @@ fn parse_flowchart<'a>(lines: impl Iterator<Item = &'a str>, mut direction: Dire
     let mut clusters: Vec<(String, Vec<String>)> = Vec::new();
     let mut open = "";
     for line in lines {
+        // A statement may end in `;`, `end;` and `subgraph A;` too.
+        let line = line.trim_end_matches(';').trim_end();
         if let Some(d) = direction_line(line) {
             // A subgraph's own direction is not followed.
             if b.cluster.is_none() {
@@ -340,7 +342,7 @@ fn parse_flowchart<'a>(lines: impl Iterator<Item = &'a str>, mut direction: Dire
         if ["classDef", "class", "style", "linkStyle", "click"].contains(&first) {
             return Err(format!("`{line}`: styles are not drawn"));
         }
-        let mut p = Cursor { text: line.trim_end_matches(';'), at: 0 };
+        let mut p = Cursor { text: line, at: 0 };
         let mut from = flow_nodes(&mut p, &mut b, line)?;
         loop {
             p.skip_spaces();
@@ -1929,6 +1931,15 @@ mod tests {
   help -- \"SSH sim@help\" --> v1am
   com & com2 & app & ci -- \"v2api.pass (v1 API)\" --> V1
 ";
+
+    /// A statement may end in `;`, a subgraph's first and last lines too.
+    #[test]
+    fn subgraphs_end_in_semicolons_too() {
+        let d = parse("flowchart TD\n subgraph A;\n a --> b;\n end;\n c --> A;").unwrap();
+        assert_eq!(d.clusters, [vec!["A".to_string()]]);
+        let anchor = d.nodes.iter().position(|n| n.shape == Shape::Cluster).unwrap();
+        assert_eq!(d.edges.iter().filter(|e| e.to == anchor).count(), 1);
+    }
 
     /// A subgraph's nodes are drawn in its box and no other node is; an
     /// edge to the subgraph ends on its box.

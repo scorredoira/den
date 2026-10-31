@@ -852,6 +852,39 @@ fn the_mouse_zooms_the_preview_and_its_diagrams_fit(cx: &mut TestAppContext) {
     assert_eq!(width(cx), normal);
 }
 
+/// Cmd and the wheel zoom the preview under the pointer, in either group,
+/// not the active tab.
+#[gpui_kit::test]
+fn the_wheel_zooms_the_preview_under_it(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+    });
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/two-zoom"), None, true, "two-zoom".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        workspace.open_doc("left", "# Left\n".into(), true, window, cx);
+        workspace.open_doc("right", "# Right\n".into(), true, window, cx);
+        workspace.tabs[1].group = 1;
+        workspace.editor_split = Some(Axis::Row);
+        workspace.activate(1, window, cx);
+        workspace
+    });
+    cx.simulate_resize(size(px(1000.), px(600.)));
+    cx.run_until_parked();
+    // Both previews have the same selector: the left one is in the left half.
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(250.), px(300.)),
+        delta: ScrollDelta::Lines(point(0., 1.)),
+        modifiers: Modifiers::command(),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let zooms = workspace.read_with(cx, |workspace, _| [workspace.tabs[0].zoom.get(), workspace.tabs[1].zoom.get()]);
+    assert!(zooms[0] > 1.0 && zooms[1] == 1.0, "{zooms:?}");
+}
+
 /// The wheel over a value's card in the code stays in the card: the code
 /// under it doesn't scroll, and the card stays.
 #[gpui_kit::test]

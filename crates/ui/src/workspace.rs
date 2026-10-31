@@ -181,8 +181,12 @@ struct FileTab {
     /// Its diagrams wider than the preview are drawn to fit it, shared
     /// like `zoom`.
     fit: Rc<Cell<bool>>,
-    /// The width of its preview's text as last drawn, which `fit` fits.
-    column: Rc<Cell<f32>>,
+    /// The width of its preview's text as last drawn, which `fit` fits:
+    /// its own, as each view of the file has its width.
+    column: Cell<f32>,
+    /// Draws the diagrams again to fit the preview once its width stops
+    /// changing.
+    refit: Option<Task<()>>,
     content: Content,
     lsp_status: LspStatus,
     /// Text as it is on disk, to tell whether there are unsaved changes.

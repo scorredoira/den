@@ -153,8 +153,13 @@ mod mac {
                     msg_send![window, initWithContentRect: PAGE, styleMask: 0usize, backing: 2usize, defer: Bool::NO];
                 let window = window.ok_or("no window")?;
                 let _: () = msg_send![&*window, setReleasedWhenClosed: Bool::NO];
+                // The Markdown's own HTML is kept, but not its scripts: a
+                // file from anywhere runs nothing, as in the preview.
+                let config: Retained<AnyObject> = msg_send![class!(WKWebViewConfiguration), new];
+                let preferences: Retained<AnyObject> = msg_send![&*config, defaultWebpagePreferences];
+                let _: () = msg_send![&*preferences, setAllowsContentJavaScript: Bool::NO];
                 let web: Allocated<AnyObject> = msg_send![class!(WKWebView), alloc];
-                let web: Option<Retained<AnyObject>> = msg_send![web, initWithFrame: PAGE];
+                let web: Option<Retained<AnyObject>> = msg_send![web, initWithFrame: PAGE, configuration: &*config];
                 let web = web.ok_or("no web view")?;
                 let _: () = msg_send![&*window, setContentView: &*web];
                 let base = base.map(|base| file_url(base, true)).transpose()?;

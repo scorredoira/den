@@ -367,9 +367,12 @@ impl Workspace {
                         .debug_selector(|| "markdown-preview-area".into())
                         .size_full()
                         .relative()
-                        .on_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
-                            this.pinch_preview(event.delta, window, cx);
-                        }))
+                        .on_pinch({
+                            let editor = tab.editor.clone();
+                            cx.listener(move |this, event: &PinchEvent, window, cx| {
+                                this.pinch_preview(&editor, event.delta, window, cx);
+                            })
+                        })
                         .context_menu({
                             let readonly = tab.diff.is_some() || tab.doc;
                             let fit = tab.fit.get();
@@ -401,6 +404,7 @@ impl Workspace {
                                     });
                                 }
                                 let workspace = workspace.clone();
+                                let editor = editor.clone();
                                 window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                                     if phase != DispatchPhase::Capture || !event.modifiers.platform || !bounds.contains(&event.position) {
                                         return;
@@ -410,7 +414,7 @@ impl Workspace {
                                         ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 50.0,
                                     };
                                     cx.stop_propagation();
-                                    workspace.update(cx, |this, cx| this.zoom_preview_by(lines, window, cx)).ok();
+                                    workspace.update(cx, |this, cx| this.zoom_preview_by(&editor, lines, window, cx)).ok();
                                 });
                             })
                             .absolute()

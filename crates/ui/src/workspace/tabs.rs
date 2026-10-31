@@ -9,6 +9,8 @@ const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
 /// A step of zooming with the wheel or the trackpad.
 const ZOOM_GESTURE: f32 = 1.1;
+/// How long a preview's width stays put before its diagrams fit it again.
+const REFIT_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
 
 impl Workspace {
     /// Opens another view of tab `of`'s file in `group`, with the same text
@@ -25,7 +27,6 @@ impl Workspace {
         view.previewed = source.previewed.clone();
         view.zoom = source.zoom.clone();
         view.fit = source.fit.clone();
-        view.column = source.column.clone();
         view.image = source.image.clone();
         view.grab_focus = false;
         if matches!(source.content, Content::Ready) {
@@ -438,77 +439,100 @@ impl Workspace {
     }
 
     pub(super) fn zoom_in_preview(&mut self, _: &ZoomInPreview, window: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_preview(|zoom| zoom * ZOOM_STEP, window, cx);
+        self.zoom_active_preview(|zoom| zoom * ZOOM_STEP, window, cx);
     }
 
     pub(super) fn zoom_out_preview(&mut self, _: &ZoomOutPreview, window: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_preview(|zoom| zoom / ZOOM_STEP, window, cx);
+        self.zoom_active_preview(|zoom| zoom / ZOOM_STEP, window, cx);
     }
 
     pub(super) fn reset_preview_zoom(&mut self, _: &ResetPreviewZoom, window: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_preview(|_| 1.0, window, cx);
+        self.zoom_active_preview(|_| 1.0, window, cx);
+    }
+
+    /// The active tab, if it shows rendered Markdown.
+    fn active_preview(&self) -> Option<usize> {
+        self.active.filter(|&ix| self.tabs[ix].rendered().is_some())
     }
 
     /// Markdown: the active tab's diagrams wider than its preview are drawn
     /// to fit it, or again at their size, scrolling sideways.
     pub(super) fn fit_preview_diagrams(&mut self, _: &FitPreviewDiagrams, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active.map(|ix| &self.tabs[ix]).filter(|tab| tab.rendered().is_some()) else {
+        let Some(ix) = self.active_preview() else {
             return;
         };
-        tab.fit.set(!tab.fit.get());
-        self.preview_again(window, cx);
+        let fit = &self.tabs[ix].fit;
+        fit.set(!fit.get());
+        self.preview_again(ix, window, cx);
     }
 
     /// The preview of the tab with `editor` is `width` wide for its text:
-    /// when its diagrams fit it and it changed, they are drawn again to fit.
+    /// when its diagrams fit it and it changed, they are drawn again to fit,
+    /// once it stops changing (a window or a split dragged changes it every
+    /// frame).
     pub(super) fn preview_resized(&mut self, editor: &Entity<EditorState>, width: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.tab_index(editor).map(|ix| &self.tabs[ix]) else {
+        let Some(ix) = self.tab_index(editor) else {
             return;
         };
+        let tab = &mut self.tabs[ix];
         if (tab.column.get() - width).abs() < 1.0 {
             return;
         }
         tab.column.set(width);
-        if tab.fit.get() {
-            let text = tab.editor.read(cx).value().to_string();
-            tab.preview(&text, window, cx);
-            cx.notify();
+        if !tab.fit.get() {
+            return;
         }
+        let editor = editor.clone();
+        tab.refit = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(REFIT_AFTER).await;
+            this.update_in(cx, |this, window, cx| {
+                if let Some(ix) = this.tab_index(&editor) {
+                    this.preview_again(ix, window, cx);
+                }
+            })
+            .ok();
+        }));
     }
 
-    /// The active tab's preview, made again for its zoom or its width.
-    fn preview_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active.map(|ix| &self.tabs[ix]).filter(|tab| tab.rendered().is_some()) else {
-            return;
-        };
+    /// A tab's preview, made again for its zoom or its width.
+    fn preview_again(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[ix];
         let text = tab.editor.read(cx).value().to_string();
         tab.preview(&text, window, cx);
         cx.notify();
     }
 
-    /// Cmd and the wheel, or a pinch, zoom the preview by `steps` of
-    /// ZOOM_GESTURE, a line of the wheel each: whole ones, as the wheel or
-    /// the fingers add up to them, so each draws the diagrams once.
-    pub(super) fn zoom_preview_by(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
+    /// Cmd and the wheel, or a pinch, over the preview of the tab with
+    /// `editor` zoom it by `steps` of ZOOM_GESTURE, a line of the wheel
+    /// each: whole ones, as the wheel or the fingers add up to them, so
+    /// each draws the diagrams once.
+    pub(super) fn zoom_preview_by(&mut self, editor: &Entity<EditorState>, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.tab_index(editor) else {
+            return;
+        };
         self.zoom_gesture += steps;
         let whole = self.zoom_gesture.trunc();
         if whole != 0.0 {
             self.zoom_gesture -= whole;
-            self.zoom_preview(|zoom| zoom * ZOOM_GESTURE.powf(whole), window, cx);
+            self.zoom_preview(ix, |zoom| zoom * ZOOM_GESTURE.powf(whole), window, cx);
         }
     }
 
     /// A pinch of `delta` (0.1 is 10% larger) in steps of ZOOM_GESTURE.
-    pub(super) fn pinch_preview(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_preview_by((1.0 + delta).max(0.01).ln() / ZOOM_GESTURE.ln(), window, cx);
+    pub(super) fn pinch_preview(&mut self, editor: &Entity<EditorState>, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_preview_by(editor, (1.0 + delta).max(0.01).ln() / ZOOM_GESTURE.ln(), window, cx);
     }
 
-    /// Markdown: the rendered view of the active tab, its text and its
-    /// diagrams, larger or smaller; a diagram is drawn again at its new size.
-    fn zoom_preview(&mut self, change: impl FnOnce(f32) -> f32, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
-            return;
-        };
+    fn zoom_active_preview(&mut self, change: impl FnOnce(f32) -> f32, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.active_preview() {
+            self.zoom_preview(ix, change, window, cx);
+        }
+    }
+
+    /// Markdown: a tab's rendered view, its text and its diagrams, larger
+    /// or smaller; a diagram is drawn again at its new size.
+    fn zoom_preview(&mut self, ix: usize, change: impl FnOnce(f32) -> f32, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[ix];
         if tab.rendered().is_none() {
             return;
         }
@@ -519,20 +543,22 @@ impl Workspace {
             return;
         }
         tab.zoom.set(zoom);
-        self.preview_again(window, cx);
+        self.preview_again(ix, window, cx);
     }
 
     /// Markdown: saves the active tab's rendered view as a PDF where the
     /// user says, and says how it went.
     pub(super) fn export_preview_pdf(&mut self, _: &ExportPreviewPdf, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active.map(|ix| &self.tabs[ix]) else {
+        let Some(tab) = self.active_preview().map(|ix| &self.tabs[ix]) else {
             return;
         };
-        if tab.rendered().is_none() {
-            return;
-        }
         let text = tab.editor.read(cx).value().to_string();
-        let title = tab.path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+        // A doc's path is its title, dots and slashes and all.
+        let title = if tab.doc {
+            tab.path.to_string_lossy().into_owned()
+        } else {
+            tab.path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
+        };
         // A doc's title can have a `:` or a `/`, which Finder's names can't.
         let name = title.replace([':', '/'], " -");
         let page = pdf::html(&diagram::with_diagrams(&text, Config::get(cx).font_size(TextArea::Preview), None), &title);

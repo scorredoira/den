@@ -313,8 +313,15 @@ pub fn apply(cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(others);
     cx.bind_keys(bindings);
-    // Where + has a key of its own (a Spanish keyboard), it zooms in too.
-    cx.bind_keys([KeyBinding::new("secondary-+", ZoomInPreview, None)]);
+    // Where + has a key of its own (a Spanish keyboard), it zooms in as =
+    // does, while Zoom In has a key with = and + is no other shortcut's.
+    let zoom_in = SHORTCUTS.iter().find(|shortcut| shortcut.id == "ZoomInPreview").expect("a shortcut");
+    if let Some(mut plus) = keys(zoom_in, cx).filter(|keystroke| keystroke.key == "=") {
+        plus.key = "+".into();
+        if owner(&plus, cx).is_none() {
+            cx.bind_keys([KeyBinding::new(&plus.unparse(), ZoomInPreview, None)]);
+        }
+    }
     // After the app's, so they win inside the editor (see `editing::keymap`).
     cx.bind_keys(crate::editing::keymap());
     // Also after the app's: a binding without context and one in the focused
