@@ -624,7 +624,7 @@ impl TerminalArea {
 
     /// The terminals by tab, with their titles and whether each is the active one.
     pub fn list(&self, cx: &App) -> Vec<(TermId, String, bool)> {
-        let active = self.tabs.get(self.active).map(|tab| tab.active);
+        let active = self.active_term();
         self.tabs
             .iter()
             .flat_map(TerminalTab::terms)
@@ -633,6 +633,11 @@ impl TerminalArea {
                 Some((term, title, Some(term) == active))
             })
             .collect()
+    }
+
+    /// The terminal in front: the active one of the tab shown.
+    pub fn active_term(&self) -> Option<TermId> {
+        self.tabs.get(self.active).map(|tab| tab.active)
     }
 
     /// Shows terminal `term` and gives it the keyboard; false if it isn't here.

@@ -201,6 +201,11 @@ impl Workspace {
         self.terminals.update(cx, |terminals, cx| terminals.rename_term(term, name, cx))
     }
 
+    /// The terminal in front in this workspace's terminals.
+    pub fn active_terminal(&self, cx: &App) -> Option<proto::TermId> {
+        self.terminals.read(cx).active_term()
+    }
+
     /// `den term focus`: false if `term` isn't one of this workspace's.
     pub fn focus_terminal(&mut self, term: proto::TermId, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let found = self.terminals.update(cx, |terminals, cx| terminals.focus_term(term, window, cx));

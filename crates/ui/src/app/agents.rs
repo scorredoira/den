@@ -154,12 +154,11 @@ impl Den {
             .map(|(_, color, _)| color)
     }
 
-    /// The Agents panel: every agent, on every server, by workspace (in the
-    /// column's order): its state's dot, its workspace and its state.
+    /// The Agents panel: every agent, on every server, alphabetically
+    /// by workspace: its state's dot, its workspace and its name.
     pub(super) fn render_agents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows: Vec<AnyElement> = Vec::new();
         let several = self.agents.values().filter(|agents| !agents.is_empty()).count() > 1;
-        let ordered: Vec<TaskKey> = self.ordered(cx).into_iter().map(|(key, _)| key).collect();
         for host in &self.hosts {
             let Some(agents) = self.agents.get(&host.name).filter(|agents| !agents.is_empty()).cloned() else {
                 continue;
@@ -175,20 +174,14 @@ impl Den {
                         .into_any_element(),
                 );
             }
-            // By workspace, in the column's order; those it doesn't list, last.
-            let mut groups: Vec<&str> = agents.iter().map(|agent| agent.group.as_str()).collect();
-            groups.sort();
-            groups.dedup();
-            groups.sort_by_key(|group| {
-                ordered
-                    .iter()
-                    .position(|key| key.host == host.name && key.path == Path::new(group))
-                    .unwrap_or(usize::MAX)
+            // Alphabetically by what the row shows, so they don't move while they work.
+            let mut agents: Vec<&AgentInfo> = agents.iter().collect();
+            agents.sort_by_cached_key(|agent| {
+                let name = terminals::saved_term_name(&agent.group, agent.term).unwrap_or_default();
+                (self.agent_label(&host.name, agent).to_lowercase(), name.to_lowercase(), agent.term)
             });
-            for group in groups {
-                for agent in agents.iter().filter(|agent| agent.group == group) {
-                    rows.push(self.render_agent(&host.name, agent, cx));
-                }
+            for agent in agents {
+                rows.push(self.render_agent(&host.name, agent, cx));
             }
         }
         let theme = cx.theme();
@@ -212,6 +205,12 @@ impl Den {
             .children(empty)
     }
 
+    /// The workspace an agent's row names: its repo and branch, or its folder.
+    fn agent_label(&self, host: &SharedString, agent: &AgentInfo) -> SharedString {
+        let key = TaskKey { host: host.clone(), path: PathBuf::from(&agent.group) };
+        self.task(&key).map(row_label).unwrap_or_else(|| folder_name(&key.path).into())
+    }
+
     /// An agent's row: its dot, its name if it was given one, and its
     /// workspace; what it's on, on hover. The dot is its state: no word for
     /// it ("working", "done"…), ever.
@@ -219,8 +218,7 @@ impl Den {
         let (dot, color, _) = self.agent_status(host, agent, cx);
         let theme = cx.theme();
         let title = agent_title(agent);
-        let key = TaskKey { host: host.clone(), path: PathBuf::from(&agent.group) };
-        let label = self.task(&key).map(row_label).unwrap_or_else(|| folder_name(&key.path).into());
+        let label = self.agent_label(host, agent);
         let name = terminals::saved_term_name(&agent.group, agent.term);
         let name_given = name.is_some();
         let (host, group, term) = (host.clone(), agent.group.clone(), agent.term);
@@ -230,6 +228,10 @@ impl Den {
             .filter(|rename| rename.host == host && rename.term == term)
             .map(|rename| rename.input.clone());
         let renaming = input.is_some();
+        // The one in front: its workspace's, and its terminal the one shown there.
+        let key = TaskKey { host: host.clone(), path: PathBuf::from(&group) };
+        let selected = self.active.as_ref() == Some(&key)
+            && self.workspaces.get(&key).and_then(|workspace| workspace.read(cx).active_terminal(cx)) == Some(term);
         let weak = cx.entity().downgrade();
         h_flex()
             .id(SharedString::from(format!("agent-{host}-{term}")))
@@ -237,7 +239,8 @@ impl Den {
             .px_3()
             .gap_2()
             .text_ui(cx)
-            .hover(|style| style.bg(theme.sidebar_accent.opacity(0.5)))
+            .when(selected, |el| el.bg(selected_row(cx)))
+            .when(!selected, |el| el.hover(|style| style.bg(theme.sidebar_accent.opacity(0.5))))
             .child(div().flex_none().w(px(12.)).text_ui_small(cx).text_color(color).child(dot))
             .map(|row| match input {
                 Some(input) => row.child(

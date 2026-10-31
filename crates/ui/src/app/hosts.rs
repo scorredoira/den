@@ -344,8 +344,12 @@ impl Den {
     /// A folder that's no longer there: closed, and off the column's order
     /// and the recent ones.
     pub(super) fn forget_gone(&mut self, key: TaskKey, window: &mut Window, cx: &mut Context<Self>) {
-        // Its unsaved files stay open, to be saved somewhere else.
-        if self.workspaces.get(&key).is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty()) {
+        // Its unsaved files stay open, to be saved somewhere else; its
+        // running agents, to be reached in their terminals (it closes once
+        // they're gone).
+        if self.workspaces.get(&key).is_some_and(|workspace| !workspace.read(cx).unsaved().is_empty())
+            || !self.workspace_agents(&key).is_empty()
+        {
             return;
         }
         if self.remembers() {
