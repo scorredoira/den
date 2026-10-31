@@ -353,17 +353,20 @@ pub fn sync_find_bar(cx: &mut App) {
 }
 
 /// The width of the Graph tab's author column, in pixels: with the
-/// emails (`author`) and with the names alone (`name`).
+/// emails (`author`) and with the names alone (`name`); and the height of
+/// an open commit's message and files, once dragged (`commit`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistorySizes {
     pub author: f32,
     pub name: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<f32>,
 }
 
 impl Default for HistorySizes {
     fn default() -> Self {
-        Self { author: 340., name: 180. }
+        Self { author: 340., name: 180., commit: None }
     }
 }
 

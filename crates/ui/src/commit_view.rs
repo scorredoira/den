@@ -1,5 +1,5 @@
-//! A whole commit (VS Code's multi-diff), as `git show` prints it: above, as
-//! tall as they need, its message, author and date and its files; under
+//! A whole commit (VS Code's multi-diff), as `git show` prints it: above, in
+//! one row its height dragged, its message, author and date and its files; under
 //! them each file's changes side by side, one after another, with the lines
 //! highlighted as the file's language. A file above goes to its changes.
 //! Read-only rows in one list; a file's name opens that file's diff in its
@@ -34,6 +34,18 @@ use crate::{
 const MAX_FILE_ROWS: usize = 3000;
 /// Sides larger than this aren't highlighted.
 const MAX_HIGHLIGHTED: usize = 256 * 1024;
+/// The message and files are never dragged shorter than this.
+const MIN_HEADER: f32 = 48.;
+
+/// The lower edge of the message and files, dragged to size them.
+#[derive(Clone)]
+struct ResizeHeader;
+
+impl Render for ResizeHeader {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
 
 /// What a file of the commit asks for, by its path.
 #[derive(Clone)]
@@ -627,29 +639,68 @@ fn halves(side: &diff::Side, language: &str, word: Hsla, theme: &HighlightTheme)
 }
 
 impl CommitView {
-    /// Over the changes, as tall as it needs (up to a part of the view,
-    /// then it scrolls): the message, who wrote it and when, and the files
-    /// one after another in lines.
+    /// Over the changes, in one row: the message, who wrote it and when on
+    /// the left, the files one under another on the right, each scrolling
+    /// on its own. As tall as it needs (up to a part of the view) until its
+    /// lower edge is dragged, then as tall as it was left.
     fn render_header(&self, message: &CommitMessage, cx: &mut Context<Self>) -> AnyElement {
         let files: Vec<AnyElement> = self.files.iter().enumerate().map(|(ix, file)| self.file_item(ix, file, cx)).collect();
+        let height = Config::get(cx).history.commit;
         let theme = cx.theme();
-        v_flex()
-            .id("commit-header")
-            .when(cfg!(test), |el| el.debug_selector(|| "commit-header".into()))
-            .flex_none()
-            .max_h(relative(0.4))
+        let text = v_flex()
+            .id("commit-message")
+            .flex_1()
+            .min_w_0()
             .overflow_y_scroll()
             .px_4()
             .py_2()
             .gap_2()
+            .child(div().font_semibold().child(message.subject.clone()))
+            .when(!message.body.is_empty(), |el| el.child(div().child(message.body.clone())))
+            .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(message.meta.clone()));
+        let files = v_flex()
+            .id("commit-files")
+            .flex_1()
+            .min_w_0()
+            .overflow_x_hidden()
+            .overflow_y_scroll()
+            .px_3()
+            .py_2()
+            .border_l_1()
+            .border_color(theme.border)
+            .children(files);
+        h_flex()
+            .id("commit-header")
+            .when(cfg!(test), |el| el.debug_selector(|| "commit-header".into()))
+            .relative()
+            .flex_none()
+            .items_stretch()
+            .map(|el| match height {
+                Some(height) => el.h(px(height.max(MIN_HEADER))),
+                None => el.max_h(relative(0.4)),
+            })
             .border_b_1()
             .border_color(theme.border)
             .text_ui(cx)
             .whitespace_normal()
-            .child(div().font_semibold().child(message.subject.clone()))
-            .when(!message.body.is_empty(), |el| el.child(div().child(message.body.clone())))
-            .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(message.meta.clone()))
-            .child(h_flex().flex_wrap().gap_x_3().children(files))
+            .child(text)
+            .child(files)
+            .child(
+                div()
+                    .id("commit-header-resize")
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(4.))
+                    .cursor_row_resize()
+                    .on_drag(ResizeHeader, |drag, _, _, cx| cx.new(|_| drag.clone())),
+            )
+            .on_drag_move(cx.listener(|_, event: &DragMoveEvent<ResizeHeader>, _, cx| {
+                let height = f32::from(event.event.position.y - event.bounds.top()).max(MIN_HEADER);
+                Config::update_quietly(cx, |config| config.history.commit = Some(height));
+                cx.notify();
+            }))
             .into_any_element()
     }
 
