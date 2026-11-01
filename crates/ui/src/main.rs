@@ -20,6 +20,7 @@ mod file_tree;
 mod language;
 mod menu;
 mod notes;
+mod file_viewer;
 mod folder_picker;
 mod guide;
 mod picker;

@@ -261,7 +261,7 @@ impl ChangesPanel {
                 .disabled(deleted),
             )
             .item(
-                menu::item("Reveal in Finder", &panel, move |_, _, cx| cx.reveal_path(&absolute))
+                menu::item(crate::file_viewer::reveal_label(), &panel, move |_, _, cx| crate::file_viewer::reveal(&absolute, cx))
                     .disabled(deleted || !local),
             )
             .separator()

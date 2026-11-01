@@ -1291,9 +1291,9 @@ impl FileTree {
             cx.write_to_clipboard(ClipboardItem::new_string(relative.clone()))
         })))
         .when(self.local, |menu| {
-            menu.item(item("Reveal in Finder", {
+            menu.item(item(crate::file_viewer::reveal_label(), {
                 let path = path.clone();
-                Box::new(move |_, _, cx| cx.reveal_path(&path))
+                Box::new(move |_, _, cx| crate::file_viewer::reveal(&path, cx))
             }))
         })
         .when(!self.plain, |menu| {

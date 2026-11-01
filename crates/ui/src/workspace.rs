@@ -1296,7 +1296,7 @@ impl Workspace {
     }
 
     /// A path Cmd-clicked in a terminal. A folder of the task opens in the
-    /// files panel, one outside it in Finder; a file Den can't show (a PDF)
+    /// files panel, one outside it in the file browser (Explorer or Finder); a file Den can't show (a PDF)
     /// in its app; any other file in a tab, at its line.
     fn open_terminal_path(
         &mut self,
@@ -1315,7 +1315,7 @@ impl Workspace {
             self.show_panel(Panel::Files, cx);
             self.file_tree.update(cx, |tree, cx| tree.reveal_folder(&path, cx));
         } else if self.local && (is_dir || !shown_in_den(&path)) {
-            cx.open_with_system(&path);
+            crate::file_viewer::open(&path, cx);
         } else {
             let goto = Position::new(line.unwrap_or(1).saturating_sub(1), column.unwrap_or(1).saturating_sub(1));
             self.open_at(path, goto, window, cx);

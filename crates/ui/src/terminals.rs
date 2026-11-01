@@ -921,7 +921,7 @@ impl TerminalArea {
             view.update(cx, |view, cx| view.open_link(link.clone(), cx))
         }))
         .when_some(reveal, |menu, (path, local)| {
-            menu.item(menu::item("Reveal in Finder", &area, move |_, _, cx| cx.reveal_path(&path)).disabled(!local))
+            menu.item(menu::item(crate::file_viewer::reveal_label(), &area, move |_, _, cx| crate::file_viewer::reveal(&path, cx)).disabled(!local))
         })
         .item(menu::item(copy_label, &area, move |_, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))

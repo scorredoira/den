@@ -291,8 +291,8 @@ impl Workspace {
             }))
             .when(local, |menu| {
                 let path = path.clone();
-                menu.item(menu::item("Reveal in Finder", &workspace, move |_, _, cx| {
-                    cx.reveal_path(&path)
+                menu.item(menu::item(crate::file_viewer::reveal_label(), &workspace, move |_, _, cx| {
+                    crate::file_viewer::reveal(&path, cx)
                 }))
             })
         }
