@@ -790,14 +790,14 @@ fn a_doc_zooms_with_the_keys(cx: &mut TestAppContext) {
     workspace.update_in(cx, |workspace, window, cx| workspace.focus_active(window, cx));
     let width = |cx: &mut gpui_kit::VisualTestContext| bounds(cx, "image diagram").size.width;
     let normal = width(cx);
-    cx.simulate_keystrokes("cmd-=");
+    cx.simulate_keystrokes("secondary-=");
     cx.run_until_parked();
     let bigger = width(cx);
     assert!(bigger > normal, "cmd-=: {bigger:?} after {normal:?}");
-    cx.simulate_keystrokes("cmd-+");
+    cx.simulate_keystrokes("secondary-+");
     cx.run_until_parked();
     assert!(width(cx) > bigger, "cmd-+");
-    cx.simulate_keystrokes("cmd-0");
+    cx.simulate_keystrokes("secondary-0");
     cx.run_until_parked();
     assert_eq!(width(cx), normal);
 }
