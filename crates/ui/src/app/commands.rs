@@ -88,6 +88,15 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
+            // `den add <path>`: the agent has it already.
+            ["add", path] => {
+                if self.remembers() {
+                    self.refresh_repos(window, cx);
+                } else {
+                    self.keep(Some(TaskKey { host: host.clone(), path: PathBuf::from(path) }), window, cx);
+                }
+                Ok(String::new())
+            }
             ["keys"] => Ok(shortcuts::recent_keys(cx)),
             ["shortcuts"] => Ok(shortcuts::list(cx)),
             ["shortcuts", "set", id, keys] => set_shortcut(id, keys, cx),

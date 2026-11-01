@@ -45,6 +45,7 @@ full list; the main ones:
   this one and prints its id; `den term list`, `den term read <id> [<lines>]`,
   `den term send <id> <text>` (types it and Enter), `den term focus <id>`,
   `den term close <id>`.
+- `den add <path>` adds a folder to the workspaces.
 - `den worktree <name>` creates a worktree and prints its path;
   `den workspaces` lists the workspaces and whether their agents are
   working, waiting for an answer or finished.

@@ -34,6 +34,8 @@ Usage:
   den worktree <name> creates a worktree in the repo of the current folder,
                       running its .den/create if it has one, and prints its
                       path. Inside den, the app also opens it.
+  den add <path>      adds the folder (its repo, if it's in one) to the
+                      workspaces, as Add to Workspaces.
 
 In den's terminals, these act on the workspace of the terminal they run in.
 Paths are relative to the current folder; lines and columns start at 1. The
@@ -302,6 +304,30 @@ pub fn task(args: &[String]) -> Result<()> {
         eprintln!("could not open it: {err:#}");
     }
     println!("{}", task.path.display());
+    Ok(())
+}
+
+/// `den add <path>`: the agent keeps it in its list, so it's added with the
+/// app closed too; the app's window running the command then reads the list
+/// again (a window of `den -s` keeps it, for the main window to list).
+pub fn add(args: &[String]) -> Result<()> {
+    let [arg] = args else {
+        eprint!("{USAGE}");
+        std::process::exit(2);
+    };
+    let path = std::path::absolute(arg)?;
+    let path = path.canonicalize().with_context(|| format!("{arg}: no such folder"))?;
+    if !path.is_dir() {
+        bail!("{arg} is not a folder");
+    }
+    let client = connect()?;
+    smol::block_on(client.request(Request::RepoAdd { path: path.clone() }))?;
+    // No window to show it yet: it's listed when the app opens.
+    let _ = smol::block_on(client.request(Request::Command {
+        args: vec!["add".into(), path.to_string_lossy().into_owned()],
+        cwd: std::env::current_dir()?,
+        term: own_term(),
+    }));
     Ok(())
 }
 

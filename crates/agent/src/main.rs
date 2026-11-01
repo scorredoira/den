@@ -4,7 +4,7 @@
 //!   by the agent it replaces: see `handover.rs`).
 //! - `den-agent bridge`: joins stdin/stdout to the socket, starting the daemon
 //!   if needed. It's what `ssh host den-agent bridge` runs (phase 3).
-//! - `den <path>`, `den worktree <name>`, `den show <file>`…: from a
+//! - `den <path>`, `den worktree <name>`, `den add <path>`, `den show <file>`…: from a
 //!   terminal (see `cli.rs`).
 //! - `den debug join …` (crate `join`) and `den chrome …` (crate `chrome`):
 //!   programs of their own, run in a terminal.
@@ -46,6 +46,7 @@ fn main() -> Result<()> {
             print!("{}", cli::USAGE);
             Ok(())
         }
+        Some("add") => cli::add(&args[1..]),
         Some("term") => cli::term(&args[1..]),
         Some("edit") => cli::edit(&args[1..]),
         // the agent isn't needed: join runs in the terminal, as its programs do
