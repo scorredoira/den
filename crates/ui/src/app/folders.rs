@@ -10,9 +10,11 @@ impl Den {
     }
 
     /// `den <path>`: `root` as a workspace (the worktree containing it, if
-    /// any), with `file` open in it. A server not yet connected enters it on
-    /// connecting. False if it opens in a window of its own instead, which
-    /// comes to the front: the caller mustn't bring this one over it.
+    /// any), with `file` open in it. A file outside this window's workspaces
+    /// opens in a tab of the one in front. A server not yet connected enters
+    /// it on connecting. False if a folder opens in a window of its own
+    /// instead, which comes to the front: the caller mustn't bring this one
+    /// over it.
     pub(super) fn open_from_terminal(
         &mut self,
         host: SharedString,
@@ -22,6 +24,15 @@ impl Den {
         cx: &mut Context<Self>,
     ) -> bool {
         let path = self.workspace_containing(&host, &root);
+        let outside = self.task(&TaskKey { host: host.clone(), path: path.clone() }).is_none();
+        if outside
+            && let Some(file) = &file
+            && let Some(workspace) = self.active_workspace().filter(|_| self.active.as_ref().is_some_and(|key| key.host == host))
+        {
+            let file = file.clone();
+            workspace.update(cx, |workspace, cx| workspace.open(file, true, window, cx));
+            return true;
+        }
         // Not a workspace yet: a window of its own, so none is added.
         if self.server.is_none() && self.client(&host).is_some() && self.task(&TaskKey { host: host.clone(), path: path.clone() }).is_none() {
             let destination = self.host(&host).and_then(|host| host.destination.clone());
@@ -71,6 +82,14 @@ impl Den {
             .ok();
         })
         .detach();
+    }
+
+    /// Folders dropped on the workspaces: each opened on this machine, as
+    /// with Open Folder, the last one in front. Files are left out.
+    pub(super) fn open_dropped_folders(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        for path in paths.iter().filter(|path| path.is_dir()) {
+            self.open_path(LOCAL.into(), path.clone(), window, cx);
+        }
     }
 
     /// The worktree of `host` containing `path`, or `path` itself.

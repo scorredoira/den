@@ -21,6 +21,13 @@ impl Den {
                     cx.stop_propagation();
                 }
             }))
+            // Folders dropped from Explorer or Finder: opened on this machine.
+            .when(self.host(LOCAL).is_some(), |el| {
+                el.drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.08)))
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                        this.open_dropped_folders(paths.paths(), window, cx)
+                    }))
+            })
             .child(body)
     }
 
@@ -429,7 +436,7 @@ impl Den {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy.path.to_string_lossy().into_owned()))
                     }))
                     .item(
-                        menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path)).disabled(!local),
+                        menu::item(crate::file_viewer::reveal_label(), &weak, move |_, _, cx| crate::file_viewer::reveal(&finder.path, cx)).disabled(!local),
                     )
                     .separator()
                     .item(
@@ -588,7 +595,7 @@ impl Den {
                         }))
                     })
                     .item(
-                        menu::item("Reveal in Finder", &weak, move |_, _, cx| cx.reveal_path(&finder.path))
+                        menu::item(crate::file_viewer::reveal_label(), &weak, move |_, _, cx| crate::file_viewer::reveal(&finder.path, cx))
                             .disabled(!local),
                     )
                     .when(removable, |menu| {
