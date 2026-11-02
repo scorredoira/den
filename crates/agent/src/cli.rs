@@ -320,11 +320,13 @@ pub fn add(args: &[String]) -> Result<()> {
     if !path.is_dir() {
         bail!("{arg} is not a folder");
     }
+    // What the workspaces list: its repo, if it's in one.
+    let kept = crate::tasks::folder_for(&path)?;
     let client = connect()?;
     smol::block_on(client.request(Request::RepoAdd { path: path.clone() }))?;
     // No window to show it yet: it's listed when the app opens.
     let _ = smol::block_on(client.request(Request::Command {
-        args: vec!["add".into(), path.to_string_lossy().into_owned()],
+        args: vec!["add".into(), kept.to_string_lossy().into_owned()],
         cwd: std::env::current_dir()?,
         term: own_term(),
     }));

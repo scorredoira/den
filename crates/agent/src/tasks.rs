@@ -72,7 +72,7 @@ pub fn add_repo(path: &Path) -> Result<PathBuf> {
 
 /// What adding `path` keeps: its repo's main checkout if it's in a git repo
 /// (a worktree adds its repo), the folder itself otherwise.
-fn folder_for(path: &Path) -> Result<PathBuf> {
+pub fn folder_for(path: &Path) -> Result<PathBuf> {
     match main_checkout(path) {
         Ok(main) => Ok(main),
         Err(_) if path.is_dir() => Ok(path.canonicalize()?),

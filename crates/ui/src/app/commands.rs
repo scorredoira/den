@@ -46,7 +46,7 @@ impl Den {
         .detach();
     }
 
-    fn command(&mut self, host: SharedString, command: Command, window: &mut Window, cx: &mut Context<Self>) -> Task<Answer> {
+    pub(super) fn command(&mut self, host: SharedString, command: Command, window: &mut Window, cx: &mut Context<Self>) -> Task<Answer> {
         let Command { args, cwd, term, group, .. } = command;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         // Only these are den's: any other belongs to the command's arguments
@@ -88,12 +88,18 @@ impl Den {
                 String::new()
             }),
             ["workspaces"] => Ok(self.workspace_list(cx)),
-            // `den add <path>`: the agent has it already.
+            // `den add <path>`: the agent has it already. With the inactive
+            // workspaces hidden, it's always shown: otherwise it wouldn't be
+            // listed, as if it hadn't been added.
             ["add", path] => {
+                let key = TaskKey { host: host.clone(), path: PathBuf::from(path) };
+                if Config::get(cx).hide_inactive_workspaces {
+                    self.show_always(&key, cx);
+                }
                 if self.remembers() {
                     self.refresh_repos(window, cx);
                 } else {
-                    self.keep(Some(TaskKey { host: host.clone(), path: PathBuf::from(path) }), window, cx);
+                    self.keep(Some(key), window, cx);
                 }
                 Ok(String::new())
             }

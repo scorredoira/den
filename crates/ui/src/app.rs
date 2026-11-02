@@ -1056,6 +1056,16 @@ impl Den {
         cx.notify();
     }
 
+    /// Lists `key` even when Hide Inactive Workspaces hides those without
+    /// an agent.
+    fn show_always(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
+        let key = key.config();
+        if !Config::get(cx).always_shown_workspaces.contains(&key) {
+            Config::update(cx, |config| config.always_shown_workspaces.push(key));
+            cx.notify();
+        }
+    }
+
     fn toggle_inactive_workspaces(&mut self, _: &ToggleInactiveWorkspaces, _: &mut Window, cx: &mut Context<Self>) {
         Config::update(cx, |config| config.hide_inactive_workspaces = !config.hide_inactive_workspaces);
         cx.notify();
@@ -2164,6 +2174,15 @@ mod palette_tests {
         cx.update(|_, cx| Config::update(cx, |config| config.only_own_worktrees = false));
         cx.update(|_, cx| den.update(cx, |den, cx| den.toggle_always_shown(&key("/den"), cx)));
         den.read_with(cx, |den, cx| assert_eq!(listed(den, cx), [std::path::PathBuf::from("/stride")]));
+        // `den add`: what it adds is listed, always shown, or it would look
+        // as if it hadn't been added.
+        let add = super::commands::Command { id: 0, args: vec!["add".into(), "/den".into()], cwd: "/".into(), term: None, group: None };
+        cx.update(|window, cx| den.update(cx, |den, cx| den.command(super::LOCAL.into(), add, window, cx))).detach();
+        den.read_with(cx, |den, cx| {
+            assert_eq!(listed(den, cx), ["/den", "/den-hide", "/stride"].map(std::path::PathBuf::from));
+            assert_eq!(Config::get(cx).always_shown_workspaces, [key("/den").config()]);
+        });
+        cx.update(|_, cx| den.update(cx, |den, cx| den.toggle_always_shown(&key("/den"), cx)));
         // Back to den: its worktree, not its checkout.
         cx.update(|window, cx| den.update(cx, |den, cx| den.enter_project(key("/den"), window, cx)));
         den.read_with(cx, |den, _| assert_eq!(den.active, Some(key("/den-hide"))));
