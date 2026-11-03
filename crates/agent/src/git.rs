@@ -255,7 +255,12 @@ fn status(dir: &Path) -> Result<GitStatus> {
         let counts = |thread: std::thread::ScopedJoinHandle<Result<_>>| thread.join().ok().and_then(Result::ok).unwrap_or_default();
         (raw, counts(staged), counts(unstaged))
     });
-    let raw = raw?;
+    let raw = match raw {
+        Ok(raw) => raw,
+        // A folder outside any repo has nothing to show.
+        Err(_) if !dir.ancestors().any(|dir| dir.join(".git").exists()) => return Ok(status),
+        Err(error) => return Err(error),
+    };
     let (mut staged, mut unstaged) = (Vec::new(), Vec::new());
     for entry in raw.split('\0').filter(|entry| !entry.is_empty()) {
         if let Some(header) = entry.strip_prefix("# ") {
@@ -760,6 +765,13 @@ mod tests {
 
     fn paths(files: &[ChangedFile]) -> Vec<(&str, char)> {
         files.iter().map(|f| (f.path.as_str(), f.status)).collect()
+    }
+
+    #[test]
+    fn a_folder_outside_any_repo_has_no_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = status(dir.path()).unwrap();
+        assert!(status.staged.is_empty() && status.unstaged.is_empty());
     }
 
     #[test]
