@@ -35,7 +35,8 @@ Usage:
                       running its .den/create if it has one, and prints its
                       path. Inside den, the app also opens it.
   den add <path>      adds the folder (its repo, if it's in one) to the
-                      workspaces, as Add to Workspaces.
+                      workspaces, as Add to Workspaces. A folder that
+                      doesn't exist yet is created.
 
 In den's terminals, these act on the workspace of the terminal they run in.
 Paths are relative to the current folder; lines and columns start at 1. The
@@ -316,7 +317,14 @@ pub fn add(args: &[String]) -> Result<()> {
         std::process::exit(2);
     };
     let path = std::path::absolute(arg)?;
-    let path = path.canonicalize().with_context(|| format!("{arg}: no such folder"))?;
+    let created = !path.exists();
+    if created {
+        std::fs::create_dir_all(&path).with_context(|| format!("could not create {arg}"))?;
+    }
+    let path = path.canonicalize()?;
+    if created {
+        eprintln!("created {}", path.display());
+    }
     if !path.is_dir() {
         bail!("{arg} is not a folder");
     }
