@@ -1,0 +1,6 @@
+Tool: built-in image_gen.
+Reference: cripta/Resources/Artwork/previews/04-cripta-refined-den-blue.png.
+Output: icon-source.png. Approved blue seamless d with amber cursor.
+Previous master and exports: archive/flat-charcoal-v1/.
+
+Use case: precise-object-edit. Extract and faithfully reproduce ONE approved icon from the supplied comparison board as a production app icon master. Single SQUARE canvas, full-bleed background extending to all four corners. NO outer rounded corners, NO inset tile, NO margins around a tile, NO labels or text. Preserve the selected symbol's exact design and relative proportions. Flat vector-like finish, solid colors only, crisp contours, NO gradients, texture, shadows, lighting, bevels, or 3D. Select ONLY the RIGHT icon 'Den · Azul'. Background solid cheerful ocean blue #167EB5. Warm ivory #FFF1DA lowercase d with tall right ascender, circular counter and continuous unbroken ring. Absolutely NO diagonal cut or slash in the letter. Keep the small amber #F3A329 horizontal cursor inside the counter near its bottom. Preserve generous background margins and the reference silhouette.

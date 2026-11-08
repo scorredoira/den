@@ -1,13 +1,14 @@
 #!/bin/sh
-# Generates den.icns from den.svg (needs rsvg-convert: brew install librsvg).
+# Exports the approved artwork to macOS and Linux icon assets (requires macOS).
 # The .icns is kept in the repo, so this is only needed when the icon changes.
 set -e
 dir="$(cd "$(dirname "$0")" && pwd)"
+swift "$dir/export-icon.swift"
 set_dir="$(mktemp -d)/den.iconset"
 mkdir -p "$set_dir"
 for size in 16 32 128 256 512; do
-  rsvg-convert -w "$size" -h "$size" "$dir/den.svg" -o "$set_dir/icon_${size}x${size}.png"
-  rsvg-convert -w $((size * 2)) -h $((size * 2)) "$dir/den.svg" -o "$set_dir/icon_${size}x${size}@2x.png"
+  sips -z "$size" "$size" "$dir/den.png" --out "$set_dir/icon_${size}x${size}.png" >/dev/null
+  sips -z $((size * 2)) $((size * 2)) "$dir/den.png" --out "$set_dir/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$set_dir" -o "$dir/den.icns"
 rm -rf "$(dirname "$set_dir")"

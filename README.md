@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="packaging/macos/den.svg" width="112" alt="Den icon">
+  <img src="packaging/macos/den.png" width="112" alt="Den icon">
 </p>
 
 <h1 align="center">Den</h1>

@@ -1,0 +1,5 @@
+Tool: built-in image_gen.
+Reference: media/music/design/icon-concepts/02-family-v1.png (approved original family).
+Output: icon-source.png, full-bleed artwork for platform exports.
+
+Use case: precise-object-edit. Extract and faithfully reproduce ONE icon from the attached approved six-icon board as a production app icon master. Output a SINGLE SQUARE image, 1024x1024. The selected tile's colored background must fill the ENTIRE square canvas edge to edge including all four corners; NO rounded outer corners, NO surrounding grey, NO inset tile, NO exterior drop shadow, NO labels or typography. Preserve the exact original ivory emblem design, sculptural satin material, soft top-left light, folds and internal shadows, and its scale relative to the selected tile. The operating system will round the square later. Do not redesign the emblem. Select bottom RIGHT Den: graphite charcoal background, original ivory lowercase d shaped like an arched doorway with amber glow inside. Keep warm light contained inside the opening.

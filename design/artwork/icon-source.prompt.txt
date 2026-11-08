@@ -1,0 +1,6 @@
+Tool: built-in image_gen.
+Reference: media/music/design/icon-concepts/06-den-color-options.png (Coral).
+Output: icon-source.png. Approved coral seamless d with amber cursor.
+Previous blue master and exports: archive/flat-blue-v1/.
+
+Use case: precise-object-edit. Extract and faithfully reproduce ONLY the LEFT icon labelled Coral from the supplied board as a production app icon master. Single SQUARE image, full bleed. Solid warm coral #D96159 background must fill the ENTIRE canvas edge to edge including all corners. NO outer rounded corners, NO inset tile, NO external margin, NO labels or text. Preserve the approved ivory lowercase d silhouette exactly: continuous unbroken circular ring, tall right ascender, generous counter, NO cut/slash/seam anywhere. Warm ivory #FFF1DA letter. Keep the short amber #F7B52B horizontal cursor near the bottom inside the counter. Counter is the same coral as background. Preserve the reference proportions and glyph size relative to the square tile. True FLAT graphic, solid colors, crisp contours; NO gradients, shadows, lighting, 3D, texture, bevel, glow, or decorative changes. Output ONLY the coral icon artwork.
