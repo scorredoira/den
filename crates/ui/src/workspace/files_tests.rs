@@ -312,3 +312,20 @@ fn closing_a_workspace_frees_its_images(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!cx.update(|window, _| window.has_image_atlas_entry(&image)));
 }
+
+/// A file deleted on disk while open keeps its tab, which says so, as VS
+/// Code's, until the file is there again.
+#[gpui_kit::test]
+fn a_deleted_file_marks_its_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace(cx);
+    cx.update(|window, cx| workspace.update(cx, |this, cx| {
+        let editor = add_tab(this, "/files-test/a.txt", "one", window, cx);
+        let path = Path::new("/files-test/a.txt");
+        let generation = this.begin_read(path);
+        this.loaded(path, true, generation, Err("not found".into()), window, cx);
+        assert!(this.tabs[0].deleted);
+        assert_eq!(editor.read(cx).value(), "one", "the text is kept");
+        read(this, "/files-test/a.txt", true, "one", window, cx);
+        assert!(!this.tabs[0].deleted);
+    }));
+}

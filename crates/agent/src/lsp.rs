@@ -3,7 +3,7 @@
 //! There's one server per project and language, started the first time it's
 //! asked and stopped with its task or after an hour unused. Only `initialize`,
 //! `didOpen`, `didChange`, `didClose`, `didChangeWatchedFiles`, `definition`,
-//! `references`, `completion` and `documentSymbol` are used. For the file we send the editor's
+//! `references`, `completion`, `documentSymbol`, `formatting` and `rename` are used. For the file we send the editor's
 //! text (saved or not) and close it when asking about another one, so the
 //! server reads everything else from disk; changes on disk (from Claude, for
 //! example) reach it through the same watcher the tree uses.
@@ -194,22 +194,7 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
             "textDocument/documentSymbol"
         }
     };
-    // While the project loads, the server may answer "content modified":
-    // keep retrying for a while.
-    let mut tries = 0;
-    let result = loop {
-        let sent = server.sync_and_send(path, text, language_id, method, params.clone())?;
-        match server.wait(sent, REQUEST_TIMEOUT) {
-            Err(err) if err.to_string().contains(&format!("({CONTENT_MODIFIED})")) && tries < 20 => {
-                tries += 1;
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            Err(err) if err.to_string().contains(&format!("({CONTENT_MODIFIED})")) => {
-                bail!("{}: still loading the project, try again in a moment", language.name)
-            }
-            result => break result?,
-        }
-    };
+    let result = ask(&server, language, path, text, language_id, method, params)?;
     if op == LspOp::SignatureHelp {
         return Ok(Response::Signature(server.signature(&result)));
     }
@@ -226,6 +211,89 @@ pub fn request(task: &Path, path: &Path, text: &str, line: u32, column: u32, op:
     locations.sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
     locations.dedup();
     Ok(Response::Lsp { server: Some(language.name.to_string()), locations })
+}
+
+/// Sends `method` about `path` (its text, `text`) and waits for the answer.
+/// While the project loads, the server may answer "content modified": it
+/// keeps retrying for a while.
+fn ask(server: &Server, language: &Language, path: &Path, text: &str, language_id: &str, method: &str, params: Value) -> Result<Value> {
+    let mut tries = 0;
+    loop {
+        let sent = server.sync_and_send(path, text, language_id, method, params.clone())?;
+        match server.wait(sent, REQUEST_TIMEOUT) {
+            Err(err) if err.to_string().contains(&format!("({CONTENT_MODIFIED})")) && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(err) if err.to_string().contains(&format!("({CONTENT_MODIFIED})")) => {
+                bail!("{}: still loading the project, try again in a moment", language.name)
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Renames what's at `line`, `column` of `path` (its editor's text, `text`)
+/// to `name`: the file's new text is answered, for its editor, and the other
+/// files that change are written, all or none: none if one of them is in
+/// `unsaved`, or a file would be created, renamed or deleted.
+pub fn rename(task: &Path, path: &Path, text: &str, line: u32, column: u32, name: &str, unsaved: &[PathBuf]) -> Result<Response> {
+    let none = Response::Renamed { server: None, text: None, files: 0, changes: 0 };
+    let Some((language, language_id)) = language(path) else {
+        return Ok(none);
+    };
+    let Some(server) = server(language, &project_root(language, task, path))? else {
+        return Ok(none);
+    };
+    let line_text = text.lines().nth(line as usize).unwrap_or("");
+    let params = json!({
+        "textDocument": { "uri": uri(path) },
+        "position": { "line": line, "character": server.encode_column(line_text, column) },
+        "newName": name,
+    });
+    let result = ask(&server, language, path, text, language_id, "textDocument/rename", params)?;
+    if result.is_null() {
+        bail!("{}: there's nothing to rename here", language.name);
+    }
+    // `changes` (by URI) or `documentChanges` (each file's edits, or an
+    // operation on a file).
+    let mut edits: Vec<(PathBuf, &Value)> = Vec::new();
+    if let Some(changes) = result["changes"].as_object() {
+        for (file, file_edits) in changes {
+            edits.push((path_from_uri(file).with_context(|| format!("bad URI {file}"))?, file_edits));
+        }
+    }
+    for change in result["documentChanges"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        if change.get("kind").is_some() {
+            bail!("Not renamed: it would create, rename or delete files too, which den doesn't do");
+        }
+        let file = change["textDocument"]["uri"].as_str().unwrap_or_default();
+        edits.push((path_from_uri(file).with_context(|| format!("bad URI {file}"))?, &change["edits"]));
+    }
+    let changes = edits.iter().map(|(_, edits)| edits.as_array().map_or(0, Vec::len)).sum();
+    let mut current = None;
+    let mut others = Vec::new();
+    for (file, file_edits) in edits {
+        if file == path {
+            current = Some(server.apply(current.as_deref().unwrap_or(text), file_edits));
+            continue;
+        }
+        if unsaved.contains(&file) {
+            bail!("Not renamed: {} has unsaved changes; save it first", file.display());
+        }
+        let bytes = std::fs::read(&file).with_context(|| format!("could not read {}", file.display()))?;
+        let old = String::from_utf8(bytes).map_err(|_| anyhow!("{} is not UTF-8 text", file.display()))?;
+        others.push((file, server.apply(&old, file_edits)));
+    }
+    for (file, new) in &others {
+        crate::fs::write(file, new.as_bytes())?;
+    }
+    Ok(Response::Renamed {
+        server: Some(language.name.to_string()),
+        text: current.filter(|new| new != text),
+        files: others.len(),
+        changes,
+    })
 }
 
 /// The symbols of the task at `task` that match `query`, from every language
@@ -632,6 +700,7 @@ impl Server {
                         "references": {},
                         "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
                         "formatting": {},
+                        "rename": {},
                         "signatureHelp": {
                             "signatureInformation": {
                                 "documentationFormat": ["plaintext", "markdown"],
@@ -1467,6 +1536,19 @@ mod tests {
         assert!(signature.label.contains("Twice(x int) int") && signature.active.is_some(), "{signature:?}");
         let (formatted, server) = format(&go, &go.join("main.go"), "package main\nfunc main(){\nx:=1\n_=x}\n", None).unwrap().unwrap();
         assert_eq!((formatted.as_str(), server.as_str()), ("package main\n\nfunc main() {\n\tx := 1\n\t_ = x\n}\n", "gopls"));
+        // `Twice` → `Double`: this file's text comes back, util.go is
+        // written; not while util.go has unsaved changes.
+        let column = "\tñ := util.".chars().count() as u32;
+        let unsaved = [go.join("util/util.go")];
+        let err = rename(&go, &go.join("main.go"), text, 5, column, "Double", &unsaved).unwrap_err();
+        assert!(err.to_string().contains("unsaved changes"), "{err:#}");
+        assert!(std::fs::read_to_string(go.join("util/util.go")).unwrap().contains("Twice"));
+        let Response::Renamed { server, text: new, files, changes } = rename(&go, &go.join("main.go"), text, 5, column, "Double", &[]).unwrap() else {
+            panic!()
+        };
+        assert_eq!((server.as_deref(), files, changes), (Some("gopls"), 1, 3));
+        assert_eq!(new.as_deref(), Some(text.replace("Twice", "Double").as_str()));
+        assert_eq!(std::fs::read_to_string(go.join("util/util.go")).unwrap(), "package util\n\nfunc Double(x int) int {\n\treturn x * 2\n}\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

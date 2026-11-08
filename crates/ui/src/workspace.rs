@@ -27,7 +27,7 @@ use crate::{
     OpenChanges, ShowFileHistory,
     FocusNext, FocusPrevious, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, ShowOutline, ShowReferences, ShowSearch,
     SplitDown, SplitRight, ToggleMarkdownSource, ToggleSidePanel, ZoomInPreview, ZoomOutPreview, ResetPreviewZoom, ExportPreviewPdf, FitPreviewDiagrams,
-    ToggleTerminals, OpenFileFinder, OpenFile, NewFile, NextResult, PrevResult, GoToDefinition, FindReferences, NavigateBack, NavigateForward,
+    ToggleTerminals, OpenFileFinder, OpenFile, NewFile, NextResult, PrevResult, FindNext, FindPrevious, GoToDefinition, FindReferences, RenameSymbol, NavigateBack, NavigateForward,
     GoToLine, GoToSymbol, GoToWorkspaceSymbol, OpenPreviewToSide, SplitEditorDown, SplitEditorRight, ToggleWordWrap, FormatDocument,
     DiffLayoutOneColumn, DiffLayoutSideBySide, OpenDiffFile, ToggleWholeFile,
     changes::{self, ChangesEvent, ChangesPanel},
@@ -194,6 +194,9 @@ struct FileTab {
     /// The text on disk, if it changed there while this had unsaved
     /// changes: saving asks before overwriting it.
     on_disk: Option<String>,
+    /// Its file was deleted on disk while open: the tab says so, as VS
+    /// Code's, until it's there again (saving puts it back).
+    deleted: bool,
     /// Serialize writes so rapid focus changes cannot save an older version last.
     save_lock: Arc<smol::lock::Mutex<()>>,
     dirty: bool,
@@ -1475,6 +1478,24 @@ impl Workspace {
     fn active_editor(&self) -> Option<Entity<EditorState>> {
         let tab = &self.tabs[self.active?];
         (tab.image.is_none() && tab.rendered().is_none()).then(|| tab.editor.clone())
+    }
+
+    /// F3 and Shift-F3, as VS Code's: the next or previous match of the
+    /// file's find, opening its find bar first if it is closed.
+    fn find_next(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else {
+            return;
+        };
+        editor.update(cx, |state, cx| {
+            if !state.search_session().open {
+                state.open_search(false, cx);
+            }
+            if forward {
+                state.next_search_match(cx);
+            } else {
+                state.previous_search_match(cx);
+            }
+        });
     }
 
     fn select_next_occurrence(&mut self, _: &SelectNextOccurrence, _: &mut Window, cx: &mut Context<Self>) {

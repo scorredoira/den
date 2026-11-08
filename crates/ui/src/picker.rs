@@ -97,6 +97,15 @@ impl Picker {
         Self { free_text: true, ..Self::new(Arc::new(Vec::new()), placeholder, false, window, cx) }
     }
 
+    /// Starts with `text` typed, all selected.
+    pub fn with_text(self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        self.input.update(cx, |input, cx| {
+            input.set_value(text.to_string(), window, cx);
+            input.select_all(window, cx);
+        });
+        self
+    }
+
     /// The list, or anything typed (Add Server: a `user@host` not in the list).
     pub fn typed(mut self) -> Self {
         self.typed = true;

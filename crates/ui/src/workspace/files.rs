@@ -84,6 +84,7 @@ impl Workspace {
             lsp_status: LspStatus::default(),
             saved: String::new(),
             on_disk: None,
+            deleted: false,
             save_lock: Default::default(),
             dirty: false,
             preview,
@@ -198,6 +199,9 @@ impl Workspace {
             Ok(Read::Text(text)) => Ok(text),
             Err(err) => Err(err),
         };
+        if result.is_ok() {
+            tab.deleted = false;
+        }
         match result {
             // Back to what it was: what's unsaved is unsaved changes again.
             Ok(text) if reload && text == tab.saved => {
@@ -281,6 +285,7 @@ impl Workspace {
                 }
             }
             Err(_) if reload => {
+                tab.deleted = true;
                 self.message = Some(format!("{name} no longer exists on disk").into());
             }
             Err(err) => tab.content = Content::Failed(err.into()),
@@ -720,6 +725,7 @@ impl Workspace {
                             tab.dirty = *tab.editor.read(cx).text() != tab.saved;
                             tab.confirm_close = false;
                             tab.preview = false;
+                            tab.deleted = false;
                         }
                         this.message = None;
                         this.load_blame(path.clone(), cx);

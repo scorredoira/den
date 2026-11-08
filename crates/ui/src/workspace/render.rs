@@ -41,6 +41,8 @@ impl Workspace {
                     None if tab.view && tab.rendered().is_some() => format!("Preview {name}"),
                     None => name,
                 };
+                let deleted = tab.deleted;
+                let name = if deleted { format!("{name} (deleted)") } else { name };
                 let dirty = self.is_dirty(ix);
                 let close_icon = if dirty {
                     "icons/tab-dirty.svg"
@@ -88,7 +90,7 @@ impl Workspace {
                         }
                     }))
                     // Only the name: the right-click menu is a child of the tab and would inherit it.
-                    .child(div().when(tab.preview, |el| el.italic()).child(name))
+                    .child(div().when(tab.preview, |el| el.italic()).when(deleted, |el| el.line_through()).child(name))
                     .child(
                         div()
                             .id(("tab-close", ix))
@@ -503,6 +505,7 @@ impl Workspace {
                                     menu
                                 } else {
                                     menu.menu_with_disabled("Find References", readonly, Box::new(FindReferences))
+                                        .menu_with_disabled("Rename Symbol", readonly, Box::new(RenameSymbol))
                                 };
                                 let menu = menu
                                     .menu_with_disabled("Go to Symbol…", readonly, Box::new(GoToSymbol))
@@ -832,7 +835,10 @@ impl Render for Workspace {
             // F4 steps through the visible panel's results: References or Search.
             .on_action(cx.listener(|this, _: &NextResult, _, cx| this.step_result(1, cx)))
             .on_action(cx.listener(|this, _: &PrevResult, _, cx| this.step_result(-1, cx)))
+            .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_next(true, cx)))
+            .on_action(cx.listener(|this, _: &FindPrevious, _, cx| this.find_next(false, cx)))
             .on_action(cx.listener(Self::go_to_definition))
+            .on_action(cx.listener(Self::rename_symbol))
             .on_action(cx.listener(Self::go_to_line))
             .on_action(cx.listener(Self::go_to_symbol))
             .on_action(cx.listener(Self::go_to_workspace_symbol))

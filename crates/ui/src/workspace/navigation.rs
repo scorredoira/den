@@ -290,6 +290,105 @@ impl Workspace {
         self.ask_lsp(LspOp::References, window, cx);
     }
 
+    /// F2: renames what's under the cursor, asking for its new name.
+    pub(super) fn rename_symbol(&mut self, _: &RenameSymbol, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.active else {
+            return;
+        };
+        let tab = &self.tabs[ix];
+        if !matches!(tab.content, Content::Ready) || tab.diff.is_some() || tab.has_no_file() {
+            return;
+        }
+        let state = tab.editor.read(cx);
+        let cursor = state.cursor_position();
+        let word = word_at(&state.text().to_string(), cursor.line, cursor.character);
+        if word.is_empty() {
+            self.message = Some("Nothing to rename here: put the cursor on a name".into());
+            return cx.notify();
+        }
+        let editor = tab.editor.clone();
+        self.symbols = None;
+        let picker = cx.new(|cx| Picker::free_text("New name", window, cx).with_text(&word, window, cx));
+        let subscription = cx.subscribe_in(&picker, window, move |this, _, event: &PickerEvent, window, cx| {
+            this.finder = None;
+            match event {
+                PickerEvent::Pick(name) if !name.trim().is_empty() && name.trim() != word => {
+                    this.focus_ide(window, cx);
+                    this.rename_at(&editor, cursor, &word, name.trim().to_string(), window, cx);
+                }
+                PickerEvent::Pick(_) | PickerEvent::Dismiss => this.focus_ide(window, cx),
+                PickerEvent::Close => {}
+            }
+            cx.notify();
+        });
+        self.finder = Some((picker, subscription));
+        cx.notify();
+    }
+
+    /// Asks the language server to rename `word`, at `cursor` of `editor`,
+    /// to `name`; the editor gets its file's new text (one undo step).
+    fn rename_at(&mut self, editor: &Entity<EditorState>, cursor: Position, word: &str, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tab_index(editor).map(|ix| &self.tabs[ix]) else {
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let text = editor.read(cx).text().to_string();
+        let unsaved = self.tabs.iter().filter(|other| other.dirty && other.path != tab.path).map(|other| other.path.clone()).collect();
+        let request = Request::LspRename {
+            root: self.root.clone(),
+            path: tab.path.clone(),
+            text: text.clone(),
+            line: cursor.line,
+            column: cursor.character,
+            name: name.clone(),
+            unsaved,
+        };
+        self.message = Some(format!("Renaming “{word}” to “{name}”…").into());
+        cx.notify();
+        let editor = editor.clone();
+        let word = word.to_string();
+        self.lsp.request = cx.spawn_in(window, async move |this, cx| {
+            let response = client.request(request).await;
+            this.update_in(cx, |this, window, cx| {
+                this.message = Some(match response {
+                    Ok(Response::Renamed { server: None, .. }) => "No language server for this kind of file: nothing renamed".into(),
+                    Ok(Response::Renamed { text: new, files, changes, .. }) => {
+                        let applied = match new {
+                            Some(new) => editor.update(cx, |state, cx| {
+                                if *state.text().to_string() != text {
+                                    return false;
+                                }
+                                if let Some((range, with)) = editing::difference(&text, &new) {
+                                    let cursor = state.cursor_position();
+                                    let offset = editing::offset_at(&new, cursor.line, cursor.character);
+                                    state.edit(&[(range, with)], &[(offset, offset)], false, window, cx);
+                                }
+                                true
+                            }),
+                            None => true,
+                        };
+                        let files = match files {
+                            0 => String::new(),
+                            1 => " (1 other file saved)".to_string(),
+                            n => format!(" ({n} other files saved)"),
+                        };
+                        if applied {
+                            format!("Renamed “{word}” to “{name}”: {changes} {}{files}", if changes == 1 { "change" } else { "changes" }).into()
+                        } else {
+                            format!("This file changed meanwhile and wasn't renamed{files}").into()
+                        }
+                    }
+                    Ok(other) => format!("Unexpected response: {other:?}").into(),
+                    Err(err) => format!("Couldn't rename: {err:#}").into(),
+                });
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
     /// Who to ask for completions in `editor`: the agent, the task and the
     /// file, if it's a text tab (not a diff).
     pub fn completion_target(&self, editor: &Entity<EditorState>) -> Option<(Arc<Client>, PathBuf, PathBuf)> {

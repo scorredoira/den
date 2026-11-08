@@ -84,8 +84,11 @@ shortcuts![
         (FitPreviewDiagrams, "Markdown: Fit Diagrams to Width", ""),
     ],
     "Code": [
+        (FindNext, "Find Next", "f3"),
+        (FindPrevious, "Find Previous", "shift-f3"),
         (GoToDefinition, "Go to Definition", "f12"),
         (FindReferences, "Find References", "shift-f12"),
+        (RenameSymbol, "Rename Symbol", "f2"),
         (GoToLine, "Go to Line", "ctrl-g"),
         (GoToSymbol, "Go to Symbol in File", "secondary-shift-o"),
         (GoToWorkspaceSymbol, "Go to Symbol in Workspace", "secondary-shift-t"),

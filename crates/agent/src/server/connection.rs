@@ -244,6 +244,11 @@ pub(super) fn own_separators(request: &mut Request) {
             fix(root);
             fix(path);
         }
+        Request::LspRename { root, path, unsaved, .. } => {
+            fix(root);
+            fix(path);
+            unsaved.iter_mut().for_each(fix);
+        }
         Request::LspWorkspaceSymbols { root, path, .. } => {
             fix(root);
             if let Some(path) = path {

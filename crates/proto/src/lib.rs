@@ -224,6 +224,20 @@ pub enum Request {
     /// connection closes; an error if it can't (Windows), and an agent
     /// older than this request rejects it: then only `Shutdown` updates it.
     ReplaceAgent { exe: PathBuf },
+    /// F2: renames what's at `line`, `column` of file `path` (in the task at
+    /// `root`; `text` its editor's text) to `name`, with its language
+    /// server. The other files it changes are written on disk, unless one
+    /// is in `unsaved` (open with unsaved changes): then nothing is.
+    /// Responds `Renamed`.
+    LspRename {
+        root: PathBuf,
+        path: PathBuf,
+        text: String,
+        line: u32,
+        column: u32,
+        name: String,
+        unsaved: Vec<PathBuf>,
+    },
 }
 
 /// The file in front in an editor, and what's selected in it (the cursor
@@ -472,6 +486,10 @@ pub enum Response {
     Symbols { server: Option<String>, symbols: Vec<LspSymbol> },
     Agents(Vec<AgentInfo>),
     Graph(Vec<GraphCommit>),
+    /// `server` as in `Lsp`. `text`: the file's new text, for its editor,
+    /// if it changed; `files` the others written; `changes` how many
+    /// places changed in all.
+    Renamed { server: Option<String>, text: Option<String>, files: usize, changes: usize },
 }
 
 /// A commit of the history's graph.

@@ -95,6 +95,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | --- | --- |
 | {{GoToDefinition}} | Go to the definition |
 | {{FindReferences}} | Find the references, in the References panel |
+| {{RenameSymbol}} | Rename what's under the cursor everywhere it's used, with the language server; the other files it changes are saved |
 | {{GoToLine}} | Go to a line (`line` or `line:column`) |
 | {{GoToSymbol}} | Go to a function, class or method of the file (Markdown: a heading) |
 | {{GoToWorkspaceSymbol}} | Go to a function, class or method of the whole workspace |
@@ -127,6 +128,7 @@ To rename something in a few places: put the cursor on it, press {{SelectNextOcc
 | --- | --- |
 | {{Search}} | Find in the file *(editor)* |
 | {{Replace}} | Replace in the file *(editor)* |
+| {{FindNext}} / {{FindPrevious}} | Next or previous match of the find in the file, from the find bar or the code |
 | {{ShowSearch}} | Search (and replace) in the whole workspace |
 | {{NextResult}} / {{PrevResult}} | Next or previous result, of a search or the references |
 

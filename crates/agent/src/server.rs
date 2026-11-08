@@ -500,6 +500,9 @@ fn handle(state: &Shared, conn: ConnId, request: Request) -> Result<Reply> {
             lsp::workspace_symbols(&root, path.as_deref(), &text, &query)
         }),
         Request::Format { root, path, text } => later(state, move |_| format::format(&root, &path, &text)),
+        Request::LspRename { root, path, text, line, column, name, unsaved } => {
+            later(state, move |_| lsp::rename(&root, &path, &text, line, column, &name, &unsaved))
+        }
         Request::FindFiles { path } => later(state, move |_| Ok(Response::Files(search::files(&path)))),
         Request::Search {
             path,
