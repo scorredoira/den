@@ -171,7 +171,7 @@ mod tests {
             let screenshot = self.screenshot.clone();
             TextView::new(&self.text)
                 .resolve_image_source(move |url| match url.as_ref() {
-                    "packaging/macos/den.svg" => Some(logo.clone().into()),
+                    "packaging/macos/den.png" => Some(logo.clone().into()),
                     "docs/screenshots/main.png" => Some(screenshot.clone().into()),
                     _ => None,
                 })
@@ -184,8 +184,8 @@ mod tests {
     fn readme_html_images_reach_the_renderer(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let logo = Arc::new(Image::from_bytes(
-            ImageFormat::Svg,
-            include_bytes!("../../../../packaging/macos/den.svg").to_vec(),
+            ImageFormat::Png,
+            include_bytes!("../../../../packaging/macos/den.png").to_vec(),
         ));
         let screenshot = Arc::new(Image::from_bytes(
             ImageFormat::Png,

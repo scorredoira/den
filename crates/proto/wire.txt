@@ -65,6 +65,7 @@ pub type TermId = u64;
     Untrash { item: PathBuf, to: PathBuf }
     IdeSelection { group: String, selection: Option<IdeSelection> }
     ReplaceAgent { exe: PathBuf }
+    LspRename { root: PathBuf, path: PathBuf, text: String, line: u32, column: u32, name: String, unsaved: Vec<PathBuf> }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct IdeSelection {
     pub file: PathBuf
@@ -189,6 +190,7 @@ pub type TermId = u64;
     Symbols { server: Option<String>, symbols: Vec<LspSymbol> }
     Agents(Vec<AgentInfo>)
     Graph(Vec<GraphCommit>)
+    Renamed { server: Option<String>, text: Option<String>, files: usize, changes: usize }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] pub struct GraphCommit {
     pub hash: String
