@@ -216,8 +216,9 @@ fn a_big_diagram_is_quick() {
     let source = random(150, 11);
     let start = std::time::Instant::now();
     render(&source).unwrap();
-    // Debug builds are some ten times slower than the app.
-    assert!(start.elapsed() < std::time::Duration::from_secs(if cfg!(debug_assertions) { 5 } else { 1 }), "{:?}", start.elapsed());
+    // Debug builds are some ten times slower than the app, and on CI's macOS
+    // Intel runner, busy with the other tests, it has taken 5 s.
+    assert!(start.elapsed() < std::time::Duration::from_secs(if cfg!(debug_assertions) { 20 } else { 1 }), "{:?}", start.elapsed());
 }
 
 /// Odd blocks, and valid ones with characters dropped, doubled or swapped
