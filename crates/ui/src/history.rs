@@ -767,7 +767,10 @@ impl HistoryView {
                 let selected = self.selected.as_ref() == Some(&commit.hash);
                 let head = commit.refs.iter().any(|name| name == "HEAD");
                 let row = graph.get(ix).cloned().unwrap_or_default();
-                let cell = |width: Pixels| div().flex_none().w(width).px_2().overflow_hidden().whitespace_nowrap().text_ellipsis();
+                // No cell clips (`overflow_hidden`): the text truncates itself, and a
+                // clip a row high would be what a drag selecting the text scrolls
+                // by, all the row being within its edges.
+                let cell = |width: Pixels| div().flex_none().w(width).px_2().whitespace_nowrap().text_ellipsis();
                 let hash = commit.hash.clone();
                 // selectable, in reading order: a drag goes across rows
                 let text = |col: usize, text: String| {
@@ -788,12 +791,11 @@ impl HistoryView {
                             .min_w_0()
                             .h_full()
                             .pl_1()
-                            .overflow_hidden()
                             .child(graph_cell(&row, head, cx))
                             // in the editor's font: every hash as wide, the subjects in line
                             .child(div().flex_none().pr_2().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(text(0, commit.short.clone())))
                             .child(h_flex().flex_none().gap_1().pr_1().children(ref_labels(&commit, cx)))
-                            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text(1, commit.subject.clone()))),
+                            .child(div().flex_1().min_w_0().whitespace_nowrap().text_ellipsis().child(text(1, commit.subject.clone()))),
                     )
                     .child(
                         cell(widths.0)
@@ -1146,6 +1148,59 @@ mod tests {
         cx.simulate_keystrokes("enter");
         view.update(cx, |view, cx| view.show_file(None, cx));
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open), (Some("a"), false)));
+    }
+
+    /// A drag over the rows selects their text and opens nothing; a click
+    /// still opens the commit.
+    #[gpui_kit::test]
+    fn a_drag_selects_the_rows_text(cx: &mut TestAppContext) {
+        struct Host(Entity<HistoryView>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(gpui_base::TextSelectionLayer).child(self.0.clone())
+            }
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            cx.bind_keys(keymap());
+        });
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            Host(cx.new(|cx| HistoryView::new(PathBuf::from("/history-test"), None, window, cx)))
+        });
+        let view = host.read_with(cx, |host, _| host.0.clone());
+        view.update(cx, |view, cx| {
+            let mut first = commit("c", &["b"]);
+            first.subject = "first subject".into();
+            let mut second = commit("b", &[]);
+            second.subject = "second subject".into();
+            let mut commits = vec![first, second];
+            commits.extend((0..200).map(|ix| commit(&format!("x{ix}"), &[])));
+            view.set_commits(commits, cx);
+        });
+        cx.run_until_parked();
+        let list = cx.debug_bounds("history-commits").unwrap();
+        let height = px((Config::default().font_size(crate::config::TextArea::Interface) * 1.75).round());
+        let row = |ix: f32| list.top() + height * ix + height / 2.;
+        let from = point(list.left() + px(60.), row(0.));
+        let to = point(list.left() + px(400.), row(1.));
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        // Along the first row, where the selection's scrolling once started
+        // at once: the list stays where it is.
+        cx.simulate_mouse_move(point(list.left() + px(300.), row(0.)), Some(MouseButton::Left), Modifiers::default());
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        let offset = view.read_with(cx, |view, _| view.scroll.0.borrow().base_handle.offset());
+        assert_eq!(offset.y, px(0.));
+        cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        let text = cx.update(TextSelection::selected_text);
+        assert!(text.contains("second subject"), "selected: {text:?}");
+        view.read_with(cx, |view, _| assert!(!view.open));
+        cx.simulate_click(from, Modifiers::default());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.open));
     }
 
     fn commit(hash: &str, parents: &[&str]) -> GraphCommit {
