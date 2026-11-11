@@ -64,19 +64,19 @@ impl Den {
                 Ok(String::new())
             }),
             ["diff", file @ ..] if file.len() <= 1 => here(self, true, window, cx).and_then(|(root, workspace)| {
-                let file = match file.first() {
-                    Some(file) => Some(
-                        normalize(&cwd.join(file))
-                            .strip_prefix(&root)
-                            .map_err(|_| format!("{file} isn't in the workspace {}", root.display()))?
-                            .to_string_lossy()
-                            .into_owned(),
-                    ),
-                    None => None,
-                };
+                let file = file.first().map(|file| workspace_file(file, &cwd, &root)).transpose()?;
                 workspace.update(cx, |workspace, cx| workspace.show_changes(file, window, cx));
                 Ok(String::new())
             }),
+            ["commit", rev, file @ ..] if file.len() <= 1 => match here(self, true, window, cx)
+                .and_then(|(root, workspace)| Ok((file.first().map(|file| workspace_file(file, &cwd, &root)).transpose()?, workspace)))
+            {
+                Ok((file, workspace)) => {
+                    let opened = workspace.update(cx, |workspace, cx| workspace.show_commit(rev.to_string(), file, window, cx));
+                    return cx.background_spawn(async move { opened.await.map(|()| String::new()) });
+                }
+                Err(err) => Err(err),
+            },
             ["doc", title, text] => here(self, true, window, cx).map(|(_, workspace)| {
                 workspace.update(cx, |workspace, cx| workspace.open_doc(title, text.to_string(), true, window, cx));
                 String::new()
@@ -423,6 +423,15 @@ fn set_shortcut(id: &str, keys: &str, cx: &mut App) -> Result<String, String> {
 
 /// A panel by the name `den panel` takes: as the layout saves it
 /// (files, terminals, debugger, changes, notes…).
+/// `file` (relative to `cwd`) relative to the workspace's `root`.
+fn workspace_file(file: &str, cwd: &Path, root: &Path) -> Result<String, String> {
+    Ok(normalize(&cwd.join(file))
+        .strip_prefix(root)
+        .map_err(|_| format!("{file} isn't in the workspace {}", root.display()))?
+        .to_string_lossy()
+        .into_owned())
+}
+
 fn parse_panel(name: &str) -> Result<Panel, String> {
     let panel: Option<Panel> = serde_json::from_value(json!(name.to_lowercase())).ok();
     panel.filter(|panel| Panel::ALL.contains(panel)).ok_or_else(|| {

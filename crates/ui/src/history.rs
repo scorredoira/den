@@ -97,6 +97,8 @@ pub struct HistoryView {
     /// The selected commit, and the one its view shows.
     selected: Option<String>,
     shown: Option<String>,
+    /// A commit `den commit` opened that isn't among the ones read.
+    outside: Option<GraphCommit>,
     /// The selected commit shows in the list's place.
     open: bool,
     /// What `git show` said of the commits read, the most recent last.
@@ -150,6 +152,7 @@ impl HistoryView {
             file: None,
             selected: None,
             shown: None,
+            outside: None,
             open: false,
             texts: Vec::new(),
             commit,
@@ -202,6 +205,7 @@ impl HistoryView {
         self.commits.clear();
         self.selected = None;
         self.shown = None;
+        self.outside = None;
         self.open = false;
         self.scroll = UniformListScrollHandle::new();
         self.schedule(Duration::ZERO, cx);
@@ -278,13 +282,14 @@ impl HistoryView {
         self.commits = commits;
         self.graph = Rc::new(graph(&self.commits, self.linked(cx)));
         // The selected commit if it's still there, or the newest.
-        let kept = self.selected.as_ref().is_some_and(|hash| self.commits.iter().any(|commit| commit.hash == *hash));
+        let kept = self.selected.as_ref().is_some_and(|hash| self.commits.iter().chain(&self.outside).any(|commit| commit.hash == *hash));
         if !kept {
             match self.commits.first().map(|commit| commit.hash.clone()) {
                 Some(hash) => self.select(hash, false, cx),
                 None => {
                     self.selected = None;
                     self.shown = None;
+                    self.outside = None;
                     self.open = false;
                     self.commit.update(cx, |view, cx| view.set(commit_view::Prepared::default(), cx));
                 }
@@ -326,7 +331,74 @@ impl HistoryView {
 
     fn shown_commit(&self) -> Option<&GraphCommit> {
         let hash = self.shown.as_ref()?;
-        self.commits.iter().find(|commit| commit.hash == *hash)
+        self.commits.iter().chain(&self.outside).find(|commit| commit.hash == *hash)
+    }
+
+    /// The open commit, as `den where` names it: its short hash.
+    pub fn open_commit_name(&self) -> Option<String> {
+        self.open.then(|| self.shown_commit().map(|commit| commit.short.clone())).flatten()
+    }
+
+    /// `den commit`: opens `rev` (a hash, short or not, or anything git
+    /// takes for a commit) in the list's place, read by itself, so it may be
+    /// one the list hasn't read; with `file`, at its changes.
+    pub fn open_rev(&mut self, rev: String, file: Option<String>, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        let Some(client) = self.client.clone() else {
+            return Task::ready(Err("no agent".into()));
+        };
+        // Every file's changes: not a file's history.
+        if self.file.is_some() {
+            self.show_file(None, cx);
+        }
+        let path = self.root.clone();
+        cx.spawn(async move |this, cx| {
+            let text = match client.request(Request::Git { path, op: GitOp::Show { commit: rev.clone() } }).await {
+                Ok(Response::Text(text)) => text,
+                Ok(other) => return Err(format!("unexpected response: {other:?}")),
+                Err(err) => return Err(format!("{rev}: not a commit ({err:#})")),
+            };
+            let commit = shown_commit(&text).ok_or_else(|| format!("{rev}: not a commit"))?;
+            let (hash, short) = (commit.hash.clone(), commit.short.clone());
+            let closed = |_| "the history closed".to_string();
+            let prepare = this
+                .update(cx, |this, cx| {
+                    this.open_outside(commit, Arc::new(text.clone()), cx);
+                    commit_view::prepare(text, None, cx)
+                })
+                .map_err(closed)?;
+            let prepared = prepare.await;
+            let changed = file.as_ref().is_none_or(|file| prepared.files().iter().any(|changed| changed.path.as_ref() == file));
+            this.update(cx, |this, cx| {
+                if this.selected.as_ref() != Some(&hash) {
+                    return;
+                }
+                this.shown = Some(hash);
+                this.commit.update(cx, |view, cx| {
+                    view.set(prepared, cx);
+                    if let Some(file) = &file {
+                        view.scroll_to(file);
+                    }
+                });
+                cx.notify();
+            })
+            .map_err(closed)?;
+            match file {
+                Some(file) if !changed => Err(format!("{short} is open, but it didn't change {file}")),
+                _ => Ok(()),
+            }
+        })
+    }
+
+    /// `commit` selected and open, `text` what `git show` said of it; kept
+    /// apart if it isn't among the commits read.
+    fn open_outside(&mut self, commit: GraphCommit, text: Arc<String>, cx: &mut Context<Self>) {
+        // What a selection was reading would show over it.
+        self.reading = None;
+        self.keep_text(commit.hash.clone(), text);
+        self.selected = Some(commit.hash.clone());
+        self.outside = (!self.commits.iter().any(|known| known.hash == commit.hash)).then_some(commit);
+        self.open = true;
+        cx.notify();
     }
 
     fn text(&self, hash: &str) -> Option<Arc<String>> {
@@ -347,6 +419,7 @@ impl HistoryView {
         let Some(ix) = self.commits.iter().position(|commit| commit.hash == hash) else {
             return;
         };
+        self.outside = None;
         self.selected = Some(hash.clone());
         if reveal {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
@@ -482,6 +555,29 @@ impl HistoryView {
         }
         cx.notify();
     }
+}
+
+/// The commit `git show --format=fuller` is of, as the list has it (the
+/// date as git shows it; no parents: it isn't in the graph).
+fn shown_commit(show: &str) -> Option<GraphCommit> {
+    // `commit <hash>`, and ` (from <parent>)` for a merge's changes.
+    let hash = show.lines().next()?.strip_prefix("commit ")?.split_whitespace().next()?.to_string();
+    let field = |name: &str| show.lines().find_map(|line| line.strip_prefix(name)).map(|value| value.trim().to_string()).unwrap_or_default();
+    let author = field("Author:");
+    let (name, email) = match author.split_once(" <") {
+        Some((name, email)) => (name.to_string(), email.trim_end_matches('>').to_string()),
+        None => (author, String::new()),
+    };
+    Some(GraphCommit {
+        short: hash.chars().take(10).collect(),
+        hash,
+        author: name,
+        email,
+        date: field("AuthorDate:"),
+        parents: Vec::new(),
+        refs: Vec::new(),
+        subject: show.lines().find_map(|line| line.strip_prefix("    ")).unwrap_or("").to_string(),
+    })
 }
 
 /// Reads the graph. An agent from before `FindGraph` (until it's restarted)
@@ -1155,6 +1251,40 @@ mod tests {
         cx.simulate_keystrokes("enter");
         view.update(cx, |view, cx| view.show_file(None, cx));
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open), (Some("a"), false)));
+    }
+
+    /// `den commit` opens a commit the list hasn't read: a reread of the
+    /// list leaves it open, and the arrows go back to the list's commits.
+    #[gpui_kit::test]
+    fn a_commit_not_in_the_list_opens(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            cx.bind_keys(keymap());
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| HistoryView::new(PathBuf::from("/history-test"), None, window, cx));
+        let show = "commit 0123456789abcdef (from 9876543210)\nAuthor:     Ann Lee <ann@example.com>\n\
+            AuthorDate: Tue Oct 21 09:41:14 2025 +0200\n\n    An old change\n\n    Its body\n";
+        let old = shown_commit(show).unwrap();
+        assert_eq!(
+            (old.hash.as_str(), old.short.as_str(), old.author.as_str(), old.email.as_str(), old.subject.as_str()),
+            ("0123456789abcdef", "0123456789", "Ann Lee", "ann@example.com", "An old change")
+        );
+        view.update_in(cx, |view, window, cx| {
+            view.set_commits(vec![commit("c", &["b"]), commit("b", &[])], cx);
+            view.open_outside(old, Arc::new(show.to_string()), cx);
+            view.shown = Some("0123456789abcdef".into());
+            view.set_commits(vec![commit("c", &["b"]), commit("b", &[])], cx);
+            view.focus_handle.focus(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("history-back").is_some());
+        view.read_with(cx, |view, _| {
+            assert_eq!((view.selected.as_deref(), view.open), (Some("0123456789abcdef"), true));
+            assert_eq!(view.open_commit_name().as_deref(), Some("0123456789"));
+        });
+        cx.simulate_keystrokes("down");
+        view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.outside.is_none()), (Some("c"), true)));
     }
 
     /// A drag over the rows selects their text and opens nothing; a click

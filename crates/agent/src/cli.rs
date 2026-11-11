@@ -58,6 +58,9 @@ keyboard stays in the terminal unless --focus.
                       without columns).
   den diff [<file>]   shows the uncommitted changes of the file, or the
                       list of changed files.
+  den commit <sha> [<file>]
+                      opens the commit (a short hash will do) in the
+                      Graph tab, at the file's changes if given.
   den doc [<title>]   shows the Markdown read from stdin in a tab, which
                       opens again with the workspace until closed.
   den edit [--idle <seconds>] [<title>]

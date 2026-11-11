@@ -25,6 +25,9 @@ full list; the main ones:
   that range. Use it to point at what you are talking about instead of
   pasting code. The keyboard stays in the terminal unless `--focus`.
 - `den diff [<file>]` shows the uncommitted changes, so the user can review them.
+- `den commit <sha> [<file>]` opens a commit in the Graph tab (its red/green
+  changes side by side), at the file's if given: to show the user what a
+  commit did.
 - `echo "# Title ..." | den doc "<title>"` shows Markdown in a tab: plans,
   reports, tables, anything longer than a chat answer.
 - Claude Code in Den's terminals is connected to it as to an IDE: the

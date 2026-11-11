@@ -115,6 +115,17 @@ impl Workspace {
         self.show_graph_tab(window, cx);
     }
 
+    /// `den commit`: the Graph tab in front with `rev` open in it, at
+    /// `file`'s changes (relative) if given.
+    pub(crate) fn show_commit(&mut self, rev: String, file: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        let opened = self.graph.update(cx, |graph, cx| graph.open_rev(rev, file, cx));
+        if self.in_terminal_mode() {
+            self.leave_terminal_mode(cx);
+        }
+        self.show_graph_tab(window, cx);
+        opened
+    }
+
     /// The Graph tab in front, opened if it wasn't, with what it showed.
     fn show_graph_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ix = match self.graph_tab() {
