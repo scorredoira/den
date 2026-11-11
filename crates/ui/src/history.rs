@@ -14,6 +14,7 @@
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use client::Client;
+use gpui_base::{SelectableText, TextSelection};
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
@@ -768,6 +769,10 @@ impl HistoryView {
                 let row = graph.get(ix).cloned().unwrap_or_default();
                 let cell = |width: Pixels| div().flex_none().w(width).px_2().overflow_hidden().whitespace_nowrap().text_ellipsis();
                 let hash = commit.hash.clone();
+                // selectable, in reading order: a drag goes across rows
+                let text = |col: usize, text: String| {
+                    SelectableText::new(("commit-text", ix * 4 + col), text).document_order((ix * 4 + col) as u64)
+                };
                 h_flex()
                     .id(("commit", ix))
                     .h(height)
@@ -786,14 +791,14 @@ impl HistoryView {
                             .overflow_hidden()
                             .child(graph_cell(&row, head, cx))
                             // in the editor's font: every hash as wide, the subjects in line
-                            .child(div().flex_none().pr_2().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(commit.short.clone()))
+                            .child(div().flex_none().pr_2().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(text(0, commit.short.clone())))
                             .child(h_flex().flex_none().gap_1().pr_1().children(ref_labels(&commit, cx)))
-                            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(commit.subject.clone())),
+                            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text(1, commit.subject.clone()))),
                     )
                     .child(
                         cell(widths.0)
                             .id(("author", ix))
-                            .child(commit.author.clone())
+                            .child(text(2, commit.author.clone()))
                             .when(emails && !commit.email.is_empty(), |el| {
                                 el.child(div().flex_none().text_color(theme.muted_foreground).child(format!(" <{}>", commit.email)))
                             })
@@ -803,8 +808,12 @@ impl HistoryView {
                             })
                             .flex(),
                     )
-                    .child(cell(widths.1).font_family(theme.mono_font_family.clone()).text_ui_small(cx).text_color(theme.muted_foreground).child(commit.date.clone()))
+                    .child(cell(widths.1).font_family(theme.mono_font_family.clone()).text_ui_small(cx).text_color(theme.muted_foreground).child(text(3, commit.date.clone())))
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        // a drag that selected text is not a click
+                        if !TextSelection::selected_text(window, cx).is_empty() {
+                            return;
+                        }
                         this.focus_handle.focus(window, cx);
                         this.select(hash.clone(), false, cx);
                         this.open_commit(&OpenCommit, window, cx);
