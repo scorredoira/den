@@ -21,7 +21,7 @@ use gpui_kit::component::{
     menu::ContextMenuExt as _,
     v_flex,
 };
-use gpui_base::AutoScroll;
+use gpui_base::{AutoScroll, SelectableText};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -62,6 +62,8 @@ pub enum CommitViewEvent {
     RevealInTree(String),
     /// Its absolute path, to the clipboard.
     CopyPath(String),
+    /// Text was selected, or the selection went (see `selected`).
+    Selected,
 }
 
 pub struct CommitView {
@@ -122,16 +124,68 @@ impl Selection {
     }
 }
 
-/// The text of row `ix` in `column`: none in a gap, nor in a row that isn't
-/// a line.
-fn line(rows: &[Row], ix: usize, column: Column) -> Option<&Half> {
+/// The text of row `ix` in `column`: a line's, none in a gap; the message's
+/// and the notes' text is in `New`, the one column they have.
+fn line(rows: &[Row], ix: usize, column: Column) -> Option<&SharedString> {
     match (rows.get(ix)?, column) {
-        (Row::Line { old, .. }, Column::Old) => Some(old),
-        (Row::Line { new, .. }, Column::New) => Some(new),
-        (Row::Single { half, .. }, Column::New) => Some(half),
+        (Row::Line { old, .. }, Column::Old) => Some(old).filter(|half| half.kind != Kind::Gap).map(|half| &half.text),
+        (Row::Line { new, .. }, Column::New) => Some(new).filter(|half| half.kind != Kind::Gap).map(|half| &half.text),
+        (Row::Single { half, .. }, Column::New) => Some(&half.text),
+        (Row::Subject(text) | Row::Body(text) | Row::Meta(text) | Row::Note(text) | Row::Remark(text, _), Column::New) => Some(text),
+        (Row::Commit { subject, .. }, Column::New) => Some(subject),
         _ => None,
     }
-    .filter(|half| half.kind != Kind::Gap)
+}
+
+/// A line's number in its file, and a column of it (from 0).
+pub type LineAt = (u32, usize);
+
+/// What's selected of a commit's rows, for `den selection` and Claude Code.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowsSelection {
+    /// The file whose changes it starts in (relative to the repo), with
+    /// the first and last selected lines' numbers in it and the columns
+    /// (from 0) where it starts and ends; none in a message or a note.
+    pub file: Option<(String, LineAt, LineAt)>,
+    /// The numbers are the old file's: the removed side was selected.
+    pub old: bool,
+    /// The commit's short hash, in a view of several.
+    pub commit: Option<SharedString>,
+    pub text: String,
+}
+
+/// `selection` of `rows`, told as `RowsSelection`.
+fn rows_selection(rows: &[Row], selection: &Selection) -> RowsSelection {
+    let ((start, from), (end, to)) = selection.ordered();
+    let mut file = None;
+    let mut commit = None;
+    for row in rows[..=start.min(rows.len().saturating_sub(1))].iter().rev() {
+        match row {
+            Row::File { path, .. } if file.is_none() => file = Some(path.to_string()),
+            Row::Commit { short, .. } => {
+                commit = Some(short.clone());
+                break;
+            }
+            _ => {}
+        }
+    }
+    let number = |ix: usize| -> Option<(u32, bool)> {
+        match (rows.get(ix)?, selection.column) {
+            (Row::Line { old, .. }, Column::Old) => old.number.map(|number| (number, true)),
+            (Row::Line { new, .. }, Column::New) => new.number.map(|number| (number, false)),
+            (Row::Single { old, new, .. }, _) => new.map(|number| (number, false)).or(old.map(|number| (number, true))),
+            _ => None,
+        }
+    };
+    let first = (start..=end).find_map(|ix| number(ix).map(|number| (ix, number)));
+    let last = (start..=end).rev().find_map(|ix| number(ix).map(|number| (ix, number)));
+    let file = file.zip(first.zip(last)).map(|(file, ((first_ix, (first, _)), (last_ix, (last, _))))| {
+        let column = |ix: usize, at: usize, byte: usize| if ix == at { byte } else { 0 };
+        let end_column = if last_ix == end { to } else { line(rows, last_ix, selection.column).map_or(0, |text| text.len()) };
+        let text_len = |ix: usize| line(rows, ix, selection.column).map_or(0, |text| text.len());
+        (file, (first, column(first_ix, start, from).min(text_len(first_ix))), (last, end_column.min(text_len(last_ix))))
+    });
+    RowsSelection { file, old: first.is_some_and(|(_, (_, old))| old), commit, text: selected_text(rows, selection) }
 }
 
 /// The text selected, its lines one under the other.
@@ -139,11 +193,11 @@ fn selected_text(rows: &[Row], selection: &Selection) -> String {
     let (start, end) = selection.ordered();
     (start.0..=end.0)
         .filter_map(|ix| {
-            let half = line(rows, ix, selection.column)?;
-            let len = half.text.len();
+            let text = line(rows, ix, selection.column)?;
+            let len = text.len();
             let from = if ix == start.0 { start.1.min(len) } else { 0 };
             let to = if ix == end.0 { end.1.min(len) } else { len };
-            Some(half.text.get(from..to.max(from)).unwrap_or(""))
+            Some(text.get(from..to.max(from)).unwrap_or(""))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -187,8 +241,9 @@ enum Row {
     /// `status`: `A` added, `D` deleted, `R` renamed, `M` modified.
     File { path: SharedString, status: char, added: usize, removed: usize },
     Note(SharedString),
-    /// A commit's short hash and subject over its message, among others'.
-    Commit { short: SharedString, subject: SharedString },
+    /// A commit's place among them (`21/64`), short hash and subject over
+    /// its message, among others'.
+    Commit { position: SharedString, short: SharedString, subject: SharedString },
     /// A line of what was written of the commit (`den commits`' notes),
     /// its Markdown styled.
     Remark(SharedString, Vec<(Range<usize>, HighlightStyle)>),
@@ -319,7 +374,9 @@ fn commits_rows(show: &str, notes: &str, colors: &Colors) -> (Vec<Row>, Vec<Stri
     let notes = parse_notes(notes);
     let mut used = vec![false; notes.len()];
     let mut rows = Vec::new();
-    for commit in split_commits(show) {
+    let commits = split_commits(show);
+    let count = commits.len();
+    for (nth, commit) in commits.into_iter().enumerate() {
         let hash = commit.lines().next().and_then(|line| line.strip_prefix("commit ")).and_then(|rest| rest.split_whitespace().next()).unwrap_or("");
         let (header, patch) = match commit.find("\ndiff --git ") {
             Some(at) => (&commit[..at], &commit[at + 1..]),
@@ -333,7 +390,8 @@ fn commits_rows(show: &str, notes: &str, colors: &Colors) -> (Vec<Row>, Vec<Stri
             Some(Row::Subject(subject)) => subject,
             _ => SharedString::default(),
         };
-        rows.push(Row::Commit { short: hash.chars().take(10).collect::<String>().into(), subject });
+        let position = format!("{}/{count}", nth + 1).into();
+        rows.push(Row::Commit { position, short: hash.chars().take(10).collect::<String>().into(), subject });
         rows.extend(message);
         let hash = hash.to_lowercase();
         if let Some(ix) = notes.iter().position(|(prefix, _)| hash.starts_with(prefix.as_str())) {
@@ -506,7 +564,9 @@ impl CommitView {
     pub fn set(&mut self, prepared: Prepared, cx: &mut Context<Self>) {
         self.take(prepared);
         self.scroll = UniformListScrollHandle::new();
-        self.selection = None;
+        if self.selection.take().is_some() {
+            cx.emit(CommitViewEvent::Selected);
+        }
         cx.notify();
     }
 
@@ -521,7 +581,7 @@ impl CommitView {
             selection.head = (ix, byte);
         } else {
             let rows = if narrow { &self.inline } else { &self.rows };
-            let text = line(rows, ix, column).map(|half| half.text.as_ref()).unwrap_or("");
+            let text = line(rows, ix, column).map(|text| text.as_ref()).unwrap_or("");
             let range = match event.click_count {
                 2 => word_at(text, byte),
                 3.. => 0..text.len(),
@@ -583,14 +643,44 @@ impl CommitView {
     }
 
     /// The button went up, anywhere.
-    fn release(&mut self) {
-        self.selecting = false;
+    fn release(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.selecting) {
+            cx.emit(CommitViewEvent::Selected);
+        }
         self.auto_scroll.stop();
     }
 
+    /// What's selected of the rows, if anything.
+    pub fn selected(&self) -> Option<RowsSelection> {
+        let selection = self.selection.filter(|selection| selection.anchor != selection.head && selection.narrow == self.narrow.get())?;
+        let rows = if selection.narrow { &self.inline } else { &self.rows };
+        Some(rows_selection(rows, &selection)).filter(|selected| !selected.text.is_empty())
+    }
+
+    /// Of several commits, the place (`21/64`) and short hash of the one
+    /// at the top of the view.
+    pub fn top_commit(&self) -> Option<(SharedString, SharedString)> {
+        let rows = if self.narrow.get() { &self.inline } else { &self.rows };
+        let height = self.row_height.get();
+        let top = if height > px(0.) { (-self.scroll.0.borrow().base_handle.offset().y / height).floor().max(0.) as usize } else { 0 };
+        rows[..(top + 1).min(rows.len())].iter().rev().find_map(|row| match row {
+            Row::Commit { position, short, .. } => Some((position.clone(), short.clone())),
+            _ => None,
+        })
+    }
+
+    /// Nothing selected of the rows: something else is.
+    fn deselect(&mut self, cx: &mut Context<Self>) {
+        if self.selection.take().is_some() {
+            cx.emit(CommitViewEvent::Selected);
+            cx.notify();
+        }
+    }
+
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        // The message's text, selected as any other in the window.
         let Some(selection) = self.selection.filter(|selection| selection.anchor != selection.head) else {
-            return;
+            return cx.propagate();
         };
         let rows = if selection.narrow { &self.inline } else { &self.rows };
         cx.write_to_clipboard(ClipboardItem::new_string(selected_text(rows, &selection)));
@@ -612,7 +702,7 @@ fn follow_drag(view: WeakEntity<CommitView>) -> impl IntoElement {
             let release = view.clone();
             window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                 if phase.bubble() && event.button == MouseButton::Left {
-                    release.update(cx, |this, _| this.release()).ok();
+                    release.update(cx, |this, cx| this.release(cx)).ok();
                 }
             });
         },
@@ -831,9 +921,10 @@ impl CommitView {
             .px_4()
             .py_2()
             .gap_2()
-            .child(div().font_semibold().child(message.subject.clone()))
-            .when(!message.body.is_empty(), |el| el.child(div().child(message.body.clone())))
-            .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(message.meta.clone()));
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.deselect(cx)))
+            .child(div().font_semibold().child(SelectableText::new("commit-subject", message.subject.clone()).document_order(0)))
+            .when(!message.body.is_empty(), |el| el.child(div().child(SelectableText::new("commit-body", message.body.clone()).document_order(1))))
+            .child(div().text_ui_small(cx).text_color(theme.muted_foreground).child(SelectableText::new("commit-meta", message.meta.clone()).document_order(2)));
         let files = v_flex()
             .id("commit-files")
             .flex_1()
@@ -980,18 +1071,18 @@ impl CommitView {
             // A line's text, with what's selected of it, which a press
             // starts selecting (a move with the button down extends it: see
             // `drag`).
-            let text = |half: &Half, ix: usize, column: Column| {
+            let styled = |content: &SharedString, styles: &[(Range<usize>, HighlightStyle)], gap: bool, ix: usize, column: Column| {
                 let selected = selection
-                    .filter(|selection| selection.column == column && half.kind != Kind::Gap)
-                    .and_then(|selection| selection.bytes(ix, half.text.len()));
+                    .filter(|selection| selection.column == column && !gap)
+                    .and_then(|selection| selection.bytes(ix, content.len()));
                 let highlights: Vec<_> = match selected {
                     Some(selected) => {
                         let style = HighlightStyle { background_color: Some(theme.selection), ..Default::default() };
-                        combine_highlights(half.highlights.clone(), [(selected, style)]).collect()
+                        combine_highlights(styles.to_vec(), [(selected, style)]).collect()
                     }
-                    None => half.highlights.clone(),
+                    None => styles.to_vec(),
                 };
-                let text = StyledText::new(half.text.clone()).with_highlights(highlights);
+                let text = StyledText::new(content.clone()).with_highlights(highlights);
                 let layout = text.layout().clone();
                 layouts.borrow_mut().insert((ix, column), layout.clone());
                 let press = view.clone();
@@ -1010,6 +1101,8 @@ impl CommitView {
                     })
                     .child(text)
             };
+            let text = |half: &Half, ix: usize, column: Column| styled(&half.text, &half.highlights, half.kind == Kind::Gap, ix, column);
+            let plain = |content: &SharedString, ix: usize| styled(content, &[], false, ix, Column::New);
             let half = |half: &Half, background: Hsla, marker: &str, ix: usize, column: Column| {
                 let changed = half.kind == Kind::Changed;
                 h_flex()
@@ -1033,20 +1126,21 @@ impl CommitView {
                 .map(|ix| {
                     let row = div().id(ix).h(height).w_full().flex().items_center();
                     match &rows[ix] {
-                        Row::Subject(text) => row.px_4().text_ui(cx).font_semibold().child(text.clone()),
-                        Row::Body(text) => row.px_4().text_ui(cx).child(text.clone()),
-                        Row::Meta(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(text.clone()),
+                        Row::Subject(text) => row.px_4().text_ui(cx).font_semibold().child(plain(text, ix)),
+                        Row::Body(text) => row.px_4().text_ui(cx).child(plain(text, ix)),
+                        Row::Meta(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(plain(text, ix)),
                         Row::Blank => row,
-                        Row::Note(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(text.clone()),
-                        Row::Commit { short, subject } => row
+                        Row::Note(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(plain(text, ix)),
+                        Row::Commit { position, short, subject } => row
                             .px_4()
                             .gap_3()
                             .bg(theme.accent)
                             .border_t_1()
                             .border_color(theme.border)
                             .text_ui(cx)
+                            .child(div().flex_none().text_color(theme.muted_foreground).child(position.clone()))
                             .child(div().flex_none().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(short.clone()))
-                            .child(div().min_w_0().font_semibold().whitespace_nowrap().text_ellipsis().child(subject.clone())),
+                            .child(div().flex_1().min_w_0().h_full().font_semibold().child(plain(subject, ix))),
                         Row::Remark(text, highlights) => row.px_4().child(
                             div()
                                 .size_full()
@@ -1057,8 +1151,7 @@ impl CommitView {
                                 .border_l(px(3.))
                                 .border_color(theme.warning)
                                 .text_ui(cx)
-                                .whitespace_nowrap()
-                                .child(StyledText::new(text.clone()).with_highlights(highlights.clone())),
+                                .child(styled(text, highlights, false, ix, Column::New)),
                         ),
                         Row::Skip => row
                             .px_4()
@@ -1116,6 +1209,7 @@ impl CommitView {
         div()
             .size_full()
             .relative()
+            .when(cfg!(test), |el| el.debug_selector(|| "commit-changes".into()))
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::copy))
             // a press anywhere but on a line's text leaves nothing selected
@@ -1129,6 +1223,23 @@ impl CommitView {
             )
             .child(follow_drag(cx.entity().downgrade()))
             .child(list)
+            // Of several commits, the one at the top: where the view is.
+            .when_some(self.top_commit(), |el, (position, short)| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_1()
+                        .right_4()
+                        .px_2()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.secondary)
+                        .text_ui_small(cx)
+                        .text_color(theme.muted_foreground)
+                        .child(format!("{position} · {short}")),
+                )
+            })
             .into_any_element()
     }
 }
@@ -1136,10 +1247,10 @@ impl CommitView {
 #[cfg(test)]
 mod tests {
     use super::{
-        Colors, Column, Half, Kind, Row, Selection, commits_rows, header_rows, section_path, section_status, selected_text, shows, wrap,
+        Colors, Column, Half, Kind, Row, RowsSelection, Selection, commits_rows, rows_selection, header_rows, section_path, section_status, selected_text, shows, wrap,
         word_at,
     };
-    use gpui_kit::{FontWeight, HighlightStyle, black, component::highlighter::HighlightTheme};
+    use gpui_kit::{FontWeight, HighlightStyle, SharedString, black, component::highlighter::HighlightTheme};
 
     /// `den commits`: each commit's band, message, note and changes, one
     /// after another; a note for a commit not there is told.
@@ -1159,7 +1270,7 @@ mod tests {
         let kinds: Vec<String> = rows
             .iter()
             .map(|row| match row {
-                Row::Commit { short, subject } => format!("commit {short} {subject}"),
+                Row::Commit { position, short, subject } => format!("commit {position} {short} {subject}"),
                 Row::Remark(text, _) => format!("note {text}"),
                 Row::File { path, .. } => format!("file {path}"),
                 Row::Line { .. } => "line".into(),
@@ -1169,8 +1280,8 @@ mod tests {
                 _ => "other".into(),
             })
             .collect();
-        let a = format!("commit {} First", "a".repeat(10));
-        let b = format!("commit {} Second", "b".repeat(10));
+        let a = format!("commit 1/2 {} First", "a".repeat(10));
+        let b = format!("commit 2/2 {} Second", "b".repeat(10));
         assert_eq!(
             kinds,
             [&a, "meta", "", "note note two and code", "note • an item", "", "file x.rs", "line", "", "", &b, "", "body Its body", "meta"]
@@ -1179,6 +1290,15 @@ mod tests {
         assert_eq!(styles[0], (5..8, HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() }));
         assert_eq!(styles[1].0, 13..17);
         assert_eq!(wrap("aaa bbb ccc", 7), [0..7, 8..11]);
+        // A note selected tells its commit; a line, its file and numbers.
+        let select = |column, anchor, head| Selection { column, narrow: false, anchor, head };
+        let short = Some(SharedString::from("a".repeat(10)));
+        let note = rows_selection(&rows, &select(Column::New, (3, 5), (4, 6)));
+        assert_eq!(note, RowsSelection { file: None, old: false, commit: short.clone(), text: "two and code\n• an".into() });
+        let new = rows_selection(&rows, &select(Column::New, (7, 0), (7, 3)));
+        assert_eq!(new, RowsSelection { file: Some(("x.rs".into(), (1, 0), (1, 3))), old: false, commit: short.clone(), text: "new".into() });
+        let old = rows_selection(&rows, &select(Column::Old, (7, 3), (7, 0)));
+        assert_eq!(old, RowsSelection { file: Some(("x.rs".into(), (1, 0), (1, 3))), old: true, commit: short, text: "old".into() });
     }
 
     #[test]

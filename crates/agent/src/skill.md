@@ -27,7 +27,9 @@ full list; the main ones:
 - `den diff [<file>]` shows the uncommitted changes, so the user can review them.
 - `den commit <sha> [<file>]` opens a commit in the Graph tab (its red/green
   changes side by side), at the file's if given: to show the user what a
-  commit did.
+  commit did. What the user selects in it comes as from the editor:
+  `den selection` prints `<file>:<line>:<col>-<line>:<col> at <sha>` (the
+  numbers the commit's, ` (old)` from a removed line) and the text.
 - `den commits <rev>... [--files <path>...] [--exclude <glob>...]` shows
   several commits (shas, or ranges `a..b`, oldest first) one after another
   in the Graph tab, each message over its changes; `--exclude '*_test.ts'`

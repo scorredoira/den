@@ -1736,6 +1736,7 @@ impl Workspace {
             CommitViewEvent::ShowHistory(file) => self.open_history(Some((file.clone(), false)), window, cx),
             CommitViewEvent::RevealInTree(file) => self.reveal_in_tree(&self.root.join(file), cx),
             CommitViewEvent::CopyPath(file) => cx.write_to_clipboard(ClipboardItem::new_string(self.root.join(file).to_string_lossy().into_owned())),
+            CommitViewEvent::Selected => self.report_graph_selection(cx),
         }
     }
 

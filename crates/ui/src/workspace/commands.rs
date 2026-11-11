@@ -36,6 +36,63 @@ impl Workspace {
         cx.notify();
     }
 
+    /// `den selection` in the Graph tab in front: what's selected of its
+    /// open commit, as in a file (`path:line:col-line:col` of the commit's
+    /// file, ` at <short hash>`, `(old)` if of the removed lines), or
+    /// `commit <short hash>` for its message or a note, then the text. None
+    /// if the Graph isn't in front.
+    pub fn graph_selection(&self, window: &mut Window, cx: &mut App) -> Option<Result<String, String>> {
+        if !self.active.is_some_and(|ix| matches!(self.tabs[ix].page, Some(pages::Page::Graph))) {
+            return None;
+        }
+        let graph = self.graph.read(cx);
+        if let Some(selected) = graph.selected(cx) {
+            let short = selected.commit.clone().unwrap_or_default();
+            let place = match &selected.file {
+                Some((file, (first, from), (last, to))) => format!(
+                    "{}:{first}:{}-{last}:{} at {short}{}",
+                    self.root.join(file).display(),
+                    from + 1,
+                    to + 1,
+                    if selected.old { " (old)" } else { "" }
+                ),
+                None => format!("commit {short}"),
+            };
+            return Some(Ok(format!("{place}\n{}\n", selected.text)));
+        }
+        let short = graph.open_short();
+        // The message over a commit's changes, selected as any text.
+        let text = gpui_base::TextSelection::selected_text(window, cx);
+        Some(match short {
+            Some(short) if !text.is_empty() => Ok(format!("commit {short}\n{text}\n")),
+            _ => Err("nothing is selected in the Graph tab".into()),
+        })
+    }
+
+    /// What's selected of the Graph tab's open commit told to Claude Code
+    /// as an editor's selection: the commit's file at those lines.
+    pub(super) fn report_graph_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Some(selected) = self.graph.read(cx).selected(cx) else {
+            return;
+        };
+        let Some((file, (first, from), (last, to))) = selected.file else {
+            return;
+        };
+        let group = self.terminals.read(cx).group().to_string();
+        let selection = proto::IdeSelection {
+            file: self.root.join(file),
+            text: selected.text,
+            start: (first.saturating_sub(1), from as u32),
+            end: (last.saturating_sub(1), to as u32),
+        };
+        // An editor's selection, told again once it's in front.
+        self.ide_reported = None;
+        client.notify(Request::IdeSelection { group, selection: Some(selection) });
+    }
+
     /// `den selection`: the active file and each selection in it
     /// (`path:line:col-line:col`, 1-based), followed by its text.
     pub fn selection(&self, cx: &App) -> Result<String, String> {
@@ -77,7 +134,7 @@ impl Workspace {
     fn tab_name(&self, ix: usize, cx: &App) -> String {
         let tab = &self.tabs[ix];
         match &tab.diff {
-            _ if matches!(tab.page, Some(pages::Page::Graph)) => match self.graph.read(cx).open_commit_name() {
+            _ if matches!(tab.page, Some(pages::Page::Graph)) => match self.graph.read(cx).open_commit_name(cx) {
                 Some(open) => format!("graph: {open}"),
                 None => "graph".to_string(),
             },

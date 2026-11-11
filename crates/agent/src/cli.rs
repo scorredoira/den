@@ -85,6 +85,9 @@ keyboard stays in the terminal unless --focus.
                       language server.
   den selection       prints the file and range selected in the editor
                       (path:line:col-line:col), then the selected text.
+                      In the Graph tab, of the open commit's changes: the
+                      same, ` at <sha>` (and ` (old)` from a removed
+                      line), or `commit <sha>` for its message or a note.
   den tabs            lists the files open in the editor, the active one
                       with its cursor.
   den close <file> | --all

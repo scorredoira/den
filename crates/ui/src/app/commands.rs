@@ -89,7 +89,10 @@ impl Den {
                 workspace.update(cx, |workspace, cx| workspace.open_doc(title, text.to_string(), true, window, cx));
                 String::new()
             }),
-            ["selection"] => here(self, false, window, cx).and_then(|(_, workspace)| workspace.read(cx).selection(cx)),
+            ["selection"] => here(self, false, window, cx).and_then(|(_, workspace)| {
+                let graph = workspace.update(cx, |workspace, cx| workspace.graph_selection(window, cx));
+                graph.unwrap_or_else(|| workspace.read(cx).selection(cx))
+            }),
             ["tabs"] => here(self, false, window, cx).map(|(_, workspace)| workspace.read(cx).tab_list(cx)),
             ["message", words @ ..] if !words.is_empty() => here(self, false, window, cx).map(|(_, workspace)| {
                 workspace.update(cx, |workspace, cx| workspace.set_message(words.join(" "), cx));

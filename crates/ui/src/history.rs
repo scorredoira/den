@@ -134,7 +134,10 @@ impl HistoryView {
                 }
             }),
             cx.subscribe(&commit, |this, _, event: &CommitViewEvent, cx| {
-                if let Some(commit) = this.shown_commit() {
+                // Of several, the files ask nothing: whose they are isn't kept.
+                if let CommitViewEvent::Selected = event {
+                    cx.emit(HistoryEvent { commit: String::new(), short: String::new(), event: event.clone() });
+                } else if let Some(commit) = this.shown_commit() {
                     let (commit, short) = (commit.hash.clone(), commit.short.clone());
                     cx.emit(HistoryEvent { commit, short, event: event.clone() });
                 }
@@ -341,14 +344,35 @@ impl HistoryView {
 
     /// What's open, as `den where` names it: `commit <short hash>`, or
     /// `commits (<how many>)`.
-    pub fn open_commit_name(&self) -> Option<String> {
+    pub fn open_commit_name(&self, cx: &App) -> Option<String> {
         if !self.open {
             return None;
         }
         match self.several {
-            Some(count) => Some(format!("commits ({count})")),
+            Some(count) => Some(match self.commit.read(cx).top_commit() {
+                Some((position, _)) => format!("commits ({count}), at {position}"),
+                None => format!("commits ({count})"),
+            }),
             None => self.shown_commit().map(|commit| format!("commit {}", commit.short)),
         }
+    }
+
+    /// What's selected of the open commit's rows, with its commit's short
+    /// hash.
+    pub fn selected(&self, cx: &App) -> Option<commit_view::RowsSelection> {
+        if !self.open {
+            return None;
+        }
+        let mut selected = self.commit.read(cx).selected()?;
+        if selected.commit.is_none() {
+            selected.commit = self.shown_commit().map(|commit| commit.short.clone().into());
+        }
+        Some(selected)
+    }
+
+    /// The open commit's short hash, or none if it's several.
+    pub fn open_short(&self) -> Option<String> {
+        self.open.then(|| self.shown_commit().map(|commit| commit.short.clone())).flatten()
     }
 
     /// `den commits`: `count` commits open one after another, `show` what
@@ -423,6 +447,22 @@ impl HistoryView {
                 _ => Ok(()),
             }
         })
+    }
+
+    /// Opens what `git show` says of a commit, as `den commit` does.
+    #[cfg(test)]
+    pub fn open_shown(&mut self, show: String, cx: &mut Context<Self>) {
+        self.open_outside(shown_commit(&show).unwrap(), Arc::new(show.clone()), cx);
+        let prepare = commit_view::prepare(show, None, cx);
+        cx.spawn(async move |this, cx| {
+            let prepared = prepare.await;
+            this.update(cx, |this, cx| {
+                this.shown = this.selected.clone();
+                this.commit.update(cx, |view, cx| view.set(prepared, cx));
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// `commit` selected and open, `text` what `git show` said of it; kept
@@ -1329,9 +1369,9 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("history-back").is_some());
-        view.read_with(cx, |view, _| {
+        view.read_with(cx, |view, cx| {
             assert_eq!((view.selected.as_deref(), view.open), (Some("0123456789abcdef"), true));
-            assert_eq!(view.open_commit_name().as_deref(), Some("commit 0123456789"));
+            assert_eq!(view.open_commit_name(cx).as_deref(), Some("commit 0123456789"));
         });
         cx.simulate_keystrokes("down");
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.outside.is_none()), (Some("c"), true)));
@@ -1356,7 +1396,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(smol::block_on(opened).as_deref(), Ok("## ffff: no such commit among them\n"));
         view.update(cx, |view, cx| view.set_commits(vec![commit("c", &["b"]), commit("b", &[])], cx));
-        view.read_with(cx, |view, _| assert_eq!(view.open_commit_name().as_deref(), Some("commits (1)")));
+        view.read_with(cx, |view, cx| assert_eq!(view.open_commit_name(cx).as_deref(), Some("commits (1), at 1/1")));
         assert!(cx.debug_bounds("history-back").is_some());
         cx.simulate_keystrokes("escape");
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open, view.several), (Some("c"), false, None)));
@@ -1413,6 +1453,50 @@ mod tests {
         cx.simulate_click(from, Modifiers::default());
         cx.run_until_parked();
         view.read_with(cx, |view, _| assert!(view.open));
+    }
+
+    /// A drag over an open commit's lines selects them, and Cmd-C copies
+    /// them.
+    #[gpui_kit::test]
+    fn a_drag_selects_an_open_commit_s_lines(cx: &mut TestAppContext) {
+        struct Host(Entity<HistoryView>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(gpui_base::TextSelectionLayer).child(self.0.clone())
+            }
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            cx.bind_keys(keymap());
+            cx.bind_keys([KeyBinding::new("cmd-c", gpui_kit::component::input::Copy, None)]);
+        });
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            Host(cx.new(|cx| HistoryView::new(PathBuf::from("/history-test"), None, window, cx)))
+        });
+        let view = host.read_with(cx, |host, _| host.0.clone());
+        let show = format!(
+            "commit {}\nAuthor:     A <a@b>\nAuthorDate: Mon Nov 9 10:00:00 2026 +0100\n\n    One\n\n\
+             diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,3 +1,3 @@\n first line\n-old second\n+new second\n third line\n",
+            "a".repeat(40)
+        );
+        view.update(cx, |view, cx| {
+            view.set_commits(vec![commit("c", &[])], cx);
+            view.open_shown(show, cx);
+        });
+        cx.run_until_parked();
+        let list = cx.debug_bounds("commit-changes").unwrap();
+        let height = px((Config::default().font_size(crate::config::TextArea::Editor) * 1.6).round());
+        // The rows: a blank one, the file's, then its lines.
+        let row = |ix: f32| list.top() + height * ix + height / 2.;
+        let x = list.left() + list.size.width * 0.7;
+        cx.simulate_mouse_down(point(x, row(2.)), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(point(list.right() - px(2.), row(4.)), Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(point(list.right() - px(2.), row(4.)), MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-c");
+        let copied = cx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).unwrap_or_default();
+        assert!(copied.contains("second") && copied.ends_with("third line"), "copied: {copied:?}");
     }
 
     fn commit(hash: &str, parents: &[&str]) -> GraphCommit {

@@ -1512,3 +1512,37 @@ fn hiding_the_terminals_focuses_a_diff(cx: &mut TestAppContext) {
         assert!(workspace.focus_handle.contains_focused(window, cx));
     });
 }
+
+/// In the Graph tab, a drag over an open commit's lines selects them:
+/// Cmd-C copies them.
+#[gpui_kit::test]
+fn an_open_commit_s_lines_select(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    cx.update(|_, cx| cx.bind_keys([KeyBinding::new("cmd-c", gpui_kit::component::input::Copy, None)]));
+    let show = format!(
+        "commit {}\nAuthor:     A <a@b>\nAuthorDate: Mon Nov 9 10:00:00 2026 +0100\n\n    One\n\n\
+         diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,3 +1,3 @@\n first line\n-old second\n+new second\n third line\n",
+        "a".repeat(40)
+    );
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.toggle_graph(window, cx);
+        workspace.graph.update(cx, |graph, cx| graph.open_shown(show, cx));
+    });
+    cx.run_until_parked();
+    let list = bounds(cx, "commit-changes");
+    let height = px((Config::default().font_size(config::TextArea::Editor) * 1.6).round());
+    let row = |ix: f32| list.top() + height * ix + height / 2.;
+    let x = list.left() + list.size.width * 0.7;
+    cx.simulate_mouse_down(point(x, row(2.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(point(list.right() - px(2.), row(4.)), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(point(list.right() - px(2.), row(4.)), MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("cmd-c");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).unwrap_or_default();
+    assert!(copied.contains("second") && copied.ends_with("third line"), "copied: {copied:?}");
+    // `den selection` tells the commit's file, at its lines.
+    let told = workspace.update_in(cx, |workspace, window, cx| workspace.graph_selection(window, cx)).unwrap().unwrap();
+    // From the end of the removed line 2 (one column: the removed lines
+    // over the added ones) to the end of line 3.
+    assert_eq!(told, format!("/layout-test/x.rs:2:11-3:11 at aaaaaaaaaa (old)\n{copied}\n"));
+}
