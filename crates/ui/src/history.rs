@@ -966,6 +966,13 @@ impl HistoryView {
                     .flex_1()
                     .min_h_0()
                     .when(cfg!(test), |el| el.debug_selector(|| "history-commits".into()))
+                    // A drag selecting text changes nothing of the view's; it
+                    // repaints as it goes, not only when it ends.
+                    .on_mouse_move(cx.listener(|_, event: &MouseMoveEvent, _, cx| {
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            cx.notify();
+                        }
+                    }))
                     .when_some(empty, |el, empty| {
                         el.child(div().px_3().pt_2().text_ui_small(cx).text_color(theme.muted_foreground).child(empty))
                     })
