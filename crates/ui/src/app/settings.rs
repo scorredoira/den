@@ -464,7 +464,7 @@ impl Den {
     }
 
     fn render_terminals(&self, matches: &dyn Fn(&str) -> bool, cx: &mut Context<Self>) -> (AnyElement, bool) {
-        let visible = [SECTIONS[3], "Pane Titles", "split", "title"].iter().any(|text| matches(text));
+        let visible = [SECTIONS[3], "Pane Titles", "split", "title", "Ask Before Closing", "close"].iter().any(|text| matches(text));
         let titles = Switch::new("pane-titles")
             .accessibility_label("Pane Titles")
             .checked(!Config::get(cx).hide_pane_titles)
@@ -472,12 +472,27 @@ impl Den {
                 Config::update(cx, |config| config.hide_pane_titles = !checked);
                 cx.refresh_windows();
             }));
-        let rows = vec![setting(
-            "Pane Titles",
-            "A split terminal tab shows each pane's title above it, the one with the focus brighter; a pane is dragged elsewhere by its title. Off, the panes go without.",
-            titles,
-            cx,
-        )];
+        let ask = Switch::new("ask-before-closing")
+            .accessibility_label("Ask Before Closing")
+            .checked(!Config::get(cx).close_terminals_without_asking)
+            .on_click(cx.listener(|_, checked: &bool, _, cx| {
+                Config::update(cx, |config| config.close_terminals_without_asking = !checked);
+                cx.notify();
+            }));
+        let rows = vec![
+            setting(
+                "Pane Titles",
+                "A split terminal tab shows each pane's title above it, the one with the focus brighter; a pane is dragged elsewhere by its title. Off, the panes go without.",
+                titles,
+                cx,
+            ),
+            setting(
+                "Ask Before Closing",
+                "Closing a terminal that runs something, such as Claude Code or a server, asks first: closing ends it, and a closed terminal can't be reopened. Off, it closes at once.",
+                ask,
+                cx,
+            ),
+        ];
         Self::section(SECTIONS[3], rows, visible, cx)
     }
 

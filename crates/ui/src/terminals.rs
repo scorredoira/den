@@ -28,7 +28,7 @@ use gpui_kit::component::{
     ResizableState, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
-use proto::TermId;
+use proto::{Request, Response, TermId};
 use serde::{Deserialize, Serialize};
 use ui_term::{Terminal, TerminalView, TerminalViewEvent, grid_for, links::Link};
 
@@ -727,12 +727,83 @@ impl TerminalArea {
         Some(self.views.get(&term)?.read(cx).focus_handle(cx))
     }
 
-    /// Closes the active terminal, killing its process.
+    /// Closes the active terminal, killing its process (asking first if it
+    /// runs something).
     pub fn close_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(term) = self.tabs.get(self.active).map(|tab| tab.active) else {
             return;
         };
-        self.close_term(term, window, cx);
+        self.close_asking(vec![term], |_, _, _| {}, window, cx);
+    }
+
+    /// Closes `terms` and kills their processes, then does `then`. If one of
+    /// them runs something other than its shell (Claude Code, a server…),
+    /// it asks first, unless Settings turned that off: nothing brings a
+    /// closed terminal back. Without an agent to tell, or one too old, it
+    /// closes them without asking.
+    fn close_asking(
+        &mut self,
+        terms: Vec<TermId>,
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let client = self.client.clone().filter(|_| !Config::get(cx).close_terminals_without_asking);
+        let Some(client) = client else {
+            self.close_terms(&terms, then, window, cx);
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let mut busy = Vec::new();
+            for &term in &terms {
+                if matches!(client.request(Request::TermBusy { term }).await, Ok(Response::Busy(true))) {
+                    busy.push(term);
+                }
+            }
+            let Ok(answer) = this.update_in(cx, |this, window, cx| {
+                let titles: Vec<String> = busy.iter().map(|&term| this.title(term, cx)).collect();
+                let (message, detail) = match titles.as_slice() {
+                    [] => return None,
+                    [title] => (
+                        format!("Close the terminal running {title}?"),
+                        "Closing it ends what runs in it, and it can't be reopened.".to_string(),
+                    ),
+                    titles => (
+                        format!("Close {} terminals that are running something?", titles.len()),
+                        format!("Closing them ends {}, and they can't be reopened.", titles.join(", ")),
+                    ),
+                };
+                Some(window.prompt(
+                    PromptLevel::Warning,
+                    &message,
+                    Some(&detail),
+                    &[PromptButton::new("Cancel"), PromptButton::new("Close")],
+                    cx,
+                ))
+            }) else {
+                return;
+            };
+            if let Some(answer) = answer
+                && !matches!(answer.await, Ok(1))
+            {
+                return;
+            }
+            this.update_in(cx, |this, window, cx| this.close_terms(&terms, then, window, cx)).ok();
+        })
+        .detach();
+    }
+
+    fn close_terms(
+        &mut self,
+        terms: &[TermId],
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for &term in terms {
+            self.close_term(term, window, cx);
+        }
+        then(self, window, cx);
     }
 
     /// Closes a specific terminal and kills its process.
@@ -748,9 +819,7 @@ impl TerminalArea {
         let Some(tab) = self.tabs.get(ix) else {
             return;
         };
-        for term in tab.tree.leaves() {
-            self.close_term(term, window, cx);
-        }
+        self.close_asking(tab.tree.leaves(), |_, _, _| {}, window, cx);
     }
 
     /// Closes every tab but the one at `ix`, with their terminals.
@@ -759,6 +828,7 @@ impl TerminalArea {
             return;
         }
         let had_focus = self.contains_focus(window, cx);
+        let kept = self.tabs[ix].id;
         let others: Vec<TermId> = self
             .tabs
             .iter()
@@ -766,16 +836,19 @@ impl TerminalArea {
             .filter(|(other, _)| *other != ix)
             .flat_map(|(_, tab)| tab.tree.leaves())
             .collect();
-        for term in others {
-            self.close_term(term, window, cx);
-        }
         // The one left is the active one, focused if a closed one was.
-        if had_focus {
-            self.activate_tab(0, window, cx);
-        } else {
-            self.active = 0;
-            cx.notify();
-        }
+        let then = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            let Some(ix) = this.tabs.iter().position(|tab| tab.id == kept) else {
+                return;
+            };
+            if had_focus {
+                this.activate_tab(ix, window, cx);
+            } else {
+                this.active = ix;
+                cx.notify();
+            }
+        };
+        self.close_asking(others, then, window, cx);
     }
 
     /// Types the tab's name in its place (Rename Tab, or a double click):
@@ -1005,7 +1078,7 @@ impl TerminalArea {
         .separator()
         .item(menu::item("Rename", &area, move |this, window, cx| this.start_term_rename(term, window, cx)))
         .item(
-            menu::item("Close Terminal", &area, move |this, window, cx| this.close_term(term, window, cx))
+            menu::item("Close Terminal", &area, move |this, window, cx| this.close_asking(vec![term], |_, _, _| {}, window, cx))
                 .action(Box::new(CloseTab)),
         )
     }
@@ -1421,7 +1494,7 @@ impl TerminalArea {
                                         )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             cx.stop_propagation();
-                                            this.close_term(term, window, cx);
+                                            this.close_asking(vec![term], |_, _, _| {}, window, cx);
                                         })),
                                 )
                                 .when(!renaming, |el| {
@@ -1800,5 +1873,98 @@ mod tests {
                 assert_eq!(this.active, 2);
             })
         });
+    }
+
+    /// Closing a terminal that runs something asks first, and Cancel keeps
+    /// it; with Ask Before Closing off, it closes at once. Run against an
+    /// isolated test agent: DEN_TEST_AGENT is its executable,
+    /// DEN_AGENT_SOCKET / DEN_STATE_DIR point to a temporary test directory,
+    /// and SHELL=/bin/sh (a profile's own programs count as running).
+    #[gpui_kit::test]
+    #[ignore]
+    fn closing_a_busy_terminal_asks_first(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        cx.executor().allow_parking();
+        init(cx);
+        let executable = std::env::var_os("DEN_TEST_AGENT").expect("isolated test agent required");
+        let socket = std::env::var_os("DEN_AGENT_SOCKET").expect("isolated test socket required");
+        let root = PathBuf::from(std::env::var_os("DEN_STATE_DIR").expect("isolated test state required"));
+        assert!(std::path::Path::new(&socket).starts_with(&root));
+        let client = Client::connect_local(std::path::Path::new(&executable)).unwrap();
+        let cx = cx.add_empty_window();
+        let area = cx.new_window_entity(|_, cx| TerminalArea::new(root.clone(), Some(client.clone()), true, cx));
+        let wait = |cx: &mut VisualTestContext, what: &str, done: &dyn Fn(&mut VisualTestContext) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !done(cx) {
+                cx.run_until_parked();
+                assert!(Instant::now() < deadline, "{what}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let busy = |term: TermId| matches!(smol::block_on(client.request(Request::TermBusy { term })), Ok(Response::Busy(true)));
+        // Opens a terminal in a tab of its own, once its shell is ready.
+        let open = |cx: &mut VisualTestContext| {
+            let (group, client, cwd) = (root.to_string_lossy().into_owned(), client.clone(), root.clone());
+            let before = cx.update(|_, cx| area.read(cx).tabs.len());
+            cx.update(|window, cx| area.update(cx, |_, cx| {
+                cx.spawn_in(window, async move |this, cx| {
+                    let (term, terminal) = agent::create(client, group, cwd, (80, 24), cx).await.unwrap();
+                    this.update_in(cx, |this, window, cx| {
+                        this.add_view(term, terminal, window, cx);
+                        let id = this.next_tab_id();
+                        this.tabs.push(TerminalTab { id, tree: Tree::Leaf(term), active: term, name: None });
+                    })
+                    .unwrap();
+                })
+                .detach();
+            }));
+            wait(cx, "terminal opened", &|cx| cx.update(|_, cx| area.read(cx).tabs.len()) > before);
+            let term = cx.update(|_, cx| area.read(cx).tabs.last().unwrap().active);
+            // A shell still starting runs its profile, which counts as running.
+            wait(cx, "shell idle", &|_| !busy(term));
+            term
+        };
+        let run_sleep = |cx: &mut VisualTestContext, term: TermId| {
+            cx.update(|_, cx| {
+                let terminal = area.read(cx).views[&term].read(cx).terminal().clone();
+                terminal.update(cx, |terminal, cx| terminal.input(b"sleep 60\r".to_vec(), cx));
+            });
+            wait(cx, "sleep running", &|_| busy(term));
+        };
+        let tabs = |cx: &mut VisualTestContext| cx.update(|_, cx| area.read(cx).tabs.len());
+
+        let shell = open(cx);
+        let sleeping = open(cx);
+        run_sleep(cx, sleeping);
+
+        // The shell alone closes without asking.
+        let shell_ix = cx.update(|_, cx| area.read(cx).tabs.iter().position(|tab| tab.contains(shell)).unwrap());
+        cx.update(|window, cx| area.update(cx, |this, cx| this.close_tab(shell_ix, window, cx)));
+        wait(cx, "the idle shell closed", &|cx| tabs(cx) == 1);
+        assert!(!cx.has_pending_prompt());
+
+        // The one running sleep asks, and Cancel keeps it.
+        cx.update(|window, cx| area.update(cx, |this, cx| this.close_tab(0, window, cx)));
+        wait(cx, "closing asked", &|cx| cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert_eq!(tabs(cx), 1);
+        assert!(busy(sleeping));
+
+        // Close closes it.
+        cx.update(|window, cx| area.update(cx, |this, cx| this.close_tab(0, window, cx)));
+        wait(cx, "closing asked again", &|cx| cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Close");
+        wait(cx, "the busy terminal closed", &|cx| tabs(cx) == 0);
+
+        // With Ask Before Closing off, a busy one closes at once.
+        let again = open(cx);
+        run_sleep(cx, again);
+        cx.update(|window, cx| {
+            cx.global_mut::<Config>().close_terminals_without_asking = true;
+            area.update(cx, |this, cx| this.close_tab(0, window, cx));
+        });
+        assert_eq!(tabs(cx), 0);
+        assert!(!cx.has_pending_prompt());
     }
 }

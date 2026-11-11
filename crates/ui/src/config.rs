@@ -235,6 +235,10 @@ pub struct Config {
     /// Worktree), not those the agents make on their own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub only_own_worktrees: bool,
+    /// Closing a terminal that runs something (a program other than its
+    /// shell) doesn't ask first.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub close_terminals_without_asking: bool,
     /// A split terminal tab shows no title over each pane.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hide_pane_titles: bool,
