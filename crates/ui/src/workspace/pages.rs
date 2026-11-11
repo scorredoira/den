@@ -126,6 +126,21 @@ impl Workspace {
         opened
     }
 
+    /// `den commits`: the Graph tab in front with `count` commits open in
+    /// it, one after another (see `HistoryView::open_commits`).
+    pub(crate) fn show_commits(&mut self, count: usize, notes: String, show: String, window: &mut Window, cx: &mut Context<Self>) -> Task<Result<String, String>> {
+        let opened = self.graph.update(cx, |graph, cx| {
+            // Every file's changes: not a file's history.
+            graph.show_file(None, cx);
+            graph.open_commits(count, notes, show, cx)
+        });
+        if self.in_terminal_mode() {
+            self.leave_terminal_mode(cx);
+        }
+        self.show_graph_tab(window, cx);
+        opened
+    }
+
     /// The Graph tab in front, opened if it wasn't, with what it showed.
     fn show_graph_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ix = match self.graph_tab() {

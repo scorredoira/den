@@ -78,7 +78,7 @@ impl Workspace {
         let tab = &self.tabs[ix];
         match &tab.diff {
             _ if matches!(tab.page, Some(pages::Page::Graph)) => match self.graph.read(cx).open_commit_name() {
-                Some(short) => format!("graph: commit {short}"),
+                Some(open) => format!("graph: {open}"),
                 None => "graph".to_string(),
             },
             _ if tab.doc => format!("doc: {}", tab.path.display()),

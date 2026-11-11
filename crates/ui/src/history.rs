@@ -99,6 +99,8 @@ pub struct HistoryView {
     shown: Option<String>,
     /// A commit `den commit` opened that isn't among the ones read.
     outside: Option<GraphCommit>,
+    /// How many commits `den commits` shows open, one after another.
+    several: Option<usize>,
     /// The selected commit shows in the list's place.
     open: bool,
     /// What `git show` said of the commits read, the most recent last.
@@ -153,6 +155,7 @@ impl HistoryView {
             selected: None,
             shown: None,
             outside: None,
+            several: None,
             open: false,
             texts: Vec::new(),
             commit,
@@ -206,6 +209,7 @@ impl HistoryView {
         self.selected = None;
         self.shown = None;
         self.outside = None;
+        self.several = None;
         self.open = false;
         self.scroll = UniformListScrollHandle::new();
         self.schedule(Duration::ZERO, cx);
@@ -282,7 +286,8 @@ impl HistoryView {
         self.commits = commits;
         self.graph = Rc::new(graph(&self.commits, self.linked(cx)));
         // The selected commit if it's still there, or the newest.
-        let kept = self.selected.as_ref().is_some_and(|hash| self.commits.iter().chain(&self.outside).any(|commit| commit.hash == *hash));
+        // Not over what `den commits` shows either.
+        let kept = self.several.is_some() || self.selected.as_ref().is_some_and(|hash| self.commits.iter().chain(&self.outside).any(|commit| commit.hash == *hash));
         if !kept {
             match self.commits.first().map(|commit| commit.hash.clone()) {
                 Some(hash) => self.select(hash, false, cx),
@@ -334,9 +339,40 @@ impl HistoryView {
         self.commits.iter().chain(&self.outside).find(|commit| commit.hash == *hash)
     }
 
-    /// The open commit, as `den where` names it: its short hash.
+    /// What's open, as `den where` names it: `commit <short hash>`, or
+    /// `commits (<how many>)`.
     pub fn open_commit_name(&self) -> Option<String> {
-        self.open.then(|| self.shown_commit().map(|commit| commit.short.clone())).flatten()
+        if !self.open {
+            return None;
+        }
+        match self.several {
+            Some(count) => Some(format!("commits ({count})")),
+            None => self.shown_commit().map(|commit| format!("commit {}", commit.short)),
+        }
+    }
+
+    /// `den commits`: `count` commits open one after another, `show` what
+    /// `git show` said of them, `notes` the Markdown under their messages.
+    /// Answers with the notes no commit took.
+    pub fn open_commits(&mut self, count: usize, notes: String, show: String, cx: &mut Context<Self>) -> Task<Result<String, String>> {
+        // What a selection was reading would show over them.
+        self.reading = None;
+        self.several = Some(count);
+        self.shown = None;
+        self.open = true;
+        cx.notify();
+        let prepare = commit_view::prepare_commits(show, notes, cx);
+        cx.spawn(async move |this, cx| {
+            let (prepared, unused) = prepare.await;
+            this.update(cx, |this, cx| {
+                if this.several.is_some() {
+                    this.commit.update(cx, |view, cx| view.set(prepared, cx));
+                    cx.notify();
+                }
+            })
+            .map_err(|_| "the history closed".to_string())?;
+            Ok(unused.iter().map(|prefix| format!("## {prefix}: no such commit among them\n")).collect())
+        })
     }
 
     /// `den commit`: opens `rev` (a hash, short or not, or anything git
@@ -394,6 +430,7 @@ impl HistoryView {
     fn open_outside(&mut self, commit: GraphCommit, text: Arc<String>, cx: &mut Context<Self>) {
         // What a selection was reading would show over it.
         self.reading = None;
+        self.several = None;
         self.keep_text(commit.hash.clone(), text);
         self.selected = Some(commit.hash.clone());
         self.outside = (!self.commits.iter().any(|known| known.hash == commit.hash)).then_some(commit);
@@ -421,6 +458,9 @@ impl HistoryView {
         };
         self.outside = None;
         self.selected = Some(hash.clone());
+        if self.several.take().is_some() {
+            self.shown = None;
+        }
         if reveal {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
         }
@@ -550,6 +590,13 @@ impl HistoryView {
             return;
         }
         self.open = false;
+        // The selected commit, read again, to open instead.
+        if self.several.take().is_some()
+            && let Some(hash) = self.selected.clone()
+        {
+            self.shown = None;
+            self.select(hash, false, cx);
+        }
         if let Some(ix) = self.selected.as_ref().and_then(|hash| self.commits.iter().position(|commit| commit.hash == *hash)) {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
         }
@@ -1129,7 +1176,10 @@ impl HistoryView {
     fn render_commit_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let at = self.selected.as_ref().and_then(|hash| self.commits.iter().position(|commit| commit.hash == *hash));
-        let place = at.map(|ix| format!("{} of {}{}", ix + 1, self.commits.len(), if self.more { "+" } else { "" }));
+        let place = match self.several {
+            Some(count) => Some(format!("{count} commits")),
+            None => at.map(|ix| format!("{} of {}{}", ix + 1, self.commits.len(), if self.more { "+" } else { "" })),
+        };
         h_flex()
             .flex_none()
             .px_2()
@@ -1281,10 +1331,35 @@ mod tests {
         assert!(cx.debug_bounds("history-back").is_some());
         view.read_with(cx, |view, _| {
             assert_eq!((view.selected.as_deref(), view.open), (Some("0123456789abcdef"), true));
-            assert_eq!(view.open_commit_name().as_deref(), Some("0123456789"));
+            assert_eq!(view.open_commit_name().as_deref(), Some("commit 0123456789"));
         });
         cx.simulate_keystrokes("down");
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.outside.is_none()), (Some("c"), true)));
+    }
+
+    /// `den commits` opens several in the list's place, which a reread of
+    /// the list leaves; Esc goes back to the list, at its selected commit.
+    #[gpui_kit::test]
+    fn several_commits_open_in_the_list_s_place(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            cx.bind_keys(keymap());
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| HistoryView::new(PathBuf::from("/history-test"), None, window, cx));
+        let opened = view.update_in(cx, |view, window, cx| {
+            view.set_commits(vec![commit("c", &["b"]), commit("b", &[])], cx);
+            view.focus_handle.focus(window, cx);
+            let show = format!("commit {}\nAuthor:     A <a@b>\n\n    One\n", "a".repeat(40));
+            view.open_commits(1, "## ffff\nlost\n".into(), show, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(smol::block_on(opened).as_deref(), Ok("## ffff: no such commit among them\n"));
+        view.update(cx, |view, cx| view.set_commits(vec![commit("c", &["b"]), commit("b", &[])], cx));
+        view.read_with(cx, |view, _| assert_eq!(view.open_commit_name().as_deref(), Some("commits (1)")));
+        assert!(cx.debug_bounds("history-back").is_some());
+        cx.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open, view.several), (Some("c"), false, None)));
     }
 
     /// A drag over the rows selects their text and opens nothing; a click

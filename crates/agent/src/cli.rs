@@ -61,6 +61,14 @@ keyboard stays in the terminal unless --focus.
   den commit <sha> [<file>]
                       opens the commit (a short hash will do) in the
                       Graph tab, at the file's changes if given.
+  den commits <rev>... [--files <path>...] [--exclude <path>...]
+                      shows the commits (shas, or ranges a..b oldest
+                      first) one after another in the Graph tab, each
+                      with its message over its changes; only those of
+                      the paths --files (or -- <path>...) match, not of
+                      --exclude's (git's patterns: '*_test.ts'). With
+                      Markdown on stdin, a `## <sha>` section's text
+                      shows as a note under that commit's message.
   den doc [<title>]   shows the Markdown read from stdin in a tab, which
                       opens again with the workspace until closed.
   den edit [--idle <seconds>] [<title>]
@@ -384,6 +392,9 @@ pub fn command(args: &[String]) -> Result<()> {
         };
         args = vec!["doc".into(), title, text];
     }
+    if args[0] == "commits" {
+        args = commits(&args[1..])?;
+    }
     // `den notes add|set`: the words, or stdin.
     if args[0] == "notes" && args.len() >= 2 && matches!(args[1].as_str(), "add" | "set") {
         let text = if args.len() > 2 {
@@ -409,6 +420,39 @@ pub fn command(args: &[String]) -> Result<()> {
     print_text(&text);
     Ok(())
 }
+
+/// `den commits <rev>... [--files <path>...] [--exclude <path>...] [-- <path>...]`:
+/// read here, where the repo is, and sent as `commits`, how many, the notes
+/// read from stdin (if it isn't a terminal) and what `git show` said.
+fn commits(args: &[String]) -> Result<Vec<String>> {
+    let (mut revs, mut files, mut exclude) = (Vec::new(), Vec::new(), Vec::new());
+    let mut into = &mut revs;
+    let mut paths = false;
+    for arg in args {
+        match arg.as_str() {
+            "--files" if !paths => into = &mut files,
+            "--exclude" if !paths => into = &mut exclude,
+            "--" if !paths => (into, paths) = (&mut files, true),
+            flag if flag.starts_with("--") && !paths => bail!("{flag}: den commits <rev>... [--files <path>...] [--exclude <path>...]"),
+            _ => into.push(arg.clone()),
+        }
+    }
+    if revs.is_empty() {
+        bail!("which commits? den commits <rev>... (a sha or a range a..b)");
+    }
+    let mut notes = String::new();
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut notes)?;
+    }
+    let (count, show) = crate::git::show_commits(&std::env::current_dir()?, &revs, &files, &exclude)?;
+    if show.len() > MAX_COMMITS_TEXT {
+        bail!("the {count} commits' changes are {} MB, too many to show: fewer commits, or --files", show.len() >> 20);
+    }
+    Ok(vec!["commits".into(), count.to_string(), notes, show])
+}
+
+/// What `den commits` sends the app at most, under the largest message.
+const MAX_COMMITS_TEXT: usize = 48 << 20;
 
 /// `den term …`: reading, typing in and closing a terminal is the agent's
 /// own; opening one, or anything about where it is, the app's.

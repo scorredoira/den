@@ -34,6 +34,8 @@ use crate::{
 const MAX_FILE_ROWS: usize = 3000;
 /// Sides larger than this aren't highlighted.
 const MAX_HIGHLIGHTED: usize = 256 * 1024;
+/// A note of `den commits` is wrapped at this many characters.
+const NOTE_WIDTH: usize = 100;
 /// The message and files are never dragged shorter than this.
 const MIN_HEADER: f32 = 48.;
 
@@ -185,6 +187,11 @@ enum Row {
     /// `status`: `A` added, `D` deleted, `R` renamed, `M` modified.
     File { path: SharedString, status: char, added: usize, removed: usize },
     Note(SharedString),
+    /// A commit's short hash and subject over its message, among others'.
+    Commit { short: SharedString, subject: SharedString },
+    /// A line of what was written of the commit (`den commits`' notes),
+    /// its Markdown styled.
+    Remark(SharedString, Vec<(Range<usize>, HighlightStyle)>),
     /// Lines skipped between two groups of changes.
     Skip,
     Line { old: Half, new: Half },
@@ -267,12 +274,7 @@ impl Prepared {
 /// Prepares `git show --format=fuller --patch` of a commit in the background:
 /// only `only`'s changes if given, a file or (`true`) a folder's files.
 pub fn prepare(show: String, only: Option<(String, bool)>, cx: &App) -> Task<Prepared> {
-    let theme = cx.theme();
-    let colors = Colors {
-        removed: theme.danger.opacity(0.3),
-        added: theme.success.opacity(0.3),
-        syntax: theme.highlight_theme.clone(),
-    };
+    let colors = colors(cx);
     cx.background_spawn(async move {
         let (rows, header) = rows(&show, only.as_ref(), &colors);
         let inline = inline(&rows);
@@ -280,11 +282,179 @@ pub fn prepare(show: String, only: Option<(String, bool)>, cx: &App) -> Task<Pre
     })
 }
 
+/// Prepares `den commits`: several commits of `git show --format=fuller
+/// --patch` one after another, each with its message over its changes and,
+/// under the message, the section of `notes` (Markdown, `## <sha>` heading
+/// each) for it. Also the notes for no commit there, by their heading.
+pub fn prepare_commits(show: String, notes: String, cx: &App) -> Task<(Prepared, Vec<String>)> {
+    let colors = colors(cx);
+    cx.background_spawn(async move {
+        let (rows, unused) = commits_rows(&show, &notes, &colors);
+        let inline = inline(&rows);
+        (Prepared { rows, inline, header: 0 }, unused)
+    })
+}
+
+fn colors(cx: &App) -> Colors {
+    let theme = cx.theme();
+    Colors {
+        removed: theme.danger.opacity(0.3),
+        added: theme.success.opacity(0.3),
+        code: theme.muted,
+        syntax: theme.highlight_theme.clone(),
+    }
+}
+
 /// What `rows` needs of the theme, to run off the UI thread.
 struct Colors {
     removed: Hsla,
     added: Hsla,
+    /// Behind a note's `code`.
+    code: Hsla,
     syntax: Arc<HighlightTheme>,
+}
+
+/// The rows of `den commits`, and the notes no commit took.
+fn commits_rows(show: &str, notes: &str, colors: &Colors) -> (Vec<Row>, Vec<String>) {
+    let notes = parse_notes(notes);
+    let mut used = vec![false; notes.len()];
+    let mut rows = Vec::new();
+    for commit in split_commits(show) {
+        let hash = commit.lines().next().and_then(|line| line.strip_prefix("commit ")).and_then(|rest| rest.split_whitespace().next()).unwrap_or("");
+        let (header, patch) = match commit.find("\ndiff --git ") {
+            Some(at) => (&commit[..at], &commit[at + 1..]),
+            None => (commit, ""),
+        };
+        if !rows.is_empty() {
+            rows.extend([Row::Blank, Row::Blank]);
+        }
+        let mut message = header_rows(header).into_iter();
+        let subject = match message.next() {
+            Some(Row::Subject(subject)) => subject,
+            _ => SharedString::default(),
+        };
+        rows.push(Row::Commit { short: hash.chars().take(10).collect::<String>().into(), subject });
+        rows.extend(message);
+        let hash = hash.to_lowercase();
+        if let Some(ix) = notes.iter().position(|(prefix, _)| hash.starts_with(prefix.as_str())) {
+            used[ix] = true;
+            rows.push(Row::Blank);
+            rows.extend(note_rows(&notes[ix].1, colors));
+        }
+        file_rows(patch, None, colors, &mut rows);
+    }
+    let unused = notes.into_iter().zip(used).filter(|(_, used)| !used).map(|((prefix, _), _)| prefix).collect();
+    (rows, unused)
+}
+
+/// Each commit's part of `git show` of several: from its `commit <hash>`
+/// line (a line of the message or of the changes never starts so).
+fn split_commits(show: &str) -> Vec<&str> {
+    let starts = |at: usize| {
+        show[at..].strip_prefix("commit ").is_some_and(|rest| rest.split_whitespace().next().is_some_and(|hash| hash.len() >= 40 && hash.chars().all(|c| c.is_ascii_hexdigit())))
+    };
+    let mut at: Vec<usize> = std::iter::once(0).chain(show.match_indices('\n').map(|(ix, _)| ix + 1)).filter(|ix| *ix < show.len() && starts(*ix)).collect();
+    at.push(show.len());
+    at.windows(2).map(|pair| &show[pair[0]..pair[1]]).collect()
+}
+
+/// The sections of `den commits`' notes: the sha prefix of each `## `
+/// heading (lowercase, 4 characters at least), and the Markdown under it.
+fn parse_notes(notes: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in notes.lines() {
+        if let Some(heading) = line.strip_prefix("## ") {
+            out.push((heading.split_whitespace().next().unwrap_or("").to_lowercase(), String::new()));
+        } else if let Some((_, body)) = out.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    out.retain(|(prefix, _)| prefix.len() >= 4);
+    for (_, body) in &mut out {
+        *body = body.trim_matches('\n').to_string();
+    }
+    out
+}
+
+/// A note's lines, wrapped at `NOTE_WIDTH`, as Markdown: headings and
+/// `**bold**` bold, `*italic*`, `` `code` ``, `-` and `*` items with a bullet.
+fn note_rows(note: &str, colors: &Colors) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for line in note.lines() {
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
+        let (prefix, text, heading) = if let Some(text) = trimmed.strip_prefix('#').map(|rest| rest.trim_start_matches('#').trim_start()) {
+            (String::new(), text, true)
+        } else if let Some(text) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            (format!("{indent}• "), text, false)
+        } else {
+            (indent.to_string(), trimmed, false)
+        };
+        let (plain, mut highlights) = inline_markdown(text, colors);
+        if heading {
+            highlights.insert(0, (0..plain.len(), HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() }));
+        }
+        let hanging = " ".repeat(prefix.chars().count());
+        for (nth, range) in wrap(&plain, NOTE_WIDTH.saturating_sub(prefix.len()).max(20)).into_iter().enumerate() {
+            let lead = if nth == 0 { &prefix } else { &hanging };
+            let shift = lead.len();
+            let styles = highlights
+                .iter()
+                .filter(|(styled, _)| styled.start < range.end && styled.end > range.start)
+                .map(|(styled, style)| (styled.start.max(range.start) - range.start + shift..styled.end.min(range.end) - range.start + shift, *style))
+                .collect();
+            rows.push(Row::Remark(format!("{lead}{}", &plain[range]).into(), styles));
+        }
+    }
+    rows
+}
+
+/// `text` without its Markdown marks, and the styles they gave.
+fn inline_markdown(text: &str, colors: &Colors) -> (String, Vec<(Range<usize>, HighlightStyle)>) {
+    let mut plain = String::new();
+    let mut styles = Vec::new();
+    let mut rest = text;
+    let marks: [(&str, HighlightStyle); 3] = [
+        ("**", HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() }),
+        ("`", HighlightStyle { background_color: Some(colors.code), ..Default::default() }),
+        ("*", HighlightStyle { font_style: Some(FontStyle::Italic), ..Default::default() }),
+    ];
+    'text: while !rest.is_empty() {
+        for (mark, style) in &marks {
+            if let Some(after) = rest.strip_prefix(mark)
+                && let Some(end) = after.find(mark).filter(|end| *end > 0)
+            {
+                let start = plain.len();
+                plain.push_str(&after[..end]);
+                styles.push((start..plain.len(), *style));
+                rest = &after[end + mark.len()..];
+                continue 'text;
+            }
+        }
+        let next = rest.chars().next().map_or(1, char::len_utf8);
+        plain.push_str(&rest[..next]);
+        rest = &rest[next..];
+    }
+    (plain, styles)
+}
+
+/// `text` in lines of `width` characters at most, broken at spaces (a
+/// longer word by itself), as byte ranges.
+fn wrap(text: &str, width: usize) -> Vec<Range<usize>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while text.len() - start > 0 && text[start..].chars().count() > width {
+        let limit = text[start..].char_indices().nth(width).map_or(text.len(), |(ix, _)| start + ix);
+        let end = match text[limit..].starts_with(' ') {
+            true => limit,
+            false => text[start..limit].rfind(' ').map(|ix| start + ix).filter(|end| *end > start).unwrap_or(limit),
+        };
+        lines.push(start..end);
+        start = if text[end..].starts_with(' ') { end + 1 } else { end };
+    }
+    lines.push(start..text.len());
+    lines
 }
 
 impl CommitView {
@@ -476,6 +646,7 @@ fn inline(rows: &[Row]) -> Vec<Row> {
                     Row::Blank => Row::Blank,
                     Row::File { .. } => row.clone(),
                     Row::Note(text) => Row::Note(text.clone()),
+                    Row::Commit { .. } | Row::Remark(..) => row.clone(),
                     Row::Skip => Row::Skip,
                     Row::Single { .. } => unreachable!("only in the inline rows"),
                 });
@@ -494,6 +665,12 @@ fn rows(show: &str, only: Option<&(String, bool)>, colors: &Colors) -> (Vec<Row>
     };
     let mut rows = header_rows(header);
     let message = rows.len();
+    file_rows(patch, only, colors, &mut rows);
+    (rows, message)
+}
+
+/// Each file's rows of a commit's changes (`only`'s, if given).
+fn file_rows(patch: &str, only: Option<&(String, bool)>, colors: &Colors, rows: &mut Vec<Row>) {
     for section in patch.split("\ndiff --git ").filter(|section| !section.trim().is_empty()) {
         let path = section_path(section);
         if !only.is_none_or(|only| shows(only, &path)) {
@@ -528,7 +705,6 @@ fn rows(show: &str, only: Option<&(String, bool)>, colors: &Colors) -> (Vec<Row>
             rows.push(Row::Line { old, new });
         }
     }
-    (rows, message)
 }
 
 /// Whether `path` is `only`'s file, or in its folder.
@@ -862,6 +1038,28 @@ impl CommitView {
                         Row::Meta(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(text.clone()),
                         Row::Blank => row,
                         Row::Note(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(text.clone()),
+                        Row::Commit { short, subject } => row
+                            .px_4()
+                            .gap_3()
+                            .bg(theme.accent)
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .text_ui(cx)
+                            .child(div().flex_none().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(short.clone()))
+                            .child(div().min_w_0().font_semibold().whitespace_nowrap().text_ellipsis().child(subject.clone())),
+                        Row::Remark(text, highlights) => row.px_4().child(
+                            div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .px_3()
+                                .bg(theme.warning.opacity(0.12))
+                                .border_l(px(3.))
+                                .border_color(theme.warning)
+                                .text_ui(cx)
+                                .whitespace_nowrap()
+                                .child(StyledText::new(text.clone()).with_highlights(highlights.clone())),
+                        ),
                         Row::Skip => row
                             .px_4()
                             .bg(theme.muted.opacity(0.3))
@@ -937,7 +1135,51 @@ impl CommitView {
 
 #[cfg(test)]
 mod tests {
-    use super::{header_rows, section_path, section_status, selected_text, shows, word_at, Column, Half, Kind, Row, Selection};
+    use super::{
+        Colors, Column, Half, Kind, Row, Selection, commits_rows, header_rows, section_path, section_status, selected_text, shows, wrap,
+        word_at,
+    };
+    use gpui_kit::{FontWeight, HighlightStyle, black, component::highlighter::HighlightTheme};
+
+    /// `den commits`: each commit's band, message, note and changes, one
+    /// after another; a note for a commit not there is told.
+    #[test]
+    fn several_commits_with_their_notes() {
+        let show = format!(
+            "commit {a}\nAuthor:     Ana <a@b.c>\nAuthorDate: Mon Nov 9 10:00:00 2026 +0100\n\n    First\n\n\
+             diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n\
+             commit {b}\nAuthor:     Bo <b@b.c>\nAuthorDate: Tue Nov 10 10:00:00 2026 +0100\n\n    Second\n    \n    Its body\n",
+            a = "a".repeat(40),
+            b = "b".repeat(40)
+        );
+        let notes = "## AAAAaaaa\nnote **two** and `code`\n- an item\n\n## cccc\nnobody's\n";
+        let colors = Colors { removed: black(), added: black(), code: black(), syntax: HighlightTheme::default_light() };
+        let (rows, unused) = commits_rows(&show, notes, &colors);
+        assert_eq!(unused, ["cccc"]);
+        let kinds: Vec<String> = rows
+            .iter()
+            .map(|row| match row {
+                Row::Commit { short, subject } => format!("commit {short} {subject}"),
+                Row::Remark(text, _) => format!("note {text}"),
+                Row::File { path, .. } => format!("file {path}"),
+                Row::Line { .. } => "line".into(),
+                Row::Body(text) => format!("body {text}"),
+                Row::Meta(_) => "meta".into(),
+                Row::Blank => "".into(),
+                _ => "other".into(),
+            })
+            .collect();
+        let a = format!("commit {} First", "a".repeat(10));
+        let b = format!("commit {} Second", "b".repeat(10));
+        assert_eq!(
+            kinds,
+            [&a, "meta", "", "note note two and code", "note • an item", "", "file x.rs", "line", "", "", &b, "", "body Its body", "meta"]
+        );
+        let Row::Remark(_, styles) = &rows[3] else { panic!() };
+        assert_eq!(styles[0], (5..8, HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() }));
+        assert_eq!(styles[1].0, 13..17);
+        assert_eq!(wrap("aaa bbb ccc", 7), [0..7, 8..11]);
+    }
 
     #[test]
     fn header_and_paths() {

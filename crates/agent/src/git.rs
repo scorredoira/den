@@ -543,15 +543,52 @@ fn diff_with(dir: &Path, file: &str, uncommitted: bool, context: Option<&str>) -
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// `den commits`: what `git show` says of each commit `revs` name, one
+/// after another, in their order (a range `a..b` is its commits, oldest
+/// first), and how many they are; only the changes of the paths `files`
+/// match (git's patterns, relative to `dir`; all if none) and `exclude`'s
+/// don't.
+pub fn show_commits(dir: &Path, revs: &[String], files: &[String], exclude: &[String]) -> Result<(usize, String)> {
+    let mut commits: Vec<String> = Vec::new();
+    for rev in revs {
+        let resolved = if rev.contains("..") {
+            git(dir, &["rev-list", "--reverse", revision(rev)?])?
+        } else {
+            git(dir, &["rev-parse", "--verify", "--quiet", &format!("{}^{{commit}}", revision(rev)?)])
+                .map_err(|_| anyhow::anyhow!("{rev}: not a commit"))?
+        };
+        for hash in resolved.split_whitespace() {
+            if !commits.iter().any(|known| known == hash) {
+                commits.push(hash.to_string());
+            }
+        }
+    }
+    if commits.is_empty() {
+        bail!("no commits in {}", revs.join(" "));
+    }
+    let mut args = vec!["show", "--no-color", "--format=fuller", "--patch", "-m", "--first-parent", "--no-renames"];
+    args.extend(commits.iter().map(String::as_str));
+    args.push("--");
+    args.extend(files.iter().map(String::as_str));
+    let excluded: Vec<String> = exclude.iter().map(|pattern| format!(":(exclude){pattern}")).collect();
+    args.extend(excluded.iter().map(String::as_str));
+    Ok((commits.len(), git_with(dir, &args, false)?))
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    // A file's name is the file, not a pattern: `a[12].txt` isn't `a1.txt`.
+    // Not for what runs the repo's hooks, which would inherit it and find
+    // nothing with their own patterns.
+    git_with(dir, args, !matches!(args.first(), Some(&("commit" | "switch"))))
+}
+
+/// `literal`: the paths are files' names, not patterns.
+fn git_with(dir: &Path, args: &[&str], literal: bool) -> Result<String> {
     // Reading never writes the index (`git status` refreshes it when it can):
     // the index is watched, and each write would ask for another read.
     let mut command = crate::platform::command("git");
     command.args(args).env("GIT_OPTIONAL_LOCKS", "0");
-    // A file's name is the file, not a pattern: `a[12].txt` isn't `a1.txt`.
-    // Not for what runs the repo's hooks, which would inherit it and find
-    // nothing with their own patterns.
-    if !matches!(args.first(), Some(&("commit" | "switch"))) {
+    if literal {
         command.env("GIT_LITERAL_PATHSPECS", "1");
     }
     let output = command.current_dir(dir).output()?;
@@ -954,6 +991,34 @@ mod tests {
         run_op(&dir, GitOp::Commit { message: "everything".into(), all: true });
         let Response::GitStatus(status) = run_op(&dir, GitOp::Status) else { panic!() };
         assert!(status.staged.is_empty() && status.unstaged.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `den commits`: shas and ranges, oldest first in a range, each once;
+    /// the changes of the paths asked, without the excluded ones.
+    #[test]
+    fn several_commits_one_after_another() {
+        let dir = repo();
+        let rev = |rev: &str| git(&dir, &["rev-parse", rev]).unwrap().trim().to_string();
+        let initial = rev("HEAD");
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/x_test.ts"), "test\n").unwrap();
+        commit(&dir, "second");
+        std::fs::write(dir.join("b.txt"), "b2\n").unwrap();
+        commit(&dir, "third");
+        let subjects = |show: &str| -> Vec<String> {
+            show.lines().filter(|line| line.starts_with("commit ")).map(|line| line[7..17].to_string()).collect()
+        };
+        let strs = |items: &[&str]| -> Vec<String> { items.iter().map(|item| item.to_string()).collect() };
+        let (count, show) = show_commits(&dir, &strs(&[&format!("{initial}..HEAD"), &initial[..10]]), &[], &strs(&["*_test.ts"])).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(subjects(&show), [rev("HEAD~1")[..10].to_string(), rev("HEAD")[..10].to_string(), initial[..10].to_string()]);
+        assert!(show.contains("+three") && show.contains("+b2") && !show.contains("x_test.ts"));
+        let (_, only) = show_commits(&dir, &strs(&["HEAD~1"]), &strs(&["sub"]), &[]).unwrap();
+        assert!(only.contains("x_test.ts") && !only.contains("+three"));
+        assert!(show_commits(&dir, &strs(&["nope"]), &[], &[]).is_err());
+        assert!(show_commits(&dir, &strs(&["HEAD..HEAD"]), &[], &[]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

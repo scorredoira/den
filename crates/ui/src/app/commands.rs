@@ -77,6 +77,14 @@ impl Den {
                 }
                 Err(err) => Err(err),
             },
+            ["commits", count, notes, show] => match (here(self, true, window, cx), count.parse::<usize>()) {
+                (Ok((_, workspace)), Ok(count)) => {
+                    let opened = workspace.update(cx, |workspace, cx| workspace.show_commits(count, notes.to_string(), show.to_string(), window, cx));
+                    return cx.background_spawn(opened);
+                }
+                (Err(err), _) => Err(err),
+                (_, Err(_)) => Err(format!("{count}: not a number of commits")),
+            },
             ["doc", title, text] => here(self, true, window, cx).map(|(_, workspace)| {
                 workspace.update(cx, |workspace, cx| workspace.open_doc(title, text.to_string(), true, window, cx));
                 String::new()

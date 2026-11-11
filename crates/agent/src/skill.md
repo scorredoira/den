@@ -28,6 +28,12 @@ full list; the main ones:
 - `den commit <sha> [<file>]` opens a commit in the Graph tab (its red/green
   changes side by side), at the file's if given: to show the user what a
   commit did.
+- `den commits <rev>... [--files <path>...] [--exclude <glob>...]` shows
+  several commits (shas, or ranges `a..b`, oldest first) one after another
+  in the Graph tab, each message over its changes; `--exclude '*_test.ts'`
+  hides those files. Markdown piped in shows under each commit's message,
+  a `## <sha>` section per commit: `printf '## 7ed0c5fe99\nwhy it matters\n'
+  | den commits a..b`. To walk the user through a series of commits.
 - `echo "# Title ..." | den doc "<title>"` shows Markdown in a tab: plans,
   reports, tables, anything longer than a chat answer.
 - Claude Code in Den's terminals is connected to it as to an IDE: the
