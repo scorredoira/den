@@ -1544,5 +1544,7 @@ fn an_open_commit_s_lines_select(cx: &mut TestAppContext) {
     let told = workspace.update_in(cx, |workspace, window, cx| workspace.graph_selection(window, cx)).unwrap().unwrap();
     // From the end of the removed line 2 (one column: the removed lines
     // over the added ones) to the end of line 3.
-    assert_eq!(told, format!("/layout-test/x.rs:2:11-3:11 at aaaaaaaaaa (old)\n{copied}\n"));
+    // The file as the platform writes it: `\layout-test\x.rs`'s separator on Windows.
+    let file = PathBuf::from("/layout-test").join("x.rs");
+    assert_eq!(told, format!("{}:2:11-3:11 at aaaaaaaaaa (old)\n{copied}\n", file.display()));
 }
