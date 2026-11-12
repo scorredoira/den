@@ -19,6 +19,7 @@ use gpui_kit::component::{
     highlighter::{HighlightTheme, SyntaxHighlighter},
     input::{Copy, Rope},
     menu::ContextMenuExt as _,
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_base::{AutoScroll, SelectableText};
@@ -64,6 +65,8 @@ pub enum CommitViewEvent {
     CopyPath(String),
     /// Text was selected, or the selection went (see `selected`).
     Selected,
+    /// Of several, one of them whole (its short hash), in their place.
+    OpenCommit(SharedString),
 }
 
 pub struct CommitView {
@@ -1139,7 +1142,23 @@ impl CommitView {
                             .border_color(theme.border)
                             .text_ui(cx)
                             .child(div().flex_none().text_color(theme.muted_foreground).child(position.clone()))
-                            .child(div().flex_none().font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(short.clone()))
+                            .child({
+                                let (view, short) = (view.clone(), short.clone());
+                                div()
+                                    .id(("commit-hash", ix))
+                                    .when(cfg!(test), |el| el.debug_selector(|| "commit-hash".into()))
+                                    .flex_none()
+                                    .font_family(theme.mono_font_family.clone())
+                                    .text_color(theme.link)
+                                    .cursor_pointer()
+                                    .hover(|style| style.underline())
+                                    .tooltip(|window, cx| Tooltip::new("Open the whole commit (Esc: back)").build(window, cx))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                    .child(short.clone())
+                                    .on_click(move |_, _, cx| {
+                                        view.update(cx, |_, cx| cx.emit(CommitViewEvent::OpenCommit(short.clone()))).ok();
+                                    })
+                            })
                             .child(div().flex_1().min_w_0().h_full().font_semibold().child(plain(subject, ix))),
                         Row::Remark(text, highlights) => row.px_4().child(
                             div()

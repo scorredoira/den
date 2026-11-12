@@ -101,11 +101,15 @@ pub struct HistoryView {
     outside: Option<GraphCommit>,
     /// How many commits `den commits` shows open, one after another.
     several: Option<usize>,
+    /// Several, as they were, while one of them is open whole: Esc goes
+    /// back to them.
+    series: Option<Series>,
     /// The selected commit shows in the list's place.
     open: bool,
     /// What `git show` said of the commits read, the most recent last.
     texts: Vec<(String, Arc<String>)>,
     commit: Entity<CommitView>,
+    commit_events: Subscription,
     refresh: Option<Task<()>>,
     /// Counts the reads of the list from the top: a page more read for one
     /// isn't added to another's (another search, or the same with other
@@ -121,6 +125,14 @@ pub struct HistoryView {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The view of several commits, kept with its scroll and selection while
+/// one of them is open whole.
+struct Series {
+    view: Entity<CommitView>,
+    count: usize,
+    events: Subscription,
+}
+
 impl EventEmitter<HistoryEvent> for HistoryView {}
 
 impl HistoryView {
@@ -133,16 +145,8 @@ impl HistoryView {
                     this.schedule(SEARCH_DEBOUNCE, cx);
                 }
             }),
-            cx.subscribe(&commit, |this, _, event: &CommitViewEvent, cx| {
-                // Of several, the files ask nothing: whose they are isn't kept.
-                if let CommitViewEvent::Selected = event {
-                    cx.emit(HistoryEvent { commit: String::new(), short: String::new(), event: event.clone() });
-                } else if let Some(commit) = this.shown_commit() {
-                    let (commit, short) = (commit.hash.clone(), commit.short.clone());
-                    cx.emit(HistoryEvent { commit, short, event: event.clone() });
-                }
-            }),
         ];
+        let commit_events = Self::watch(&commit, window, cx);
         Self {
             client,
             root,
@@ -159,9 +163,11 @@ impl HistoryView {
             shown: None,
             outside: None,
             several: None,
+            series: None,
             open: false,
             texts: Vec::new(),
             commit,
+            commit_events,
             refresh: None,
             listing: 0,
             reading: None,
@@ -175,6 +181,67 @@ impl HistoryView {
 
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    /// What a commit's view asks: one of several opens whole in their place;
+    /// the rest goes up, of the commit it shows.
+    fn watch(commit: &Entity<CommitView>, window: &mut Window, cx: &mut Context<Self>) -> Subscription {
+        cx.subscribe_in(commit, window, |this, _, event: &CommitViewEvent, window, cx| {
+            // Of several, the files ask nothing: whose they are isn't kept.
+            if let CommitViewEvent::OpenCommit(short) = event {
+                this.open_one_of_several(short.to_string(), window, cx);
+            } else if let CommitViewEvent::Selected = event {
+                cx.emit(HistoryEvent { commit: String::new(), short: String::new(), event: event.clone() });
+            } else if let Some(commit) = this.shown_commit() {
+                let (commit, short) = (commit.hash.clone(), commit.short.clone());
+                cx.emit(HistoryEvent { commit, short, event: event.clone() });
+            }
+        })
+    }
+
+    /// One of the several open, whole (every file, read again), in their
+    /// place; the view of the several is kept as it is, for Esc.
+    fn open_one_of_several(&mut self, rev: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(count) = self.several else {
+            return;
+        };
+        self.stash_series(count, window, cx);
+        let opened = self.read_rev(rev, None, cx);
+        cx.spawn(async move |_, _| {
+            if let Err(err) = opened.await {
+                eprintln!("{err}");
+            }
+        })
+        .detach();
+    }
+
+    /// Keeps the view of the several and puts an empty one in its place.
+    fn stash_series(&mut self, count: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let single = cx.new(|cx| CommitView::new(commit_view::Prepared::default(), cx));
+        let events = Self::watch(&single, window, cx);
+        let view = std::mem::replace(&mut self.commit, single);
+        let events = std::mem::replace(&mut self.commit_events, events);
+        self.series = Some(Series { view, count, events });
+        self.several = None;
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Back to the several, as they were, if one of them is open whole.
+    fn restore_series(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(series) = self.series.take() else {
+            return false;
+        };
+        self.commit = series.view;
+        self.commit_events = series.events;
+        self.several = Some(series.count);
+        self.reading = None;
+        self.shown = None;
+        self.outside = None;
+        self.open = true;
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+        true
     }
 
     /// Switches to a new connection with the agent.
@@ -213,6 +280,7 @@ impl HistoryView {
         self.shown = None;
         self.outside = None;
         self.several = None;
+        self.series = None;
         self.open = false;
         self.scroll = UniformListScrollHandle::new();
         self.schedule(Duration::ZERO, cx);
@@ -381,6 +449,7 @@ impl HistoryView {
     pub fn open_commits(&mut self, count: usize, notes: String, show: String, cx: &mut Context<Self>) -> Task<Result<String, String>> {
         // What a selection was reading would show over them.
         self.reading = None;
+        self.series = None;
         self.several = Some(count);
         self.shown = None;
         self.open = true;
@@ -403,6 +472,13 @@ impl HistoryView {
     /// takes for a commit) in the list's place, read by itself, so it may be
     /// one the list hasn't read; with `file`, at its changes.
     pub fn open_rev(&mut self, rev: String, file: Option<String>, cx: &mut Context<Self>) -> Task<Result<(), String>> {
+        self.series = None;
+        self.read_rev(rev, file, cx)
+    }
+
+    /// Reads `rev` and opens it, as `open_rev`, leaving what's kept to go
+    /// back to.
+    fn read_rev(&mut self, rev: String, file: Option<String>, cx: &mut Context<Self>) -> Task<Result<(), String>> {
         let Some(client) = self.client.clone() else {
             return Task::ready(Err("no agent".into()));
         };
@@ -429,7 +505,8 @@ impl HistoryView {
             let prepared = prepare.await;
             let changed = file.as_ref().is_none_or(|file| prepared.files().iter().any(|changed| changed.path.as_ref() == file));
             this.update(cx, |this, cx| {
-                if this.selected.as_ref() != Some(&hash) {
+                // Another one asked since, or back to the several already.
+                if this.selected.as_ref() != Some(&hash) || this.several.is_some() {
                     return;
                 }
                 this.shown = Some(hash);
@@ -497,6 +574,7 @@ impl HistoryView {
             return;
         };
         self.outside = None;
+        self.series = None;
         self.selected = Some(hash.clone());
         if self.several.take().is_some() {
             self.shown = None;
@@ -617,9 +695,12 @@ impl HistoryView {
     }
 
     /// Back to the list, at the selected commit.
-    fn close_commit(&mut self, _: &CloseCommit, _: &mut Window, cx: &mut Context<Self>) {
+    fn close_commit(&mut self, _: &CloseCommit, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
             return cx.propagate();
+        }
+        if self.restore_series(window, cx) {
+            return;
         }
         self.show_list(cx);
     }
@@ -1236,7 +1317,10 @@ impl HistoryView {
                     .py_0p5()
                     .rounded(theme.radius)
                     .hover(|style| style.bg(theme.secondary_hover))
-                    .child("← Commits")
+                    .child(match &self.series {
+                        Some(series) => format!("← {} commits", series.count),
+                        None => "← Commits".to_string(),
+                    })
                     .tooltip(|window, cx| Tooltip::new("Back to the commits (Esc)").build(window, cx))
                     .on_click(cx.listener(|this, _, window, cx| this.close_commit(&CloseCommit, window, cx))),
             )
@@ -1400,6 +1484,44 @@ mod tests {
         assert!(cx.debug_bounds("history-back").is_some());
         cx.simulate_keystrokes("escape");
         view.read_with(cx, |view, _| assert_eq!((view.selected.as_deref(), view.open, view.several), (Some("c"), false, None)));
+    }
+
+    /// Of several, a click on one's hash opens it whole in their place, and
+    /// Esc brings back the same view of the several (its scroll, its
+    /// selection), not the list.
+    #[gpui_kit::test]
+    fn one_of_several_opens_whole_and_esc_goes_back_to_them(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            cx.bind_keys(keymap());
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| HistoryView::new(PathBuf::from("/history-test"), None, window, cx));
+        let several = view.update_in(cx, |view, window, cx| {
+            view.set_commits(vec![commit("c", &["b"]), commit("b", &[])], cx);
+            view.focus_handle.focus(window, cx);
+            let show = format!("commit {}\nAuthor:     A <a@b>\n\n    One\n", "a".repeat(40));
+            view.open_commits(1, String::new(), show, cx).detach();
+            view.commit.entity_id()
+        });
+        cx.run_until_parked();
+        let hash = cx.debug_bounds("commit-hash").expect("the band shows the hash");
+        cx.simulate_click(hash.center(), Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!((view.open, view.several, view.series.as_ref().map(|series| series.count)), (true, None, Some(1)));
+            assert_ne!(view.commit.entity_id(), several);
+        });
+        assert!(cx.debug_bounds("history-back").is_some());
+        cx.simulate_keystrokes("escape");
+        view.read_with(cx, |view, cx| {
+            assert_eq!((view.open, view.several, view.series.is_none()), (true, Some(1), true));
+            assert_eq!(view.commit.entity_id(), several);
+            assert_eq!(view.open_commit_name(cx).as_deref(), Some("commits (1), at 1/1"));
+        });
+        // Esc again: the list, as from any several.
+        cx.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| assert_eq!((view.open, view.several), (false, None)));
     }
 
     /// A drag over the rows selects their text and opens nothing; a click
