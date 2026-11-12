@@ -245,8 +245,9 @@ enum Row {
     File { path: SharedString, status: char, added: usize, removed: usize },
     Note(SharedString),
     /// A commit's place among them (`21/64`), short hash and subject over
-    /// its message, among others'.
-    Commit { position: SharedString, short: SharedString, subject: SharedString },
+    /// its message, among others'. `noted`: the head of its note instead,
+    /// with no subject (the note says what it is).
+    Commit { position: SharedString, short: SharedString, subject: SharedString, noted: bool },
     /// A line of what was written of the commit (`den commits`' notes),
     /// its Markdown styled.
     Remark(SharedString, Vec<(Range<usize>, HighlightStyle)>),
@@ -394,17 +395,21 @@ fn commits_rows(show: &str, notes: &str, colors: &Colors) -> (Vec<Row>, Vec<Stri
             _ => SharedString::default(),
         };
         let position = format!("{}/{count}", nth + 1).into();
-        rows.push(Row::Commit { position, short: hash.chars().take(10).collect::<String>().into(), subject });
+        let short: SharedString = hash.chars().take(10).collect::<String>().into();
         let hash = hash.to_lowercase();
-        // A note says what matters of it in the message's place: the message
-        // is a click on the hash away, with the whole commit.
+        // A note says what matters of it in the message's place, and its
+        // place and hash head it: the message is a click on the hash away,
+        // with the whole commit.
         match notes.iter().position(|(prefix, _)| hash.starts_with(prefix.as_str())) {
             Some(ix) => {
                 used[ix] = true;
-                rows.push(Row::Blank);
+                rows.push(Row::Commit { position, short, subject: SharedString::default(), noted: true });
                 rows.extend(note_rows(&notes[ix].1, colors));
             }
-            None => rows.extend(message),
+            None => {
+                rows.push(Row::Commit { position, short, subject, noted: false });
+                rows.extend(message);
+            }
         }
         file_rows(patch, None, colors, &mut rows);
     }
@@ -1138,13 +1143,15 @@ impl CommitView {
                         Row::Meta(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(plain(text, ix)),
                         Row::Blank => row,
                         Row::Note(text) => row.px_4().text_ui_small(cx).text_color(theme.muted_foreground).child(plain(text, ix)),
-                        Row::Commit { position, short, subject } => row
-                            .px_4()
-                            .gap_3()
-                            .bg(theme.accent)
-                            .border_t_1()
-                            .border_color(theme.border)
-                            .text_ui(cx)
+                        Row::Commit { position, short, subject, noted } => {
+                            let head = h_flex().size_full().gap_3().text_ui(cx);
+                            // Noted: the first line of its note's block.
+                            let (row, head) = if *noted {
+                                (row.px_4(), head.px_3().bg(theme.warning.opacity(0.12)).border_l(px(3.)).border_color(theme.warning).font_semibold())
+                            } else {
+                                (row.px_4().bg(theme.accent).border_t_1().border_color(theme.border), head)
+                            };
+                            row.child(head
                             .child(div().flex_none().text_color(theme.muted_foreground).child(position.clone()))
                             .child({
                                 let (view, short) = (view.clone(), short.clone());
@@ -1163,7 +1170,8 @@ impl CommitView {
                                         view.update(cx, |_, cx| cx.emit(CommitViewEvent::OpenCommit(short.clone()))).ok();
                                     })
                             })
-                            .child(div().flex_1().min_w_0().h_full().font_semibold().child(plain(subject, ix))),
+                            .when(!*noted, |el| el.child(div().flex_1().min_w_0().h_full().font_semibold().child(plain(subject, ix)))))
+                        }
                         Row::Remark(text, highlights) => row.px_4().child(
                             div()
                                 .size_full()
@@ -1293,7 +1301,7 @@ mod tests {
         let kinds: Vec<String> = rows
             .iter()
             .map(|row| match row {
-                Row::Commit { position, short, subject } => format!("commit {position} {short} {subject}"),
+                Row::Commit { position, short, subject, noted } => format!("commit {position} {short} {subject}{}", if *noted { "(noted)" } else { "" }),
                 Row::Remark(text, _) => format!("note {text}"),
                 Row::File { path, .. } => format!("file {path}"),
                 Row::Line { .. } => "line".into(),
@@ -1303,25 +1311,25 @@ mod tests {
                 _ => "other".into(),
             })
             .collect();
-        let a = format!("commit 1/2 {} First", "a".repeat(10));
+        let a = format!("commit 1/2 {} (noted)", "a".repeat(10));
         let b = format!("commit 2/2 {} Second", "b".repeat(10));
         assert_eq!(
             kinds,
-            // The first has a note in its message's place; the second, its message.
-            [&a, "", "note note two and code", "note • an item", "", "file x.rs", "line", "", "", &b, "", "body Its body", "meta"]
+            // The first's note heads it in its message's place; the second has its message.
+            [&a, "note note two and code", "note • an item", "", "file x.rs", "line", "", "", &b, "", "body Its body", "meta"]
         );
-        let Row::Remark(_, styles) = &rows[2] else { panic!() };
+        let Row::Remark(_, styles) = &rows[1] else { panic!() };
         assert_eq!(styles[0], (5..8, HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() }));
         assert_eq!(styles[1].0, 13..17);
         assert_eq!(wrap("aaa bbb ccc", 7), [0..7, 8..11]);
         // A note selected tells its commit; a line, its file and numbers.
         let select = |column, anchor, head| Selection { column, narrow: false, anchor, head };
         let short = Some(SharedString::from("a".repeat(10)));
-        let note = rows_selection(&rows, &select(Column::New, (2, 5), (3, 6)));
+        let note = rows_selection(&rows, &select(Column::New, (1, 5), (2, 6)));
         assert_eq!(note, RowsSelection { file: None, old: false, commit: short.clone(), text: "two and code\n• an".into() });
-        let new = rows_selection(&rows, &select(Column::New, (6, 0), (6, 3)));
+        let new = rows_selection(&rows, &select(Column::New, (5, 0), (5, 3)));
         assert_eq!(new, RowsSelection { file: Some(("x.rs".into(), (1, 0), (1, 3))), old: false, commit: short.clone(), text: "new".into() });
-        let old = rows_selection(&rows, &select(Column::Old, (6, 3), (6, 0)));
+        let old = rows_selection(&rows, &select(Column::Old, (5, 3), (5, 0)));
         assert_eq!(old, RowsSelection { file: Some(("x.rs".into(), (1, 0), (1, 3))), old: true, commit: short, text: "old".into() });
     }
 
