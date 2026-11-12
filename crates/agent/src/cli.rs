@@ -68,7 +68,7 @@ keyboard stays in the terminal unless --focus.
                       the paths --files (or -- <path>...) match, not of
                       --exclude's (git's patterns: '*_test.ts'). With
                       Markdown on stdin, a `## <sha>` section's text
-                      shows as a note under that commit's message. A
+                      shows in place of that commit's message. A
                       click on a commit's hash opens it whole (every
                       file); Esc goes back to them as they were.
   den doc [<title>]   shows the Markdown read from stdin in a tab, which
