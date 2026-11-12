@@ -1524,6 +1524,34 @@ mod tests {
         view.read_with(cx, |view, _| assert_eq!((view.open, view.several), (false, None)));
     }
 
+    /// Of several, a commit's hash opens it on a click, so it is copied from
+    /// its menu.
+    #[gpui_kit::test]
+    fn a_hash_of_several_is_copied_from_its_menu(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Config::default());
+            cx.bind_keys(keymap());
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| HistoryView::new(PathBuf::from("/history-test"), None, window, cx));
+        view.update_in(cx, |view, window, cx| {
+            view.set_commits(vec![commit("c", &["b"]), commit("b", &[])], cx);
+            view.focus_handle.focus(window, cx);
+            let show = format!("commit {}\nAuthor:     A <a@b>\n\n    One\n", "a".repeat(40));
+            view.open_commits(1, String::new(), show, cx).detach();
+        });
+        cx.run_until_parked();
+        let hash = cx.debug_bounds("commit-hash").expect("the band shows the hash");
+        cx.simulate_mouse_down(hash.center(), MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(hash.center(), MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down enter");
+        cx.run_until_parked();
+        let copied = cx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).unwrap_or_default();
+        assert_eq!(copied, "a".repeat(10));
+        view.read_with(cx, |view, _| assert_eq!(view.several, Some(1), "the menu opened nothing"));
+    }
+
     /// A drag over the rows selects their text and opens nothing; a click
     /// still opens the commit.
     #[gpui_kit::test]

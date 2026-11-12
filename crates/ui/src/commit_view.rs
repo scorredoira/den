@@ -1155,6 +1155,7 @@ impl CommitView {
                             .child(div().flex_none().text_color(theme.muted_foreground).child(position.clone()))
                             .child({
                                 let (view, short) = (view.clone(), short.clone());
+                                let (menu_view, copy) = (view.clone(), short.clone());
                                 div()
                                     .id(("commit-hash", ix))
                                     .when(cfg!(test), |el| el.debug_selector(|| "commit-hash".into()))
@@ -1163,11 +1164,18 @@ impl CommitView {
                                     .text_color(theme.link)
                                     .cursor_pointer()
                                     .hover(|style| style.underline())
-                                    .tooltip(|window, cx| Tooltip::new("Open the whole commit (Esc: back)").build(window, cx))
+                                    .tooltip(|window, cx| Tooltip::new("Open the whole commit (Esc: back) · right click: copy").build(window, cx))
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                     .child(short.clone())
                                     .on_click(move |_, _, cx| {
                                         view.update(cx, |_, cx| cx.emit(CommitViewEvent::OpenCommit(short.clone()))).ok();
+                                    })
+                                    // The hash opens the commit on a click, so it is copied from here.
+                                    .context_menu(move |menu, _, _| {
+                                        let copy = copy.clone();
+                                        menu.item(menu::item("Copy Hash", &menu_view, move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(copy.to_string()))
+                                        }))
                                     })
                             })
                             .when(!*noted, |el| el.child(div().flex_1().min_w_0().h_full().font_semibold().child(plain(subject, ix)))))
