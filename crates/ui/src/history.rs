@@ -14,7 +14,7 @@
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use client::Client;
-use gpui_base::{SelectableText, TextSelection};
+use gpui_base::{Scrollbar, SelectableText, TextSelection};
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
@@ -1227,6 +1227,7 @@ impl HistoryView {
             )
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .when(cfg!(test), |el| el.debug_selector(|| "history-commits".into()))
@@ -1251,7 +1252,8 @@ impl HistoryView {
                         )
                         .track_scroll(&self.scroll)
                         .size_full(),
-                    ),
+                    )
+                    .child(Scrollbar::vertical(&self.scroll)),
             )
             .into_any_element()
     }

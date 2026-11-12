@@ -22,7 +22,7 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     v_flex,
 };
-use gpui_base::{AutoScroll, SelectableText};
+use gpui_base::{AutoScroll, Scrollbar, SelectableText};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -1262,6 +1262,7 @@ impl CommitView {
             )
             .child(follow_drag(cx.entity().downgrade()))
             .child(list)
+            .child(Scrollbar::vertical(&self.scroll))
             // Of several commits, the one at the top: where the view is.
             .when_some(self.top_commit(), |el, (position, short)| {
                 el.child(

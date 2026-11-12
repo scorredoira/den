@@ -20,6 +20,7 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
 };
+use gpui_base::Scrollbar;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use crate::menu::PanelItems as _;
 
@@ -1455,6 +1456,7 @@ impl Render for FileTree {
             .key_context("FileTree")
             .track_focus(&self.focus_handle)
             .size_full()
+            .relative()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && this.edit.is_some() {
                     this.cancel_edit(cx);
@@ -1530,6 +1532,7 @@ impl Render for FileTree {
                 }
             })
             .child(list)
+            .child(Scrollbar::vertical(&self.scroll))
     }
 }
 
