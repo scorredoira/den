@@ -545,9 +545,9 @@ mod tests {
     fn hooks_in_den() {
         let repo = std::env::temp_dir().join(format!("den-hooks-{}", std::process::id()));
         std::fs::create_dir_all(repo.join(".den")).unwrap();
-        assert_eq!(super::repo_hook(&repo, "create"), None);
-        std::fs::write(repo.join(".den/create"), "").unwrap();
-        assert_eq!(super::repo_hook(&repo, "create"), Some(repo.join(".den/create")));
+        assert_eq!(super::repo_hook(&repo, "setup"), None);
+        std::fs::write(repo.join(".den/setup"), "").unwrap();
+        assert_eq!(super::repo_hook(&repo, "setup"), Some(repo.join(".den/setup")));
         let _ = std::fs::remove_dir_all(&repo);
     }
 

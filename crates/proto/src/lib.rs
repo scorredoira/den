@@ -79,14 +79,14 @@ pub enum Request {
     RepoList,
     /// Tasks from all known repos: their worktrees, the main one included.
     TaskList,
-    /// Creates a task in the repo of `repo` (a worktree works too): runs
-    /// `.den/create <name>` if it exists and, otherwise, `git worktree add`.
+    /// Creates a task in the repo of `repo` (a worktree works too): `git
+    /// worktree add` at `<repo>_worktrees/<name>`, then `.den/setup` if it exists.
     /// May take a while; the response arrives when it's done. With `open`, the
     /// connected UIs open it (`den task` from a den terminal).
     TaskCreate { repo: PathBuf, name: String, open: bool },
-    /// Removes the task (its worktree) with the repo's `.den/remove` if it
-    /// exists and, otherwise, moving it to the Trash, uncommitted changes
-    /// and all. Closes its terminals. May take a while.
+    /// Removes the task (its worktree): to the Trash, uncommitted changes and
+    /// all, and its branch if merged into the main branch. Refused while git
+    /// holds it (locked, a rebase or merge under way…). Closes its terminals.
     TaskRemove { path: PathBuf },
     /// What the task at `path` has changed against its base branch (or, with
     /// `uncommitted`, only what isn't committed yet), not counting ignored files.
@@ -197,8 +197,7 @@ pub enum Request {
     /// The terminals running a coding agent right now. Responds `Agents`;
     /// `Event::Agents` says when they change.
     AgentList,
-    /// `TaskRemove` without the repo's `.den/remove`: to the Trash, for
-    /// when the script failed.
+    /// `TaskRemove` even while git holds it: for when it was refused.
     TaskForceRemove { path: PathBuf },
     /// `ListDir` with what git ignores too (`target/`, `node_modules`…);
     /// never `.git`. Responds `Dir`.

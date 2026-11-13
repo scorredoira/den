@@ -32,7 +32,7 @@ Usage:
                       relative to its home folder, or the home folder.
                       What's open in it isn't remembered unless kept.
   den worktree <name> creates a worktree in the repo of the current folder,
-                      running its .den/create if it has one, and prints its
+                      running its .den/setup if it has one, and prints its
                       path. Inside den, the app also opens it.
   den add <path>      adds the folder (its repo, if it's in one) to the
                       workspaces, as Add to Workspaces. A folder that

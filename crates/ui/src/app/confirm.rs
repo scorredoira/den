@@ -94,7 +94,7 @@ impl Den {
         // Only what would be lost, and then how it goes; nothing to lose, just the question.
         let (warning, detail, action) = match at_risk.and_then(risk_text) {
             None => (None, None, "Delete"),
-            Some(text) => (Some((true, text)), Some(self.remove_detail(key)), "Delete Anyway"),
+            Some(text) => (Some((true, text)), Some(remove_detail(at_risk)), "Delete Anyway"),
         };
         let key = key.clone();
         let title = format!("Delete {}?", self.label(&key));
@@ -107,16 +107,6 @@ impl Den {
         self.render_confirm(focus, title, warning, detail, action, true, confirm, cx)
     }
 
-    /// How Delete Worktree removes it: with the repo's script or to the Trash.
-    fn remove_detail(&self, key: &TaskKey) -> &'static str {
-        if key.host != LOCAL {
-            "With the repo's .den/remove if it has one; otherwise it goes to the Trash, uncommitted changes and all."
-        } else if self.task(key).is_some_and(|task| task.repo.join(".den/remove").is_file()) {
-            "The repo's .den/remove deletes it; depending on the repo, along with its uncommitted changes."
-        } else {
-            "It goes to the Trash, uncommitted changes and all."
-        }
-    }
 
     /// The repo's script failed (`reason`, its words): to the Trash instead?
     pub(super) fn render_confirm_force_remove(
@@ -128,7 +118,7 @@ impl Den {
     ) -> impl IntoElement {
         let key = key.clone();
         let title = format!("Move {} to the Trash?", self.label(&key));
-        let detail = "It goes to the Trash, uncommitted changes and all, without the repo's .den/remove.";
+        let detail = "It goes to the Trash anyway, uncommitted changes and all.";
         let confirm = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| this.remove_task(key.clone(), true, window, cx);
         self.render_confirm(focus, title, Some((true, reason.to_string())), Some(detail), "Move to Trash", true, confirm, cx)
     }
@@ -246,6 +236,16 @@ impl Den {
 }
 
 /// What a worktree would lose, in words; none if nothing.
+/// How Delete Worktree removes it: to the Trash, and its branch with it only
+/// if the main branch has all its commits.
+fn remove_detail(at_risk: Option<&AtRisk>) -> &'static str {
+    if at_risk.is_some_and(|at_risk| !at_risk.commits.is_empty()) {
+        "It goes to the Trash, uncommitted changes and all. Its branch stays, with those commits."
+    } else {
+        "It goes to the Trash, uncommitted changes and all."
+    }
+}
+
 fn risk_text(at_risk: &AtRisk) -> Option<String> {
     let plural = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
     let mut parts = Vec::new();

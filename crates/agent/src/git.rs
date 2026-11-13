@@ -13,7 +13,7 @@ use proto::{ChangedFile, CommitInfo, GitOp, GitStatus, GraphCommit, GraphScope, 
 
 /// The repo's main branch: the local `master` or `main`. Only the local repo
 /// counts: remotes are never looked at.
-fn default_branch(dir: &Path) -> Option<String> {
+pub(crate) fn default_branch(dir: &Path) -> Option<String> {
     ["master", "main"]
         .into_iter()
         .find(|branch| git(dir, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok())

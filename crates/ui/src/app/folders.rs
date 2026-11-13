@@ -394,7 +394,7 @@ impl Den {
         cx.notify();
     }
 
-    /// With `force`, to the Trash without the repo's .den/remove.
+    /// With `force`, even while git holds it (locked, a rebase under way…).
     pub(super) fn remove_task(&mut self, key: TaskKey, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client(&key.host) else {
             return;
@@ -435,7 +435,7 @@ impl Den {
                             }
                         }
                     }
-                    // Whatever refused it (the repo's .den/remove, the Trash), why
+                    // Whatever refused it (git holding it, the Trash), why
                     // goes in a dialog that offers to force it, never a dead
                     // end in the list; a force that fails too says why there.
                     Err(err) => {
