@@ -951,6 +951,13 @@ impl Workspace {
             Panel::Workspaces if !open || tab != panel => self.badges.workspaces,
             _ => None,
         };
+        // The changes say how many they are on their header and their tab,
+        // as on their icon.
+        let changes = self.changes.read(cx).count();
+        let count = |tab: Panel| match tab {
+            Panel::Changes if changes > 0 => Some(count_pill(changes, theme.primary, theme.primary_foreground)),
+            _ => None,
+        };
         let name = if tabbed {
             h_flex()
                 .flex_1()
@@ -973,6 +980,7 @@ impl Workspace {
                         .text_color(if front { theme.sidebar_foreground } else { theme.muted_foreground })
                         .hover(|style| style.text_color(theme.sidebar_foreground))
                         .child(div().overflow_hidden().text_ellipsis().child(title(tab).to_uppercase()))
+                        .children(count(tab))
                         .children(dot(tab).map(|color| div().flex_none().size(px(7.)).rounded_full().bg(color)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
@@ -1002,17 +1010,19 @@ impl Workspace {
                 }))
                 .into_any_element()
         } else {
-            div()
+            h_flex()
                 .flex_1()
                 .min_w_0()
+                .gap_1()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 // The files go by their folder, as in VS Code; as a tab, by
                 // their name.
-                .child(match panel {
+                .child(div().overflow_hidden().text_ellipsis().child(match panel {
                     Panel::Files => folder_label(&self.root),
                     _ => title(panel).to_uppercase(),
-                })
+                }))
+                .children(count(panel))
                 .into_any_element()
         };
         let header = h_flex()
@@ -1234,4 +1244,23 @@ fn set_side(side: bool, place: Place, cx: &mut App) {
 /// The side column closes, in every workspace.
 fn close_side(cx: &mut App) {
     Config::update(cx, |config| config.layout.side = false);
+}
+
+/// A count beside a panel's name, as VS Code's beside "Changes".
+fn count_pill(count: usize, bg: Hsla, fg: Hsla) -> AnyElement {
+    div()
+        .flex_none()
+        .h(px(16.))
+        .min_w(px(16.))
+        .px(px(4.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(if count > 99 { "99+".to_string() } else { count.to_string() })
+        .into_any_element()
 }
