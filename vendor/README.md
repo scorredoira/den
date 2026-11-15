@@ -77,6 +77,15 @@ instead of `aho-corasick`. `set_search_query` takes `SearchOptions` instead of
 a case flag (the tests in `state.rs` follow), and `src/input/mod.rs` exports
 it.
 
+And one fix marked `(den)` in `src/tooltip.rs`: a tooltip went only when its
+trigger said it was left or clicked, so one whose trigger went away under the
+mouse (a find bar closed with Escape) stayed on screen for good. While a
+tooltip is shown or waiting to show, `TooltipOverlay` hides it once the mouse
+moves off the trigger's bounds, and on any key in its window, as GPUI's own
+tooltips do; `tooltip_of_a_trigger_gone_*` covers it. The crate's tests run
+from a copy outside the workspace (with `[workspace]` added to its
+`Cargo.toml`), as it isn't a member.
+
 ## gpui-component 0.7.0
 
 The crates.io release the same way (its `tests/` and `[[test]]` entries left

@@ -68,6 +68,7 @@ pub(crate) use edits::EditEvent;
 mod files;
 mod navigation;
 mod render;
+mod preview_find;
 mod tabs;
 mod untitled;
 #[cfg(test)]
@@ -462,6 +463,8 @@ pub struct Workspace {
     /// A plain editor (see `set_plain`), and the side panel it shows: the
     /// files, the search or none.
     plain: bool,
+    /// The find bar of a Markdown preview, while it's open.
+    preview_find: Option<preview_find::PreviewFind>,
     plain_side: Option<Panel>,
     /// The columns.
     split: config::Split,
@@ -713,6 +716,7 @@ impl Workspace {
             terminals_maximized: false,
             terminal_mode: Rc::new(Cell::new(false)),
             plain: false,
+            preview_find: None,
             plain_side: None,
             split: config::Split::new(cx),
             rows: config::Split::new(cx),
@@ -1483,6 +1487,9 @@ impl Workspace {
     /// F3 and Shift-F3, as VS Code's: the next or previous match of the
     /// file's find, opening its find bar first if it is closed.
     fn find_next(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.step_preview_find(forward, cx) {
+            return;
+        }
         let Some(editor) = self.active_editor() else {
             return;
         };

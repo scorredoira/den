@@ -4,7 +4,7 @@
 //! highlighted as the file's language. A file above goes to its changes.
 //! Read-only rows in one list; a file's name opens that file's diff in its
 //! own tab. Text is selected with the mouse in one column at a time, and
-//! Cmd-C copies it.
+//! Cmd-C copies it; Cmd-F finds in the rows' text (`find_bar`).
 
 use std::{
     cell::{Cell, RefCell},
@@ -17,7 +17,7 @@ use std::{
 use gpui_kit::component::{
     ActiveTheme as _, StyledExt as _, h_flex,
     highlighter::{HighlightTheme, SyntaxHighlighter},
-    input::{Copy, Rope},
+    input::{Copy, InputEvent, InputState, Rope},
     menu::ContextMenuExt as _,
     tooltip::Tooltip,
     v_flex,
@@ -28,7 +28,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use crate::{
     config::{Config, TextArea, UiText as _},
     diff::{self, Kind},
-    language, menu,
+    find_bar, language, menu,
 };
 
 /// Beyond this many rows a file's changes aren't drawn: its name opens them.
@@ -89,6 +89,44 @@ pub struct CommitView {
     layouts: Rc<RefCell<HashMap<(usize, Column), TextLayout>>>,
     row_height: Cell<Pixels>,
     focus_handle: FocusHandle,
+    /// The find bar, while it's open.
+    find: Option<Find>,
+}
+
+/// The find bar and what it found in the rows shown (two columns or one).
+struct Find {
+    input: Entity<InputState>,
+    invalid: bool,
+    matches: Rc<Vec<Found>>,
+    active: Option<usize>,
+    /// Found in the rows of one column.
+    narrow: bool,
+    _changed: Subscription,
+}
+
+/// A match: in row `row`'s line of `column`, its bytes `range`.
+#[derive(Clone, PartialEq)]
+struct Found {
+    row: usize,
+    column: Column,
+    range: Range<usize>,
+}
+
+/// Every match of `pattern` in the rows' text, in order: by row, the old
+/// column before the new one.
+fn find_rows(rows: &[Row], pattern: &regex::Regex) -> Vec<Found> {
+    let mut found = Vec::new();
+    for row in 0..rows.len() {
+        for column in [Column::Old, Column::New] {
+            let Some(text) = line(rows, row, column) else { continue };
+            let left = find_bar::MAX_MATCHES - found.len();
+            found.extend(find_bar::find_in(text, pattern, left).map(|range| Found { row, column, range }));
+            if found.len() >= find_bar::MAX_MATCHES {
+                return found;
+            }
+        }
+    }
+    found
 }
 
 /// The text of a line a selection is in: the old side or the new one (also
@@ -542,6 +580,7 @@ impl CommitView {
             layouts: Rc::default(),
             row_height: Cell::new(px(0.)),
             focus_handle: cx.focus_handle(),
+            find: None,
         };
         this.take(prepared);
         this
@@ -579,7 +618,113 @@ impl CommitView {
         if self.selection.take().is_some() {
             cx.emit(CommitViewEvent::Selected);
         }
+        self.find_matches(true, cx);
         cx.notify();
+    }
+
+    /// Opens the find bar, or focuses it, with the selection of a line as the query.
+    pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.is_none() {
+            let input = find_bar::new_input(window, cx);
+            let changed = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    this.find_matches(true, cx);
+                }
+            });
+            self.find = Some(Find {
+                input,
+                invalid: false,
+                matches: Rc::default(),
+                active: None,
+                narrow: self.narrow.get(),
+                _changed: changed,
+            });
+        }
+        let narrow = self.narrow.get();
+        let rows = if narrow { &self.inline } else { &self.rows };
+        let selected = self
+            .selection
+            .filter(|selection| selection.narrow == narrow)
+            .map(|selection| selected_text(rows, &selection))
+            .unwrap_or_default();
+        let Some(find) = &self.find else { return };
+        find_bar::focus_input(&find.input.clone(), &selected, window, cx);
+        self.find_matches(true, cx);
+    }
+
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.take().is_some() {
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The matches of the query in the rows shown. `reveal`: the query
+    /// changed, the active one is the first from the top of the view, and
+    /// it's scrolled to; else the one where the active one was.
+    fn find_matches(&mut self, reveal: bool, cx: &mut Context<Self>) {
+        let options = find_bar::options(cx);
+        let narrow = self.narrow.get();
+        let rows = if narrow { self.inline.clone() } else { self.rows.clone() };
+        let top = self.top_row();
+        let Some(find) = &mut self.find else { return };
+        let query = find.input.read(cx).value().to_string();
+        let previous = find.active.and_then(|ix| find.matches.get(ix)).map(|found| found.row).filter(|_| !reveal && find.narrow == narrow);
+        let matches = match find_bar::pattern(&query, &options) {
+            Ok(Some(pattern)) => {
+                find.invalid = false;
+                find_rows(&rows, &pattern)
+            }
+            Ok(None) => {
+                find.invalid = false;
+                Vec::new()
+            }
+            Err(()) => {
+                find.invalid = true;
+                Vec::new()
+            }
+        };
+        let from = previous.unwrap_or(top);
+        find.active = (!matches.is_empty()).then(|| matches.partition_point(|found| found.row < from).min(matches.len() - 1));
+        find.matches = Rc::new(matches);
+        find.narrow = narrow;
+        if reveal {
+            self.reveal_found();
+        }
+        cx.notify();
+    }
+
+    /// How many matches the find bar has, and the active one.
+    #[cfg(test)]
+    pub fn find_state(&self) -> (usize, Option<usize>) {
+        self.find.as_ref().map(|find| (find.matches.len(), find.active)).unwrap_or_default()
+    }
+
+    /// The row at the top of the view.
+    fn top_row(&self) -> usize {
+        let height = self.row_height.get();
+        if height <= px(0.) {
+            return 0;
+        }
+        let offset = self.scroll.0.borrow().base_handle.offset().y;
+        (f32::from(-offset) / f32::from(height)).max(0.) as usize
+    }
+
+    fn reveal_found(&self) {
+        let Some(find) = &self.find else { return };
+        if let Some(found) = find.active.and_then(|ix| find.matches.get(ix)) {
+            self.scroll.scroll_to_item(found.row, ScrollStrategy::Center);
+        }
+    }
+
+    /// The next match (Enter) or the previous one (Shift-Enter).
+    fn step_find(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(find) = &mut self.find else { return };
+        if let Some(ix) = find_bar::step(find.active, find.matches.len(), forward) {
+            find.active = Some(ix);
+            self.reveal_found();
+            cx.notify();
+        }
     }
 
     /// The button went down on row `ix`'s line at `byte`: a new selection
@@ -1076,7 +1221,18 @@ impl CommitView {
         let (removed, added) = (theme.danger.opacity(0.14), theme.success.opacity(0.14));
         let selection = self.selection.filter(|selection| selection.narrow == narrow);
         self.row_height.set(height);
+        if self.find.as_ref().is_some_and(|find| find.narrow != narrow) {
+            self.find_matches(false, cx);
+        }
+        let found = self.find.as_ref().map(|find| (find.matches.clone(), find.active));
+        let match_colors = find_bar::colors(cx);
         let layouts = self.layouts.clone();
+        let find_bar = self.find.as_ref().map(|find| {
+            let status = find_bar::Status { invalid: find.invalid, count: find.matches.len(), active: find.active };
+            let handlers = find_bar::Handlers { step: Self::step_find, close: Self::close_find, toggled: |this: &mut Self, cx| this.find_matches(true, cx) };
+            find_bar::render(&find.input.clone(), status, handlers, cx)
+        });
+        let theme = cx.theme();
         let list = uniform_list("commit-view", rows.len(), move |range, _, cx| {
             let theme = cx.theme();
             layouts.borrow_mut().clear();
@@ -1087,12 +1243,30 @@ impl CommitView {
                 let selected = selection
                     .filter(|selection| selection.column == column && !gap)
                     .and_then(|selection| selection.bytes(ix, content.len()));
+                // What the find found in it, behind the selection.
+                let styles: Vec<_> = match &found {
+                    Some((matches, active)) if !gap => {
+                        let key = |found: &Found| (found.row, found.column == Column::New);
+                        let first = matches.partition_point(|found| key(found) < (ix, column == Column::New));
+                        let here: Vec<_> = matches[first..]
+                            .iter()
+                            .enumerate()
+                            .take_while(|(_, found)| key(found) == (ix, column == Column::New))
+                            .map(|(at, found)| {
+                                let color = if *active == Some(first + at) { match_colors.1 } else { match_colors.0 };
+                                (found.range.clone(), HighlightStyle { background_color: Some(color), ..Default::default() })
+                            })
+                            .collect();
+                        if here.is_empty() { styles.to_vec() } else { combine_highlights(styles.to_vec(), here).collect() }
+                    }
+                    _ => styles.to_vec(),
+                };
                 let highlights: Vec<_> = match selected {
                     Some(selected) => {
                         let style = HighlightStyle { background_color: Some(theme.selection), ..Default::default() };
-                        combine_highlights(styles.to_vec(), [(selected, style)]).collect()
+                        combine_highlights(styles, [(selected, style)]).collect()
                     }
-                    None => styles.to_vec(),
+                    None => styles,
                 };
                 let text = StyledText::new(content.clone()).with_highlights(highlights);
                 let layout = text.layout().clone();
@@ -1280,6 +1454,7 @@ impl CommitView {
                         .child(format!("{position} · {short}")),
                 )
             })
+            .children(find_bar)
             .into_any_element()
     }
 }

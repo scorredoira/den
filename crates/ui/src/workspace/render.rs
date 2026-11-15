@@ -303,6 +303,11 @@ impl Workspace {
     /// A group's tab bar and the tab it shows. A click anywhere in it gives
     /// it the focus.
     pub(super) fn render_group(&self, group: usize, cx: &mut Context<Self>) -> AnyElement {
+        // The find bar over the preview this group shows, if open on it.
+        let preview_find = self
+            .shown_in(group)
+            .and_then(|ix| self.tabs[ix].rendered())
+            .and_then(|text| self.render_preview_find(text, cx));
         let theme = cx.theme();
         let shown = self.shown_in(group).map(|ix| &self.tabs[ix]);
         // Still loading: what was there before, if anything.
@@ -443,6 +448,7 @@ impl Workspace {
                                 .px_8()
                                 .py_6(),
                         )
+                        .children(preview_find)
                         .into_any_element(),
                     None => {
                         let readonly = tab.diff.is_some() || tab.doc;
@@ -835,6 +841,8 @@ impl Render for Workspace {
             // F4 steps through the visible panel's results: References or Search.
             .on_action(cx.listener(|this, _: &NextResult, _, cx| this.step_result(1, cx)))
             .on_action(cx.listener(|this, _: &PrevResult, _, cx| this.step_result(-1, cx)))
+            // Find in a preview: the editor's handles it in a file.
+            .on_action(cx.listener(|this, _: &input::Search, window, cx| this.open_preview_find(window, cx)))
             .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_next(true, cx)))
             .on_action(cx.listener(|this, _: &FindPrevious, _, cx| this.find_next(false, cx)))
             .on_action(cx.listener(Self::go_to_definition))

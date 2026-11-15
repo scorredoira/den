@@ -17,7 +17,7 @@ use client::Client;
 use gpui_base::{Scrollbar, SelectableText, TextSelection};
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, h_flex, h_resizable,
-    input::{Input, InputEvent, InputState},
+    input::{self, Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
     resizable_panel,
     tooltip::Tooltip,
@@ -1290,11 +1290,25 @@ impl Render for HistoryView {
             .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::open_commit))
             .on_action(cx.listener(Self::close_commit))
+            // Cmd-F: in an open commit, its find bar; else the search of the commits.
+            .on_action(cx.listener(|this, _: &input::Search, window, cx| {
+                if this.open {
+                    this.commit.update(cx, |commit, cx| commit.open_find(window, cx));
+                } else {
+                    this.query.update(cx, |query, cx| query.focus(window, cx));
+                }
+            }))
             .child(body)
     }
 }
 
 impl HistoryView {
+    /// The open commit's matches and the active one, while its find bar is open.
+    #[cfg(test)]
+    pub fn commit_find(&self, cx: &App) -> (usize, Option<usize>) {
+        self.commit.read(cx).find_state()
+    }
+
     /// Over an open commit: back to the commits, and where it is among them.
     fn render_commit_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();

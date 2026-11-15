@@ -1,9 +1,10 @@
 use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    AnyElement, AnyView, App, Bounds, Context, Div, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Render, RenderOnce, Role, Stateful, StatefulInteractiveElement, Styled,
-    Task, Window, deferred, div, prelude::FluentBuilder as _, px,
+    AnyElement, AnyView, App, Bounds, Context, DispatchPhase, Div, ElementId, InteractiveElement,
+    IntoElement, MouseMoveEvent, ParentElement, Pixels, Point, Render, RenderOnce, Role, Stateful,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, canvas, deferred, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::{Placement, Positioner};
@@ -97,6 +98,9 @@ pub enum TooltipTransition {
 pub struct TooltipOverlay {
     enabled: bool,
     content: Option<TooltipRequest>,
+    /// (den) What `show_task` will show: the overlay watches the mouse for it
+    /// too (see `render`).
+    pending: Option<Bounds<Pixels>>,
     previous_bounds: Option<Bounds<Pixels>>,
     epoch: usize,
     had_recent_tooltip: bool,
@@ -104,6 +108,8 @@ pub struct TooltipOverlay {
     is_switching: bool,
     show_task: Option<Task<()>>,
     hide_task: Option<Task<()>>,
+    /// (den) Hides the tooltip on any key in its window (see `request_show`).
+    keys: Option<Subscription>,
     renderer: TooltipRenderer,
 }
 
@@ -112,6 +118,7 @@ impl TooltipOverlay {
         Self {
             enabled: !crate::is_mobile(),
             content: None,
+            pending: None,
             previous_bounds: None,
             epoch: 0,
             had_recent_tooltip: false,
@@ -119,6 +126,7 @@ impl TooltipOverlay {
             is_switching: false,
             show_task: None,
             hide_task: None,
+            keys: None,
             renderer: Rc::new(|view, _, _, _| div().child(view).into_any_element()),
         }
     }
@@ -147,12 +155,24 @@ impl TooltipOverlay {
         if !self.enabled {
             return;
         }
+        // (den) A key hides it, as GPUI's own tooltips: Escape may close what
+        // the mouse is on, and nothing would say it was left. Keys go down the
+        // focus path, which the overlay is not on, so it observes them all.
+        if self.keys.is_none() {
+            let own = window.window_handle();
+            self.keys = Some(cx.observe_keystrokes(move |this, _, window, cx| {
+                if window.window_handle() == own {
+                    this.hide(cx);
+                }
+            }));
+        }
         self.hide_task = None;
         let was_visible = self.content.is_some();
         if was_visible || self.had_recent_tooltip {
             self.previous_bounds = self.content.as_ref().map(|content| content.trigger_bounds);
             self.content = Some(content);
             self.show_task = None;
+            self.pending = None;
             self.is_switching = was_visible;
             self.animation_epoch += 1;
             cx.notify();
@@ -160,10 +180,14 @@ impl TooltipOverlay {
         }
 
         let epoch = self.next_epoch();
+        self.pending = Some(content.trigger_bounds);
+        // (den) Drawn again so the overlay watches the mouse while it waits.
+        cx.notify();
         self.show_task = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SHOW_DELAY).await;
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.epoch == epoch {
+                    this.pending = None;
                     this.content = Some(content);
                     this.previous_bounds = None;
                     this.is_switching = false;
@@ -176,6 +200,9 @@ impl TooltipOverlay {
 
     pub fn request_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_task = None;
+        if self.pending.take().is_some() {
+            cx.notify();
+        }
         if self.content.is_none() {
             return;
         }
@@ -196,11 +223,13 @@ impl TooltipOverlay {
 
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         let changed = self.content.is_some()
+            || self.pending.is_some()
             || self.previous_bounds.is_some()
             || self.had_recent_tooltip
             || self.show_task.is_some()
             || self.hide_task.is_some();
         self.content = None;
+        self.pending = None;
         self.previous_bounds = None;
         self.had_recent_tooltip = false;
         self.is_switching = false;
@@ -208,6 +237,27 @@ impl TooltipOverlay {
         self.hide_task = None;
         if changed {
             cx.notify();
+        }
+    }
+
+    /// (den) The mouse moved to `position`: off the trigger, the tooltip goes
+    /// as if the trigger had been left. A trigger that went away under the
+    /// mouse (a bar closed with Escape) never says it was left, and its
+    /// tooltip stayed on screen for good.
+    fn mouse_moved(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let trigger = self
+            .content
+            .as_ref()
+            .map(|content| content.trigger_bounds)
+            .or(self.pending);
+        let hiding = self.content.is_some() && self.hide_task.is_some();
+        if trigger.is_some_and(|bounds| !bounds.contains(&position)) && !hiding {
+            self.request_hide(window, cx);
         }
     }
 }
@@ -220,8 +270,26 @@ impl Default for TooltipOverlay {
 
 impl Render for TooltipOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // (den) While a tooltip is shown or about to be, the mouse leaving its
+        // trigger hides it, whether or not the trigger is still drawn (see
+        // `mouse_moved`).
+        let watch = (self.content.is_some() || self.pending.is_some()).then(|| {
+            let this = cx.weak_entity();
+            canvas(
+                |_, _, _| (),
+                move |_, _, window, _| {
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture {
+                            let _ = this.update(cx, |this, cx| {
+                                this.mouse_moved(event.position, window, cx)
+                            });
+                        }
+                    });
+                },
+            )
+        });
         let Some(content) = self.content.as_ref() else {
-            return div().into_any_element();
+            return div().children(watch).into_any_element();
         };
         let view = (content.build)(window, cx);
         let transition = match (self.is_switching, self.previous_bounds) {
@@ -235,15 +303,19 @@ impl Render for TooltipOverlay {
             },
         };
         let rendered = (self.renderer)(view, transition, window, cx);
-        deferred(
-            TooltipPositioner::new(content.trigger_bounds)
-                .when_some(content.preferred_placement, |this, placement| {
-                    this.placement(placement)
-                })
-                .child(rendered),
-        )
-        .with_priority(TOOLTIP_PRIORITY)
-        .into_any_element()
+        div()
+            .children(watch)
+            .child(
+                deferred(
+                    TooltipPositioner::new(content.trigger_bounds)
+                        .when_some(content.preferred_placement, |this, placement| {
+                            this.placement(placement)
+                        })
+                        .child(rendered),
+                )
+                .with_priority(TOOLTIP_PRIORITY),
+            )
+            .into_any_element()
     }
 }
 
@@ -309,6 +381,112 @@ mod tests {
             state.update(cx, |tooltip, cx| tooltip.hide(cx));
         });
         cx.update(|_, cx| assert!(state.read(cx).content.is_none()));
+    }
+
+    /// (den) A trigger with a tooltip, as components wire it, that the test
+    /// can take away while the mouse is on it.
+    struct Bar {
+        overlay: gpui::Entity<TooltipOverlay>,
+        trigger: bool,
+    }
+
+    impl Render for Bar {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let overlay = self.overlay.clone();
+            div()
+                .size_full()
+                .when(self.trigger, |this| {
+                    this.child(div().id("close").size(px(20.)).on_hover(
+                        move |hovered, window, cx| {
+                            overlay.update(cx, |overlay, cx| {
+                                if *hovered {
+                                    let request =
+                                        TooltipRequest::new(bounds(0., 0., 20., 20.), |_, cx| {
+                                            cx.new(|_| gpui::Empty).into()
+                                        });
+                                    overlay.request_show(request, window, cx);
+                                } else {
+                                    overlay.request_hide(window, cx);
+                                }
+                            })
+                        },
+                    ))
+                })
+                .child(self.overlay.clone())
+        }
+    }
+
+    fn bar(cx: &mut gpui::TestAppContext) -> (gpui::Entity<Bar>, &mut gpui::VisualTestContext) {
+        let overlay = cx.update(|cx| cx.new(|_| TooltipOverlay::new()));
+        cx.add_window_view(|_, _| Bar {
+            overlay,
+            trigger: true,
+        })
+    }
+
+    fn shown(bar: &gpui::Entity<Bar>, cx: &mut gpui::VisualTestContext) -> bool {
+        cx.update(|_, cx| bar.read(cx).overlay.read(cx).content.is_some())
+    }
+
+    fn take_trigger_away(bar: &gpui::Entity<Bar>, cx: &mut gpui::VisualTestContext) {
+        cx.update(|_, cx| {
+            bar.update(cx, |bar, cx| {
+                bar.trigger = false;
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+    }
+
+    /// (den) A trigger gone from under the mouse never says it was left: its
+    /// tooltip goes once the mouse moves off it, or with a key (below).
+    #[gpui::test]
+    fn tooltip_of_a_trigger_gone_goes_with_the_mouse(cx: &mut gpui::TestAppContext) {
+        let none = gpui::Modifiers::default();
+        let (bar, cx) = bar(cx);
+        cx.run_until_parked();
+        cx.simulate_mouse_move(point(px(10.), px(10.)), None, none);
+        cx.executor().advance_clock(SHOW_DELAY);
+        cx.run_until_parked();
+        assert!(shown(&bar, cx));
+        take_trigger_away(&bar, cx);
+        cx.simulate_mouse_move(point(px(12.), px(12.)), None, none);
+        cx.run_until_parked();
+        assert!(shown(&bar, cx), "still on where the trigger was");
+        cx.simulate_mouse_move(point(px(100.), px(100.)), None, none);
+        cx.executor().advance_clock(GRACE_PERIOD);
+        cx.run_until_parked();
+        assert!(!shown(&bar, cx));
+    }
+
+    #[gpui::test]
+    fn tooltip_of_a_trigger_gone_goes_with_a_key(cx: &mut gpui::TestAppContext) {
+        let (bar, cx) = bar(cx);
+        cx.run_until_parked();
+        cx.simulate_mouse_move(point(px(10.), px(10.)), None, gpui::Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        cx.run_until_parked();
+        assert!(shown(&bar, cx));
+        take_trigger_away(&bar, cx);
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(!shown(&bar, cx));
+    }
+
+    /// (den) Taken away before its delay is up, with the mouse gone from where
+    /// it was, it never shows.
+    #[gpui::test]
+    fn tooltip_waiting_for_a_trigger_gone_never_shows(cx: &mut gpui::TestAppContext) {
+        let none = gpui::Modifiers::default();
+        let (bar, cx) = bar(cx);
+        cx.run_until_parked();
+        cx.simulate_mouse_move(point(px(10.), px(10.)), None, none);
+        cx.run_until_parked();
+        take_trigger_away(&bar, cx);
+        cx.simulate_mouse_move(point(px(100.), px(100.)), None, none);
+        cx.executor().advance_clock(SHOW_DELAY);
+        cx.run_until_parked();
+        assert!(!shown(&bar, cx));
     }
 
     #[test]

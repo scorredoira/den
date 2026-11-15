@@ -1,4 +1,4 @@
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/Cargo.toml vendor/gpui-base/Cargo.toml
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/Cargo.toml vendor/gpui-base/Cargo.toml
 --- a/Cargo.toml	2006-07-24 03:21:28
 +++ b/Cargo.toml	2026-10-13 09:32:24
 @@ -43,27 +43,12 @@
@@ -31,7 +31,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
  [dependencies.anyhow]
  version = "1"
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/base/element.rs vendor/gpui-base/src/input/base/element.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/base/element.rs vendor/gpui-base/src/input/base/element.rs
 --- a/src/input/base/element.rs	2006-07-24 03:21:28
 +++ b/src/input/base/element.rs	2026-10-13 09:32:24
 @@ -2,7 +2,7 @@
@@ -595,7 +595,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      }
  }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/base/state.rs vendor/gpui-base/src/input/base/state.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/base/state.rs vendor/gpui-base/src/input/base/state.rs
 --- a/src/input/base/state.rs	2006-07-24 03:21:28
 +++ b/src/input/base/state.rs	2026-10-13 09:32:24
 @@ -2,7 +2,7 @@
@@ -996,7 +996,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +    pub at: f32,
 +    pub margin: Option<usize>,
  }
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/editor/lsp/completions.rs vendor/gpui-base/src/input/editor/lsp/completions.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/lsp/completions.rs vendor/gpui-base/src/input/editor/lsp/completions.rs
 --- a/src/input/editor/lsp/completions.rs	2006-07-24 03:21:28
 +++ b/src/input/editor/lsp/completions.rs	2026-10-03 08:58:23
 @@ -96,6 +96,12 @@
@@ -1041,7 +1041,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              return;
          }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/editor/lsp/definitions.rs vendor/gpui-base/src/input/editor/lsp/definitions.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/lsp/definitions.rs vendor/gpui-base/src/input/editor/lsp/definitions.rs
 --- a/src/input/editor/lsp/definitions.rs	2006-07-24 03:21:28
 +++ b/src/input/editor/lsp/definitions.rs	2026-10-13 09:32:24
 @@ -21,6 +21,19 @@
@@ -1097,7 +1097,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          }
  
          let Some(location) = self.extras.hover_definition.locations.first().cloned() else {
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/editor/search.rs vendor/gpui-base/src/input/editor/search.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/editor/search.rs vendor/gpui-base/src/input/editor/search.rs
 --- a/src/input/editor/search.rs	2006-07-24 03:21:28
 +++ b/src/input/editor/search.rs	2026-10-13 09:32:24
 @@ -1,6 +1,9 @@
@@ -1523,7 +1523,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          matcher.set_current_match_index(2);
          matcher.begin_replacement();
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/input/mod.rs vendor/gpui-base/src/input/mod.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/input/mod.rs vendor/gpui-base/src/input/mod.rs
 --- a/src/input/mod.rs	2006-07-24 03:21:28
 +++ b/src/input/mod.rs	2026-10-13 09:32:24
 @@ -118,6 +118,6 @@
@@ -1534,7 +1534,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
 +pub use search::{SearchMatcher, SearchOptions, SearchSession}; // (den) SearchOptions
  pub use state::*;
  pub use textarea::{Textarea, TextareaState};
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/resizable/mod.rs vendor/gpui-base/src/resizable/mod.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/resizable/mod.rs vendor/gpui-base/src/resizable/mod.rs
 --- a/src/resizable/mod.rs	2006-07-24 03:21:28
 +++ b/src/resizable/mod.rs	2026-10-03 08:58:23
 @@ -217,6 +217,14 @@
@@ -1552,7 +1552,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      /// Remove the panel at `panel_ix` and redistribute the remaining space.
      pub fn remove_panel(&mut self, panel_ix: usize, cx: &mut Context<Self>) {
          self.panels.remove(panel_ix);
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/resizable/panel.rs vendor/gpui-base/src/resizable/panel.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/resizable/panel.rs vendor/gpui-base/src/resizable/panel.rs
 --- a/src/resizable/panel.rs	2006-07-24 03:21:28
 +++ b/src/resizable/panel.rs	2026-10-03 08:58:23
 @@ -301,6 +301,11 @@
@@ -1567,10 +1567,38 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              return div().id(("resizable-panel", self.panel_ix));
          }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/format/html.rs vendor/gpui-base/src/text/format/html.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/format/html.rs vendor/gpui-base/src/text/format/html.rs
 --- a/src/text/format/html.rs	2006-07-24 03:21:28
-+++ b/src/text/format/html.rs	2026-10-24 13:59:53
-@@ -610,6 +610,10 @@
++++ b/src/text/format/html.rs	2026-10-25 07:46:01
+@@ -180,6 +180,11 @@
+     }
+ }
+ 
++/// (den) Whether the image is kept at its width: `max-width: none`.
++fn fixed_width(attrs: &RefCell<Vec<html5ever::Attribute>>) -> bool {
++    style_attrs(attrs).get("max-width").is_some_and(|value| value == "none")
++}
++
+ /// Get width, height from attributes or parse them from style attribute.
+ fn attr_width_height(
+     attrs: &RefCell<Vec<html5ever::Attribute>>,
+@@ -401,6 +406,7 @@
+                     width,
+                     height,
+                     title: title.map(Into::into),
++                    fixed: fixed_width(attrs),
+                     ..Default::default()
+                 });
+             }
+@@ -497,6 +503,7 @@
+                     alt: alt.map(Into::into),
+                     width,
+                     height,
++                    fixed: fixed_width(&attrs),
+                     ..Default::default()
+                 });
+ 
+@@ -610,6 +617,10 @@
                          }
                      }
                      consume_paragraph(&mut children, paragraph);
@@ -1581,7 +1609,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  
                      if children.is_empty() {
                          None
-@@ -659,6 +663,15 @@
+@@ -659,6 +670,15 @@
      }
  
      children
@@ -1597,7 +1625,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  }
  
  fn consume_paragraph(children: &mut Vec<BlockNode>, paragraph: &mut Paragraph) {
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/inline.rs vendor/gpui-base/src/text/inline.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/inline.rs vendor/gpui-base/src/text/inline.rs
 --- a/src/text/inline.rs	2006-07-24 03:21:28
 +++ b/src/text/inline.rs	2026-10-05 18:11:10
 @@ -1130,6 +1130,7 @@
@@ -1646,10 +1674,36 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  }
  
  /// Where one glyph of laid-out text paints: its row, and its horizontal
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/node.rs vendor/gpui-base/src/text/node.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/node.rs vendor/gpui-base/src/text/node.rs
 --- a/src/text/node.rs	2006-07-24 03:21:28
-+++ b/src/text/node.rs	2026-10-24 13:58:49
-@@ -1105,6 +1105,9 @@
++++ b/src/text/node.rs	2026-10-30 13:01:12
+@@ -485,6 +485,9 @@
+     pub alt: Option<SharedString>,
+     pub width: Option<DefiniteLength>,
+     pub height: Option<DefiniteLength>,
++    /// (den) `style="max-width: none"`: drawn at its width, never shrunk
++    /// to the column; wider, its paragraph scrolls sideways.
++    pub fixed: bool,
+     pub(crate) span: Option<Span>,
+     /// The image a `data:` URL carries, decoded on first render and kept for
+     /// the node's lifetime so it is not decoded again every frame.
+@@ -523,6 +526,7 @@
+             .field("alt", &self.alt)
+             .field("width", &self.width)
+             .field("height", &self.height)
++            .field("fixed", &self.fixed)
+             .field("span", &self.span)
+             .finish()
+     }
+@@ -536,6 +540,7 @@
+             && self.alt == other.alt
+             && self.width == other.width
+             && self.height == other.height
++            && self.fixed == other.fixed
+             && self.span == other.span
+     }
+ }
+@@ -1105,6 +1110,9 @@
      /// What the plain (text-only) render path derives from `children`, kept
      /// between frames; see [`ParagraphRender`].
      pub(super) render_cache: ParagraphRenderCache,
@@ -1659,7 +1713,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
  }
  
  /// Derived state, invisible to `Debug` and equality.
-@@ -1153,6 +1156,7 @@
+@@ -1153,6 +1161,7 @@
          self.span == other.span
              && self.children == other.children
              && self.link_refs == other.link_refs
@@ -1667,7 +1721,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      }
  }
  
-@@ -1164,6 +1168,7 @@
+@@ -1164,6 +1173,7 @@
              link_refs: HashMap::new(),
              state: Arc::new(Mutex::new(InlineState::default())),
              render_cache: ParagraphRenderCache::default(),
@@ -1675,7 +1729,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          }
      }
  
-@@ -1683,6 +1688,7 @@
+@@ -1683,6 +1693,7 @@
                  link_refs: Default::default(),
                  state: Arc::new(Mutex::new(InlineState::default())),
                  render_cache: ParagraphRenderCache::default(),
@@ -1683,7 +1737,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
              },
          )
      }
-@@ -2005,10 +2011,9 @@
+@@ -2005,10 +2016,9 @@
  
  impl NodeContext {
      fn image_source(&self, image: &ImageNode) -> ImageSource {
@@ -1697,16 +1751,50 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      }
  
      pub(super) fn add_ref(&mut self, identifier: SharedString, link: LinkMark) {
-@@ -2310,6 +2315,8 @@
+@@ -2119,7 +2129,7 @@
+         &self,
+         fade_key: Option<TextLeafKey>,
+         node_cx: &NodeContext,
+-        _window: &mut Window,
++        window: &mut Window,
+         cx: &mut App,
+     ) -> AnyElement {
+         let children = &self.children;
+@@ -2210,7 +2220,8 @@
+                     img(node_cx.image_source(image))
+                         .id(ix)
+                         .object_fit(ObjectFit::Contain)
+-                        .max_w(relative(1.))
++                        .map(|this| if image.fixed { this.flex_none() } else { this.max_w(relative(1.)) })
++                        .debug_selector(|| format!("image {}", image.title()))
+                         .when_some(image.width, |this, width| this.w(width))
+                         .when_some(image.link.clone(), |this, link| {
+                             let link_click_handler = link_click_handler.clone();
+@@ -2308,10 +2319,20 @@
+                 .unwrap_or_else(|| div().into_any_element());
+         }
  
-         div()
+-        div()
++        let paragraph = div()
              .id(leaf_element_id(fade_key))
+-            .children(child_nodes)
+-            .into_any_element()
 +            // (den) `align="center"` on the HTML block around it.
 +            .when(self.centered, |this| this.flex().flex_col().items_center())
-             .children(child_nodes)
-             .into_any_element()
++            .children(child_nodes);
++        // (den) An image at its own width scrolls sideways when wider than
++        // the column: the track is as wide as the widest, or the column.
++        let fixed = children.iter().filter_map(|child| child.image.as_ref()).filter(|image| image.fixed);
++        let Some(width) = fixed.filter_map(|image| image.width).map(|width| width.to_pixels(px(0.).into(), window.rem_size())).max() else {
++            return paragraph.into_any_element();
++        };
++        let id = ElementId::NamedChild(Arc::new(leaf_element_id(fade_key)), "scroll".into());
++        let scroll_handle = window.use_keyed_state(id.clone(), cx, |_, _| ScrollHandle::default()).read(cx).clone();
++        horizontal_scroll_area(id, &scroll_handle, &StyleRefinement::default(), paragraph.min_w_full().w(width)).into_any_element()
      }
-@@ -3780,6 +3787,7 @@
+ 
+     fn should_render_inline_flow(&self) -> bool {
+@@ -3780,6 +3801,7 @@
              link_refs: HashMap::new(),
              state: Arc::new(Mutex::new(InlineState::default())),
              render_cache: ParagraphRenderCache::default(),
@@ -1714,7 +1802,7 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          };
          if let Ok(mut state) = paragraph.state.lock() {
              state.set_text(combined.into());
-@@ -4265,6 +4273,7 @@
+@@ -4265,6 +4287,7 @@
              link_refs: HashMap::new(),
              state: Arc::new(Mutex::new(InlineState::default())),
              render_cache: ParagraphRenderCache::default(),
@@ -1722,9 +1810,9 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
          }
      }
  
-diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok /private/tmp/claude-501/-Users-santi-Documents-projects-scl-worktrees-spec/f38e9a9a-8d4e-4c6d-b2ac-fd7828fc09c6/scratchpad/crate/gpui-base-0.7.0/src/text/text_view.rs vendor/gpui-base/src/text/text_view.rs
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/text/text_view.rs vendor/gpui-base/src/text/text_view.rs
 --- a/src/text/text_view.rs	2006-07-24 03:21:28
-+++ b/src/text/text_view.rs	2026-10-13 09:32:24
++++ b/src/text/text_view.rs	2026-10-25 07:47:06
 @@ -75,7 +75,8 @@
  pub(crate) type TableActionsFn =
      dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
@@ -1752,3 +1840,317 @@ diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_inf
      {
          self.image_source = Some(Arc::new(resolver));
          self
+diff -ruN -x benches -x tests -x Cargo.lock -x Cargo.toml.orig -x .cargo_vcs_info.json -x .cargo-ok gpui-base-0.7.0/src/tooltip.rs vendor/gpui-base/src/tooltip.rs
+--- a/src/tooltip.rs	2006-07-24 03:21:28
++++ b/src/tooltip.rs	2026-11-15 05:10:03
+@@ -1,9 +1,10 @@
+ use std::{rc::Rc, time::Duration};
+ 
+ use gpui::{
+-    AnyElement, AnyView, App, Bounds, Context, Div, ElementId, InteractiveElement, IntoElement,
+-    ParentElement, Pixels, Render, RenderOnce, Role, Stateful, StatefulInteractiveElement, Styled,
+-    Task, Window, deferred, div, prelude::FluentBuilder as _, px,
++    AnyElement, AnyView, App, Bounds, Context, DispatchPhase, Div, ElementId, InteractiveElement,
++    IntoElement, MouseMoveEvent, ParentElement, Pixels, Point, Render, RenderOnce, Role, Stateful,
++    StatefulInteractiveElement, Styled, Subscription, Task, Window, canvas, deferred, div,
++    prelude::FluentBuilder as _, px,
+ };
+ 
+ use crate::{Placement, Positioner};
+@@ -97,6 +98,9 @@
+ pub struct TooltipOverlay {
+     enabled: bool,
+     content: Option<TooltipRequest>,
++    /// (den) What `show_task` will show: the overlay watches the mouse for it
++    /// too (see `render`).
++    pending: Option<Bounds<Pixels>>,
+     previous_bounds: Option<Bounds<Pixels>>,
+     epoch: usize,
+     had_recent_tooltip: bool,
+@@ -104,6 +108,8 @@
+     is_switching: bool,
+     show_task: Option<Task<()>>,
+     hide_task: Option<Task<()>>,
++    /// (den) Hides the tooltip on any key in its window (see `request_show`).
++    keys: Option<Subscription>,
+     renderer: TooltipRenderer,
+ }
+ 
+@@ -112,6 +118,7 @@
+         Self {
+             enabled: !crate::is_mobile(),
+             content: None,
++            pending: None,
+             previous_bounds: None,
+             epoch: 0,
+             had_recent_tooltip: false,
+@@ -119,6 +126,7 @@
+             is_switching: false,
+             show_task: None,
+             hide_task: None,
++            keys: None,
+             renderer: Rc::new(|view, _, _, _| div().child(view).into_any_element()),
+         }
+     }
+@@ -147,12 +155,24 @@
+         if !self.enabled {
+             return;
+         }
++        // (den) A key hides it, as GPUI's own tooltips: Escape may close what
++        // the mouse is on, and nothing would say it was left. Keys go down the
++        // focus path, which the overlay is not on, so it observes them all.
++        if self.keys.is_none() {
++            let own = window.window_handle();
++            self.keys = Some(cx.observe_keystrokes(move |this, _, window, cx| {
++                if window.window_handle() == own {
++                    this.hide(cx);
++                }
++            }));
++        }
+         self.hide_task = None;
+         let was_visible = self.content.is_some();
+         if was_visible || self.had_recent_tooltip {
+             self.previous_bounds = self.content.as_ref().map(|content| content.trigger_bounds);
+             self.content = Some(content);
+             self.show_task = None;
++            self.pending = None;
+             self.is_switching = was_visible;
+             self.animation_epoch += 1;
+             cx.notify();
+@@ -160,10 +180,14 @@
+         }
+ 
+         let epoch = self.next_epoch();
++        self.pending = Some(content.trigger_bounds);
++        // (den) Drawn again so the overlay watches the mouse while it waits.
++        cx.notify();
+         self.show_task = Some(cx.spawn_in(window, async move |this, cx| {
+             cx.background_executor().timer(SHOW_DELAY).await;
+             let _ = this.update_in(cx, |this, _, cx| {
+                 if this.epoch == epoch {
++                    this.pending = None;
+                     this.content = Some(content);
+                     this.previous_bounds = None;
+                     this.is_switching = false;
+@@ -176,6 +200,9 @@
+ 
+     pub fn request_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         self.show_task = None;
++        if self.pending.take().is_some() {
++            cx.notify();
++        }
+         if self.content.is_none() {
+             return;
+         }
+@@ -196,11 +223,13 @@
+ 
+     pub fn hide(&mut self, cx: &mut Context<Self>) {
+         let changed = self.content.is_some()
++            || self.pending.is_some()
+             || self.previous_bounds.is_some()
+             || self.had_recent_tooltip
+             || self.show_task.is_some()
+             || self.hide_task.is_some();
+         self.content = None;
++        self.pending = None;
+         self.previous_bounds = None;
+         self.had_recent_tooltip = false;
+         self.is_switching = false;
+@@ -210,6 +239,27 @@
+             cx.notify();
+         }
+     }
++
++    /// (den) The mouse moved to `position`: off the trigger, the tooltip goes
++    /// as if the trigger had been left. A trigger that went away under the
++    /// mouse (a bar closed with Escape) never says it was left, and its
++    /// tooltip stayed on screen for good.
++    fn mouse_moved(
++        &mut self,
++        position: Point<Pixels>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let trigger = self
++            .content
++            .as_ref()
++            .map(|content| content.trigger_bounds)
++            .or(self.pending);
++        let hiding = self.content.is_some() && self.hide_task.is_some();
++        if trigger.is_some_and(|bounds| !bounds.contains(&position)) && !hiding {
++            self.request_hide(window, cx);
++        }
++    }
+ }
+ 
+ impl Default for TooltipOverlay {
+@@ -220,8 +270,26 @@
+ 
+ impl Render for TooltipOverlay {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        // (den) While a tooltip is shown or about to be, the mouse leaving its
++        // trigger hides it, whether or not the trigger is still drawn (see
++        // `mouse_moved`).
++        let watch = (self.content.is_some() || self.pending.is_some()).then(|| {
++            let this = cx.weak_entity();
++            canvas(
++                |_, _, _| (),
++                move |_, _, window, _| {
++                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
++                        if phase == DispatchPhase::Capture {
++                            let _ = this.update(cx, |this, cx| {
++                                this.mouse_moved(event.position, window, cx)
++                            });
++                        }
++                    });
++                },
++            )
++        });
+         let Some(content) = self.content.as_ref() else {
+-            return div().into_any_element();
++            return div().children(watch).into_any_element();
+         };
+         let view = (content.build)(window, cx);
+         let transition = match (self.is_switching, self.previous_bounds) {
+@@ -235,15 +303,19 @@
+             },
+         };
+         let rendered = (self.renderer)(view, transition, window, cx);
+-        deferred(
+-            TooltipPositioner::new(content.trigger_bounds)
+-                .when_some(content.preferred_placement, |this, placement| {
+-                    this.placement(placement)
+-                })
+-                .child(rendered),
+-        )
+-        .with_priority(TOOLTIP_PRIORITY)
+-        .into_any_element()
++        div()
++            .children(watch)
++            .child(
++                deferred(
++                    TooltipPositioner::new(content.trigger_bounds)
++                        .when_some(content.preferred_placement, |this, placement| {
++                            this.placement(placement)
++                        })
++                        .child(rendered),
++                )
++                .with_priority(TOOLTIP_PRIORITY),
++            )
++            .into_any_element()
+     }
+ }
+ 
+@@ -309,6 +381,112 @@
+             state.update(cx, |tooltip, cx| tooltip.hide(cx));
+         });
+         cx.update(|_, cx| assert!(state.read(cx).content.is_none()));
++    }
++
++    /// (den) A trigger with a tooltip, as components wire it, that the test
++    /// can take away while the mouse is on it.
++    struct Bar {
++        overlay: gpui::Entity<TooltipOverlay>,
++        trigger: bool,
++    }
++
++    impl Render for Bar {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            let overlay = self.overlay.clone();
++            div()
++                .size_full()
++                .when(self.trigger, |this| {
++                    this.child(div().id("close").size(px(20.)).on_hover(
++                        move |hovered, window, cx| {
++                            overlay.update(cx, |overlay, cx| {
++                                if *hovered {
++                                    let request =
++                                        TooltipRequest::new(bounds(0., 0., 20., 20.), |_, cx| {
++                                            cx.new(|_| gpui::Empty).into()
++                                        });
++                                    overlay.request_show(request, window, cx);
++                                } else {
++                                    overlay.request_hide(window, cx);
++                                }
++                            })
++                        },
++                    ))
++                })
++                .child(self.overlay.clone())
++        }
++    }
++
++    fn bar(cx: &mut gpui::TestAppContext) -> (gpui::Entity<Bar>, &mut gpui::VisualTestContext) {
++        let overlay = cx.update(|cx| cx.new(|_| TooltipOverlay::new()));
++        cx.add_window_view(|_, _| Bar {
++            overlay,
++            trigger: true,
++        })
++    }
++
++    fn shown(bar: &gpui::Entity<Bar>, cx: &mut gpui::VisualTestContext) -> bool {
++        cx.update(|_, cx| bar.read(cx).overlay.read(cx).content.is_some())
++    }
++
++    fn take_trigger_away(bar: &gpui::Entity<Bar>, cx: &mut gpui::VisualTestContext) {
++        cx.update(|_, cx| {
++            bar.update(cx, |bar, cx| {
++                bar.trigger = false;
++                cx.notify();
++            })
++        });
++        cx.run_until_parked();
++    }
++
++    /// (den) A trigger gone from under the mouse never says it was left: its
++    /// tooltip goes once the mouse moves off it, or with a key (below).
++    #[gpui::test]
++    fn tooltip_of_a_trigger_gone_goes_with_the_mouse(cx: &mut gpui::TestAppContext) {
++        let none = gpui::Modifiers::default();
++        let (bar, cx) = bar(cx);
++        cx.run_until_parked();
++        cx.simulate_mouse_move(point(px(10.), px(10.)), None, none);
++        cx.executor().advance_clock(SHOW_DELAY);
++        cx.run_until_parked();
++        assert!(shown(&bar, cx));
++        take_trigger_away(&bar, cx);
++        cx.simulate_mouse_move(point(px(12.), px(12.)), None, none);
++        cx.run_until_parked();
++        assert!(shown(&bar, cx), "still on where the trigger was");
++        cx.simulate_mouse_move(point(px(100.), px(100.)), None, none);
++        cx.executor().advance_clock(GRACE_PERIOD);
++        cx.run_until_parked();
++        assert!(!shown(&bar, cx));
++    }
++
++    #[gpui::test]
++    fn tooltip_of_a_trigger_gone_goes_with_a_key(cx: &mut gpui::TestAppContext) {
++        let (bar, cx) = bar(cx);
++        cx.run_until_parked();
++        cx.simulate_mouse_move(point(px(10.), px(10.)), None, gpui::Modifiers::default());
++        cx.executor().advance_clock(SHOW_DELAY);
++        cx.run_until_parked();
++        assert!(shown(&bar, cx));
++        take_trigger_away(&bar, cx);
++        cx.simulate_keystrokes("escape");
++        cx.run_until_parked();
++        assert!(!shown(&bar, cx));
++    }
++
++    /// (den) Taken away before its delay is up, with the mouse gone from where
++    /// it was, it never shows.
++    #[gpui::test]
++    fn tooltip_waiting_for_a_trigger_gone_never_shows(cx: &mut gpui::TestAppContext) {
++        let none = gpui::Modifiers::default();
++        let (bar, cx) = bar(cx);
++        cx.run_until_parked();
++        cx.simulate_mouse_move(point(px(10.), px(10.)), None, none);
++        cx.run_until_parked();
++        take_trigger_away(&bar, cx);
++        cx.simulate_mouse_move(point(px(100.), px(100.)), None, none);
++        cx.executor().advance_clock(SHOW_DELAY);
++        cx.run_until_parked();
++        assert!(!shown(&bar, cx));
+     }
+ 
+     #[test]

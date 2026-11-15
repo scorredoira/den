@@ -1548,3 +1548,91 @@ fn an_open_commit_s_lines_select(cx: &mut TestAppContext) {
     let file = PathBuf::from("/layout-test").join("x.rs");
     assert_eq!(told, format!("{}:2:11-3:11 at aaaaaaaaaa (old)\n{copied}\n", file.display()));
 }
+
+/// In a Markdown preview, Cmd-F opens a find bar over it: typing finds in
+/// the text as shown, Enter goes to the next match and back to the first,
+/// Shift-Enter to the one before, and Escape closes it.
+#[gpui_kit::test]
+fn the_preview_finds_its_text(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(Config::default());
+        cx.bind_keys(crate::find_bar::keymap());
+    });
+    let (workspace, cx) = cx.add_window_view(|window, cx| {
+        let mut workspace = Workspace::new(PathBuf::from("/find-test"), None, true, "find-test".into(), window, cx);
+        workspace.hide_panel(Panel::Files, cx);
+        workspace.hide_panel(Panel::Terminals, cx);
+        let mut tab = workspace.new_tab(PathBuf::from("/find-test/README.md"), false, window, cx);
+        tab.content = Content::Ready;
+        let text = "# A **cat**\n\nOne cat, two cats.\n";
+        tab.editor.update(cx, |state, cx| state.set_value(text, window, cx));
+        tab.preview(text, window, cx);
+        workspace.tabs.push(tab);
+        workspace.activate(0, window, cx);
+        workspace
+    });
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| workspace.focus_active(window, cx));
+    cx.simulate_keystrokes("secondary-f");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("find-bar").is_some(), "the find bar");
+    cx.simulate_input("cat");
+    cx.run_until_parked();
+    let found = |cx: &mut gpui_kit::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            let find = workspace.preview_find.as_ref().expect("open");
+            let text = find.text.read(cx).rendered_text();
+            (find.matches.iter().map(|found| text.as_str()[found.clone()].to_string()).collect::<Vec<_>>(), find.active)
+        })
+    };
+    assert_eq!(found(cx), (vec!["cat".to_string(); 3], Some(0)), "the heading's bold too, not its `**`");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(found(cx).1, Some(1));
+    cx.simulate_keystrokes("shift-enter shift-enter");
+    assert_eq!(found(cx).1, Some(2), "round from the first to the last");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("find-bar").is_none(), "closed");
+    assert!(workspace.read_with(cx, |workspace, _| workspace.preview_find.is_none()));
+}
+
+/// In the Graph tab, Cmd-F over an open commit finds in its lines and its
+/// message; Enter goes to the next match, and Escape closes the find bar,
+/// not the commit.
+#[gpui_kit::test]
+fn an_open_commit_finds_its_text(cx: &mut TestAppContext) {
+    let (workspace, cx) = draw(cx, |_| {});
+    cx.update(|_, cx| cx.bind_keys(crate::find_bar::keymap().into_iter().chain(crate::history::keymap())));
+    let show = format!(
+        "commit {}\nAuthor:     A <a@b>\nAuthorDate: Mon Nov 9 10:00:00 2026 +0100\n\n    One second\n\n\
+         diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,3 +1,3 @@\n first line\n-old second\n+new second\n third line\n",
+        "a".repeat(40)
+    );
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.toggle_graph(window, cx);
+        workspace.graph.update(cx, |graph, cx| graph.open_shown(show, cx));
+    });
+    cx.run_until_parked();
+    let at = bounds(cx, "commit-changes").center();
+    cx.simulate_click(at, Modifiers::default());
+    cx.simulate_keystrokes("secondary-f");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("find-bar").is_some(), "the find bar");
+    cx.simulate_input("second");
+    cx.run_until_parked();
+    let found = |cx: &mut VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            let graph = workspace.graph.read(cx);
+            graph.commit_find(cx)
+        })
+    };
+    let (count, first) = found(cx);
+    assert_eq!(count, 2, "the old line and the new one: the message is over the rows");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(found(cx).1, first.map(|ix| (ix + 1) % count));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("find-bar").is_none(), "closed");
+    assert!(cx.debug_bounds("commit-changes").is_some(), "the commit stays open");
+}

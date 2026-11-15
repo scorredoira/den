@@ -21,6 +21,7 @@ mod language;
 mod menu;
 mod notes;
 mod file_viewer;
+mod find_bar;
 mod folder_picker;
 mod guide;
 mod picker;
@@ -382,6 +383,7 @@ fn listen_for_open(agent: &std::sync::Arc<client::Client>, cx: &mut App) {
 fn bind_keys(cx: &mut App) {
     cx.bind_keys(file_tree::keymap());
     cx.bind_keys(history::keymap());
+    cx.bind_keys(find_bar::keymap());
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-h", Hide, None),
