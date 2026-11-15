@@ -92,7 +92,8 @@ mod tests {
     }
 
     /// XML and JSON in VS Code's colors: a tag, its `<`, an attribute and
-    /// its value; a key and a string value, each its own.
+    /// its value; a key and a string value, each its own; CSS selectors,
+    /// properties, values and numbers with their units.
     #[test]
     fn xml_and_json_are_colored_as_vs_code() {
         use gpui_kit::component::highlighter::{HighlightTheme, SyntaxColors, SyntaxHighlighter};
@@ -126,5 +127,25 @@ mod tests {
         let swift = "struct Point { let x: Int = 1 }";
         assert!(color("swift", swift, "struct").is_some(), "Swift is colored");
         assert!(color("swift", swift, "Int").is_some());
+        let css = ".UI-panel > [hidden]:hover, #main a::before {\n  flex: 1 1 100%;\n  display: none;\n  --gap: 12px;\n  margin: var(--gap) !important;\n  font-family: \"Inter\";\n}";
+        for (needle, hex) in [
+            (".UI", 0x800000),
+            ("UI-panel", 0x800000),
+            ("hidden", 0xe50000),
+            (":hover", 0x800000),
+            ("hover", 0x800000),
+            ("#main", 0x800000),
+            ("before", 0x800000),
+            ("flex", 0xe50000),
+            ("100", 0x098658),
+            ("%", 0x098658),
+            ("none", 0x0000ff),
+            ("--gap", 0x0451a5),
+            ("var", 0x8250df),
+            ("!important", 0xcf222e),
+            ("\"Inter\"", 0xa31515),
+        ] {
+            assert_eq!(color("css", css, needle), Some(rgb(hex).into()), "{needle}");
+        }
     }
 }

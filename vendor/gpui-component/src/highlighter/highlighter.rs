@@ -1571,11 +1571,11 @@ mod tests {
         let highlights = highlighter.match_styles(0..html.len());
 
         assert!(
-            has_highlight_covering(&highlights, html, "color", "property"),
+            has_highlight_covering(&highlights, html, "color", "attribute"),
             "CSS property names inside style elements should be highlighted"
         );
         assert!(
-            has_highlight_covering(&highlights, html, "#336699", "string.special"),
+            has_highlight_covering(&highlights, html, "#336699", "attribute.value"),
             "CSS color values inside style elements should be highlighted"
         );
     }

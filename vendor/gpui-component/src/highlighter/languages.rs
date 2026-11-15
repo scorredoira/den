@@ -492,7 +492,7 @@ impl Language {
             #[cfg(feature = "tree-sitter-css")]
             Self::Css => (
                 tree_sitter_css::LANGUAGE,
-                tree_sitter_css::HIGHLIGHTS_QUERY,
+                include_str!("languages/css/highlights.scm"), // (den)
                 "",
                 "",
             ),

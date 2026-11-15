@@ -99,7 +99,12 @@ four falling back to the color they had before); the TypeScript, JavaScript, Go 
 Rust `highlights.scm` capture control keywords as `keyword.control` and
 parameters as `variable.parameter` (TypeScript's namespaces as `namespace`,
 Rust's numbers and booleans as `number` and `boolean`); JSON's captures keys
-and string values as `string.key` and `string.value`; and
+and string values as `string.key` and `string.value`; CSS has its own
+`languages/css/highlights.scm` (the grammar's own query makes selectors and
+property names `property`, black, and leaves values uncolored): selectors
+as `tag`, property names as `attribute`, values as `attribute.value`, units
+as `number`, strings as `string.value` and custom properties as
+`string.key`; and
 `src/highlighter/highlighter.rs` skips the `local.*` captures, which shadowed
 the highlights of the same node. Brackets are colored by nesting depth like
 VS Code's bracket pair colors (`bracket_depth` there, the
