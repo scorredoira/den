@@ -594,16 +594,19 @@ fn run_to_and_pause() -> Result<()> {
     session.breakpoints("src/app.ts", json!([]))?;
 
     for pause in [json!({ "vm": vm }), json!({})] {
-        let id = session.client.send("evaluate", json!({ "expr": "app.spin(5e9)" }))?;
+        // A loop with an end in time, not in turns, that a pause ends by
+        // setting a property: Chrome may drop a local set from the debugger
+        // (`n = 0` in `spin` left it running on a slow machine).
+        let id = session.client.send("evaluate", json!({ "expr": "app.busy(8000)" }))?;
         thread::sleep(Duration::from_millis(300));
         session.client.request("pause", pause)?;
         let stop = session.client.stopped()?;
         ensure!(
-            stop["reason"] == "pause" && stop["file"] == "src/app.ts" && stop["frames"][0]["function"] == "spin",
+            stop["reason"] == "pause" && stop["file"] == "src/app.ts" && stop["frames"][0]["function"] == "busy",
             "{stop}"
         );
-        // ends the loop: an assignment to a local
-        session.client.request("eval", json!({ "vm": stop["vm"], "frame": 0, "expr": "n = 0" }))?;
+        // ends the loop
+        session.client.request("eval", json!({ "vm": stop["vm"], "frame": 0, "expr": "until.end = 0" }))?;
         session.client.request("continue", json!({ "vm": stop["vm"] }))?;
         let result = session.client.response(id)?;
         ensure!(result["ok"] == true, "{result}");

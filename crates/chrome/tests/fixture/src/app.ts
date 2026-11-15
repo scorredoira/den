@@ -49,6 +49,18 @@ function spin(n: number): number {
 	return acc;
 }
 
+// Runs for `ms`, or until `until.end` is set to 0 from a pause in it: a
+// property, which the running code reads again, where a local set from
+// the debugger may not be.
+function busy(ms: number): number {
+	const until = { end: Date.now() + ms };
+	let turns = 0;
+	while (Date.now() < until.end) {
+		turns++; // @busy
+	}
+	return turns;
+}
+
 function showBox(): void {
 	const box = makeBox("a box"); // @box
 	box.id = "box";
@@ -59,6 +71,6 @@ function showBox(): void {
 	document.body.appendChild(box);
 }
 
-(window as any).app = { main, throwCaught, throwLater, spin, loads: () => loads, boxClicks: () => boxClicks };
+(window as any).app = { main, throwCaught, throwLater, spin, busy, loads: () => loads, boxClicks: () => boxClicks };
 showBox();
 main();

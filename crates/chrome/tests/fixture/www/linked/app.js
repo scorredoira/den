@@ -66,6 +66,14 @@
     }
     return acc;
   }
+  function busy(ms) {
+    const until = { end: Date.now() + ms };
+    let turns = 0;
+    while (Date.now() < until.end) {
+      turns++;
+    }
+    return turns;
+  }
   function showBox() {
     const box = makeBox("a box");
     box.id = "box";
@@ -75,7 +83,7 @@
     });
     document.body.appendChild(box);
   }
-  window.app = { main, throwCaught, throwLater, spin, loads: () => loads, boxClicks: () => boxClicks };
+  window.app = { main, throwCaught, throwLater, spin, busy, loads: () => loads, boxClicks: () => boxClicks };
   showBox();
   main();
 })();
