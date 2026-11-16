@@ -175,6 +175,18 @@ test covers Shift-F12, Ctrl-F12 and Cmd-J, including auto-repeat.
 Also `(den)` in its `Cargo.toml`: `deprecated` is allowed, as crates.io
 caps a dependency's lints and a path doesn't (its `cocoa` calls).
 
+## xim-ctext 0.3.0
+
+A copy of the crates.io release (MIT, by Riey; `src/main.rs`, a demo, left
+out), used through `[patch.crates-io]`. It decodes the text X11's input
+method (XIM) commits, and `zed-xim` panics on any error it returns.
+
+A fix marked `(den)` in `compound_text_to_utf8` (`src/lib.rs`): text with no
+escape sequence was read as UTF-8 only, but COMPOUND_TEXT starts out in
+ISO-8859-1, and that is what XIM sends for a Latin letter: typing ñ on a
+Spanish keyboard under X11 sent 0xF1 and closed the app. Bytes that aren't
+UTF-8 are read as ISO-8859-1. Tests `unescaped_latin1` and `unescaped_utf8`.
+
 ## Updating
 
 Copy the new release over each crate; drop `benches/`, `tests/` and their
@@ -185,6 +197,7 @@ reapply the changes from `patches/`, from the crate's folder:
 patch -p1 -d vendor/gpui-base < vendor/patches/gpui-base.patch
 patch -p1 -d vendor/gpui-component < vendor/patches/gpui-component.patch
 patch -p1 -d vendor/gpui-pre-macos < vendor/patches/gpui-pre-macos.patch
+patch -p1 -d vendor/xim-ctext < vendor/patches/xim-ctext.patch
 ```
 
 Hunks that no longer apply are redone by hand, with the descriptions above.
