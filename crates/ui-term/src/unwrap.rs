@@ -30,6 +30,9 @@ pub fn unwrap(rows: &[Row], cols: usize) -> String {
         }
         joining = row.wraps;
     }
+    for (text, _) in &mut lines {
+        unquote(text);
+    }
     let Some((first, _)) = lines.first_mut() else {
         return String::new();
     };
@@ -97,6 +100,16 @@ fn starts_block(line: &str) -> bool {
         .any(|start| line.starts_with(start))
 }
 
+/// The bar Claude Code draws down the left of a quote, out: blanks in its
+/// place, so the columns stay where they were.
+fn unquote(text: &mut String) {
+    let at = text.len() - text.trim_start().len();
+    let rest = &text[at..];
+    if let Some(bar) = ["▎", "▍", "▌", "┃"].iter().find(|bar| rest.starts_with(**bar)) {
+        text.replace_range(at..at + bar.len(), " ");
+    }
+}
+
 fn leading(text: &str) -> usize {
     text.chars().take_while(|c| *c == ' ').count()
 }
@@ -159,5 +172,19 @@ Los tests pasan y he probado los fallos en tests, pero en la app aún no."
             Row { text: "def".into(), end: 3, wraps: false },
         ];
         assert_eq!(unwrap(&wrapped, 5), "abcdef");
+    }
+
+    /// The bar down the left of a quote goes, and the quote is a paragraph.
+    #[test]
+    fn quote_bars_go() {
+        let text = "\
+  ▎ Queda la misma fuga en otra pantalla: devuelve c.name y c.avatar de
+  ▎ todas las relationships del cliente, sin mirar status. Con un test.
+
+  ¿Lo publico así?";
+        assert_eq!(
+            unwrap(&rows(text), 74),
+            "Queda la misma fuga en otra pantalla: devuelve c.name y c.avatar de todas las relationships del cliente, sin mirar status. Con un test.\n\n¿Lo publico así?"
+        );
     }
 }
