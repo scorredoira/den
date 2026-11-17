@@ -801,8 +801,7 @@ pub fn link_den(exe: &std::path::Path) -> Result<()> {
     {
         let link = local.join(APP);
         let ours = match std::fs::read_link(&link) {
-            // The agent runs from versioned copies: `den-agent-6-…`.
-            Ok(target) => target.file_name().is_some_and(|name| name.to_string_lossy().starts_with("den-agent")),
+            Ok(target) => links_to_den(&target),
             Err(_) => !link.exists(),
         };
         if ours {
@@ -810,6 +809,17 @@ pub fn link_den(exe: &std::path::Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether a `den` link in `~/.local/bin` pointing to `target` is ours to
+/// replace: an agent (it runs from versioned copies, `den-agent-6-…`), or
+/// the app the Linux package's `install.sh` linked there before it linked
+/// the agent, `<data>/den/app/den`, which opened every `den <command>` as
+/// a folder.
+fn links_to_den(target: &std::path::Path) -> bool {
+    let named = |path: Option<&std::path::Path>, name: &str| path.and_then(|path| path.file_name()).is_some_and(|file| file == name);
+    target.file_name().is_some_and(|name| name.to_string_lossy().starts_with("den-agent"))
+        || (named(Some(target), APP) && named(target.parent(), "app") && named(target.parent().and_then(|app| app.parent()), APP))
 }
 
 /// Link `link` pointing to `target` (replaces any previous one).
@@ -1124,5 +1134,16 @@ mod tests {
             Some(Decoded::Known(message)) => assert_eq!(message.id, Some(10)),
             _ => panic!("should have been read"),
         }
+    }
+
+    #[test]
+    fn a_den_link_to_an_agent_or_the_linux_app_is_ours() {
+        use std::path::Path;
+        assert!(links_to_den(Path::new("/home/u/.local/state/den/agents/den-agent-9-42e1aa2fd03635ea")));
+        assert!(links_to_den(Path::new("/home/u/.local/share/den/app/den-agent")));
+        assert!(links_to_den(Path::new("/home/u/.local/share/den/app/den")));
+        assert!(!links_to_den(Path::new("/usr/bin/den")));
+        assert!(!links_to_den(Path::new("/home/u/src/den/target/release/den")));
+        assert!(!links_to_den(Path::new("/opt/other/app/den")));
     }
 }

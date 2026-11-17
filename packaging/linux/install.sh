@@ -11,7 +11,10 @@ for name in den den-agent den-agent-linux-x86_64; do
     chmod +x "$app_dir/$name.new"
     mv -f "$app_dir/$name.new" "$app_dir/$name"
 done
-ln -sfn "$app_dir/den" "$HOME/.local/bin/den"
+# `den` in a shell is the command line (`den <path>`, `den where`…), which
+# the agent is when called `den`; the app opened as a folder whatever it
+# was given. The agent relinks it to its versioned copy when it starts.
+ln -sfn "$app_dir/den-agent" "$HOME/.local/bin/den"
 cp "$source_dir/den.svg" "$data_dir/icons/hicolor/scalable/apps/den.svg"
 # Desktop launchers do not necessarily inherit ~/.local/bin in PATH.
 python3 - "$source_dir/den.desktop" "$data_dir/applications/den.desktop" "$app_dir/den" <<'PY'
@@ -26,4 +29,4 @@ PY
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$data_dir/applications" || true
 fi
-printf 'Installed Den. Open it from your applications menu or run %s/.local/bin/den\n' "$HOME"
+printf 'Installed Den. Open it from your applications menu or run %s, and `den <folder>` from a shell.\n' "$app_dir/den"
