@@ -14,7 +14,7 @@ use std::{
 
 use client::Client;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, h_flex, h_resizable,
+    ActiveTheme as _, Icon, TITLE_BAR_HEIGHT, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, h_flex, h_resizable,
     button::{Button, ButtonVariants as _},
     highlighter::SyntaxColors,
     input::{Input, InputEvent, InputState},
@@ -302,6 +302,20 @@ fn opens_from_host(host: &str, den: &WeakEntity<Den>, cx: &App) -> bool {
 
 /// Opens the window with `root` and `file` in it; with no `root`, the last
 /// workspace if `resume`, or none.
+/// The options of every window: our own title bar (`TitleBar`), and on Linux
+/// no system one above it. GNOME draws its own title bar unless the window
+/// decorates itself, which left two bars there; with client decorations
+/// there's one, as on macOS, and `TitleBar` draws minimize, maximize and
+/// close on its right. Where the system can't let a window decorate itself
+/// (X11 without a compositor), it keeps its own bar and `TitleBar` draws no
+/// buttons.
+fn window_options() -> WindowOptions {
+    WindowOptions {
+        window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
+        ..TitleBar::window_options()
+    }
+}
+
 pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, cx: &mut App) {
     let agent = cx.default_global::<Main>().agent.clone();
     let title = match &root {
@@ -315,7 +329,7 @@ pub fn open_window(root: Option<PathBuf>, file: Option<PathBuf>, resume: bool, c
             ..TitleBar::title_bar_options()
         }),
         window_bounds: Some(window_bounds(cx)),
-        ..TitleBar::window_options()
+        ..window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
         cx.new(|cx| Den::new(root.clone(), file.clone(), resume, agent, window, cx))
@@ -442,7 +456,7 @@ fn open_host_window(name: SharedString, cx: &mut App, build: impl FnOnce(&mut Wi
             ..TitleBar::title_bar_options()
         }),
         window_bounds: Some(bounds),
-        ..TitleBar::window_options()
+        ..window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| build(window, cx)));
     match opened {
@@ -939,6 +953,7 @@ impl Den {
     fn install_theme(cx: &mut App) {
         let mut colors: HashMap<String, SyntaxColors> =
             serde_json::from_str(include_str!("../assets/themes/vscode-2026.json")).expect("vscode-2026.json");
+        theme::add_fonts(cx);
         if !cx.has_global::<Theme>() {
             Theme::change(ThemeMode::Light, None, cx);
         }
@@ -953,6 +968,7 @@ impl Den {
                 theme::dark_surfaces(&mut updated);
             }
             theme::selection(&mut updated, mode == "dark");
+            theme::ui_font(&mut updated);
             *config = Rc::new(updated);
         }
     }
@@ -1522,6 +1538,17 @@ impl Render for Den {
             });
         }
         let title = self.active.as_ref().map(|key| self.label(key)).unwrap_or_else(|| self.title());
+        // Off macOS the title is centered over the bar left of the window's
+        // buttons (`TitleBar` draws them when the window decorates itself):
+        // as much on its left as they take on the right, past the bar's
+        // own 12 px.
+        let controls = if matches!(window.window_decorations(), Decorations::Client { .. }) {
+            let supported = window.window_controls();
+            1 + usize::from(supported.minimize) + usize::from(supported.maximize)
+        } else {
+            0
+        };
+        let title_inset = (TITLE_BAR_HEIGHT * controls as f32 - px(12.)).max(px(0.));
         v_flex()
             .id("den")
             .key_context("Den")
@@ -1562,6 +1589,25 @@ impl Render for Den {
             // and zooms like the system one.
             .child(
                 TitleBar::new()
+                    // Elsewhere the menus are on the left, and the title stays
+                    // centered over the bar as on macOS: under them, it
+                    // doesn't take their clicks.
+                    .when(!cfg!(target_os = "macos"), |bar| {
+                        bar.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .pl(title_inset)
+                                .flex()
+                                .justify_center()
+                                .items_center()
+                                .text_ui(cx)
+                                .text_color(cx.theme().muted_foreground)
+                                .child(title.clone()),
+                        )
+                    })
                     // Windows and Linux: the menus, which only macOS draws itself.
                     .children(crate::app_menu::bar(cx))
                     .child(
@@ -1576,7 +1622,7 @@ impl Render for Den {
                             .gap_2()
                             .text_ui(cx)
                             .text_color(cx.theme().muted_foreground)
-                            .child(title),
+                            .when(cfg!(target_os = "macos"), |this| this.child(title)),
                     )
                     .when(self.unkept(cx), |bar| {
                         bar.child(
