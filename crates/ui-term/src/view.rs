@@ -248,6 +248,17 @@ impl TerminalView {
         self.terminal.read(cx).has_selection()
     }
 
+    /// Ctrl-C: copies and clears the selection if there is one (off the Mac,
+    /// where Ctrl-C is also Copy), sends ^C otherwise.
+    fn interrupt(&mut self, _: &SendInterrupt, _: &mut Window, cx: &mut Context<Self>) {
+        if cfg!(not(target_os = "macos")) && self.has_selection(cx) {
+            self.copy_selection(cx);
+            self.terminal.update(cx, |terminal, cx| terminal.clear_selection(cx));
+        } else {
+            self.send(b"\x03", cx);
+        }
+    }
+
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         self.paste_clipboard(cx);
     }
@@ -883,7 +894,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::open_find))
             .on_action(cx.listener(|this, _: &SendTab, _, cx| this.send(b"\t", cx)))
             .on_action(cx.listener(|this, _: &SendBackTab, _, cx| this.send(b"\x1b[Z", cx)))
-            .on_action(cx.listener(|this, _: &SendInterrupt, _, cx| this.send(b"\x03", cx)))
+            .on_action(cx.listener(Self::interrupt))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
             // Before the pane's menu, which takes the click as it opens.
