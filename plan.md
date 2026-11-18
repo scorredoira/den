@@ -217,6 +217,8 @@ The tests run in GitHub Actions on macOS (Apple Silicon and Intel), Linux x86_64
 | Topic | macOS (used daily) | Linux (same code) | Windows |
 | --- | --- | --- | --- |
 | Rendering (GPUI) | Metal | wgpu, Wayland and X11 | GPUI's own backend |
+| Title bar | Ours, with the traffic lights; menus in the system's bar | Ours alone (client decorations): the menus, the title centered, minimize, maximize and close | Ours, with the menus |
+| Interface font | San Francisco (the system's) | Inter, bundled (`crates/ui/assets/fonts/inter`) | Segoe UI (the system's) |
 | App modifier | Cmd | Ctrl | Ctrl |
 | App shortcuts inside the terminal | Cmd | not Ctrl plus a letter (see Shortcuts in terminals) | the same as Linux |
 | Transport to the local agent | Unix socket | Unix socket | Named pipe with owner-only permissions |

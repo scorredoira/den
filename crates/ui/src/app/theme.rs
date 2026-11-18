@@ -65,3 +65,47 @@ pub(super) fn dark_surfaces(config: &mut ThemeConfig) {
     highlight.editor_background = Some(rgb(0x1e1e1e).into());
     highlight.editor_active_line = Some(rgb(0x2a2a2a).into());
 }
+
+/// The interface's family off macOS: Inter, the closest to the San Francisco
+/// macOS draws it in. Linux would otherwise get whatever its desktop's sans
+/// is (Ubuntu's, Noto), lighter and wider. Bundled under the SIL Open Font
+/// License (`assets/fonts/inter/LICENSE.txt`); macOS and Windows keep their
+/// system font.
+#[cfg(target_os = "linux")]
+const UI_FONT: &str = "Inter";
+
+/// Registers the bundled interface font, once (each window installs the
+/// theme), before any text is laid out.
+pub(super) fn add_fonts(cx: &App) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::borrow::Cow;
+        static ADDED: std::sync::Once = std::sync::Once::new();
+        if ADDED.is_completed() {
+            return;
+        }
+        ADDED.call_once(|| ());
+        let fonts = [
+            include_bytes!("../../assets/fonts/inter/Inter-Regular.ttf").as_slice(),
+            include_bytes!("../../assets/fonts/inter/Inter-Medium.ttf"),
+            include_bytes!("../../assets/fonts/inter/Inter-SemiBold.ttf"),
+            include_bytes!("../../assets/fonts/inter/Inter-Bold.ttf"),
+            include_bytes!("../../assets/fonts/inter/Inter-Italic.ttf"),
+        ];
+        if let Err(err) = cx.text_system().add_fonts(fonts.into_iter().map(Cow::Borrowed).collect()) {
+            eprintln!("could not load the interface font: {err:#}");
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cx;
+}
+
+/// Names the bundled interface font on a theme, where there is one.
+pub(super) fn ui_font(config: &mut ThemeConfig) {
+    #[cfg(target_os = "linux")]
+    {
+        config.font_family = Some(UI_FONT.into());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = config;
+}
