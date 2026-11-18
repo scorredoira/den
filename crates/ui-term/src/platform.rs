@@ -4,8 +4,10 @@ use gpui_kit::KeyBinding;
 
 use crate::{Copy, Find, Paste, SendBackTab, SendInterrupt, SendTab, terminal_key};
 
-/// Copy and paste inside the terminal. On Mac it uses Cmd; on Linux and
-/// Windows, Ctrl-Shift so Ctrl-C and Ctrl-V still go to the shell.
+/// Copy and paste inside the terminal. On Mac it uses Cmd. On Linux and
+/// Windows, as in Windows Terminal: Ctrl-C copies when there's a selection
+/// and interrupts otherwise (`SendInterrupt`), Ctrl-V pastes, and
+/// Ctrl-Shift-C and Ctrl-Shift-V do the same as in other terminals.
 ///
 /// Tab, Shift-Tab and Ctrl-C have shortcuts at the window root (move focus,
 /// copy); inside the terminal they're claimed for the shell.
@@ -21,6 +23,7 @@ pub fn keymap() -> Vec<KeyBinding> {
         keys.extend([
             terminal_key("ctrl-shift-c", Copy),
             terminal_key("ctrl-shift-v", Paste),
+            terminal_key("ctrl-v", Paste),
         ]);
     }
     // Off the Mac, Ctrl-F is the shell's and Ctrl-Shift-F the Search panel.
