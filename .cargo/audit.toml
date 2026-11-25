@@ -12,4 +12,5 @@ ignore = [
     "RUSTSEC-2026-0370", # zvariant: gpui-pre-linux's accesskit_unix
     "RUSTSEC-2026-0371", # zbus_names: gpui-pre-linux's accesskit_unix
     "RUSTSEC-2026-0372", # zvariant_derive: gpui-pre-linux's accesskit_unix
+    "RUSTSEC-2026-0543", # chrono: gpui-base, gpui-component, gpui-pre
 ]
