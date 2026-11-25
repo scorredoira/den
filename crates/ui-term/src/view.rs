@@ -892,6 +892,13 @@ impl Render for TerminalView {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::mouse_up))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
+            // Files from Finder or the Explorer: their paths, as typed.
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().primary.opacity(0.08)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.focus_handle.focus(window, cx);
+                let paths = paths.paths().to_vec();
+                this.terminal.update(cx, |terminal, cx| terminal.drop_paths(paths, cx));
+            }))
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 this.update_hovered_link(event.modifiers.platform, cx)
             }))

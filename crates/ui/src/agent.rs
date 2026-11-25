@@ -101,6 +101,10 @@ impl TerminalBackend for AgentBackend {
         })
     }
 
+    fn is_local(&self) -> bool {
+        self.client.is_local()
+    }
+
     /// An agent from before `TermClear` answers it with an error.
     fn clear(&self) -> std::pin::Pin<Box<dyn Future<Output = Result<()>>>> {
         let response = self.client.request(Request::TermClear { term: self.term });

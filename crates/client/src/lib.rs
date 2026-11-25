@@ -548,6 +548,11 @@ impl Client {
         });
     }
 
+    /// The agent runs on this machine and sees its files.
+    pub fn is_local(&self) -> bool {
+        self.destination.is_none()
+    }
+
     /// Whether the connection to the agent is still alive.
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)

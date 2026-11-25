@@ -279,6 +279,45 @@ impl Terminal {
         .detach();
     }
 
+    /// Pastes the paths of files dropped on the terminal, escaped as a shell
+    /// takes them, as Terminal.app does: Claude Code attaches the images. On
+    /// a server the files are copied there first (folders can't be).
+    pub fn drop_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.backend.is_local() {
+            let text = paths.iter().map(|path| shell_escape(&path.to_string_lossy())).collect::<Vec<_>>();
+            let text = format!("{} ", text.join(" "));
+            self.paste(&text, cx);
+            return;
+        }
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let mut copied = Vec::new();
+            for path in paths {
+                let read = cx.background_spawn({
+                    let path = path.clone();
+                    async move { std::fs::read(&path) }
+                });
+                let data = match read.await {
+                    Ok(data) => data,
+                    Err(err) => {
+                        eprintln!("could not drop {}: {err}", path.display());
+                        continue;
+                    }
+                };
+                let extension = path.extension().map(|ext| ext.to_string_lossy().into_owned()).unwrap_or_default();
+                match backend.save_image(&extension, data).await {
+                    Ok(remote) => copied.push(shell_escape(&remote.to_string_lossy())),
+                    Err(err) => eprintln!("could not copy {} to the server: {err:#}", path.display()),
+                }
+            }
+            if !copied.is_empty() {
+                let text = format!("{} ", copied.join(" "));
+                this.update(cx, |this, cx| this.paste(&text, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
     /// Kills the terminal's process.
     pub fn kill(&self) {
         self.backend.kill();
@@ -497,6 +536,19 @@ impl Terminal {
     }
 }
 
+/// `path` as a POSIX shell takes it: a backslash before each character
+/// that isn't plain.
+fn shell_escape(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for c in path.chars() {
+        if !(c.is_alphanumeric() || "/._-+,:@%".contains(c)) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use core::prelude::v1::test;
@@ -522,6 +574,12 @@ mod tests {
     fn terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
         let (_, output) = smol::channel::unbounded();
         cx.new(|cx| Terminal::new(Rc::new(Backend), output, 20, 3, b"one\r\ntwo\r\nthree\r\nfour\r\n$ ls", cx))
+    }
+
+    #[test]
+    fn paths_are_escaped_as_a_shell_takes_them() {
+        assert_eq!(shell_escape("/Users/me/Captura de pantalla (1).png"), "/Users/me/Captura\\ de\\ pantalla\\ \\(1\\).png");
+        assert_eq!(shell_escape("/tmp/año's.txt"), "/tmp/año\\'s.txt");
     }
 
     #[gpui_kit::test]
